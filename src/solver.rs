@@ -377,17 +377,61 @@ pub fn drag(sk: &mut Sketch, p: PointId, target: DVec2) -> Result<Solved, SolveE
     if p >= sk.points.len() {
         return Err(SolveError::Invalid); // point was removed (e.g. undo mid-drag)
     }
-    let mut trial = sk.clone();
-    trial.points[p] = target;
-    let mut exact = trial.clone();
     let stiff = stiffness(sk, p);
+    // Straight to the target.
+    let mut exact = sk.clone();
+    exact.points[p] = target;
     if let Ok(s) = solve_with(&mut exact, &[p], None, Some(&stiff)) {
-        *sk = exact;
+        if !collapsed(sk, &exact) {
+            *sk = exact;
+            return Ok(s);
+        }
+    }
+    // Too far in one go (a far jump can land on a wrong branch, even a squashed
+    // shape): walk there in small steps and stop where the constraints stop it.
+    let start = sk.points[p];
+    let mut cur = sk.clone();
+    let mut last = None;
+    for k in 1..=16 {
+        let mut step = cur.clone();
+        step.points[p] = start.lerp(target, k as f64 / 16.0);
+        match solve_with(&mut step, &[p], None, Some(&stiff)) {
+            Ok(s) if !collapsed(&cur, &step) => {
+                cur = step;
+                last = Some(s);
+            }
+            _ => break,
+        }
+    }
+    if let Some(s) = last {
+        *sk = cur;
         return Ok(s);
     }
+    // Not reachable exactly (a dimension fixes its height, say): let it move
+    // as little as possible off the target, sliding along what freedom is left.
+    let mut trial = sk.clone();
+    trial.points[p] = target;
     let s = solve_with(&mut trial, &[], Some(p), Some(&stiff))?;
+    if collapsed(sk, &trial) {
+        return Err(SolveError::Degenerate);
+    }
     *sk = trial;
     Ok(s)
+}
+
+/// Did solving squash something flat: any line, circle or arc now under a
+/// twentieth of its size before (that no dimension asked for)?
+fn collapsed(before: &Sketch, after: &Sketch) -> bool {
+    let size = |sk: &Sketch, e: usize| match sk.entities[e] {
+        Entity::Line { .. } => sk.line_length(e).unwrap_or(0.0),
+        Entity::Circle { radius, .. } => radius,
+        Entity::Arc { .. } => sk.arc_geometry(e).map_or(0.0, |(_, r, _, _)| r),
+        Entity::Point { .. } => 0.0,
+    };
+    (0..before.entities.len().min(after.entities.len())).any(|e| {
+        let (b, a) = (size(before, e), size(after, e));
+        b > 1e-6 && a < b * 0.05
+    })
 }
 
 /// Drag a whole line by `shift`: both ends move together to where `shift`

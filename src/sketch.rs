@@ -2114,10 +2114,23 @@ impl Editor {
                 for k in 0..n {
                     sk.entities.push(Entity::Line { a: corners[k], b: corners[(k + 1) % n] });
                 }
-                let mut out: Vec<Constraint> = (0..n)
-                    .map(|k| if inscribed { Constraint::OnCircle(corners[k], circle) } else { Constraint::Tangent(first + k, circle) })
-                    .collect();
+                // Corners on a circle plus equal sides make it regular. For circumscribed
+                // polygons that circle is a second, hidden one; the size dimension is on
+                // the circle the edges touch, which one edge is tied to (tying them all
+                // would only repeat what the rest already says).
+                let on_circle = if inscribed {
+                    circle
+                } else {
+                    sk.entities.push(Entity::Circle { center, radius: shape.radius });
+                    let outer = sk.entities.len() - 1;
+                    sk.set_construction(outer, true);
+                    outer
+                };
+                let mut out: Vec<Constraint> = (0..n).map(|k| Constraint::OnCircle(corners[k], on_circle)).collect();
                 out.extend((1..n).map(|k| Constraint::Equal(first, first + k)));
+                if !inscribed {
+                    out.push(Constraint::Tangent(first, circle));
+                }
                 // Its size is a dimension on the reference circle (edit it like any other).
                 out.push(Constraint::Diameter(circle, 2.0 * circle_r));
                 out.extend(ties);
@@ -3330,6 +3343,23 @@ mod polygon_tests {
             let far = ys.iter().cloned().fold(0.0f64, |m, y| if y.abs() > m.abs() { y } else { m });
             assert_eq!(far > 0.0, expect_above, "{ys:?}");
             assert!((far.abs() - 10.0 * 3f64.sqrt()).abs() < 1e-6, "hexagon with side 10 is 17.32 tall");
+        }
+    }
+
+    #[test]
+    fn every_polygon_is_rigid_up_to_centre_and_turn_and_survives_dragging_a_corner() {
+        for tool in [Tool::PolygonInscribed, Tool::PolygonCircumscribed] {
+            for n in [3, 4, 5, 6, 8, 12] {
+                let mut sk = make(tool, n, &[free(20.0, 20.0), free(30.0, 20.0)]);
+                assert_eq!(solver::solve(&mut sk, &[]).unwrap().dof, 3, "{tool:?} n = {n}");
+                let corner = sk.entities.iter().find_map(|e| match *e { Entity::Line { a, .. } => Some(a), _ => None }).unwrap();
+                for target in [DVec2::new(32.0, 24.0), DVec2::new(40.0, 40.0), DVec2::new(20.0, 20.0), DVec2::new(100.0, 0.0), DVec2::new(-5.0, 60.0)] {
+                    let _ = solver::drag(&mut sk, corner, target);
+                    let l = side_lengths(&sk);
+                    assert!(l.iter().all(|x| (x - l[0]).abs() < 1e-5), "{tool:?} n = {n} after {target:?}: {l:?}");
+                    assert!(l[0] > 1.0, "{tool:?} n = {n} collapsed after {target:?}: {l:?}");
+                }
+            }
         }
     }
 
