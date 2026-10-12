@@ -23,6 +23,23 @@ pub enum Feature {
     Revolve(usize),
 }
 
+/// Put `f` into the timeline at the rollback marker (the end when there is
+/// none). Returns the new marker: just after the new feature, still rolled
+/// back past the later ones.
+pub fn insert_at_marker(timeline: &mut Vec<Feature>, marker: Option<usize>, f: Feature) -> Option<usize> {
+    let at = marker.map_or(timeline.len(), |m| m.min(timeline.len()));
+    timeline.insert(at, f);
+    marker.map(|_| at + 1)
+}
+
+/// Take `f` out of the timeline; the marker keeps its place among the
+/// features that are left. Returns the new marker.
+pub fn remove_keeping_marker(timeline: &mut Vec<Feature>, marker: Option<usize>, f: Feature) -> Option<usize> {
+    let Some(pos) = timeline.iter().position(|x| *x == f) else { return marker };
+    timeline.remove(pos);
+    marker.and_then(|m| if m > pos { Some(m - 1) } else { Some(m) }).filter(|&m| m < timeline.len())
+}
+
 /// Which body, however the list of bodies shifts: the feature that created
 /// it (a NewBody extrude or revolve) and which piece of that it is (a cut can
 /// split a body, and the pieces are numbered). Join, Cut and fillets keep a
@@ -83,6 +100,9 @@ pub struct ViewState {
     /// Sketches the user switched on or off in the browser, by index.
     pub sketch_shown: Vec<(usize, bool)>,
     pub home: Option<HomeView>,
+    /// Timeline rollback: how many features are built (None: all).
+    #[serde(default)]
+    pub marker: Option<usize>,
 }
 
 impl PartialEq for ViewState {
@@ -509,12 +529,14 @@ mod tests {
             hidden_ids: vec![BodyId { feature: Feature::Extrude(0), piece: 1 }],
             sketch_shown: vec![(0, true)],
             home: Some(HomeView { yaw: 0.5, pitch: 0.25, target: [1.0, 2.0, 3.0], distance: 150.0 }),
+            marker: Some(2),
         };
         assert_eq!(doc, plain, "view choices don't count as a change");
         let back = from_json(&to_json(&doc)).unwrap();
         assert_eq!(back.view.hidden_ids, vec![BodyId { feature: Feature::Extrude(0), piece: 1 }]);
         assert_eq!(back.view.sketch_shown, vec![(0, true)]);
         assert_eq!(back.view.home, doc.view.home);
+        assert_eq!(back.view.marker, Some(2));
         // Not an undo step.
         let mut h = History::default();
         h.reset(plain);
@@ -558,5 +580,25 @@ mod tests {
         assert!(v["document"].get("body_names").is_none(), "nothing stored when unnamed");
         v["document"]["view"].as_object_mut().unwrap().remove("hidden_ids");
         assert!(from_json(&v.to_string()).unwrap().view.hidden_ids.is_empty());
+    }
+
+    #[test]
+    fn new_features_go_in_at_the_marker_and_deletes_keep_it_in_place() {
+        use Feature::*;
+        let mut t = vec![Sketch(0), Extrude(0), Edge(0), Extrude(1)];
+        // Rolled back after the first extrude: a new revolve goes in there.
+        let m = insert_at_marker(&mut t, Some(2), Revolve(0));
+        assert_eq!(t, vec![Sketch(0), Extrude(0), Revolve(0), Edge(0), Extrude(1)]);
+        assert_eq!(m, Some(3), "the marker moves past what was just added");
+        // At the end (no marker) it just appends.
+        let m = insert_at_marker(&mut t, None, Sketch(1));
+        assert_eq!((t.last(), m), (Some(&Sketch(1)), None));
+        // Deleting something before the marker moves it back one; after it, not.
+        let mut t = vec![Sketch(0), Extrude(0), Edge(0), Extrude(1)];
+        assert_eq!(remove_keeping_marker(&mut t, Some(2), Sketch(0)), Some(1));
+        assert_eq!(remove_keeping_marker(&mut t, Some(1), Extrude(1)), Some(1));
+        // Removing the last rolled-back feature leaves nothing to roll back past.
+        let mut t = vec![Sketch(0), Extrude(0)];
+        assert_eq!(remove_keeping_marker(&mut t, Some(1), Extrude(0)), None);
     }
 }

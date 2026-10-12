@@ -1049,6 +1049,23 @@ mod tests {
     }
 
     #[test]
+    fn building_only_part_of_the_timeline_rolls_the_design_back() {
+        let mut a = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut a, 0.0, 0.0, 50.0, 30.0);
+        let mut b = Sketch::new("B".into(), OriginPlane::XY);
+        rect(&mut b, 20.0, 10.0, 30.0, 20.0);
+        let exs = [ex(0, vec![0], 10.0, Operation::NewBody), ex(1, vec![0], 10.0, Operation::Cut)];
+        let full = [Feature::Sketch(0), Feature::Extrude(0), Feature::Sketch(1), Feature::Extrude(1)];
+        let all = build4(&[a.clone(), b.clone()], &exs, &[], &full);
+        assert!(close(total(&all), 15000.0 - 1000.0));
+        // Rolled back to before the cut: the plate is whole, and the cut has no error.
+        let back = build4(&[a, b], &exs, &[], &full[..3]);
+        assert!(close(total(&back), 15000.0));
+        assert_eq!(back.errors, vec![None, None]);
+        assert_eq!(ids(&back), vec![id(Feature::Extrude(0), 0)]);
+    }
+
+    #[test]
     fn a_broken_feature_is_skipped_not_fatal() {
         let mut a = Sketch::new("A".into(), OriginPlane::XY);
         rect(&mut a, 0.0, 0.0, 50.0, 30.0);

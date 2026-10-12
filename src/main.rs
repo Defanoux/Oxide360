@@ -389,6 +389,7 @@ struct OpenCad {
     body_names: HashMap<BodyId, String>,    // names the user gave bodies
     body_ids: Vec<BodyId>,                  // the bodies of the last build, in order
     renaming: Option<(BodyId, String)>,     // a body being renamed in the browser, and the text so far
+    marker: Option<usize>,                  // timeline rollback: features before this many are built (None = all)
     sketch_shown: HashMap<usize, bool>,     // per-sketch visibility the user chose
     label_drag: Option<(usize, DVec2, DVec2)>, // dimension being moved: constraint, press point, its shift then
     circle_tool: Tool,                         // which circle tool the toolbar's circle button is
@@ -461,6 +462,7 @@ impl Default for OpenCad {
             body_names: HashMap::new(),
             body_ids: Vec::new(),
             renaming: None,
+            marker: None,
             sketch_shown: HashMap::new(),
             label_drag: None,
             circle_tool: Tool::Circle,
@@ -506,6 +508,41 @@ impl OpenCad {
         }
     }
 
+    /// How many timeline entries are built: all of them unless the marker was
+    /// dragged back.
+    fn applied(&self) -> usize {
+        self.marker.map_or(self.timeline.len(), |m| m.min(self.timeline.len()))
+    }
+
+    /// Roll the design to the first `n` timeline entries (Fusion's marker).
+    /// Anything open that points at the part is closed first.
+    fn set_marker(&mut self, n: usize) {
+        let n = n.min(self.timeline.len());
+        let new = (n < self.timeline.len()).then_some(n);
+        if new == self.marker {
+            return;
+        }
+        self.finish_sketch();
+        self.cancel_extrude();
+        self.cancel_revolve();
+        self.cancel_edge_dialog();
+        self.face_pick = false;
+        self.float = None;
+        self.dim_selection.clear();
+        self.marker = new;
+    }
+
+    /// A new feature goes in at the marker (after everything built so far),
+    /// and the marker moves past it.
+    fn timeline_insert(&mut self, f: Feature) {
+        self.marker = doc::insert_at_marker(&mut self.timeline, self.marker, f);
+    }
+
+    /// Take a feature out of the timeline, keeping the marker in place.
+    fn timeline_remove(&mut self, f: Feature) {
+        self.marker = doc::remove_keeping_marker(&mut self.timeline, self.marker, f);
+    }
+
     fn sorted_body_names(&self) -> Vec<(BodyId, String)> {
         let mut v: Vec<(BodyId, String)> = self.body_names.iter().map(|(&k, n)| (k, n.clone())).collect();
         v.sort();
@@ -545,6 +582,7 @@ impl OpenCad {
             hidden_bodies: Vec::new(),
             hidden_ids,
             sketch_shown,
+            marker: self.marker,
             home: Some(HomeView { yaw: h.yaw, pitch: h.pitch, target: h.target.to_array(), distance: h.distance }),
         }
     }
@@ -553,6 +591,7 @@ impl OpenCad {
     fn apply_view(&mut self, v: &ViewState) {
         self.hidden_bodies = v.hidden_ids.iter().copied().collect();
         self.sketch_shown = v.sketch_shown.iter().filter(|(i, _)| *i < self.sketches.len()).copied().collect();
+        self.marker = v.marker.filter(|&n| n < self.timeline.len());
         self.home = match v.home {
             Some(h) => Pose { yaw: h.yaw, pitch: h.pitch, target: Vec3::from_array(h.target), distance: h.distance },
             None => OrbitCamera::default().pose(),
@@ -658,6 +697,7 @@ impl OpenCad {
         self.timeline = doc.timeline;
         self.body_names = doc.body_names.into_iter().collect();
         self.renaming = None;
+        self.marker = self.marker.filter(|&n| n < self.timeline.len());
         self.dialog = None;
         self.revolve_dialog = None;
         self.edge_dialog = None;
@@ -748,6 +788,7 @@ impl OpenCad {
     fn inputs(&self, slot: Slot) -> (Vec<Extrude>, Vec<Revolve>, Vec<EdgeFeature>, Vec<Feature>) {
         let (mut extrudes, mut revolves, mut edge_features, mut timeline) =
             (self.extrudes.clone(), self.revolves.clone(), self.edge_features.clone(), self.timeline.clone());
+        timeline.truncate(self.applied()); // features after the marker aren't built
         match slot {
             Slot::Committed => {}
             Slot::Preview => {
@@ -943,7 +984,7 @@ impl OpenCad {
         let name = format!("Sketch{}", self.sketches.len() + 1);
         self.sketches.push(Sketch::new(name, plane));
         let i = self.sketches.len() - 1;
-        self.timeline.push(Feature::Sketch(i));
+        self.timeline_insert(Feature::Sketch(i));
         self.enter_sketch(i);
     }
 
@@ -966,7 +1007,9 @@ impl OpenCad {
     /// (like Fusion); the browser's checkbox overrides that either way.
     fn sketch_visible(&self, i: usize) -> bool {
         let used = self.extrudes.iter().any(|e| e.sketch == i) || self.revolves.iter().any(|r| r.sketch == i);
-        self.sketch_shown.get(&i).copied().unwrap_or(!used)
+        // A sketch the marker is still before doesn't exist yet.
+        let built = self.timeline.iter().position(|f| *f == Feature::Sketch(i)).is_none_or(|p| p < self.applied());
+        built && self.sketch_shown.get(&i).copied().unwrap_or(!used)
     }
 
     /// Delete a sketch and the extrudes built from it.
@@ -994,7 +1037,7 @@ impl OpenCad {
             self.delete_revolve(k);
         }
         self.sketches.remove(i);
-        self.timeline.retain(|f| *f != Feature::Sketch(i));
+        self.timeline_remove(Feature::Sketch(i));
         for f in &mut self.timeline {
             if let Feature::Sketch(k) = f {
                 if *k > i {
@@ -1023,7 +1066,7 @@ impl OpenCad {
         let name = format!("Sketch{}", self.sketches.len() + 1);
         self.sketches.push(Sketch::on_face(name, face));
         let i = self.sketches.len() - 1;
-        self.timeline.push(Feature::Sketch(i));
+        self.timeline_insert(Feature::Sketch(i));
         self.enter_sketch(i);
         // Centre the view on the face, like the origin-plane sketches.
         self.camera.target = face.origin.as_vec3();
@@ -1061,7 +1104,7 @@ impl OpenCad {
             return None;
         }
         self.sketches.remove(i);
-        self.timeline.retain(|f| *f != Feature::Sketch(i));
+        self.timeline_remove(Feature::Sketch(i));
         for f in &mut self.timeline {
             if let Feature::Sketch(k) = f {
                 if *k > i {
@@ -1495,7 +1538,7 @@ impl OpenCad {
             Some(k) => self.extrudes[k] = ex,
             None => {
                 self.extrudes.push(ex);
-                self.timeline.push(Feature::Extrude(self.extrudes.len() - 1));
+                self.timeline_insert(Feature::Extrude(self.extrudes.len() - 1));
             }
         }
         self.dialog = None;
@@ -1640,7 +1683,7 @@ impl OpenCad {
         self.fix_follows(false, k);
         self.shift_body_keys(false, k);
         self.extrudes.remove(k);
-        self.timeline.retain(|f| *f != Feature::Extrude(k));
+        self.timeline_remove(Feature::Extrude(k));
         for f in &mut self.timeline {
             if let Feature::Extrude(j) = f {
                 if *j > k {
@@ -1704,7 +1747,7 @@ impl OpenCad {
             Some(k) => self.revolves[k] = rv,
             None => {
                 self.revolves.push(rv);
-                self.timeline.push(Feature::Revolve(self.revolves.len() - 1));
+                self.timeline_insert(Feature::Revolve(self.revolves.len() - 1));
             }
         }
         self.cancel_revolve();
@@ -1722,7 +1765,7 @@ impl OpenCad {
         self.fix_follows(true, k);
         self.shift_body_keys(true, k);
         self.revolves.remove(k);
-        self.timeline.retain(|f| *f != Feature::Revolve(k));
+        self.timeline_remove(Feature::Revolve(k));
         for f in &mut self.timeline {
             if let Feature::Revolve(j) = f {
                 if *j > k {
@@ -1800,7 +1843,7 @@ impl OpenCad {
             Some(k) => self.edge_features[k] = f,
             None => {
                 self.edge_features.push(f);
-                self.timeline.push(Feature::Edge(self.edge_features.len() - 1));
+                self.timeline_insert(Feature::Edge(self.edge_features.len() - 1));
             }
         }
         self.cancel_edge_dialog();
@@ -1817,7 +1860,7 @@ impl OpenCad {
 
     fn delete_edge_feature(&mut self, k: usize) {
         self.edge_features.remove(k);
-        self.timeline.retain(|f| *f != Feature::Edge(k));
+        self.timeline_remove(Feature::Edge(k));
         for f in &mut self.timeline {
             if let Feature::Edge(j) = f {
                 if *j > k {
@@ -2486,12 +2529,34 @@ impl OpenCad {
     fn timeline_bar(&mut self, ui: &mut egui::Ui) {
         let mut action = None;
         let mut delete = None;
+        let mut goto: Option<usize> = None;
+        let len = self.timeline.len();
+        if self.marker.is_some_and(|m| m >= len) {
+            self.marker = None;
+        }
+        let applied = self.applied();
         ui.horizontal(|ui| {
             ui.label("Timeline:");
+            // Step the marker (Fusion's rollback bar): features after it stay
+            // in the timeline but aren't built.
+            if ui.small_button("⏮").on_hover_text("Roll back to the start").clicked() {
+                goto = Some(0);
+            }
+            if ui.small_button("◀").on_hover_text("Step back one feature").clicked() {
+                goto = Some(applied.saturating_sub(1));
+            }
+            if ui.small_button("▶").on_hover_text("Step forward one feature").clicked() {
+                goto = Some(applied + 1);
+            }
+            if ui.small_button("⏭").on_hover_text("Roll forward to the end").clicked() {
+                goto = Some(len);
+            }
             if self.timeline.is_empty() {
                 ui.weak("(empty)");
             }
-            for f in &self.timeline {
+            let mut rects: Vec<egui::Rect> = Vec::new();
+            for (idx, f) in self.timeline.iter().enumerate() {
+                let future = idx >= applied; // rolled back past this one
                 let (name, selected) = match *f {
                     Feature::Sketch(i) => (self.sketches[i].name.clone(), self.active == Some(i)),
                     Feature::Extrude(k) => (
@@ -2513,17 +2578,24 @@ impl OpenCad {
                     Feature::Revolve(k) => self.revolve_errors.get(k).cloned().flatten(),
                     Feature::Sketch(k) => self.sketch_errors.get(k).cloned().flatten(),
                 };
-                let text = match &error {
-                    Some(_) => egui::RichText::new(format!("{name} ⚠")).color(COL_FIXED),
-                    None => egui::RichText::new(name),
+                let text = match (&error, future) {
+                    (_, true) => egui::RichText::new(name).color(Color32::from_gray(110)),
+                    (Some(_), _) => egui::RichText::new(format!("{name} ⚠")).color(COL_FIXED),
+                    (None, _) => egui::RichText::new(name),
                 };
-                let r = ui.selectable_label(selected, text);
-                let r = match error {
-                    Some(e) => r.on_hover_text(e),
-                    None => r,
+                let r = ui.selectable_label(selected && !future, text);
+                rects.push(r.rect);
+                let r = match (error, future) {
+                    (_, true) => r.on_hover_text("Rolled back — click to roll forward to here"),
+                    (Some(e), _) => r.on_hover_text(e),
+                    (None, _) => r,
                 };
                 if r.clicked() {
-                    action = Some(*f);
+                    if future {
+                        goto = Some(idx + 1);
+                    } else {
+                        action = Some(*f);
+                    }
                 }
                 r.context_menu(|ui| {
                     if ui.button("Delete").clicked() {
@@ -2532,7 +2604,32 @@ impl OpenCad {
                     }
                 });
             }
+            // The marker: a bar between built and rolled-back features, draggable.
+            if let Some(first) = rects.first().copied() {
+                let gap_x = |g: usize| if g == 0 { first.left() - 3.0 } else { rects[g - 1].right() + 3.0 };
+                let x = gap_x(applied);
+                let (top, bottom) = (first.top() - 2.0, first.bottom() + 2.0);
+                let handle = egui::Rect::from_min_max(egui::pos2(x - 6.0, top), egui::pos2(x + 6.0, bottom));
+                let resp = ui.interact(handle, egui::Id::new("timeline_marker"), egui::Sense::drag());
+                let colour = if resp.dragged() || resp.hovered() { COL_ARROW_HOT } else { COL_ARROW };
+                let painter = ui.painter();
+                painter.line_segment([egui::pos2(x, top), egui::pos2(x, bottom)], Stroke::new(3.0, colour));
+                painter.add(egui::Shape::convex_polygon(
+                    vec![egui::pos2(x - 5.0, top), egui::pos2(x + 5.0, top), egui::pos2(x, top + 7.0)],
+                    colour,
+                    Stroke::NONE,
+                ));
+                resp.clone().on_hover_text("Drag to roll the design back (and forward) along the timeline");
+                if resp.dragged() {
+                    if let Some(p) = resp.interact_pointer_pos() {
+                        goto = (0..=len).min_by(|&a, &b| (gap_x(a) - p.x).abs().total_cmp(&(gap_x(b) - p.x).abs()));
+                    }
+                }
+            }
         });
+        if let Some(n) = goto {
+            self.set_marker(n);
+        }
         match delete {
             Some(Feature::Sketch(i)) => self.delete_sketch(i),
             Some(Feature::Extrude(k)) => self.delete_extrude(k),

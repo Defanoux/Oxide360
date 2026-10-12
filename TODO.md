@@ -11,7 +11,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 9. **Sketch Extend / Offset**, then **Slot**, **Spline**. (Trim done for lines; trimming circles/arcs themselves not yet.)
 
-10. **Timeline**: rename, suppress, drag to reorder (with error checking);
+10. **Timeline**: rename, suppress, drag to reorder (with error checking) (rollback marker is done);
     browser: select/delete bodies; **Measure** tool.
 
 11. **Extrude options**: symmetric, two sides, taper angle, "to object".
@@ -31,6 +31,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Timeline rollback marker (Fusion's): drag the bar (or ⏮ ◀ ▶ ⏭) back along the timeline; later features stay but aren't built and are greyed (click one to roll forward to it). New features insert at the marker. Saved with the file (`ViewState.marker`).
 - Body identity: every body has a `BodyId` (feature that made it + piece number) that survives Join/Cut/Intersect/fillets and feature deletes. Browser shows feature names ("Extrude1", "Extrude1 (2)" for split pieces), right-click → Rename (saved in the .ocad as `body_names`), hiding is by id, exports use the names.
 - Fixed: editing a chamfer distance slid the rectangle corner (virtual sharp now pinned when a distance dimension is edited).
 - Origin like Fusion: no grid in the 3D view (grid only in sketches); short axes + three small translucent origin planes (`origin.rs`), browser Origin checkbox. Create Sketch now = click the button, then click an origin plane or a flat face. Camera type (perspective / orthographic / ortho faces) is persisted in the settings file.
