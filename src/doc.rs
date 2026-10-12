@@ -33,6 +33,39 @@ pub struct Document {
     #[serde(default)]
     pub revolves: Vec<Revolve>,
     pub timeline: Vec<Feature>,
+    /// What's shown and where Home goes. Saved with the file, but never part
+    /// of undo or the "unsaved changes" test (see `ViewState`'s equality).
+    #[serde(default)]
+    pub view: ViewState,
+}
+
+/// Viewing choices saved with a design: hidden bodies, sketch visibility
+/// overrides and the Home pose. Older files have none.
+///
+/// All of these compare equal, so changing them is neither an undo step nor
+/// an unsaved change — the same way a dimension label's position doesn't
+/// rebuild the model.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ViewState {
+    pub hidden_bodies: Vec<usize>,
+    /// Sketches the user switched on or off in the browser, by index.
+    pub sketch_shown: Vec<(usize, bool)>,
+    pub home: Option<HomeView>,
+}
+
+impl PartialEq for ViewState {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+/// The Home camera pose (radians, mm).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HomeView {
+    pub yaw: f32,
+    pub pitch: f32,
+    pub target: [f32; 3],
+    pub distance: f32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -76,6 +109,12 @@ pub fn from_json(text: &str) -> Result<Document, String> {
 /// Check every reference and number so nothing later can index out of bounds.
 pub fn validate(doc: &Document) -> Result<(), String> {
     let finite = |v: f64| v.is_finite();
+    if let Some(h) = doc.view.home {
+        let nums = [h.yaw, h.pitch, h.distance, h.target[0], h.target[1], h.target[2]];
+        if nums.iter().any(|v| !v.is_finite()) || h.distance <= 0.0 {
+            return Err("the saved Home view is damaged".into());
+        }
+    }
     for (si, sk) in doc.sketches.iter().enumerate() {
         let err = |m: String| format!("{}: {m}", if sk.name.is_empty() { format!("sketch {si}") } else { sk.name.clone() });
         if sk.points.is_empty() {
@@ -276,6 +315,7 @@ mod tests {
             }],
             revolves: Vec::new(),
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],
+            view: ViewState::default(),
         }
     }
 
@@ -425,5 +465,41 @@ mod tests {
         let a = build_extrude(&doc.sketches, &doc.extrudes[0]).unwrap();
         let b = build_extrude(&loaded.sketches, &loaded.extrudes[0]).unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn view_state_is_saved_but_never_an_undo_step_or_a_change() {
+        let mut doc = sample();
+        let plain = doc.clone();
+        doc.view = ViewState {
+            hidden_bodies: vec![1, 3],
+            sketch_shown: vec![(0, true)],
+            home: Some(HomeView { yaw: 0.5, pitch: 0.25, target: [1.0, 2.0, 3.0], distance: 150.0 }),
+        };
+        assert_eq!(doc, plain, "view choices don't count as a change");
+        let back = from_json(&to_json(&doc)).unwrap();
+        assert_eq!(back.view.hidden_bodies, vec![1, 3]);
+        assert_eq!(back.view.sketch_shown, vec![(0, true)]);
+        assert_eq!(back.view.home, doc.view.home);
+        // Not an undo step.
+        let mut h = History::default();
+        h.reset(plain);
+        h.record(doc);
+        assert!(h.past.is_empty());
+    }
+
+    #[test]
+    fn files_without_view_state_still_open_and_a_damaged_home_is_refused() {
+        let json = to_json(&sample());
+        // Remove the `view` key entirely, like a file saved by an older version.
+        let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        v["document"].as_object_mut().unwrap().remove("view");
+        let old = from_json(&v.to_string()).unwrap();
+        assert!(old.view.hidden_bodies.is_empty() && old.view.home.is_none());
+        let mut bad = sample();
+        bad.view.home = Some(HomeView { yaw: 0.0, pitch: 0.0, target: [0.0; 3], distance: -1.0 });
+        assert!(validate(&bad).is_err());
+        bad.view.home = Some(HomeView { yaw: f32::NAN, pitch: 0.0, target: [0.0; 3], distance: 10.0 });
+        assert!(validate(&bad).is_err());
     }
 }

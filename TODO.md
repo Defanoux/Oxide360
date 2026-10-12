@@ -4,11 +4,6 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Next
 
-5. **Persist settings**: touchpad/mouse choice and "show XYZ on view cube" in
-   eframe storage; body/sketch visibility and the Home pose in the `.ocad`
-   file (`#[serde(default)]`), excluded from undo/dirty comparison the way
-   `label_shift` is excluded from `same_shape`.
-
 6. **Body identity**: hidden-body checkboxes are by index and shift when
    features change. Name bodies after the feature that created them and
    track them through Join/Cut; browser shows real names; rename via
@@ -41,6 +36,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Persisted settings: touchpad/mouse + view-cube axes in `~/.config/opencad/settings.json` (own small file — eframe storage needs a new crate); hidden bodies, sketch visibility and the Home pose saved in the `.ocad` (`Document.view`, `#[serde(default)]`, always compares equal so it's never an undo step or unsaved change).
 - Solid chamfer with two distances: type `2, 5` in the size box (`EdgeFeature.size2`, serde default). First distance is on `EdgeRef.faces[0]`'s face. New patched OCCT wrapper `BRepFilletAPI_MakeChamfer_try_add_two` / `Shape::try_chamfer_edges_two`; exact volume d1·d2/2·L tested.
 - Sketch fillet / chamfer: live preview while the size box is open, drag arrow (along the corner bisector), box stays open until Enter/Esc. Sketch chamfer takes two distances: type `2, 5` (first = first-picked line, or the lower-numbered line when clicking the corner point); dragging the arrow keeps the ratio.
 - Drag arrows for solid fillet / chamfer (along the edge's face bisector, into the part) and revolve (swings round the axis from the profile), same grab/drag as the extrude arrow. Math in `handles.rs` (tested); main.rs has one generic `Handle`.

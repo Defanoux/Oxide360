@@ -26,6 +26,7 @@ mod icons;
 mod kernel;
 mod model;
 mod profile;
+mod settings;
 mod sketch;
 mod solver;
 mod view;
@@ -34,7 +35,7 @@ use camera::{
     FOV_Y, OrbitCamera, Pose, Projection, angles_for_dir, closest_param_on_line, cube_cells, cube_click_target,
     ndc_from_pixel,
 };
-use doc::{Document, Feature, History};
+use doc::{Document, Feature, History, HomeView, ViewState};
 use handles::{LineHandle, TurnHandle};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -396,6 +397,7 @@ struct OpenCad {
     turn: Option<CameraTurn>,
     home: Pose,      // where Home goes (set it from the view cube menu)
     cube_axes: bool, // show the XYZ triad on the view cube
+    settings_saved: settings::Settings, // what's on disk, to notice a change
     arrow_screen: Option<(Vec2, Vec2)>, // extrude arrow on screen, last frame
     arrow_drag: Option<f64>,            // grab offset while dragging the arrow
     arrow_turn: Option<(f64, f64)>,     // revolve arrow: cursor angle so far (unwrapped, last raw)
@@ -462,6 +464,7 @@ impl Default for OpenCad {
             turn: None,
             home: OrbitCamera::default().pose(),
             cube_axes: true,
+            settings_saved: settings::Settings::default(),
             arrow_screen: None,
             arrow_drag: None,
             arrow_turn: None,
@@ -487,6 +490,42 @@ impl OpenCad {
             edge_features: self.edge_features.clone(),
             revolves: self.revolves.clone(),
             timeline: self.timeline.clone(),
+            view: self.view_state(),
+        }
+    }
+
+    /// What's hidden and where Home is, for saving with the design.
+    fn view_state(&self) -> ViewState {
+        let mut hidden_bodies: Vec<usize> = self.hidden_bodies.iter().copied().collect();
+        hidden_bodies.sort_unstable();
+        let mut sketch_shown: Vec<(usize, bool)> = self.sketch_shown.iter().map(|(&i, &v)| (i, v)).collect();
+        sketch_shown.sort_unstable();
+        let h = self.home;
+        ViewState {
+            hidden_bodies,
+            sketch_shown,
+            home: Some(HomeView { yaw: h.yaw, pitch: h.pitch, target: h.target.to_array(), distance: h.distance }),
+        }
+    }
+
+    /// Show the design the way it was saved (indices past the end are ignored).
+    fn apply_view(&mut self, v: &ViewState) {
+        self.hidden_bodies = v.hidden_bodies.iter().copied().collect();
+        self.sketch_shown = v.sketch_shown.iter().filter(|(i, _)| *i < self.sketches.len()).copied().collect();
+        self.home = match v.home {
+            Some(h) => Pose { yaw: h.yaw, pitch: h.pitch, target: Vec3::from_array(h.target), distance: h.distance },
+            None => OrbitCamera::default().pose(),
+        };
+    }
+
+    /// Write the preferences when one changed (checked every frame; cheap).
+    fn save_settings_if_changed(&mut self) {
+        let now = settings::Settings { touchpad: self.touchpad, cube_axes: self.cube_axes };
+        if now != self.settings_saved {
+            if let Some(path) = settings::default_path() {
+                let _ = settings::save(&path, &now); // a lost preference isn't worth an error box
+            }
+            self.settings_saved = now;
         }
     }
 
@@ -524,6 +563,7 @@ impl OpenCad {
         self.revolves = doc.revolves.clone();
         self.revolve_dialog = None;
         self.timeline = doc.timeline.clone();
+        self.apply_view(&doc.view);
         self.history.reset(doc.clone());
         self.saved = doc;
         self.path = path;
@@ -4186,6 +4226,7 @@ impl eframe::App for OpenCad {
         self.modals(&ctx);
         self.record_history(&ctx);
 
+        self.save_settings_if_changed();
         let title = format!("{}{} — opencad", self.file_name(), if self.is_dirty() { " •" } else { "" });
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
@@ -4212,6 +4253,12 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             let mut app = OpenCad::default();
+            if let Some(path) = settings::default_path() {
+                let s = settings::load(&path);
+                app.touchpad = s.touchpad;
+                app.cube_axes = s.cube_axes;
+                app.settings_saved = s;
+            }
             // Set up the GPU renderer once and keep it with egui's renderer.
             if let Some(rs) = cc.wgpu_render_state.as_ref() {
                 let g = gpu::Gpu::new(&rs.device, rs.target_format);

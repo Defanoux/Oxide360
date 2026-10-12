@@ -1,0 +1,82 @@
+//! Preferences kept between runs (not part of any design): a small JSON file
+//! in the user's config directory. A missing or damaged file just means the
+//! defaults, and a failed save is silent — losing a preference is never worth
+//! interrupting work.
+
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    /// Touchpad controls instead of mouse.
+    pub touchpad: bool,
+    /// Show the XYZ triad on the view cube.
+    pub cube_axes: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self { touchpad: false, cube_axes: true }
+    }
+}
+
+/// `$XDG_CONFIG_HOME/opencad/settings.json`, or `~/.config/opencad/settings.json`.
+pub fn default_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".config")))?;
+    Some(base.join("opencad").join("settings.json"))
+}
+
+pub fn load(path: &Path) -> Settings {
+    std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+/// Write the settings (creating the folder). Errors are returned for tests;
+/// the app ignores them.
+pub fn save(path: &Path, s: &Settings) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    // Write beside it and rename, so a crash never leaves half a file.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(s).expect("settings serialize"))?;
+    std::fs::rename(tmp, path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("opencad-settings-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn settings_round_trip_through_a_file_that_may_not_exist_yet() {
+        let d = dir("roundtrip");
+        let path = d.join("nested").join("settings.json");
+        assert_eq!(load(&path), Settings::default(), "nothing saved yet");
+        let s = Settings { touchpad: true, cube_axes: false };
+        save(&path, &s).unwrap();
+        assert_eq!(load(&path), s);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn damaged_or_partial_files_fall_back_to_defaults() {
+        let d = dir("damaged");
+        std::fs::create_dir_all(&d).unwrap();
+        let path = d.join("settings.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        assert_eq!(load(&path), Settings::default());
+        // A file from an older version with only some settings keeps the rest at default.
+        std::fs::write(&path, r#"{"touchpad": true}"#).unwrap();
+        assert_eq!(load(&path), Settings { touchpad: true, cube_axes: true });
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
