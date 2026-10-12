@@ -260,6 +260,7 @@ enum EditTarget {
     RevolveAngle, // degrees
     NewCircle,    // diameter typed for the circle being drawn
     Corner(PointId), // sketch fillet radius / chamfer distance for this corner
+    PolygonSides,    // number of sides, asked after the polygon's first click
 }
 
 struct FloatEdit {
@@ -366,6 +367,7 @@ struct OpenCad {
     arc_tool: Tool,  // which arc tool the toolbar's arc button is
     poly_tool: Tool, // which polygon tool the toolbar's polygon button is
     corner_size: f64, // last sketch fillet radius / chamfer distance
+    poly_asked: bool, // the sides box was shown for the polygon being drawn
     corner_first: Option<usize>, // chamfer: the line the first distance is for (when picked as two lines)
     feature_errors: Vec<Option<String>>, // per extrude, from the last committed build
     body_count: usize,
@@ -431,6 +433,7 @@ impl Default for OpenCad {
             arc_tool: Tool::Arc3Point,
             poly_tool: Tool::PolygonCircumscribed,
             corner_size: 2.0,
+            poly_asked: false,
             corner_first: None,
             feature_errors: Vec::new(),
             body_count: 0,
@@ -1152,6 +1155,19 @@ impl OpenCad {
             Err(e) => self.report(Err(e)),
         }
         self.editor.selection.clear();
+    }
+
+    /// Where to put a size box so it doesn't cover the drag arrow: behind the
+    /// arrow's start, on the side away from where it points. `fallback` when
+    /// there is no arrow.
+    fn off_arrow(&self, fallback: egui::Pos2) -> egui::Pos2 {
+        match self.arrow_screen {
+            Some((base, tip)) => {
+                let dir = (tip - base).normalize_or_zero();
+                to_pos(base - dir * 80.0) - egui::vec2(55.0, 14.0)
+            }
+            None => fallback,
+        }
     }
 
     /// The fillet / chamfer the open size box would make right now.
@@ -1939,13 +1955,6 @@ impl OpenCad {
                             }
                         }
                     });
-                    let mut sides = self.editor.sides();
-                    let r = ui
-                        .add(egui::DragValue::new(&mut sides).range(3..=Editor::MAX_SIDES).prefix("sides "))
-                        .on_hover_text("Number of sides (also ↑ / ↓ while a polygon tool is active)");
-                    if r.changed() {
-                        self.editor.polygon_sides = sides;
-                    }
                 });
                 let _ = i;
                 group(ui, "MODIFY", |ui| {
@@ -2447,6 +2456,7 @@ impl OpenCad {
         let mut close = false;
         let mut live: Option<f64> = None;
         let mut corner_text: Option<String> = None;
+        let mut sides_typed: Option<usize> = None;
         let mut edge_sizes: Option<(f64, Option<f64>)> = None;
         let mut extrude_ok = false;
         let mut extrude_cancel = false;
@@ -2459,7 +2469,13 @@ impl OpenCad {
                             .id(egui::Id::new("float_edit_text"))
                             .desired_width(70.0)
                             .show(ui);
-                        ui.label(if degrees { "°" } else { "mm" });
+                        ui.label(if degrees {
+                            "°"
+                        } else if target == EditTarget::PolygonSides {
+                            "sides"
+                        } else {
+                            "mm"
+                        });
                         let (lost, changed, id) = (out.response.lost_focus(), out.response.changed(), out.response.id);
                         if fe.focus {
                             // Focus and select everything, so typing replaces the value.
@@ -2477,6 +2493,15 @@ impl OpenCad {
                         let (enter, esc) =
                             ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
                         match target {
+                            // Applies as you type; Enter just puts the cursor back on the canvas.
+                            EditTarget::PolygonSides => {
+                                if changed {
+                                    sides_typed = fe.text.trim().parse::<usize>().ok();
+                                }
+                                if lost && (enter || esc) {
+                                    close = true;
+                                }
+                            }
                             // Stays open until Enter / Esc, so its arrow can be dragged.
                             EditTarget::Corner(_) => {
                                 if lost {
@@ -2523,6 +2548,14 @@ impl OpenCad {
                         Some((d1, d2)) => self.finish_corner(p, d1, d2),
                         None => self.message = Some("Type a number (a chamfer can take two: 2, 5)".into()),
                     }
+                }
+                if close {
+                    self.float = None;
+                }
+            }
+            EditTarget::PolygonSides => {
+                if let Some(n) = sides_typed.filter(|n| (3..=Editor::MAX_SIDES).contains(n)) {
+                    self.editor.polygon_sides = n;
                 }
                 if close {
                     self.float = None;
@@ -2685,6 +2718,23 @@ impl OpenCad {
         let mm_per_px = (self.camera.distance * 2.0 * (FOV_Y * 0.5).tan() / size.y) as f64;
         let regions: Vec<Vec<Region>> = self.sketches.iter().map(find_regions).collect();
 
+        // Polygon tools ask for the number of sides after the first click.
+        if Tool::POLYGONS.contains(&self.editor.tool) && self.editor.start.is_some() {
+            if !self.poly_asked && self.float.is_none() {
+                self.poly_asked = true;
+                self.float = Some(FloatEdit {
+                    target: EditTarget::PolygonSides,
+                    text: self.editor.sides().to_string(),
+                    focus: true,
+                    keep_text: false,
+                });
+            }
+        } else {
+            self.poly_asked = false;
+            if self.float.as_ref().is_some_and(|f| f.target == EditTarget::PolygonSides) {
+                self.float = None;
+            }
+        }
         // The corner size box only lives while its tool does.
         if matches!(self.float.as_ref().map(|f| f.target), Some(EditTarget::Corner(_)))
             && !(matches!(self.editor.tool, Tool::SketchFillet | Tool::SketchChamfer) && self.active.is_some())
@@ -3803,7 +3853,12 @@ impl OpenCad {
             }
             Some(EditTarget::Corner(p)) => self.active.and_then(|i| {
                 let at = *self.sketches[i].points.get(p)?;
-                view.project(self.plane_of(i).to_world(at)).map(|q| to_pos(q) + egui::vec2(14.0, 10.0))
+                view.project(self.plane_of(i).to_world(at)).map(|q| self.off_arrow(to_pos(q) + egui::vec2(14.0, 10.0)))
+            }),
+            Some(EditTarget::PolygonSides) => self.active.and_then(|i| {
+                let sk = &self.sketches[i];
+                let start = self.editor.start.filter(|s| sk.is_valid_anchor(*s))?;
+                view.project(self.plane_of(i).to_world(sk.pos(start))).map(|p| to_pos(p) + egui::vec2(16.0, 12.0))
             }),
             Some(EditTarget::NewCircle) => self.active.and_then(|i| {
                 let sk = &self.sketches[i];
@@ -3813,12 +3868,12 @@ impl OpenCad {
             Some(EditTarget::RevolveAngle) => self.revolve_dialog.as_ref().and_then(|d| {
                 let s = d.sketch?;
                 let r = regions.get(s)?.get(*d.profiles.first()?)?;
-                view.project(self.plane_of(s).to_world(r.centroid())).map(|p| to_pos(p) + egui::vec2(16.0, -16.0))
+                view.project(self.plane_of(s).to_world(r.centroid())).map(|p| self.off_arrow(to_pos(p) + egui::vec2(16.0, -16.0)))
             }),
             Some(EditTarget::EdgeSize) => self.edge_dialog.as_ref().and_then(|d| {
                 // Next to the first picked edge.
                 let r = d.edges.first()?;
-                view.project(r.mid.as_vec3()).map(|p| to_pos(p) + egui::vec2(18.0, -22.0))
+                view.project(r.mid.as_vec3()).map(|p| self.off_arrow(to_pos(p) + egui::vec2(18.0, -22.0)))
             }),
             Some(EditTarget::ExtrudeDistance) => self.dialog.as_ref().and_then(|d| {
                 let s = d.sketch?;
