@@ -59,6 +59,9 @@ pub struct Model {
     pub revolve_errors: Vec<Option<String>>,
     /// Far-end faces of the extrudes/revolves, to tag what's picked there.
     pub caps: Vec<Cap>,
+    /// For each extrude / revolve / fillet that was built: the body it made or
+    /// changed (the first, if several). The timeline colours its icon by it.
+    pub touched: HashMap<Feature, BodyId>,
 }
 
 fn kv(p: DVec3) -> KVec {
@@ -377,12 +380,16 @@ fn uniquify(bodies: Tagged) -> Tagged {
 
 /// Combine a tool solid with the existing bodies. `made_by` names what new
 /// bodies are called after.
-fn apply(bodies: Tagged, tool: Shape, op: Operation, made_by: Feature) -> Result<Tagged, String> {
+fn apply(bodies: Tagged, tool: Shape, op: Operation, made_by: Feature) -> Result<(Tagged, Option<BodyId>), String> {
     let failed = || format!("the kernel couldn't {} these shapes", op.name().to_lowercase());
     let fresh = BodyId { feature: made_by, piece: 0 };
     let tag = |solids: Vec<Shape>, id: BodyId| -> Tagged { solids.into_iter().map(|s| (s, id)).collect() };
-    Ok(uniquify(match op {
-        Operation::NewBody => bodies.into_iter().chain(tag(tool.solids(), fresh)).collect(),
+    let mut touched: Option<BodyId> = None;
+    let result = match op {
+        Operation::NewBody => {
+            touched = Some(fresh);
+            bodies.into_iter().chain(tag(tool.solids(), fresh)).collect()
+        }
         Operation::Join => {
             // Merge with every body it overlaps or touches (fusing two touching
             // solids leaves fewer solids than they had separately). The merged
@@ -400,6 +407,7 @@ fn apply(bodies: Tagged, tool: Shape, op: Operation, made_by: Feature) -> Result
                     rest.push((b, id));
                 }
             }
+            touched = Some(acc_id.unwrap_or(fresh));
             rest.extend(tag(acc.solids(), acc_id.unwrap_or(fresh)));
             rest
         }
@@ -408,6 +416,9 @@ fn apply(bodies: Tagged, tool: Shape, op: Operation, made_by: Feature) -> Result
             for (b, id) in bodies {
                 // A cut can split a body in two, or remove it entirely.
                 let cut = b.try_subtract(&tool).ok_or_else(failed)?;
+                if touched.is_none() && (cut.volume() - b.volume()).abs() > MIN_VOLUME {
+                    touched = Some(id);
+                }
                 out.extend(tag(cut.solids().into_iter().filter(|s| s.volume() > MIN_VOLUME).collect(), id));
             }
             out
@@ -416,11 +427,15 @@ fn apply(bodies: Tagged, tool: Shape, op: Operation, made_by: Feature) -> Result
             let mut out = Vec::new();
             for (b, id) in bodies {
                 let common = b.try_intersect(&tool).ok_or_else(failed)?;
+                if touched.is_none() && (common.volume() - b.volume()).abs() > MIN_VOLUME {
+                    touched = Some(id);
+                }
                 if common.volume() > MIN_VOLUME { out.extend(tag(common.solids(), id)) } else { out.push((b, id)) }
             }
             out
         }
-    }))
+    };
+    Ok((uniquify(result), touched))
 }
 
 /// The point halfway along a polyline (by length) and its direction there.
@@ -532,7 +547,7 @@ fn find_edge<'a>(edges: &'a [(usize, Edge, EdgeRef)], r: &EdgeRef, reach: f64) -
 }
 
 /// Fillet or chamfer the referenced edges.
-fn apply_edges(tagged: Tagged, f: &EdgeFeature, ext: &[Option<End>], rev: &[Option<End>]) -> Result<Tagged, String> {
+fn apply_edges(tagged: Tagged, f: &EdgeFeature, ext: &[Option<End>], rev: &[Option<End>]) -> Result<(Tagged, Option<BodyId>), String> {
     let (bodies, ids): (Vec<Shape>, Vec<BodyId>) = tagged.into_iter().unzip();
     if !f.size.is_finite() || f.size <= 0.0 {
         return Err(format!("{} must be greater than zero", f.kind.size_label().to_lowercase()));
@@ -588,7 +603,8 @@ fn apply_edges(tagged: Tagged, f: &EdgeFeature, ext: &[Option<End>], rev: &[Opti
         .ok_or_else(|| format!("{} {} is too large for these edges", f.kind.size_label().to_lowercase(), f.size))?;
         out.extend(done.solids().into_iter().map(|s| (s, ids[i])));
     }
-    Ok(uniquify(out))
+    let touched = (0..ids.len()).find(|&i| !picked[i].is_empty()).map(|i| ids[i]);
+    Ok((uniquify(out), touched))
 }
 
 /// The face of `shape` that has `edge` as one of its edges and whose outward
@@ -762,6 +778,7 @@ pub fn build(
     let mut revolve_ends: Vec<Option<End>> = vec![None; revolves.len()];
     let mut frames: Vec<Option<FacePlane>> = sketches.iter().map(|s| s.face).collect();
     let mut sketch_errors: Vec<Option<String>> = vec![None; sketches.len()];
+    let mut touched_by: HashMap<Feature, BodyId> = HashMap::new();
     for f in timeline {
         let current = std::mem::take(&mut shapes);
         // Keep a copy so a failed operation leaves the previous bodies intact.
@@ -826,7 +843,12 @@ pub fn build(
             }
         };
         shapes = match result {
-            Ok(Ok(next)) => next,
+            Ok(Ok((next, touched))) => {
+                if let Some(id) = touched {
+                    touched_by.insert(*f, id);
+                }
+                next
+            }
             Ok(Err(e)) => {
                 *slot = Some(e);
                 backup
@@ -847,7 +869,7 @@ pub fn build(
         })
         .collect();
     let caps = caps_of(&extrude_ends, &revolve_ends);
-    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, caps }
+    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, caps, touched: touched_by }
 }
 
 /// Exact STEP export of all bodies (true planes, cylinders, arcs).
@@ -1063,6 +1085,23 @@ mod tests {
         assert!(close(total(&back), 15000.0));
         assert_eq!(back.errors, vec![None, None]);
         assert_eq!(ids(&back), vec![id(Feature::Extrude(0), 0)]);
+    }
+
+    #[test]
+    fn each_feature_remembers_the_body_it_touched() {
+        let plate = id(Feature::Extrude(0), 0);
+        let m = two_step((100.0, 0.0, 120.0, 10.0), 5.0, Operation::NewBody);
+        assert_eq!(m.touched[&Feature::Extrude(0)], plate);
+        assert_eq!(m.touched[&Feature::Extrude(1)], id(Feature::Extrude(1), 0));
+        let m = two_step((20.0, 10.0, 30.0, 20.0), 20.0, Operation::Join);
+        assert_eq!(m.touched[&Feature::Extrude(1)], plate, "joined into the plate");
+        let m = two_step((10.0, 10.0, 20.0, 20.0), 10.0, Operation::Cut);
+        assert_eq!(m.touched[&Feature::Extrude(1)], plate, "cut the plate");
+        // A cut that misses everything touched nothing.
+        let m = two_step((100.0, 100.0, 110.0, 110.0), 10.0, Operation::Cut);
+        assert!(!m.touched.contains_key(&Feature::Extrude(1)));
+        let m = plate_with(10.0, Some((EdgeKind::Fillet, 2.0, picked_top_front(10.0))));
+        assert_eq!(m.touched[&Feature::Edge(0)], plate);
     }
 
     #[test]

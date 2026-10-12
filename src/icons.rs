@@ -371,3 +371,38 @@ pub fn dropdown(ui: &mut egui::Ui, tooltip: &str) -> egui::Response {
     ));
     response.on_hover_text(tooltip)
 }
+
+/// A timeline entry: the feature's icon with a coloured bar under it (the
+/// colour of the body it worked on). `dim` greys it out (rolled back);
+/// `warn` marks a feature that failed.
+pub fn timeline_button(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    tooltip: &str,
+    selected: bool,
+    underline: Option<Color32>,
+    dim: bool,
+    warn: bool,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(32.0, 36.0), egui::Sense::click());
+    let body = Rect::from_min_size(rect.min, egui::vec2(32.0, 30.0));
+    let bg = if selected {
+        Some(Color32::from_rgb(40, 80, 130))
+    } else if response.hovered() {
+        Some(Color32::from_gray(60))
+    } else {
+        None
+    };
+    if let Some(c) = bg {
+        ui.painter().rect_filled(body, 4.0, c);
+    }
+    paint(ui.painter(), body.shrink(4.0), icon, !dim);
+    if let Some(c) = underline {
+        let c = if dim { c.gamma_multiply(0.35) } else { c };
+        ui.painter().rect_filled(Rect::from_min_size(rect.min + egui::vec2(3.0, 31.0), egui::vec2(26.0, 3.5)), 1.5, c);
+    }
+    if warn {
+        ui.painter().circle_filled(body.right_top() + egui::vec2(-4.0, 4.0), 4.0, Color32::from_rgb(230, 80, 80));
+    }
+    response.on_hover_text(tooltip)
+}

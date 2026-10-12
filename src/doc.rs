@@ -81,6 +81,9 @@ pub struct Document {
     /// Names the user gave bodies (others are named after their feature).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub body_names: Vec<(BodyId, String)>,
+    /// Colours the user gave bodies (others get a default by order).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body_colors: Vec<(BodyId, [u8; 3])>,
 }
 
 /// Viewing choices saved with a design: hidden bodies, sketch visibility
@@ -369,6 +372,7 @@ mod tests {
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],
             view: ViewState::default(),
             body_names: Vec::new(),
+            body_colors: Vec::new(),
         }
     }
 
@@ -568,6 +572,17 @@ mod tests {
         assert_eq!(id(e(1), 0).after_delete(false, 1), None, "its body is gone");
         assert_eq!(id(Feature::Revolve(1), 0).after_delete(false, 0), Some(id(Feature::Revolve(1), 0)), "other kind untouched");
         assert_eq!(id(Feature::Revolve(1), 0).after_delete(true, 0), Some(id(Feature::Revolve(0), 0)));
+    }
+
+    #[test]
+    fn body_colors_save_and_old_files_have_none() {
+        let mut doc = sample();
+        doc.body_colors = vec![(BodyId { feature: Feature::Extrude(0), piece: 0 }, [10, 20, 30])];
+        let back = from_json(&to_json(&doc)).unwrap();
+        assert_eq!(back.body_colors[0].1, [10, 20, 30]);
+        let json = to_json(&sample());
+        assert!(!json.contains("body_colors"), "nothing stored when none chosen");
+        assert!(from_json(&json).unwrap().body_colors.is_empty());
     }
 
     #[test]

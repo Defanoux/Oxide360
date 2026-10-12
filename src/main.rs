@@ -18,6 +18,7 @@
 //!   Ctrl+Z = undo anything, Ctrl+Shift+Z / Ctrl+Y = redo
 
 mod camera;
+mod colors;
 mod doc;
 mod export;
 mod gpu;
@@ -276,6 +277,8 @@ struct FloatEdit {
 }
 
 struct ExtrudeDialog {
+    /// The sketch a Cut was last pointed into the body for (so it's done once).
+    cut_aimed_for: Option<usize>,
     editing: Option<usize>,
     sketch: Option<usize>,
     profiles: Vec<usize>,
@@ -387,8 +390,10 @@ struct OpenCad {
     history: History, // undo / redo for the whole design
     hidden_bodies: HashSet<BodyId>,         // bodies switched off in the browser
     body_names: HashMap<BodyId, String>,    // names the user gave bodies
+    body_colors: HashMap<BodyId, [u8; 3]>,  // colours the user gave bodies
     body_ids: Vec<BodyId>,                  // the bodies of the last build, in order
     renaming: Option<(BodyId, String)>,     // a body being renamed in the browser, and the text so far
+    set_distance_text_pending: bool,        // the extrude distance changed outside its box
     marker: Option<usize>,                  // timeline rollback: features before this many are built (None = all)
     sketch_shown: HashMap<usize, bool>,     // per-sketch visibility the user chose
     label_drag: Option<(usize, DVec2, DVec2)>, // dimension being moved: constraint, press point, its shift then
@@ -460,9 +465,11 @@ impl Default for OpenCad {
             history: History::default(),
             hidden_bodies: HashSet::new(),
             body_names: HashMap::new(),
+            body_colors: HashMap::new(),
             body_ids: Vec::new(),
             renaming: None,
             marker: None,
+            set_distance_text_pending: false,
             sketch_shown: HashMap::new(),
             label_drag: None,
             circle_tool: Tool::Circle,
@@ -505,6 +512,7 @@ impl OpenCad {
             timeline: self.timeline.clone(),
             view: self.view_state(),
             body_names: self.sorted_body_names(),
+            body_colors: self.sorted_body_colors(),
         }
     }
 
@@ -549,6 +557,26 @@ impl OpenCad {
         v
     }
 
+    fn sorted_body_colors(&self) -> Vec<(BodyId, [u8; 3])> {
+        let mut v: Vec<(BodyId, [u8; 3])> = self.body_colors.iter().map(|(&k, &c)| (k, c)).collect();
+        v.sort();
+        v
+    }
+
+    /// A body's colour: the one the user picked, else a default by the order
+    /// bodies were made in.
+    fn body_color(&self, id: BodyId) -> Color32 {
+        let rank = self
+            .timeline
+            .iter()
+            .filter(|f| matches!(f, Feature::Extrude(_) | Feature::Revolve(_)))
+            .position(|f| *f == id.feature)
+            .unwrap_or(0)
+            + id.piece;
+        let c = self.body_colors.get(&id).copied().unwrap_or_else(|| colors::default_color(rank));
+        Color32::from_rgb(c[0], c[1], c[2])
+    }
+
     /// A body's name: the one the user gave it, else its feature's name
     /// (with the piece number when a feature made several).
     fn body_name(&self, id: BodyId) -> String {
@@ -568,6 +596,7 @@ impl OpenCad {
     fn shift_body_keys(&mut self, revolve: bool, k: usize) {
         self.hidden_bodies = self.hidden_bodies.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
         self.body_names = self.body_names.drain().filter_map(|(id, n)| Some((id.after_delete(revolve, k)?, n))).collect();
+        self.body_colors = self.body_colors.drain().filter_map(|(id, c)| Some((id.after_delete(revolve, k)?, c))).collect();
         self.renaming = None;
     }
 
@@ -645,6 +674,7 @@ impl OpenCad {
         self.timeline = doc.timeline.clone();
         self.apply_view(&doc.view);
         self.body_names = doc.body_names.iter().cloned().collect();
+        self.body_colors = doc.body_colors.iter().cloned().collect();
         self.renaming = None;
         self.history.reset(doc.clone());
         self.saved = doc;
@@ -696,6 +726,7 @@ impl OpenCad {
         self.revolves = doc.revolves;
         self.timeline = doc.timeline;
         self.body_names = doc.body_names.into_iter().collect();
+        self.body_colors = doc.body_colors.into_iter().collect();
         self.renaming = None;
         self.marker = self.marker.filter(|&n| n < self.timeline.len());
         self.dialog = None;
@@ -1492,6 +1523,7 @@ impl OpenCad {
         self.message = None;
         let d = match editing.and_then(|k| self.extrudes.get(k)) {
             Some(e) => ExtrudeDialog {
+                cut_aimed_for: e.sketch.into(),
                 editing,
                 sketch: Some(e.sketch),
                 profiles: e.profiles.clone(),
@@ -1499,6 +1531,7 @@ impl OpenCad {
                 op: e.op,
             },
             None => ExtrudeDialog {
+                cut_aimed_for: None,
                 editing: None,
                 sketch: None,
                 profiles: Vec::new(),
@@ -2199,6 +2232,9 @@ impl OpenCad {
                         self.hidden_bodies.insert(id);
                     }
                 }
+                // The body's colour, as a small swatch.
+                let (swatch, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                ui.painter().rect_filled(swatch, 2.0, self.body_color(id));
                 if let Some((rid, text)) = self.renaming.as_mut().filter(|(rid, _)| *rid == id) {
                     let edit = ui.add(egui::TextEdit::singleline(text).desired_width(120.0));
                     edit.request_focus();
@@ -2210,10 +2246,26 @@ impl OpenCad {
                     }
                 } else {
                     let name = self.body_name(id);
-                    let r = ui.label(name.clone()).on_hover_text("Right-click to rename");
+                    let r = ui
+                        .add(egui::Label::new(name.clone()).sense(egui::Sense::click()))
+                        .on_hover_text("Double-click to rename · right-click for more");
+                    if r.double_clicked() {
+                        self.renaming = Some((id, name.clone()));
+                    }
                     r.context_menu(|ui| {
                         if ui.button("Rename").clicked() {
                             self.renaming = Some((id, name));
+                            ui.close();
+                        }
+                        ui.menu_button("Color…", |ui| {
+                            let c = self.body_color(id);
+                            let mut c = c;
+                            if egui::color_picker::color_picker_color32(ui, &mut c, egui::color_picker::Alpha::Opaque) {
+                                self.body_colors.insert(id, [c.r(), c.g(), c.b()]);
+                            }
+                        });
+                        if self.body_colors.contains_key(&id) && ui.button("Use the default color").clicked() {
+                            self.body_colors.remove(&id);
                             ui.close();
                         }
                         if self.body_names.contains_key(&id) && ui.button("Use the feature's name").clicked() {
@@ -2345,8 +2397,34 @@ impl OpenCad {
     }
 
     /// Right panel while extruding.
+    /// Which way (+1 / -1 along the sketch's normal) an extrude goes into the
+    /// existing bodies: toward where they are. -1 when there's nothing to go into.
+    fn cut_direction(&self, sketch: usize) -> f64 {
+        let Some(cache) = self.caches[Slot::Committed as usize].as_ref() else { return -1.0 };
+        let (mut sum, mut n) = (Vec3::ZERO, 0usize);
+        for b in &cache.model.bodies {
+            for p in &b.mesh.positions {
+                sum += *p;
+                n += 1;
+            }
+        }
+        if n == 0 || sketch >= self.sketches.len() {
+            return -1.0;
+        }
+        let plane = self.plane_of(sketch);
+        if ((sum / n as f32) - plane.origin).dot(plane.normal()) > 1e-4 { 1.0 } else { -1.0 }
+    }
+
     fn extrude_panel(&mut self, ui: &mut egui::Ui) {
         let dialog_error = self.dialog_error.clone();
+        let toward = self.dialog.as_ref().and_then(|d| d.sketch).map(|s| self.cut_direction(s));
+        let Some(d) = self.dialog.as_mut() else { return };
+        // Cut chosen before the profile was: aim it into the body once the sketch is known.
+        if let (Operation::Cut, Some(s), true) = (d.op, d.sketch, d.cut_aimed_for != d.sketch) {
+            d.cut_aimed_for = Some(s);
+            d.distance = d.distance.abs() * toward.unwrap_or(-1.0);
+            self.set_distance_text_pending = true;
+        }
         let Some(d) = self.dialog.as_mut() else { return };
         ui.heading(if d.editing.is_some() { "Edit Extrude" } else { "Extrude" });
         ui.label(format!("Profiles: {} selected", d.profiles.len()));
@@ -2366,14 +2444,21 @@ impl OpenCad {
         ui.horizontal(|ui| {
             ui.label("Operation");
             for op in Operation::ALL {
-                if ui.selectable_label(d.op == op, op.name()).clicked() {
+                if ui.selectable_label(d.op == op, op.name()).clicked() && d.op != op {
+                    // A cut goes into the body by itself; leaving Cut goes back out.
+                    if op == Operation::Cut {
+                        d.distance = d.distance.abs() * toward.unwrap_or(-1.0);
+                    } else if d.op == Operation::Cut {
+                        d.distance = d.distance.abs();
+                    }
                     d.op = op;
+                    changed = true;
                 }
             }
         });
         let editing = d.editing;
         let has_profiles = !d.profiles.is_empty();
-        if changed {
+        if changed | std::mem::take(&mut self.set_distance_text_pending) {
             self.set_distance_text();
         }
         if let (Some(e), true) = (&dialog_error, has_profiles) {
@@ -2578,18 +2663,27 @@ impl OpenCad {
                     Feature::Revolve(k) => self.revolve_errors.get(k).cloned().flatten(),
                     Feature::Sketch(k) => self.sketch_errors.get(k).cloned().flatten(),
                 };
-                let text = match (&error, future) {
-                    (_, true) => egui::RichText::new(name).color(Color32::from_gray(110)),
-                    (Some(_), _) => egui::RichText::new(format!("{name} ⚠")).color(COL_FIXED),
-                    (None, _) => egui::RichText::new(name),
+                let icon = match *f {
+                    Feature::Sketch(_) => Icon::Sketch,
+                    Feature::Extrude(_) => Icon::Extrude,
+                    Feature::Revolve(_) => Icon::Revolve,
+                    Feature::Edge(k) => match self.edge_features[k].kind {
+                        EdgeKind::Fillet => Icon::Fillet,
+                        EdgeKind::Chamfer => Icon::Chamfer,
+                    },
                 };
-                let r = ui.selectable_label(selected && !future, text);
+                // Underlined in the colour of the body this feature worked on.
+                let underline = self.caches[Slot::Committed as usize]
+                    .as_ref()
+                    .and_then(|c| c.model.touched.get(f))
+                    .map(|&id| self.body_color(id));
+                let tip = match (&error, future) {
+                    (_, true) => format!("{name} — rolled back; click to roll forward to here"),
+                    (Some(e), _) => format!("{name}: {e}"),
+                    (None, _) => name.clone(),
+                };
+                let r = icons::timeline_button(ui, icon, &tip, selected && !future, underline, future, error.is_some() && !future);
                 rects.push(r.rect);
-                let r = match (error, future) {
-                    (_, true) => r.on_hover_text("Rolled back — click to roll forward to here"),
-                    (Some(e), _) => r.on_hover_text(e),
-                    (None, _) => r,
-                };
                 if r.clicked() {
                     if future {
                         goto = Some(idx + 1);
@@ -3784,7 +3878,7 @@ impl OpenCad {
             .iter()
             .enumerate()
             .filter(|(k, _)| !hidden.contains(k))
-            .map(|(_, b)| (&b.mesh, body_color))
+            .map(|(_, b)| (&b.mesh, if previewing { body_color } else { self.body_color(b.id) }))
             .collect();
         if self.gpu {
             let list: Vec<(&Mesh, [f32; 3])> = meshes.iter().map(|(m, c)| (*m, rgb(*c))).collect();
@@ -4426,7 +4520,10 @@ impl eframe::App for OpenCad {
             }
         }
 
-        egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
+        // Side-scrollable, so a narrow window doesn't cut the ribbon off.
+        egui::Panel::top("toolbar").show(ui, |ui| {
+            egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| self.toolbar(ui));
+        });
         egui::Panel::left("browser").resizable(true).default_size(200.0).show(ui, |ui| self.browser(ui));
         if self.active.is_some() {
             egui::Panel::right("constraints").resizable(true).default_size(260.0).show(ui, |ui| self.constraints_panel(ui));
