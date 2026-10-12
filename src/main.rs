@@ -2449,7 +2449,7 @@ impl OpenCad {
                     self.constraint_button(label);
                 }
                 group(ui, "OPTIONS", |ui| {
-                    if icons::button(ui, Icon::Grid, "Grid snap (G)", true, self.grid_snap).clicked() {
+                    if icons::button(ui, Icon::Grid, "Grid snap (G, or Ctrl+G any time)", true, self.grid_snap).clicked() {
                         self.grid_snap = !self.grid_snap;
                     }
                 });
@@ -3522,7 +3522,7 @@ impl OpenCad {
                 i.key_pressed(egui::Key::L),
                 i.key_pressed(egui::Key::R),
                 i.key_pressed(egui::Key::C),
-                i.key_pressed(egui::Key::G),
+                i.key_pressed(egui::Key::G) && !i.modifiers.command,
                 i.key_pressed(egui::Key::D),
                 i.key_pressed(egui::Key::E),
                 i.key_pressed(egui::Key::F),
@@ -3799,6 +3799,9 @@ impl OpenCad {
                                     let t = ((p - a).dot(ab) / ab.length_squared().max(1e-30)).clamp(0.0, 1.0);
                                     let q = a + ab * t;
                                     let d = q.distance(p);
+                                    // Near the middle: snap right onto it (the new point becomes its midpoint).
+                                    let mid = a.midpoint(b);
+                                    let q = if q.distance(mid) <= tol * 1.5 { mid } else { q };
                                     (d <= tol).then_some((e, q, d))
                                 }
                                 _ => None,
@@ -3854,6 +3857,11 @@ impl OpenCad {
                 }
             }
 
+            // Ctrl+G flips grid snapping at any moment, even with a number box open.
+            if ui.input(|i| i.key_pressed(egui::Key::G) && i.modifiers.command) {
+                self.grid_snap = !self.grid_snap;
+                self.notify(if self.grid_snap { "Grid snap on" } else { "Grid snap off" }.into());
+            }
             if !typing {
                 if key_l {
                     self.editor.set_tool(Tool::Line);
@@ -4897,6 +4905,13 @@ impl OpenCad {
                         Anchor::OnLine(..) | Anchor::OnAxis(..) => {
                             // A small diamond: "this point will stay on that line".
                             let c = to_pos(px);
+                            if let Anchor::OnLine(e, q) = at {
+                                if let Some(&Entity::Line { a, b }) = sk.entities.get(e) {
+                                    if sk.points[a].midpoint(sk.points[b]).distance(q) < 1e-9 {
+                                        view.text_beside(px, Vec2::new(1.0, -1.0), 14.0, "Midpoint".into(), COL_SNAP);
+                                    }
+                                }
+                            }
                             painter.add(egui::Shape::closed_line(
                                 vec![c + egui::vec2(0.0, -6.0), c + egui::vec2(6.0, 0.0), c + egui::vec2(0.0, 6.0), c + egui::vec2(-6.0, 0.0)],
                                 Stroke::new(2.0, COL_SNAP),

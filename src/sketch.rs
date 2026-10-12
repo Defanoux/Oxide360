@@ -1999,7 +1999,13 @@ impl Editor {
         let mut resolve = |sk: &mut Sketch, a: Anchor| {
             let p = sk.resolve(a);
             match a {
-                Anchor::OnLine(e, _) => ties.push(Constraint::OnLine(p, e)),
+                // Right at a line's middle: the point is its midpoint, not just on it.
+                Anchor::OnLine(e, q) => match sk.entities.get(e) {
+                    Some(&Entity::Line { a: la, b: lb }) if sk.points[la].midpoint(sk.points[lb]).distance(q) < 1e-9 * (1.0 + sk.points[la].distance(sk.points[lb])) && p != la && p != lb => {
+                        ties.push(Constraint::Midpoint(p, la, lb))
+                    }
+                    _ => ties.push(Constraint::OnLine(p, e)),
+                },
                 Anchor::OnAxis(axis, _) => ties.push(Constraint::OnAxis(p, axis)),
                 _ => {}
             }
@@ -3020,6 +3026,26 @@ mod construction_tests {
         let mut t = sk.clone();
         crate::solver::add_constraints(&mut t, &[Constraint::Midpoint(3, 1, 2)]).unwrap();
         assert!(t.points[3].distance((t.points[1] + t.points[2]) / 2.0) < 1e-6, "{:?}", t.points);
+    }
+
+    #[test]
+    fn a_point_dropped_on_a_lines_middle_gets_a_midpoint_constraint() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Line);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(0.0, 0.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(10.0, 0.0)));
+        ed.cancel();
+        // A second line from the first one's middle: Midpoint, not OnLine.
+        ed.click(&mut sk, Anchor::OnLine(0, DVec2::new(5.0, 0.0)));
+        let ties = ed.click(&mut sk, Anchor::Free(DVec2::new(5.0, 8.0)));
+        assert!(ties.iter().any(|c| matches!(c, Constraint::Midpoint(..))), "{ties:?}");
+        assert!(!ties.iter().any(|c| matches!(c, Constraint::OnLine(..))));
+        ed.cancel();
+        // Elsewhere along the line it's still OnLine.
+        ed.click(&mut sk, Anchor::OnLine(0, DVec2::new(3.0, 0.0)));
+        let ties = ed.click(&mut sk, Anchor::Free(DVec2::new(3.0, 8.0)));
+        assert!(ties.iter().any(|c| matches!(c, Constraint::OnLine(..))));
     }
 
     #[test]
