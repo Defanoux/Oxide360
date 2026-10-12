@@ -31,6 +31,7 @@ mod model;
 mod origin;
 mod pattern;
 mod profile;
+mod project;
 mod settings;
 mod sketch;
 mod solver;
@@ -440,6 +441,7 @@ struct OpenCad {
     axis_hidden: HashSet<usize>,             // construction axes switched off in the browser
     axis_pick: bool,                         // waiting for a click on a straight edge to put an axis on
     revolve_errors: Vec<Option<String>>,
+    project_hover: Option<EdgeRef>,          // the body edge under the mouse (Project tool)
     copy_axis_hover: Option<AxisChoice>, // the axis under the mouse while a pattern's axis is being picked
     axis_hover: Option<(usize, usize)>, // sketch, line entity under the mouse (revolve axis picking)
     edge_hover: Option<EdgeRef>,
@@ -533,6 +535,7 @@ impl Default for OpenCad {
             axis_hidden: HashSet::new(),
             axis_pick: false,
             revolve_errors: Vec::new(),
+            project_hover: None,
             copy_axis_hover: None,
             axis_hover: None,
             edge_hover: None,
@@ -1536,6 +1539,46 @@ impl OpenCad {
         }
     }
 
+    /// Project tool: bring the body edge `r` into sketch `i`.
+    fn project_edge_into(&mut self, i: usize, r: EdgeRef) {
+        let Some(points) = self
+            .model(Slot::Committed)
+            .bodies
+            .iter()
+            .flat_map(|b| &b.edges)
+            .find(|e| e.at.mid.distance(r.mid) < 1e-6)
+            .map(|e| e.points.iter().map(|p| p.as_dvec3()).collect::<Vec<_>>())
+        else {
+            return;
+        };
+        let plane = self.plane_of(i);
+        let projected = project::project_edge(plane.origin.as_dvec3(), plane.u.as_dvec3(), plane.v.as_dvec3(), &points);
+        let projected = match projected {
+            Ok(p) => p,
+            Err(e) => return self.notify(format!("Can't project: {e}")),
+        };
+        let mut why = None;
+        let res = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
+            let mut trial = sk.clone();
+            match trial.add_projected(projected) {
+                Ok(fixes) => {
+                    for c in fixes {
+                        let mut t = trial.clone();
+                        if solver::add_constraints(&mut t, &[c]).is_ok() {
+                            trial = t;
+                        }
+                    }
+                    *sk = trial;
+                }
+                Err(e) => why = Some(e),
+            }
+        });
+        match why {
+            Some(e) => self.notify(e),
+            None => self.report(res),
+        }
+    }
+
     /// The Mirror button: the current selection is what gets copied; next click picks the line.
     fn start_mirror(&mut self) {
         let sel = self.editor.selection.clone();
@@ -1914,7 +1957,12 @@ impl OpenCad {
         let sk = self.sketches.get(s)?;
         let plane = self.plane_of(s);
         let reach = (self.camera.distance as f64) * 2.0 * reach;
+        if let RevolveAxis::Construction(k) = which {
+            let (o, d) = self.model(Slot::Committed).axes.get(k).copied().flatten()?;
+            return Some(((o - d * reach).as_vec3(), (o + d * reach).as_vec3()));
+        }
         let (a, b) = match which {
+            RevolveAxis::Construction(_) => return None,
             RevolveAxis::SketchX => (DVec2::new(-reach, 0.0), DVec2::new(reach, 0.0)),
             RevolveAxis::SketchY => (DVec2::new(0.0, -reach), DVec2::new(0.0, reach)),
             RevolveAxis::Line(e) => match sk.entities.get(e)? {
@@ -2550,6 +2598,10 @@ impl OpenCad {
                     if icons::button(ui, Icon::Mirror, "Mirror: select geometry first, then click this and the mirror line", true, self.editor.tool == Tool::Mirror).clicked() {
                         self.start_mirror();
                     }
+                    let tip = "Project: click a body edge to bring it into the sketch (as locked construction geometry)";
+                    if icons::button(ui, Icon::Project, tip, self.body_count > 0, self.editor.tool == Tool::Project).clicked() {
+                        self.editor.set_tool(Tool::Project);
+                    }
                     let tip = "Construction (X): toggle the selected geometry, or what you draw next";
                     if icons::button(ui, Icon::Construction, tip, true, self.editor.construction).clicked() {
                         self.toggle_construction();
@@ -3012,6 +3064,7 @@ impl OpenCad {
     /// Right panel while revolving.
     fn revolve_panel(&mut self, ui: &mut egui::Ui) {
         let dialog_error = self.dialog_error.clone();
+        let axis_names: Vec<String> = self.axes.iter().map(|a| a.name.clone()).collect();
         let Some(d) = self.revolve_dialog.as_mut() else { return };
         ui.heading(if d.editing.is_some() { "Edit Revolve" } else { "Revolve" });
         ui.label(format!("Profiles: {} selected", d.profiles.len()));
@@ -3030,6 +3083,12 @@ impl OpenCad {
             let on_line = matches!(d.axis, RevolveAxis::Line(_));
             if ui.selectable_label(d.picking_axis || on_line, "A sketch line…").clicked() {
                 d.picking_axis = true;
+            }
+            for (k, name) in axis_names.iter().enumerate() {
+                if ui.selectable_label(d.axis == RevolveAxis::Construction(k) && !d.picking_axis, name.as_str()).clicked() {
+                    d.axis = RevolveAxis::Construction(k);
+                    d.picking_axis = false;
+                }
             }
         });
         if d.picking_axis {
@@ -3931,7 +3990,7 @@ impl OpenCad {
                     }
                 }
                 // …drawing tools a snapped cursor.
-                if matches!(tool, Tool::Select | Tool::Constrain(_) | Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Mirror) {
+                if matches!(tool, Tool::Select | Tool::Constrain(_) | Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Mirror | Tool::Project) {
                 } else if let Some(px) = hover_px {
                     let nearest = sk
                         .points
@@ -4104,6 +4163,14 @@ impl OpenCad {
                 if self.drag.is_some_and(|p| p >= sk.points.len()) {
                     self.drag = None;
                 }
+            }
+
+            // Project: the body edge under the cursor.
+            self.project_hover = None;
+            if let (Tool::Project, Some(px)) = (self.editor.tool, hover_px) {
+                self.ensure_model(Slot::Committed);
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                self.project_hover = self.edge_under(&view, Slot::Committed, px, &ray, false);
             }
 
             match self.editor.tool {
@@ -4303,6 +4370,11 @@ impl OpenCad {
                         } else {
                             self.editor.selection.clear();
                         }
+                    }
+                }
+                Tool::Project => {
+                    if let Some(r) = self.project_hover.filter(|_| response.clicked()) {
+                        self.project_edge_into(i, r);
                     }
                 }
                 Tool::Mirror => {
@@ -4664,6 +4736,17 @@ impl OpenCad {
             if let Some(o) = view.project(Vec3::ZERO) {
                 painter.circle_filled(to_pos(o), 4.0, Color32::from_gray(235));
                 painter.circle_stroke(to_pos(o), 4.0, Stroke::new(1.0, Color32::from_gray(60)));
+            }
+        }
+
+        // --- draw: the body edge the Project tool would bring in ---
+        if let (Some(h), true) = (self.project_hover, self.active.is_some()) {
+            for body in &self.model(Slot::Committed).bodies {
+                for e in body.edges.iter().filter(|e| e.at.mid.distance(h.mid) < 1e-6) {
+                    for w in e.points.windows(2) {
+                        view.line(w[0], w[1], Stroke::new(3.0, COL_HOVER));
+                    }
+                }
             }
         }
 

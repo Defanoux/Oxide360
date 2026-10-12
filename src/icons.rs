@@ -21,6 +21,7 @@ pub enum Icon {
     Trim,
     Mirror,
     Midpoint,
+    Project,
     Axis,
     RectPattern,
     CircPattern,
@@ -204,6 +205,14 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             line((0.08, 0.72), (0.28, 0.92), thin);
             line((0.72, 0.08), (0.92, 0.28), thin);
             dot(0.5, 0.5, ink);
+        }
+        Icon::Project => {
+            // A line above, an arrow dropping onto its shadow below.
+            line((0.15, 0.25), (0.85, 0.25), Stroke::new(thin.width * 1.2, ink));
+            line((0.5, 0.3), (0.5, 0.68), thin);
+            line((0.4, 0.58), (0.5, 0.7), thin);
+            line((0.6, 0.58), (0.5, 0.7), thin);
+            line((0.15, 0.82), (0.85, 0.82), Stroke::new(thin.width * 1.4, orange));
         }
         Icon::Midpoint => {
             // A line with a dot at its middle and two small ticks.

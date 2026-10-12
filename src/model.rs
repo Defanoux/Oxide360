@@ -157,6 +157,8 @@ pub enum RevolveAxis {
     SketchY,
     /// A line of the sketch (entity index).
     Line(usize),
+    /// A construction axis (index into the design's axes); it must run parallel to the sketch.
+    Construction(usize),
 }
 
 /// Spin sketch profiles around an axis.

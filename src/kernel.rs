@@ -311,7 +311,12 @@ fn tool(sketches: &[Sketch], frames: &[Option<FacePlane>], ex: &Extrude) -> Resu
 }
 
 /// The solid a revolve adds/removes: the picked profiles spun around the axis.
-fn revolve_tool(sketches: &[Sketch], frames: &[Option<FacePlane>], rv: &Revolve) -> Result<(Shape, End), String> {
+fn revolve_tool(
+    sketches: &[Sketch],
+    frames: &[Option<FacePlane>],
+    rv: &Revolve,
+    axes: &[Option<(DVec3, DVec3)>],
+) -> Result<(Shape, End), String> {
     let sk = sketches.get(rv.sketch).ok_or("its sketch was deleted")?;
     if !rv.angle.is_finite() || rv.angle.abs() < 1e-6 {
         return Err("angle is zero".into());
@@ -321,7 +326,17 @@ fn revolve_tool(sketches: &[Sketch], frames: &[Option<FacePlane>], rv: &Revolve)
     }
     let plane = frame_for(sk, frames.get(rv.sketch).copied().flatten())?;
     // The axis as a point and direction, in the sketch (2D) and in the world.
+    let mut world_axis: Option<(DVec3, DVec3)> = None;
     let (a2, d2) = match rv.axis {
+        RevolveAxis::Construction(k) => {
+            let (o, d) = axes.get(k).copied().flatten().ok_or("its construction axis couldn't be built")?;
+            if d.dot(plane.normal()).abs() > 1e-6 {
+                return Err("a construction axis must run parallel to the sketch to revolve about it".into());
+            }
+            world_axis = Some((o, d));
+            let to2 = |p: DVec3| DVec2::new((p - plane.origin).dot(plane.u), (p - plane.origin).dot(plane.v));
+            (to2(o), DVec2::new(d.dot(plane.u), d.dot(plane.v)).normalize_or_zero())
+        }
         RevolveAxis::SketchX => (DVec2::ZERO, DVec2::X),
         RevolveAxis::SketchY => (DVec2::ZERO, DVec2::Y),
         RevolveAxis::Line(e) => match sk.entities.get(e) {
@@ -350,8 +365,7 @@ fn revolve_tool(sketches: &[Sketch], frames: &[Option<FacePlane>], rv: &Revolve)
     if sides.iter().any(|&s| s > eps) && sides.iter().any(|&s| s < -eps) {
         return Err("the profile crosses the axis".into());
     }
-    let origin = world(&plane, a2);
-    let dir = plane.u * d2.x + plane.v * d2.y;
+    let (origin, dir) = world_axis.unwrap_or_else(|| (world(&plane, a2), plane.u * d2.x + plane.v * d2.y));
     let mut out: Option<Shape> = None;
     for r in union(&picked) {
         let solid = region_face(&plane, &r)?
@@ -912,7 +926,7 @@ pub fn build_with(
                 };
                 let ends = &mut revolve_ends;
                 let r = catch_unwind(AssertUnwindSafe(|| {
-                    let (shape, end) = revolve_tool(sketches, &frames, rv)?;
+                    let (shape, end) = revolve_tool(sketches, &frames, rv, &axes)?;
                     ends[k] = Some(end);
                     apply(current, shape, rv.op, Feature::Revolve(k))
                 }));
@@ -1179,6 +1193,27 @@ mod tests {
         assert!(is_straight(&[p(0.0, 0.0), p(5.0, 5.0), p(10.0, 10.0)]));
         assert!(!is_straight(&[p(0.0, 0.0), p(5.0, 1.0), p(10.0, 0.0)]));
         assert!(!is_straight(&[p(1.0, 1.0)]) && !is_straight(&[]));
+    }
+
+    #[test]
+    fn revolve_about_a_construction_axis() {
+        // A box at x 2..6, y 0..3 (z 0..5). Its bottom back edge (y = 3, z = 0) runs along X.
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk, 2.0, 0.0, 6.0, 3.0);
+        let mut sk2 = Sketch::new("P".into(), OriginPlane::XY);
+        rect(&mut sk2, 2.0, 5.0, 4.0, 7.0); // 2 × 2, from 2 to 4 mm off the axis
+        let edge = EdgeRef { mid: DVec3::new(4.0, 3.0, 0.0), dir: DVec3::X, faces: [DVec3::ZERO; 2], follow: None };
+        let axis = AxisFeature { name: "Axis1".into(), edge };
+        let rv = |axis: RevolveAxis| Revolve { op: Operation::NewBody, name: "R".into(), sketch: 1, profiles: vec![0], axis, angle: 360.0 };
+        let t = vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Axis(0), Feature::Sketch(1), Feature::Revolve(0)];
+        let m = build_with(&[sk.clone(), sk2.clone()], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[rv(RevolveAxis::Construction(0))], &[], &[], &[axis.clone()], &t);
+        assert_eq!(m.revolve_errors, vec![None], "{:?}", m.revolve_errors);
+        // A ring, outer radius 4, inner 2, 2 mm long.
+        assert!(close(total(&m), 60.0 + PI * (16.0 - 4.0) * 2.0), "{}", total(&m));
+        // An axis standing up through the sketch plane can't be revolved about.
+        let up = AxisFeature { name: "Up".into(), edge: EdgeRef { mid: DVec3::new(6.0, 3.0, 2.5), dir: DVec3::Z, faces: [DVec3::ZERO; 2], follow: None } };
+        let m = build_with(&[sk, sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[rv(RevolveAxis::Construction(0))], &[], &[], &[up], &t);
+        assert!(m.revolve_errors[0].as_deref().is_some_and(|e| e.contains("parallel")), "{:?}", m.revolve_errors);
     }
 
     #[test]

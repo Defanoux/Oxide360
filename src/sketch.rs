@@ -1656,6 +1656,8 @@ pub enum Tool {
     Trim,
     /// Copy the geometry that was selected across a clicked line.
     Mirror,
+    /// Click a body edge to bring it into the sketch.
+    Project,
     PolygonCircumscribed,
     PolygonInscribed,
     PolygonEdge,
@@ -1699,6 +1701,7 @@ impl Tool {
             Tool::SketchChamfer => "Chamfer",
             Tool::Trim => "Trim",
             Tool::Mirror => "Mirror",
+            Tool::Project => "Project",
             Tool::PolygonCircumscribed => "Circumscribed Polygon",
             Tool::PolygonInscribed => "Inscribed Polygon",
             Tool::PolygonEdge => "Edge Polygon",
@@ -1984,6 +1987,7 @@ impl Editor {
                 | Tool::SketchChamfer
                 | Tool::Trim
                 | Tool::Mirror
+                | Tool::Project
         ) {
             return Vec::new();
         }
@@ -2267,7 +2271,7 @@ impl Editor {
                 ties
             }
             Tool::Circle2Tangent | Tool::Circle3Tangent | Tool::Constrain(_) | Tool::Point => Vec::new(),
-            Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Mirror => Vec::new(),
+            Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Mirror | Tool::Project => Vec::new(),
             Tool::Select => Vec::new(),
         }
     }
