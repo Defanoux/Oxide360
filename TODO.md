@@ -4,13 +4,6 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Next
 
-1. **Verify the build.** The last few changes to `main.rs`, `view.rs`,
-   `icons.rs` were written without compiling them. `cargo build`, fix every
-   error and warning, `cargo test`, commit. Likely trouble spots: the Select
-   tool click handling (dimension select / touchpad carry / double-click),
-   `View { trace: Some(&trace), ..view }`, `icons.rs` arc/rectangle icons,
-   `view.rs` `diameter_dimension` / `radius_dimension`.
-
 2. **3-Point Arc snapping** (Gavin's request, match Fusion):
    - The third click (the point the arc passes through) must **not** be grid
      snapped — use the raw cursor. (Same rule the 2-tangent circle already
@@ -77,6 +70,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Verified build: `cargo build` clean (no warnings), 151 tests pass.
 - Orbit viewport, grid, view cube (with home, flip-to-opposite, axis triad toggle).
 - Sketching: line, 2-point / 3-point / center rectangle, center / 2-point /
   3-point / 2-tangent / 3-tangent circle, 3-point and center-point arc, point.
