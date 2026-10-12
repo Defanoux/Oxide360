@@ -566,6 +566,36 @@ pub fn add_constraints(sk: &mut Sketch, cs: &[Constraint]) -> Result<Solved, Sol
     Ok(solved)
 }
 
+/// Points that are "virtual sharps" left by a fillet or chamfer: a lone point
+/// held on two lines where the corner used to be.
+fn virtual_sharps(sk: &Sketch) -> Vec<PointId> {
+    (0..sk.entities.len())
+        .filter_map(|e| match sk.entities[e] {
+            Entity::Point { p } => Some(p),
+            _ => None,
+        })
+        .filter(|&p| sk.constraints.iter().filter(|c| matches!(c, Constraint::OnLine(q, _) if *q == p)).count() >= 2)
+        .collect()
+}
+
+/// Change the value of dimension `ci` and re-solve. A chamfer's distances
+/// are measured from its virtual sharp, which stays put: only the chamfer's
+/// own end moves, instead of the whole corner sliding to make room.
+pub fn set_dimension_value(sk: &mut Sketch, ci: usize, v: f64) -> Result<Solved, SolveError> {
+    let mut trial = sk.clone();
+    set_value(trial.constraints.get_mut(ci).ok_or(SolveError::Invalid)?, v);
+    let pins = match trial.constraints[ci] {
+        Constraint::Distance(a, b, _) => virtual_sharps(&trial).into_iter().filter(|&p| p == a || p == b).collect(),
+        _ => Vec::new(),
+    };
+    let solved = match solve(&mut trial.clone(), &pins) {
+        Ok(_) => solve(&mut trial, &pins),
+        Err(_) => solve(&mut trial, &[]),
+    }?;
+    *sk = trial;
+    Ok(solved)
+}
+
 /// Add a dimension. If it would over-constrain the sketch it is added as a
 /// *driven* (reference) dimension instead, holding the measured value.
 /// Returns whether it ended up driven.
@@ -1172,3 +1202,56 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod chamfer_edit_tests {
+    use super::*;
+    use crate::sketch::{Anchor, Editor, Entity, OriginPlane, Tool};
+
+    /// A 50×30 rectangle drawn with the rectangle tool (so it only has the
+    /// constraints the tool adds), then its (50,30) corner chamfered 2 / 5.
+    fn chamfered() -> (Sketch, usize, usize) {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Rectangle);
+        let mut cs = ed.click(&mut sk, Anchor::Free(DVec2::new(0.0, 0.0)));
+        cs.extend(ed.click(&mut sk, Anchor::Free(DVec2::new(50.0, 30.0))));
+        for c in cs {
+            let mut t = sk.clone();
+            if add_constraints(&mut t, &[c]).is_ok() {
+                sk = t;
+            }
+        }
+        let corner = (0..sk.points.len()).find(|&p| sk.points[p].distance(DVec2::new(50.0, 30.0)) < 1e-9).unwrap();
+        let cs = sk.chamfer_corner2(corner, 2.0, 5.0, None).unwrap();
+        add_constraints(&mut sk, &cs).unwrap();
+        let ci = sk.constraints.iter().position(|c| matches!(c, Constraint::Distance(_, p, d) if *p == corner && (*d - 2.0).abs() < 1e-9)).unwrap();
+        (sk, corner, ci)
+    }
+
+    #[test]
+    fn changing_a_chamfer_distance_only_moves_the_chamfer_end() {
+        let (mut sk, corner, ci) = chamfered();
+        let before: Vec<DVec2> = sk.points.clone();
+        crate::solver::set_dimension_value(&mut sk, ci, 8.0).unwrap();
+        // Nothing but the chamfer's own end point moved: the rectangle is the same size.
+        let moved: Vec<usize> = (0..before.len()).filter(|&p| before[p].distance(sk.points[p]) > 1e-6).collect();
+        let Constraint::Distance(n, _, _) = sk.constraints[ci] else { unreachable!() };
+        assert_eq!(moved, vec![n], "moved points: {moved:?}");
+        assert!(sk.points[corner].distance(DVec2::new(50.0, 30.0)) < 1e-9, "the virtual sharp stays");
+        assert!((sk.points[n].distance(sk.points[corner]) - 8.0).abs() < 1e-6);
+        let _ = Entity::Point { p: 0 };
+    }
+
+    #[test]
+    fn without_the_pin_the_corner_would_slide() {
+        // The old behaviour (plain solve), to keep the test above honest.
+        let (mut sk, corner, ci) = chamfered();
+        let before = sk.points.clone();
+        set_value(&mut sk.constraints[ci], 8.0);
+        solve(&mut sk, &[]).unwrap();
+        let moved: Vec<usize> = (0..before.len()).filter(|&p| before[p].distance(sk.points[p]) > 1e-6).collect();
+        eprintln!("moved without pin: {moved:?}, corner {corner}");
+        assert!(moved.len() > 1, "the rectangle itself changed: {moved:?}");
+    }
+}

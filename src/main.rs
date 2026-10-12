@@ -1364,10 +1364,14 @@ impl OpenCad {
             return;
         }
         let r = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
-            if let Some(Constraint::Length(_, d) | Constraint::Diameter(_, d) | Constraint::Angle(_, _, d) | Constraint::Distance(_, _, d) | Constraint::Radius(_, d)) =
-                sk.constraints.get_mut(ci)
-            {
-                *d = v;
+            // (Keeps a chamfer's virtual sharp where it is; see the solver.)
+            if solver::set_dimension_value(sk, ci, v).is_err() {
+                // Couldn't solve: leave the new value in so the usual error shows.
+                if let Some(Constraint::Length(_, d) | Constraint::Diameter(_, d) | Constraint::Angle(_, _, d) | Constraint::Distance(_, _, d) | Constraint::Radius(_, d)) =
+                    sk.constraints.get_mut(ci)
+                {
+                    *d = v;
+                }
             }
         });
         self.report(r);
