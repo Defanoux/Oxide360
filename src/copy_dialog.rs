@@ -42,6 +42,8 @@ pub struct CopyDialog {
     pub count2: u32,
     pub spacing2: f64,
     pub axis: WorldAxis,
+    /// A construction axis instead of `axis`.
+    pub custom: Option<usize>,
     pub count_round: u32,
     pub angle: f64,
 }
@@ -60,6 +62,7 @@ impl CopyDialog {
             count2: 1,
             spacing2: 20.0,
             axis: WorldAxis::Z,
+            custom: None,
             count_round: 4,
             angle: 360.0,
         }
@@ -74,7 +77,9 @@ impl CopyDialog {
             CopyKind::Rectangular { dir, count, spacing, dir2, count2, spacing2 } => {
                 (d.mode, d.dir, d.count, d.spacing, d.dir2, d.count2, d.spacing2) = (Mode::Rectangular, dir, count, spacing, dir2, count2, spacing2);
             }
-            CopyKind::Circular { axis, count, angle } => (d.mode, d.axis, d.count_round, d.angle) = (Mode::Circular, axis, count, angle),
+            CopyKind::Circular { axis, custom, count, angle } => {
+                (d.mode, d.axis, d.custom, d.count_round, d.angle) = (Mode::Circular, axis, custom, count, angle)
+            }
         }
         d
     }
@@ -90,7 +95,7 @@ impl CopyDialog {
                 count2: self.count2,
                 spacing2: self.spacing2,
             },
-            Mode::Circular => CopyKind::Circular { axis: self.axis, count: self.count_round, angle: self.angle },
+            Mode::Circular => CopyKind::Circular { axis: self.axis, custom: self.custom, count: self.count_round, angle: self.angle },
         }
     }
 
@@ -100,7 +105,14 @@ impl CopyDialog {
     }
 
     /// The right-hand panel. `bodies` are the bodies that can be picked.
-    pub fn panel(&mut self, ui: &mut egui::Ui, bodies: &[(BodyId, String)], error: Option<&str>, message: Option<&str>) -> Action {
+    pub fn panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        bodies: &[(BodyId, String)],
+        axes: &[String],
+        error: Option<&str>,
+        message: Option<&str>,
+    ) -> Action {
         ui.heading(if self.editing.is_some() { format!("Edit {}", self.mode.title()) } else { self.mode.title().to_string() });
         ui.label("Bodies");
         for (id, name) in bodies {
@@ -158,7 +170,19 @@ impl CopyDialog {
                 ui.weak("Distance is the gap from one copy to the next. Quantity counts the original.");
             }
             Mode::Circular => {
-                axis_pick(ui, "Axis", &mut self.axis);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Axis");
+                    for a in WorldAxis::ALL {
+                        if ui.selectable_label(self.custom.is_none() && self.axis == a, a.name()).clicked() {
+                            (self.axis, self.custom) = (a, None);
+                        }
+                    }
+                    for (k, name) in axes.iter().enumerate() {
+                        if ui.selectable_label(self.custom == Some(k), name.as_str()).clicked() {
+                            self.custom = Some(k);
+                        }
+                    }
+                });
                 count_box(ui, &mut self.count_round);
                 ui.horizontal(|ui| {
                     ui.label("Angle");
@@ -167,7 +191,7 @@ impl CopyDialog {
                         self.angle = 360.0;
                     }
                 });
-                ui.weak("The axis goes through the origin. 360° spaces the copies evenly all the way round.");
+                ui.weak("X, Y and Z go through the origin; a construction axis goes where it is. 360° spaces the copies evenly all the way round.");
             }
         }
         if let (Some(e), false) = (error, self.bodies.is_empty()) {
@@ -207,8 +231,9 @@ mod tests {
         d.count_round = 6;
         d.angle = 180.0;
         d.axis = WorldAxis::X;
+        d.custom = Some(2);
         let f = d.feature("Circular Pattern1".into()).unwrap();
-        assert_eq!(f.kind, CopyKind::Circular { axis: WorldAxis::X, count: 6, angle: 180.0 });
+        assert_eq!(f.kind, CopyKind::Circular { axis: WorldAxis::X, custom: Some(2), count: 6, angle: 180.0 });
         assert_eq!(CopyDialog::from_feature(3, &f).feature(f.name.clone()), Some(f.clone()));
         assert_eq!(CopyDialog::from_feature(3, &f).editing, Some(3));
 

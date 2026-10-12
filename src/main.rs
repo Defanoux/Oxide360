@@ -49,7 +49,7 @@ use eframe::egui;
 use egui::{Color32, Stroke};
 use glam::{DVec2, Vec2, Vec3};
 use copy_dialog::{CopyDialog, Mode as CopyMode};
-use model::{CopyFeature, EdgeFeature, EdgeKind, EdgeRef, Extrude, Mesh, Operation, Revolve, RevolveAxis};
+use model::{AxisFeature, CopyFeature, EdgeFeature, EdgeKind, EdgeRef, Extrude, Mesh, Operation, Revolve, RevolveAxis};
 use icons::Icon;
 use profile::{Region, find_regions};
 use sketch::{
@@ -356,6 +356,7 @@ struct KernelCache {
     revolves: Vec<Revolve>,
     edge_features: Vec<EdgeFeature>,
     copies: Vec<CopyFeature>,
+    axes: Vec<AxisFeature>,
     timeline: Vec<Feature>,
     model: kernel::Model,
 }
@@ -396,6 +397,10 @@ struct OpenCad {
     copies: Vec<CopyFeature>,                // mirrors and patterns
     copy_errors: Vec<Option<String>>,
     copy_dialog: Option<CopyDialog>,
+    axes: Vec<AxisFeature>,                  // construction axes
+    axis_errors: Vec<Option<String>>,
+    axis_hidden: HashSet<usize>,             // construction axes switched off in the browser
+    axis_pick: bool,                         // waiting for a click on a straight edge to put an axis on
     revolve_errors: Vec<Option<String>>,
     axis_hover: Option<(usize, usize)>, // sketch, line entity under the mouse (revolve axis picking)
     edge_hover: Option<EdgeRef>,
@@ -484,6 +489,10 @@ impl Default for OpenCad {
             copies: Vec::new(),
             copy_errors: Vec::new(),
             copy_dialog: None,
+            axes: Vec::new(),
+            axis_errors: Vec::new(),
+            axis_hidden: HashSet::new(),
+            axis_pick: false,
             revolve_errors: Vec::new(),
             axis_hover: None,
             edge_hover: None,
@@ -546,6 +555,7 @@ impl OpenCad {
             edge_features: self.edge_features.clone(),
             revolves: self.revolves.clone(),
             copies: self.copies.clone(),
+            axes: self.axes.clone(),
             timeline: self.timeline.clone(),
             view: self.view_state(),
             body_names: self.sorted_body_names(),
@@ -690,6 +700,7 @@ impl OpenCad {
             || self.edge_features != self.saved.edge_features
             || self.revolves != self.saved.revolves
             || self.copies != self.saved.copies
+            || self.axes != self.saved.axes
             || self.timeline != self.saved.timeline
     }
 
@@ -718,6 +729,9 @@ impl OpenCad {
         self.edge_features = doc.edge_features.clone();
         self.revolves = doc.revolves.clone();
         self.copies = doc.copies.clone();
+        self.axes = doc.axes.clone();
+        self.axis_hidden.clear();
+        self.axis_pick = false;
         self.copy_dialog = None;
         self.revolve_dialog = None;
         self.timeline = doc.timeline.clone();
@@ -774,6 +788,9 @@ impl OpenCad {
         self.edge_features = doc.edge_features;
         self.revolves = doc.revolves;
         self.copies = doc.copies;
+        self.axes = doc.axes;
+        self.axis_hidden.retain(|&k| k < self.axes.len());
+        self.axis_pick = false;
         self.copy_dialog = None;
         self.timeline = doc.timeline;
         self.body_names = doc.body_names.into_iter().collect();
@@ -867,9 +884,10 @@ impl OpenCad {
     }
 
     /// The feature lists a slot is built from.
-    fn inputs(&self, slot: Slot) -> (Vec<Extrude>, Vec<Revolve>, Vec<EdgeFeature>, Vec<CopyFeature>, Vec<Feature>) {
+    fn inputs(&self, slot: Slot) -> (Vec<Extrude>, Vec<Revolve>, Vec<EdgeFeature>, Vec<CopyFeature>, Vec<AxisFeature>, Vec<Feature>) {
         let (mut extrudes, mut revolves, mut edge_features, mut copies, mut timeline) =
             (self.extrudes.clone(), self.revolves.clone(), self.edge_features.clone(), self.copies.clone(), self.timeline.clone());
+        let axes = self.axes.clone();
         timeline.truncate(self.applied()); // features after the marker aren't built
         match slot {
             Slot::Committed => {}
@@ -920,13 +938,13 @@ impl OpenCad {
                 }
             }
         }
-        (extrudes, revolves, edge_features, copies, timeline)
+        (extrudes, revolves, edge_features, copies, axes, timeline)
     }
 
     /// Make sure the kernel model for `slot` matches the current design.
     /// Rebuilds only when its inputs changed.
     fn ensure_model(&mut self, slot: Slot) {
-        let (extrudes, revolves, edge_features, copies, timeline) = self.inputs(slot);
+        let (extrudes, revolves, edge_features, copies, axes, timeline) = self.inputs(slot);
         let fresh = self.caches[slot as usize].as_ref().is_some_and(|c| {
             c.sketches.len() == self.sketches.len()
                 && c.sketches.iter().zip(&self.sketches).all(|(a, b)| a.same_shape(b))
@@ -934,12 +952,13 @@ impl OpenCad {
                 && c.revolves == revolves
                 && c.edge_features == edge_features
                 && c.copies == copies
+                && c.axes == axes
                 && c.timeline == timeline
         });
         if !fresh {
-            let model = kernel::build_with(&self.sketches, &extrudes, &revolves, &edge_features, &copies, &timeline);
+            let model = kernel::build_with(&self.sketches, &extrudes, &revolves, &edge_features, &copies, &axes, &timeline);
             self.caches[slot as usize] =
-                Some(KernelCache { sketches: self.sketches.clone(), extrudes, revolves, edge_features, copies, timeline, model });
+                Some(KernelCache { sketches: self.sketches.clone(), extrudes, revolves, edge_features, copies, axes, timeline, model });
         }
     }
 
@@ -1622,6 +1641,7 @@ impl OpenCad {
     // ---------- extrude ----------
 
     fn open_extrude(&mut self, editing: Option<usize>) {
+        self.axis_pick = false;
         self.finish_sketch();
         self.cancel_edge_dialog();
         self.cancel_revolve();
@@ -1836,6 +1856,7 @@ impl OpenCad {
     // ---------- revolve ----------
 
     fn open_revolve(&mut self, editing: Option<usize>) {
+        self.axis_pick = false;
         self.finish_sketch();
         self.cancel_extrude();
         self.cancel_edge_dialog();
@@ -1916,6 +1937,7 @@ impl OpenCad {
     }
 
     fn open_copy(&mut self, mode: CopyMode, editing: Option<usize>) {
+        self.axis_pick = false;
         self.cancel_extrude();
         self.cancel_revolve();
         self.cancel_edge_dialog();
@@ -1979,12 +2001,83 @@ impl OpenCad {
         self.cancel_copy();
     }
 
+    fn delete_axis(&mut self, k: usize) {
+        self.axes.remove(k);
+        self.axis_hidden = self.axis_hidden.iter().filter(|&&j| j != k).map(|&j| if j > k { j - 1 } else { j }).collect();
+        self.timeline_remove(Feature::Axis(k));
+        for f in &mut self.timeline {
+            if let Feature::Axis(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+        // A pattern that turned about it falls back to the world axis it names.
+        for c in &mut self.copies {
+            if let model::CopyKind::Circular { custom, .. } = &mut c.kind {
+                *custom = match *custom {
+                    Some(j) if j == k => None,
+                    Some(j) if j > k => Some(j - 1),
+                    other => other,
+                };
+            }
+        }
+        if let Some(d) = self.copy_dialog.as_mut() {
+            d.custom = match d.custom {
+                Some(j) if j == k => None,
+                Some(j) if j > k => Some(j - 1),
+                other => other,
+            };
+        }
+    }
+
+    /// Put a construction axis along the straight edge picked.
+    fn add_axis(&mut self, edge: EdgeRef) {
+        let name = format!("Axis{}", self.axes.len() + 1);
+        self.axes.push(AxisFeature { name, edge });
+        self.timeline_insert(Feature::Axis(self.axes.len() - 1));
+        self.axis_pick = false;
+    }
+
+    /// The straight body edge nearest the cursor (within snapping reach) that
+    /// isn't hidden behind a body, from the model in `slot`.
+    fn edge_under(&self, view: &View, slot: Slot, px: Vec2, ray: &Ray, straight_only: bool) -> Option<EdgeRef> {
+        let base = self.model(slot);
+        // How far the ray goes before it hits a body: edges further than
+        // that are hidden behind something and can't be picked.
+        let hit = base.bodies.iter().filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir)).reduce(f32::min);
+        let slack = self.camera.distance * 0.01;
+        let mut best: Option<(f32, EdgeRef)> = None;
+        for body in &base.bodies {
+            for e in &body.edges {
+                if straight_only && !kernel::is_straight(&e.points.iter().map(|p| p.as_dvec3()).collect::<Vec<_>>()) {
+                    continue;
+                }
+                for w in e.points.windows(2) {
+                    let (Some(a), Some(b)) = (view.project(w[0]), view.project(w[1])) else { continue };
+                    let ab = b - a;
+                    let t = if ab.length_squared() > 0.0 { ((px - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+                    let d = px.distance(a + ab * t);
+                    if d > SNAP_PX || best.is_some_and(|(bd, _)| d >= bd) {
+                        continue;
+                    }
+                    let along = (w[0].lerp(w[1], t) - ray.origin).dot(ray.dir);
+                    if hit.is_none_or(|h| along <= h + slack) {
+                        best = Some((d, e.at));
+                    }
+                }
+            }
+        }
+        best.map(|(_, r)| r)
+    }
+
     /// Right panel while mirroring / patterning.
     fn copy_panel(&mut self, ui: &mut egui::Ui) {
         let bodies: Vec<(BodyId, String)> = self.body_ids.iter().map(|&id| (id, self.body_name(id))).collect();
+        let axes: Vec<String> = self.axes.iter().map(|a| a.name.clone()).collect();
         let (error, message) = (self.dialog_error.clone(), self.message.clone());
         let Some(d) = self.copy_dialog.as_mut() else { return };
-        match d.panel(ui, &bodies, error.as_deref(), message.as_deref()) {
+        match d.panel(ui, &bodies, &axes, error.as_deref(), message.as_deref()) {
             copy_dialog::Action::Ok => self.commit_copy(),
             copy_dialog::Action::Cancel => self.cancel_copy(),
             copy_dialog::Action::None => {}
@@ -2019,6 +2112,7 @@ impl OpenCad {
     // ---------- fillet / chamfer ----------
 
     fn open_edge_dialog(&mut self, editing: Option<usize>, kind: EdgeKind) {
+        self.axis_pick = false;
         self.finish_sketch();
         self.cancel_extrude();
         self.cancel_revolve();
@@ -2386,6 +2480,17 @@ impl OpenCad {
                         self.open_revolve(None);
                     }
                 });
+                group(ui, "CONSTRUCT", |ui| {
+                    let tip = "Axis Along Edge: click a straight edge of a body";
+                    if icons::button(ui, Icon::Axis, tip, has_bodies, self.axis_pick).clicked() {
+                        self.cancel_extrude();
+                        self.cancel_revolve();
+                        self.cancel_edge_dialog();
+                        self.cancel_copy();
+                        self.face_pick = false;
+                        self.axis_pick = !self.axis_pick;
+                    }
+                });
                 let copy_mode = self.copy_dialog.as_ref().map(|d| d.mode);
                 group(ui, "PATTERN", |ui| {
                     for (mode, icon, tip) in [
@@ -2431,6 +2536,22 @@ impl OpenCad {
                     ui.checkbox(&mut self.origin_shown.axes[k], name);
                 }
             });
+        if !self.axes.is_empty() {
+            ui.label("Construction");
+            for k in 0..self.axes.len() {
+                ui.horizontal(|ui| {
+                    let mut shown = !self.axis_hidden.contains(&k);
+                    if ui.checkbox(&mut shown, "").on_hover_text("Show or hide this axis").changed() {
+                        if shown {
+                            self.axis_hidden.remove(&k);
+                        } else {
+                            self.axis_hidden.insert(k);
+                        }
+                    }
+                    ui.label(self.axes[k].name.as_str());
+                });
+            }
+        }
         ui.label("Bodies");
         let mut rename_done: Option<(BodyId, Option<String>)> = None;
         for id in self.body_ids.clone() {
@@ -2926,6 +3047,7 @@ impl OpenCad {
                         self.revolves[k].name.clone(),
                         self.revolve_dialog.as_ref().is_some_and(|d| d.editing == Some(k)),
                     ),
+                    Feature::Axis(k) => (self.axes[k].name.clone(), false),
                     Feature::Copy(k) => (
                         self.copies[k].name.clone(),
                         self.copy_dialog.as_ref().is_some_and(|d| d.editing == Some(k)),
@@ -2936,12 +3058,14 @@ impl OpenCad {
                     Feature::Edge(k) => self.edge_feature_errors.get(k).cloned().flatten(),
                     Feature::Revolve(k) => self.revolve_errors.get(k).cloned().flatten(),
                     Feature::Copy(k) => self.copy_errors.get(k).cloned().flatten(),
+                    Feature::Axis(k) => self.axis_errors.get(k).cloned().flatten(),
                     Feature::Sketch(k) => self.sketch_errors.get(k).cloned().flatten(),
                 };
                 let icon = match *f {
                     Feature::Sketch(_) => Icon::Sketch,
                     Feature::Extrude(_) => Icon::Extrude,
                     Feature::Revolve(_) => Icon::Revolve,
+                    Feature::Axis(_) => Icon::Axis,
                     Feature::Copy(k) => match self.copies[k].kind {
                         model::CopyKind::Mirror(_) => Icon::Mirror,
                         model::CopyKind::Rectangular { .. } => Icon::RectPattern,
@@ -3010,6 +3134,7 @@ impl OpenCad {
             Some(Feature::Edge(k)) => self.delete_edge_feature(k),
             Some(Feature::Revolve(k)) => self.delete_revolve(k),
             Some(Feature::Copy(k)) => self.delete_copy(k),
+            Some(Feature::Axis(k)) => self.delete_axis(k),
             None => {}
         }
         if delete.is_some() {
@@ -3019,6 +3144,7 @@ impl OpenCad {
             Some(Feature::Sketch(i)) => self.edit_sketch(i),
             Some(Feature::Extrude(k)) => self.open_extrude(Some(k)),
             Some(Feature::Revolve(k)) => self.open_revolve(Some(k)),
+            Some(Feature::Axis(_)) => {}
             Some(Feature::Copy(k)) => {
                 let mode = match self.copies[k].kind {
                     model::CopyKind::Mirror(_) => CopyMode::Mirror,
@@ -3553,36 +3679,28 @@ impl OpenCad {
                 self.cancel_extrude();
                 self.cancel_revolve();
             }
+        } else if self.axis_pick {
+            // --- construction axis: click a straight edge ---
+            self.ensure_model(Slot::Committed);
+            self.edge_hover = None;
+            if let Some(px) = hover_px {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                self.edge_hover = self.edge_under(&view, Slot::Committed, px, &ray, true);
+            }
+            if let (true, Some(r)) = (response.clicked(), self.edge_hover) {
+                self.add_axis(r);
+                self.edge_hover = None;
+            }
+            if esc && !typing {
+                self.axis_pick = false;
+            }
         } else if self.edge_dialog.is_some() {
             // --- fillet / chamfer input: pick edges on the model before this feature ---
             self.ensure_model(Slot::Base);
             self.edge_hover = None;
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
-                let base = self.model(Slot::Base);
-                // How far the ray goes before it hits a body: edges further than
-                // that are hidden behind something and can't be picked.
-                let hit = base.bodies.iter().filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir)).reduce(f32::min);
-                let slack = self.camera.distance * 0.01;
-                let mut best: Option<(f32, EdgeRef)> = None;
-                for body in &base.bodies {
-                    for e in &body.edges {
-                        for w in e.points.windows(2) {
-                            let (Some(a), Some(b)) = (view.project(w[0]), view.project(w[1])) else { continue };
-                            let ab = b - a;
-                            let t = if ab.length_squared() > 0.0 { ((px - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
-                            let d = px.distance(a + ab * t);
-                            if d > SNAP_PX || best.is_some_and(|(bd, _)| d >= bd) {
-                                continue;
-                            }
-                            let along = (w[0].lerp(w[1], t) - ray.origin).dot(ray.dir);
-                            if hit.is_none_or(|h| along <= h + slack) {
-                                best = Some((d, e.at));
-                            }
-                        }
-                    }
-                }
-                self.edge_hover = best.map(|(_, r)| r);
+                self.edge_hover = self.edge_under(&view, Slot::Base, px, &ray, false);
             }
             if response.clicked() {
                 // Remember if the edge lies on the far end of an extrude/revolve.
@@ -4215,6 +4333,16 @@ impl OpenCad {
             let c = rgb(axis_color(axis));
             grid_segments.push((a, b, [c[0], c[1], c[2], 1.0]));
         }
+        // Construction axes: a long dashed-looking line through the picked edge.
+        if !sketching {
+            self.ensure_model(Slot::Committed);
+            let reach = origin_size * 1.5;
+            let hot = [1.0, 0.85, 0.3, 1.0];
+            for (k, a) in self.model(Slot::Committed).axes.iter().enumerate() {
+                let (Some((o, d)), false) = (a, self.axis_hidden.contains(&k)) else { continue };
+                grid_segments.push(((o - d * reach as f64).as_vec3(), (o + d * reach as f64).as_vec3(), hot));
+            }
+        }
         if !self.gpu {
             if sketching {
                 view.grid(&dplane, centre, grid);
@@ -4281,6 +4409,7 @@ impl OpenCad {
         self.sketch_errors = self.model(Slot::Committed).sketch_errors.clone();
         self.revolve_errors = self.model(Slot::Committed).revolve_errors.clone();
         self.copy_errors = self.model(Slot::Committed).copy_errors.clone();
+        self.axis_errors = self.model(Slot::Committed).axis_errors.clone();
         self.body_count = self.model(Slot::Committed).bodies.len();
         // With a body in the scene the origin gets out of the way (Create Sketch
         // and the browser's Origin box bring it back).
@@ -4373,6 +4502,26 @@ impl OpenCad {
                 painter.circle_filled(to_pos(o), 4.0, Color32::from_gray(235));
                 painter.circle_stroke(to_pos(o), 4.0, Stroke::new(1.0, Color32::from_gray(60)));
             }
+        }
+
+        // --- draw: the edge a construction axis would go along ---
+        if self.axis_pick {
+            if let Some(h) = self.edge_hover {
+                for body in &self.model(Slot::Committed).bodies {
+                    for e in body.edges.iter().filter(|e| e.at.mid.distance(h.mid) < 1e-6) {
+                        for w in e.points.windows(2) {
+                            view.line(w[0], w[1], Stroke::new(3.0, COL_HOVER));
+                        }
+                    }
+                }
+            }
+            painter.text(
+                rect.center_top() + egui::vec2(0.0, 14.0),
+                egui::Align2::CENTER_TOP,
+                "Click a straight edge to put an axis along it   (Esc to cancel)",
+                egui::FontId::proportional(15.0),
+                Color32::from_gray(220),
+            );
         }
 
         // --- draw: picked and hovered edges (fillet / chamfer) ---

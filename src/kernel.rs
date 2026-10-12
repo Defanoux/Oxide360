@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{CopyFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{AxisFeature, CopyFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
 use glam::{DQuat, DVec2, DVec3, Vec3};
@@ -59,6 +59,10 @@ pub struct Model {
     pub revolve_errors: Vec<Option<String>>,
     /// One entry per mirror / pattern.
     pub copy_errors: Vec<Option<String>>,
+    /// Each construction axis as built: a point on it and its direction.
+    pub axes: Vec<Option<(DVec3, DVec3)>>,
+    /// One entry per construction axis.
+    pub axis_errors: Vec<Option<String>>,
     /// Far-end faces of the extrudes/revolves, to tag what's picked there.
     pub caps: Vec<Cap>,
     /// For each extrude / revolve / fillet that was built: the body it made or
@@ -763,6 +767,23 @@ fn resolve_face(shapes: &[&Shape], f: &FacePlane, anchor: DVec2) -> Option<FaceP
     over.or(any.filter(|&(d, _)| d <= reach)).map(|(_, q)| FacePlane { origin: n * n.dot(q), ..*f })
 }
 
+/// Where a construction axis is now: along the straight edge it was picked on.
+fn resolve_axis(bodies: &Tagged, af: &AxisFeature) -> Result<(DVec3, DVec3), String> {
+    let mut all: Vec<(usize, Edge, EdgeRef)> = Vec::new();
+    for (i, (b, _)) in bodies.iter().enumerate() {
+        all.extend(shape_edges(b).into_iter().filter(|(_, _, pts)| is_straight(pts)).map(|(e, r, _)| (i, e, r)));
+    }
+    let found = find_edge(&all, &af.edge, f64::INFINITY).ok_or("the edge it was made on no longer exists — delete it and pick again")?;
+    Ok((found.2.mid, found.2.dir.normalize()))
+}
+
+/// Is a polyline a straight run (all points on the line through its ends)?
+pub fn is_straight(pts: &[DVec3]) -> bool {
+    let (Some(&a), Some(&b)) = (pts.first(), pts.last()) else { return false };
+    let d = b - a;
+    d.length() > 1e-9 && pts.iter().all(|p| (*p - a).cross(d).length() <= 1e-7 * d.length().max(1.0))
+}
+
 /// Evaluate the timeline. A feature that fails is skipped (with its error
 /// recorded) and the rest still build — like a red feature in Fusion.
 #[cfg(test)]
@@ -773,17 +794,17 @@ pub fn build(
     edge_features: &[EdgeFeature],
     timeline: &[Feature],
 ) -> Model {
-    build_with(sketches, extrudes, revolves, edge_features, &[], timeline)
+    build_with(sketches, extrudes, revolves, edge_features, &[], &[], timeline)
 }
 
 /// Copy the picked bodies once per placement (mirror or pattern). The copies
 /// are new bodies; the originals stay.
-fn apply_copy(bodies: Tagged, cf: &CopyFeature, k: usize) -> Result<(Tagged, Option<BodyId>), String> {
+fn apply_copy(bodies: Tagged, cf: &CopyFeature, k: usize, axes: &[Option<(DVec3, DVec3)>]) -> Result<(Tagged, Option<BodyId>), String> {
     let sources: Vec<usize> = (0..bodies.len()).filter(|&i| cf.bodies.contains(&bodies[i].1)).collect();
     if sources.is_empty() {
         return Err("the bodies it copies are gone — edit it and pick again".into());
     }
-    let placements = cf.kind.placements();
+    let placements = cf.kind.placements(axes)?;
     if placements.is_empty() {
         return Err("it makes no copies — raise the quantity".into());
     }
@@ -794,7 +815,7 @@ fn apply_copy(bodies: Tagged, cf: &CopyFeature, k: usize) -> Result<(Tagged, Opt
             let src = &bodies[i].0;
             let copy = match p {
                 Placement::Translate(t) => src.translated(kv(t)),
-                Placement::Rotate { axis, radians } => src.rotated_about(kv(DVec3::ZERO), kv(axis), radians),
+                Placement::Rotate { origin, axis, radians } => src.rotated_about(kv(origin), kv(axis), radians),
                 Placement::Reflect { normal } => src.mirrored_in_plane(kv(DVec3::ZERO), kv(normal)),
             };
             let id = BodyId { feature: Feature::Copy(k), piece };
@@ -814,8 +835,11 @@ pub fn build_with(
     revolves: &[Revolve],
     edge_features: &[EdgeFeature],
     copies: &[CopyFeature],
+    axis_features: &[AxisFeature],
     timeline: &[Feature],
 ) -> Model {
+    let mut axes: Vec<Option<(DVec3, DVec3)>> = vec![None; axis_features.len()];
+    let mut axis_errors: Vec<Option<String>> = vec![None; axis_features.len()];
     let mut copy_errors: Vec<Option<String>> = vec![None; copies.len()];
     let mut shapes: Tagged = Vec::new();
     let mut errors: Vec<Option<String>> = vec![None; extrudes.len()];
@@ -879,12 +903,25 @@ pub fn build_with(
                 }));
                 (r, &mut revolve_errors[k])
             }
+            Feature::Axis(k) => {
+                // An axis changes no body: find its edge in what's built so far.
+                if let Some(af) = axis_features.get(k) {
+                    match catch_unwind(AssertUnwindSafe(|| resolve_axis(&current, af))) {
+                        Ok(Ok(a)) => axes[k] = Some(a),
+                        Ok(Err(e)) => axis_errors[k] = Some(e),
+                        Err(_) => axis_errors[k] = Some("the geometry kernel couldn't find its edge".into()),
+                    }
+                }
+                shapes = current;
+                continue;
+            }
             Feature::Copy(k) => {
                 let Some(cf) = copies.get(k) else {
                     shapes = current;
                     continue;
                 };
-                let r = catch_unwind(AssertUnwindSafe(|| apply_copy(current, cf, k)));
+                let axes_now = &axes;
+                let r = catch_unwind(AssertUnwindSafe(|| apply_copy(current, cf, k, axes_now)));
                 (r, &mut copy_errors[k])
             }
             Feature::Edge(k) => {
@@ -924,7 +961,7 @@ pub fn build_with(
         })
         .collect();
     let caps = caps_of(&extrude_ends, &revolve_ends);
-    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, caps, touched: touched_by }
+    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, axes, axis_errors, caps, touched: touched_by }
 }
 
 /// Exact STEP export of all bodies (true planes, cylinders, arcs).
@@ -999,7 +1036,7 @@ mod tests {
         let c = CopyFeature { name: "C".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind };
         let mut t = timeline(1, 1);
         t.push(Feature::Copy(0));
-        build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &t)
+        build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[], &t)
     }
 
     /// (OCCT pads bounding boxes by 1e-7.)
@@ -1038,13 +1075,13 @@ mod tests {
     fn circular_pattern_spaces_copies_round_the_axis() {
         use crate::model::{CopyKind, WorldAxis};
         // Four copies over 360°: 90° apart. The box (x 2..6, y 0..3) rotated 90° about Z lands at x −3..0, y 2..6.
-        let m = copies_of_a_box(CopyKind::Circular { axis: WorldAxis::Z, count: 4, angle: 360.0 });
+        let m = copies_of_a_box(CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 4, angle: 360.0 });
         assert_eq!(m.bodies.len(), 4);
         assert!(close(total(&m), 240.0));
         let (lo, hi) = box_of(&m.bodies[1]);
         assert!((lo - DVec3::new(-3.0, 2.0, 0.0)).length() < 1e-6 && (hi - DVec3::new(0.0, 6.0, 5.0)).length() < 1e-6, "{lo:?} {hi:?}");
         // Over 180° the last copy sits at the end of the angle: three copies at 0°, 90°, 180°.
-        let m = copies_of_a_box(CopyKind::Circular { axis: WorldAxis::Z, count: 3, angle: 180.0 });
+        let m = copies_of_a_box(CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 3, angle: 180.0 });
         let (lo, hi) = box_of(&m.bodies[2]);
         assert!((lo - DVec3::new(-6.0, -3.0, 0.0)).length() < 1e-6 && (hi - DVec3::new(-2.0, 0.0, 5.0)).length() < 1e-6, "{lo:?} {hi:?}");
     }
@@ -1056,13 +1093,63 @@ mod tests {
         rect(&mut sk, 2.0, 0.0, 6.0, 3.0);
         let gone = BodyId { feature: Feature::Extrude(7), piece: 0 };
         let c = CopyFeature { name: "C".into(), bodies: vec![gone], kind: CopyKind::Mirror(OriginPlane::XY) };
-        let one = CopyFeature { name: "C".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: CopyKind::Circular { axis: WorldAxis::Z, count: 1, angle: 360.0 } };
+        let one = CopyFeature { name: "C".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 1, angle: 360.0 } };
         let mut t = timeline(1, 1);
         t.extend([Feature::Copy(0), Feature::Copy(1)]);
-        let m = build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c, one], &t);
+        let m = build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c, one], &[], &t);
         assert!(m.copy_errors[0].as_deref().is_some_and(|e| e.contains("gone")));
         assert!(m.copy_errors[1].as_deref().is_some_and(|e| e.contains("no copies")));
         assert_eq!(m.bodies.len(), 1, "the original is untouched");
+    }
+
+    #[test]
+    fn a_construction_axis_on_an_edge_is_found_and_patterns_turn_about_it() {
+        use crate::model::{CopyKind, WorldAxis};
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk, 2.0, 0.0, 6.0, 3.0);
+        let edge = EdgeRef { mid: DVec3::new(6.0, 3.0, 2.5), dir: DVec3::Z, faces: [DVec3::ZERO; 2], follow: None };
+        let axis = AxisFeature { name: "Axis1".into(), edge };
+        let c = CopyFeature {
+            name: "C".into(),
+            bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }],
+            kind: CopyKind::Circular { axis: WorldAxis::X, custom: Some(0), count: 2, angle: 360.0 },
+        };
+        let mut t = timeline(1, 1);
+        t.extend([Feature::Axis(0), Feature::Copy(0)]);
+        let m = build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[axis], &t);
+        assert_eq!(m.axis_errors, vec![None]);
+        let (o, d) = m.axes[0].unwrap();
+        assert!((o.x - 6.0).abs() < 1e-9 && (o.y - 3.0).abs() < 1e-9 && d.dot(DVec3::Z).abs() > 0.999999);
+        assert_eq!(m.copy_errors, vec![None]);
+        // Half a turn about the box's corner edge swings it to x 6..10, y 3..6.
+        let (lo, hi) = box_of(&m.bodies[1]);
+        assert!((lo - DVec3::new(6.0, 3.0, 0.0)).length() < 1e-6 && (hi - DVec3::new(10.0, 6.0, 5.0)).length() < 1e-6, "{lo:?} {hi:?}");
+    }
+
+    #[test]
+    fn a_curved_or_missing_edge_makes_an_axis_error() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk, 2.0, 0.0, 6.0, 3.0);
+        let nowhere = EdgeRef { mid: DVec3::new(60.0, 3.0, 2.5), dir: DVec3::X, faces: [DVec3::ZERO; 2], follow: None };
+        let mut t = timeline(1, 1);
+        t.push(Feature::Axis(0));
+        let m = build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[], &[AxisFeature { name: "A".into(), edge: nowhere }], &t);
+        // (No box edge runs along X near there… the nearest X edge is taken, so it resolves; a wrong direction can't.)
+        let wrong = EdgeRef { mid: DVec3::new(6.0, 3.0, 2.5), dir: DVec3::new(0.0, 0.6, 0.8), faces: [DVec3::ZERO; 2], follow: None };
+        assert!(m.axes.len() == 1);
+        let mut sk2 = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk2, 2.0, 0.0, 6.0, 3.0);
+        let m2 = build_with(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[], &[AxisFeature { name: "A".into(), edge: wrong }], &t);
+        assert!(m2.axis_errors[0].as_deref().is_some_and(|e| e.contains("no longer exists")));
+        assert_eq!(m2.axes, vec![None]);
+    }
+
+    #[test]
+    fn straight_runs_are_told_from_curves() {
+        let p = |x: f64, y: f64| DVec3::new(x, y, 0.0);
+        assert!(is_straight(&[p(0.0, 0.0), p(5.0, 5.0), p(10.0, 10.0)]));
+        assert!(!is_straight(&[p(0.0, 0.0), p(5.0, 1.0), p(10.0, 0.0)]));
+        assert!(!is_straight(&[p(1.0, 1.0)]) && !is_straight(&[]));
     }
 
     #[test]

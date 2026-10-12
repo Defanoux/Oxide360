@@ -4,7 +4,7 @@
 //! index and number so a damaged or hand-edited file gives a clear error
 //! instead of crashing the app.
 
-use crate::model::{CopyFeature, EdgeFeature, Extrude, MAX_COPIES, Revolve};
+use crate::model::{AxisFeature, CopyFeature, EdgeFeature, Extrude, MAX_COPIES, Revolve};
 use crate::sketch::{Constraint, Entity, Sketch};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -23,6 +23,8 @@ pub enum Feature {
     Revolve(usize),
     /// A mirror or pattern (index into `copies`).
     Copy(usize),
+    /// A construction axis (index into `axes`).
+    Axis(usize),
 }
 
 /// Put `f` into the timeline at the rollback marker (the end when there is
@@ -96,6 +98,9 @@ pub struct Document {
     /// Mirrors and patterns. Older files have none.
     #[serde(default)]
     pub copies: Vec<CopyFeature>,
+    /// Construction axes. Older files have none.
+    #[serde(default)]
+    pub axes: Vec<AxisFeature>,
     pub timeline: Vec<Feature>,
     /// What's shown and where Home goes. Saved with the file, but never part
     /// of undo or the "unsaved changes" test (see `ViewState`'s equality).
@@ -261,10 +266,17 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Rectangular { count, spacing, count2, spacing2, .. } => {
                 (1..=MAX_COPIES).contains(&count) && (1..=MAX_COPIES).contains(&count2) && spacing.is_finite() && spacing2.is_finite()
             }
-            Circular { count, angle, .. } => (1..=MAX_COPIES).contains(&count) && angle.is_finite(),
+            Circular { count, angle, custom, .. } => {
+                (1..=MAX_COPIES).contains(&count) && angle.is_finite() && custom.is_none_or(|k| k < doc.axes.len())
+            }
         };
         if !ok {
             return Err(format!("{}: invalid count, spacing or angle", c.name));
+        }
+    }
+    for a in &doc.axes {
+        if !(a.edge.mid.is_finite() && a.edge.dir.is_finite() && a.edge.dir.length() > 0.5) {
+            return Err(format!("{}: invalid edge", a.name));
         }
     }
     for f in &doc.edge_features {
@@ -281,6 +293,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     let mut seen_f = vec![false; doc.edge_features.len()];
     let mut seen_r = vec![false; doc.revolves.len()];
     let mut seen_c = vec![false; doc.copies.len()];
+    let mut seen_a = vec![false; doc.axes.len()];
     for f in &doc.timeline {
         let slot = match *f {
             Feature::Sketch(i) => seen_s.get_mut(i),
@@ -288,13 +301,14 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Feature::Edge(i) => seen_f.get_mut(i),
             Feature::Revolve(i) => seen_r.get_mut(i),
             Feature::Copy(i) => seen_c.get_mut(i),
+            Feature::Axis(i) => seen_a.get_mut(i),
         };
         match slot {
             Some(s) if !*s => *s = true,
             _ => return Err(format!("timeline entry {f:?} is invalid or repeated")),
         }
     }
-    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).any(|s| !s) {
+    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).any(|s| !s) {
         return Err("timeline is missing a feature".into());
     }
     Ok(())
@@ -408,6 +422,7 @@ mod tests {
             }],
             revolves: Vec::new(),
             copies: Vec::new(),
+            axes: Vec::new(),
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],
             view: ViewState::default(),
             body_names: Vec::new(),
@@ -493,12 +508,12 @@ mod tests {
         let mut doc = sample();
         let src = BodyId { feature: Feature::Extrude(0), piece: 0 };
         doc.copies.push(CopyFeature { name: "Mirror1".into(), bodies: vec![src], kind: CopyKind::Mirror(OriginPlane::YZ) });
-        doc.copies.push(CopyFeature { name: "Circular Pattern2".into(), bodies: vec![src], kind: CopyKind::Circular { axis: WorldAxis::Z, count: 6, angle: 360.0 } });
+        doc.copies.push(CopyFeature { name: "Circular Pattern2".into(), bodies: vec![src], kind: CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 6, angle: 360.0 } });
         doc.timeline.extend([Feature::Copy(0), Feature::Copy(1)]);
         assert_eq!(from_json(&to_json(&doc)).unwrap(), doc);
         assert!(validate(&doc).is_ok());
         let mut bad = doc.clone();
-        bad.copies[1].kind = CopyKind::Circular { axis: WorldAxis::Z, count: 0, angle: 360.0 };
+        bad.copies[1].kind = CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 0, angle: 360.0 };
         assert!(validate(&bad).is_err(), "zero copies");
         let mut missing = doc.clone();
         missing.timeline.pop();

@@ -211,7 +211,14 @@ pub enum CopyKind {
     /// `count` copies (the original included) around an axis through the
     /// origin, spread over `angle` degrees: 360 spaces them evenly all the
     /// way round, less puts the last copy at the end of the angle.
-    Circular { axis: WorldAxis, count: u32, angle: f64 },
+    Circular {
+        axis: WorldAxis,
+        /// A construction axis (index into the design's axes) instead of `axis`.
+        #[serde(default)]
+        custom: Option<usize>,
+        count: u32,
+        angle: f64,
+    },
 }
 
 /// Where one copy goes relative to the original.
@@ -219,7 +226,7 @@ pub enum CopyKind {
 pub enum Placement {
     Translate(DVec3),
     /// About an axis through the origin, in radians.
-    Rotate { axis: DVec3, radians: f64 },
+    Rotate { origin: DVec3, axis: DVec3, radians: f64 },
     /// In the plane through the origin with this normal.
     Reflect { normal: DVec3 },
 }
@@ -233,16 +240,24 @@ pub struct CopyFeature {
     pub kind: CopyKind,
 }
 
+/// A construction axis: along a straight edge of a body.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AxisFeature {
+    pub name: String,
+    pub edge: EdgeRef,
+}
+
 /// Most copies one feature may make (keeps a typo from hanging the app).
 pub const MAX_COPIES: u32 = 200;
 
 impl CopyKind {
     /// One placement per new copy (the original isn't one).
-    pub fn placements(&self) -> Vec<Placement> {
+    /// `axes` are the construction axes as built: (point on it, direction).
+    pub fn placements(&self, axes: &[Option<(DVec3, DVec3)>]) -> Result<Vec<Placement>, String> {
         match *self {
             CopyKind::Mirror(p) => {
                 let n = p.plane().normal().as_dvec3();
-                vec![Placement::Reflect { normal: n }]
+                Ok(vec![Placement::Reflect { normal: n }])
             }
             CopyKind::Rectangular { dir, count, spacing, dir2, count2, spacing2 } => {
                 let mut out = Vec::new();
@@ -254,16 +269,20 @@ impl CopyKind {
                         out.push(Placement::Translate(dir.dir() * spacing * i as f64 + dir2.dir() * spacing2 * j as f64));
                     }
                 }
-                out
+                Ok(out)
             }
-            CopyKind::Circular { axis, count, angle } => {
+            CopyKind::Circular { axis, custom, count, angle } => {
                 let count = count.clamp(1, MAX_COPIES);
                 if count < 2 {
-                    return Vec::new();
+                    return Ok(Vec::new());
                 }
+                let (origin, dir) = match custom {
+                    Some(k) => axes.get(k).copied().flatten().ok_or("its construction axis couldn't be built")?,
+                    None => (DVec3::ZERO, axis.dir()),
+                };
                 let full = angle.abs() >= 360.0 - 1e-9;
                 let step = if full { angle / count as f64 } else { angle / (count - 1) as f64 };
-                (1..count).map(|i| Placement::Rotate { axis: axis.dir(), radians: (step * i as f64).to_radians() }).collect()
+                Ok((1..count).map(|i| Placement::Rotate { origin, axis: dir, radians: (step * i as f64).to_radians() }).collect())
             }
         }
     }

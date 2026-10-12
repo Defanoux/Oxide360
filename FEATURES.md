@@ -96,7 +96,7 @@ Suggested crates: `wgpu`, `winit`, `egui`/`eframe` (UI), `glam` or `nalgebra` (m
 
 ## Phase 4 — Construction geometry
 - [ ] Offset plane, plane at angle, tangent plane, midplane, plane through 3 points, plane along path
-- [ ] Axis through two points, along edge, perpendicular to face, through cylinder/cone/torus
+- [ ] Axis through two points, along edge, perpendicular to face, through cylinder/cone/torus — along a straight edge done
 - [ ] Point at vertex, at edge/plane intersection, centre of circle/sphere, along path
 - [ ] Visibility toggles in the browser
 
@@ -203,5 +203,6 @@ That gets you a working parametric part modeler. Everything else is additive.
 - Settings (touchpad, view-cube axes, projection) live in `~/.config/opencad/settings.json`; eframe persistence would need a new crate.
 - Coplanar ambiguity: a body face lying in an origin (or future construction) plane wins over the plane for picking; the part of a plane covered by a body is hidden.
 - Origin hides itself when the first body appears; show it again via the browser Origin box or Create Sketch.
+- Origin planes sit set back from the axes so axes/origin stay pickable; polygons lock to quarter turns unless Ctrl is held; construction axes are stored as an edge reference and re-found on every rebuild.
 - Extrude operation defaults to Join only if the profile's prism touches an existing body, else New Body, until the user picks one.
 
