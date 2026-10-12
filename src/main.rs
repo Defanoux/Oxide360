@@ -1856,7 +1856,8 @@ impl OpenCad {
     fn current_handles(&self, regions: &[Vec<Region>]) -> Vec<Handle> {
         if let Some(d) = &self.plane_dialog {
             let size = origin::size_for(self.camera.distance);
-            let c = self.plane_centre(&d.base, d.on_origin, size);
+            let (lo, hi) = self.plane_rect(d.extent, &d.base, d.on_origin, size);
+            let c = (lo + hi) * 0.5;
             let from = d.base.origin + d.base.u * c.x + d.base.v * c.y;
             return vec![Handle::Line { line: LineHandle { origin: from, dir: d.base.normal() }, value: d.distance, target: HandleTarget::PlaneOffset }];
         }
@@ -2314,10 +2315,15 @@ impl OpenCad {
     }
 
     /// A plane's square in its own coordinates: (low corner, high corner).
-    fn plane_rect(&self, frame: &sketch::FacePlane, on_origin: bool, size: f32) -> (DVec2, DVec2) {
+    /// Origin planes use their usual spot; a face's plane is drawn over the
+    /// face it was picked on, as a square a little bigger than it.
+    fn plane_rect(&self, extent: [f64; 4], frame: &sketch::FacePlane, on_origin: bool, size: f32) -> (DVec2, DVec2) {
         if on_origin {
             let (lo, hi) = origin::span(size);
             return (DVec2::splat(lo as f64), DVec2::splat(hi as f64));
+        }
+        if extent[2] > extent[0] || extent[3] > extent[1] {
+            return origin::square_over(extent);
         }
         let c = self.plane_centre(frame, on_origin, size);
         let half = DVec2::splat(size as f64 * 0.35);
@@ -2331,7 +2337,7 @@ impl OpenCad {
             .filter(|k| !self.plane_hidden.contains(k))
             .filter_map(|k| {
                 let frame = model.planes.get(k).copied().flatten()?;
-                let (lo, hi) = self.plane_rect(&frame, self.planes[k].on_origin, size);
+                let (lo, hi) = self.plane_rect(self.planes[k].extent, &frame, self.planes[k].on_origin, size);
                 let (t, p) = frame.plane().intersect_t(ray)?;
                 (p.cmpge(lo).all() && p.cmple(hi).all()).then_some((k, t))
             })
@@ -3985,17 +3991,22 @@ impl OpenCad {
                     let base = match (self.origin_hover, self.face_hover) {
                         (Some(op), _) => {
                             let p = op.plane();
-                            Some((sketch::FacePlane { origin: DVec3::ZERO, u: p.u.as_dvec3(), v: p.v.as_dvec3(), follow: None }, true, [0.0; 2]))
+                            Some((sketch::FacePlane { origin: DVec3::ZERO, u: p.u.as_dvec3(), v: p.v.as_dvec3(), follow: None }, true, [0.0; 2], [0.0; 4]))
                         }
-                        (None, Some((_, face))) => {
+                        (None, Some((b, face))) => {
                             let q = self.face_pick_point.unwrap_or(face.origin);
-                            Some((sketch::FacePlane { follow: None, ..face }, false, [q.dot(face.u), q.dot(face.v)]))
+                            let extent = self
+                                .model(Slot::Committed)
+                                .bodies
+                                .get(b)
+                                .map_or([0.0; 4], |body| model::face_extent(&body.mesh, &face));
+                            Some((sketch::FacePlane { follow: None, ..face }, false, [q.dot(face.u), q.dot(face.v)], extent))
                         }
                         _ => None,
                     };
-                    if let Some((base, on_origin, anchor)) = base {
+                    if let Some((base, on_origin, anchor, extent)) = base {
                         self.cancel_all_dialogs();
-                        self.plane_dialog = Some(PlaneDialog::new(base, on_origin, anchor));
+                        self.plane_dialog = Some(PlaneDialog::new(base, on_origin, anchor, extent));
                     }
                 } else if let Some(op) = self.origin_hover {
                     self.start_sketch(op);
@@ -4895,21 +4906,21 @@ impl OpenCad {
         if !sketching {
             self.ensure_model(Slot::Committed);
             let editing = self.plane_dialog.as_ref().and_then(|d| d.editing);
-            let mut items: Vec<(sketch::FacePlane, bool, f32)> = Vec::new();
+            let mut items: Vec<(sketch::FacePlane, bool, f32, [f64; 4])> = Vec::new();
             for k in 0..self.planes.len() {
                 if self.plane_hidden.contains(&k) || editing == Some(k) {
                     continue;
                 }
                 if let Some(f) = self.model(Slot::Committed).planes.get(k).copied().flatten() {
                     let alpha = if self.cplane_hover == Some(k) { 150.0 } else if self.face_pick { 80.0 } else { 55.0 };
-                    items.push((f, self.planes[k].on_origin, alpha / 255.0));
+                    items.push((f, self.planes[k].on_origin, alpha / 255.0, self.planes[k].extent));
                 }
             }
             if let Some(d) = &self.plane_dialog {
-                items.push((d.frame(), d.on_origin, 120.0 / 255.0));
+                items.push((d.frame(), d.on_origin, 120.0 / 255.0, d.extent));
             }
-            for (f, on_origin, alpha) in items {
-                let (lo, hi) = self.plane_rect(&f, on_origin, origin_size);
+            for (f, on_origin, alpha, extent) in items {
+                let (lo, hi) = self.plane_rect(extent, &f, on_origin, origin_size);
                 let at = |x: f64, y: f64| (f.origin + f.u * x + f.v * y).as_vec3();
                 let q = [at(lo.x, lo.y), at(hi.x, lo.y), at(hi.x, hi.y), at(lo.x, hi.y)];
                 if self.gpu {

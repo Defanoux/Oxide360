@@ -38,6 +38,14 @@ pub fn span(size: f32) -> (f32, f32) {
     (size * 0.15, size * 0.75)
 }
 
+/// A square about the middle of `extent`, a little bigger than its longer side.
+pub fn square_over(extent: [f64; 4]) -> (DVec2, DVec2) {
+    let (lo, hi) = (DVec2::new(extent[0], extent[1]), DVec2::new(extent[2], extent[3]));
+    let half = ((hi - lo).max_element() * 0.5 * 1.15).max(1e-3);
+    let c = (lo + hi) * 0.5;
+    (c - DVec2::splat(half), c + DVec2::splat(half))
+}
+
 /// The origin plane under the cursor ray, nearest first: (plane, distance).
 pub fn pick(ray: &Ray, size: f32, shown: impl Fn(OriginPlane) -> bool) -> Option<(OriginPlane, f32)> {
     let (lo, hi) = span(size);
@@ -117,6 +125,14 @@ mod tests {
         // A slanted ray crossing XY (z = 0) near x=2 and then... nearest by distance.
         let ray = Ray { origin: Vec3::new(2.0, 2.0, 30.0), dir: Vec3::new(0.0, 0.0, -1.0) };
         assert_eq!(pick(&ray, 10.0, |_| true).map(|p| p.0), Some(OriginPlane::XY));
+    }
+
+    #[test]
+    fn a_picked_faces_plane_is_a_square_a_bit_bigger_than_the_face() {
+        // A 10 × 4 face: the square is 11.5 on a side, centred on it.
+        let (lo, hi) = square_over([2.0, 1.0, 12.0, 5.0]);
+        assert!((hi - lo).x - 11.5 < 1e-12 && ((hi - lo).y - 11.5).abs() < 1e-12);
+        assert!(((lo + hi) * 0.5).distance(DVec2::new(7.0, 3.0)) < 1e-12);
     }
 
     #[test]

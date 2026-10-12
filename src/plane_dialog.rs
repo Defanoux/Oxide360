@@ -13,19 +13,21 @@ pub struct PlaneDialog {
     pub on_origin: bool,
     pub distance: f64,
     pub anchor: [f64; 2],
+    pub extent: [f64; 4],
 }
 
 impl PlaneDialog {
-    pub fn new(base: FacePlane, on_origin: bool, anchor: [f64; 2]) -> Self {
-        PlaneDialog { editing: None, base, on_origin, distance: 10.0, anchor }
+    /// Starts 0 mm from what was picked.
+    pub fn new(base: FacePlane, on_origin: bool, anchor: [f64; 2], extent: [f64; 4]) -> Self {
+        PlaneDialog { editing: None, base, on_origin, distance: 0.0, anchor, extent }
     }
 
     pub fn from_feature(k: usize, f: &PlaneFeature) -> Self {
-        PlaneDialog { editing: Some(k), base: f.base, on_origin: f.on_origin, distance: f.offset, anchor: f.anchor }
+        PlaneDialog { editing: Some(k), base: f.base, on_origin: f.on_origin, distance: f.offset, anchor: f.anchor, extent: f.extent }
     }
 
     pub fn feature(&self, name: String) -> PlaneFeature {
-        PlaneFeature { name, base: self.base, on_origin: self.on_origin, offset: self.distance, anchor: self.anchor }
+        PlaneFeature { name, base: self.base, on_origin: self.on_origin, offset: self.distance, anchor: self.anchor, extent: self.extent }
     }
 
     /// Where the plane would be right now: the base moved along its normal.
@@ -68,7 +70,8 @@ mod tests {
     #[test]
     fn the_plane_sits_the_distance_along_the_normal_and_round_trips() {
         let xy = FacePlane::from_face(DVec3::Z, DVec3::ZERO);
-        let mut d = PlaneDialog::new(xy, true, [0.0, 0.0]);
+        let mut d = PlaneDialog::new(xy, true, [0.0, 0.0], [0.0; 4]);
+        assert_eq!(d.distance, 0.0, "starts on what was picked");
         d.distance = -4.5;
         assert!((d.frame().origin - DVec3::new(0.0, 0.0, -4.5)).length() < 1e-12);
         let f = d.feature("Plane1".into());

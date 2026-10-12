@@ -1261,8 +1261,8 @@ mod tests {
         let xy = FacePlane::from_face(DVec3::Z, DVec3::ZERO);
         let top = FacePlane::from_face(DVec3::Z, DVec3::new(4.0, 1.5, 5.0));
         let planes = [
-            PlaneFeature { name: "P0".into(), base: xy, on_origin: true, offset: 2.0, anchor: [0.0, 0.0] },
-            PlaneFeature { name: "P1".into(), base: top, on_origin: false, offset: 3.0, anchor: [4.0, 1.5] },
+            PlaneFeature { name: "P0".into(), base: xy, on_origin: true, offset: 2.0, anchor: [0.0, 0.0], extent: [0.0; 4] },
+            PlaneFeature { name: "P1".into(), base: top, on_origin: false, offset: 3.0, anchor: [4.0, 1.5], extent: [0.0; 4] },
         ];
         let mut on0 = Sketch::on_plane("A".into(), xy, 0);
         rect(&mut on0, 0.0, 0.0, 1.0, 1.0);

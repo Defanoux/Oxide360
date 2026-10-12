@@ -252,6 +252,28 @@ pub struct AxisFeature {
     pub edge: EdgeRef,
 }
 
+/// The area of a flat face in its plane's coordinates: (low x, low y, high x, high y).
+pub fn face_extent(mesh: &Mesh, face: &FacePlane) -> [f64; 4] {
+    let n = face.normal();
+    let tol = 1e-4 * (1.0 + face.origin.length());
+    let (mut lo, mut hi) = (glam::DVec2::splat(f64::MAX), glam::DVec2::splat(f64::MIN));
+    for (t, tri) in mesh.tris.iter().enumerate() {
+        if mesh.normal(t).as_dvec3().dot(n) < 0.9999 {
+            continue;
+        }
+        for &i in tri {
+            let p = mesh.positions[i as usize].as_dvec3();
+            if (p - face.origin).dot(n).abs() > tol.max(1e-3) {
+                continue;
+            }
+            let c = glam::DVec2::new(p.dot(face.u), p.dot(face.v));
+            lo = lo.min(c);
+            hi = hi.max(c);
+        }
+    }
+    if lo.x > hi.x { [0.0; 4] } else { [lo.x, lo.y, hi.x, hi.y] }
+}
+
 /// A construction plane: a plane parallel to an origin plane or a body face,
 /// `offset` mm along its normal.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -266,6 +288,10 @@ pub struct PlaneFeature {
     /// right face is found again after the part changes.
     #[serde(default)]
     pub anchor: [f64; 2],
+    /// The face's area as shown (low x, low y, high x, high y in the base
+    /// plane's coordinates): only what the picked plane is drawn over.
+    #[serde(default)]
+    pub extent: [f64; 4],
 }
 
 /// Most copies one feature may make (keeps a typo from hanging the app).
@@ -527,6 +553,23 @@ mod tests {
             assert!(is_closed(&m));
             assert_eq!(m.tris.len(), 12);
         }
+    }
+
+    #[test]
+    fn a_faces_extent_is_where_the_face_lies_in_its_planes_coordinates() {
+        // The box is 50 × 30 × 20 from the origin; its top face is z = 20.
+        let sk = rect_sketch(OriginPlane::XY);
+        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 20.0 };
+        let m = build_extrude(&[sk], &ex).unwrap();
+        let top = FacePlane::from_face(DVec3::Z, DVec3::new(10.0, 10.0, 20.0));
+        let e = face_extent(&m, &top);
+        assert_eq!(e, [0.0, 0.0, 50.0, 30.0]);
+        // A side face (x = 50, normal +X) is 30 wide and 20 tall.
+        let side = FacePlane::from_face(DVec3::X, DVec3::new(50.0, 10.0, 10.0));
+        let e = face_extent(&m, &side);
+        assert!(((e[2] - e[0]) - 30.0).abs() < 1e-9 || ((e[2] - e[0]) - 20.0).abs() < 1e-9, "{e:?}");
+        // Nothing there: empty.
+        assert_eq!(face_extent(&m, &FacePlane::from_face(DVec3::Z, DVec3::new(0.0, 0.0, 99.0))), [0.0; 4]);
     }
 
     #[test]
