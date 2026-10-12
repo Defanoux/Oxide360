@@ -403,8 +403,9 @@ fn stiffness(sk: &Sketch, p: PointId) -> Vec<f64> {
             next[b].push(a);
         }
     };
-    for e in &sk.entities {
-        if let Entity::Line { a, b } = *e {
+    for (i, e) in sk.entities.iter().enumerate() {
+        // Construction lines (a rectangle's diagonals) don't tie points together.
+        if let (Entity::Line { a, b }, false) = (*e, sk.is_construction(i)) {
             join(a, b);
         }
     }
@@ -964,7 +965,8 @@ mod tests {
     fn center_rectangle_stays_centred() {
         let mut sk = Sketch::new("S".into(), OriginPlane::XY);
         make(&mut sk, Tool::RectangleCenter, &[free(10.0, 10.0), free(25.0, 18.0)]);
-        assert_eq!(sk.entities.len(), 5, "the centre point and four sides");
+        assert_eq!(sk.entities.len(), 7, "the centre point, four sides and two construction diagonals");
+        assert_eq!((0..7).filter(|&e| sk.is_construction(e)).count(), 2);
         assert_eq!(solve(&mut sk, &[]).unwrap().dof, 4, "centre position, width, height");
         // Change the width: the centre is still in the middle.
         add_constraints(&mut sk, &[Length(1, 40.0)]).unwrap();

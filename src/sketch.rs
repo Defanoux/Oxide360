@@ -307,6 +307,11 @@ pub struct Sketch {
     /// the geometry and are never solved. Missing entries mean driving.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub driven: Vec<bool>,
+    /// Entities that are construction geometry (by entity index): drawn
+    /// dashed, ignored when finding regions to extrude, still constrainable.
+    /// Missing entries mean normal geometry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub construction: Vec<bool>,
 }
 
 /// A line as unit normal n and offset d: n·p + d is the signed distance of p.
@@ -523,6 +528,7 @@ impl Sketch {
             constraints: Vec::new(),
             label_shift: Vec::new(),
             driven: Vec::new(),
+            construction: Vec::new(),
         }
     }
 
@@ -730,6 +736,14 @@ impl Sketch {
             }
         }
         self.entities = kept;
+        let old_construction = std::mem::take(&mut self.construction);
+        self.construction = (0..dead_ents.len())
+            .filter(|&i| !dead_ents[i])
+            .map(|i| old_construction.get(i).copied().unwrap_or(false))
+            .collect();
+        while self.construction.last() == Some(&false) {
+            self.construction.pop();
+        }
 
         // Points still in use.
         let mut used = vec![false; self.points.len()];
@@ -869,6 +883,40 @@ impl Sketch {
         }
     }
 
+    pub fn is_construction(&self, e: EntityId) -> bool {
+        self.construction.get(e).copied().unwrap_or(false)
+    }
+
+    pub fn set_construction(&mut self, e: EntityId, on: bool) {
+        if self.construction.len() <= e {
+            if !on {
+                return;
+            }
+            self.construction.resize(e + 1, false);
+        }
+        self.construction[e] = on;
+        while self.construction.last() == Some(&false) {
+            self.construction.pop();
+        }
+    }
+
+    /// Fusion's X on a selection: if everything selected is construction make
+    /// it normal again, otherwise make it all construction. Points selected
+    /// alone have no such state; the entities of a selected point are left alone.
+    pub fn toggle_construction(&mut self, sel: &[Sel]) {
+        let ents: Vec<EntityId> = sel
+            .iter()
+            .filter_map(|s| match *s {
+                Sel::Entity(e) if e < self.entities.len() && !matches!(self.entities[e], Entity::Point { .. }) => Some(e),
+                _ => None,
+            })
+            .collect();
+        let all = !ents.is_empty() && ents.iter().all(|&e| self.is_construction(e));
+        for e in ents {
+            self.set_construction(e, !all);
+        }
+    }
+
     /// What a dimension constraint measures on the geometry right now.
     pub fn measure(&self, c: &Constraint) -> Option<f64> {
         match *c {
@@ -905,6 +953,7 @@ impl Sketch {
             && self.entities == other.entities
             && self.constraints == other.constraints
             && self.driven == other.driven
+            && self.construction == other.construction
     }
 
     /// How many lines/circles use each point: 2 or more means it's a joint
@@ -1279,6 +1328,8 @@ pub struct Editor {
     /// Tangent circles: the lines picked so far.
     pub tangent_lines: Vec<EntityId>,
     pub selection: Vec<Sel>,
+    /// Construction mode (Fusion's X while drawing): new geometry is construction.
+    pub construction: bool,
 }
 
 impl Editor {
@@ -1461,6 +1512,17 @@ impl Editor {
     /// should get (horizontal/vertical); the caller adds each through the
     /// solver so a redundant one is simply skipped.
     pub fn click(&mut self, sk: &mut Sketch, at: Anchor) -> Vec<Constraint> {
+        let before = sk.entities.len();
+        let out = self.click_tool(sk, at);
+        if self.construction {
+            for e in before..sk.entities.len() {
+                sk.set_construction(e, true);
+            }
+        }
+        out
+    }
+
+    fn click_tool(&mut self, sk: &mut Sketch, at: Anchor) -> Vec<Constraint> {
         // These tools pick existing geometry instead (see pick_tangent_line,
         // tangent_click, and the app's constraint picking).
         if matches!(
@@ -1584,6 +1646,11 @@ impl Editor {
                 let first = sk.entities.len();
                 for k in 0..4 {
                     sk.entities.push(Entity::Line { a: corner[k], b: corner[(k + 1) % 4] });
+                }
+                // Construction diagonals through the centre, as in Fusion.
+                for (u, v) in [(0, 2), (1, 3)] {
+                    sk.set_construction(sk.entities.len(), true);
+                    sk.entities.push(Entity::Line { a: corner[u], b: corner[v] });
                 }
                 let mut out = vec![
                     Constraint::Horizontal(first),
@@ -2422,5 +2489,65 @@ mod tests {
         assert_eq!(sk.points.len(), 3);
         sk.delete(&[Sel::Point(Sketch::ORIGIN)]);
         assert_eq!(sk.points.len(), 3, "origin cannot be deleted");
+    }
+}
+
+#[cfg(test)]
+mod construction_tests {
+    use super::*;
+
+    fn free(x: f64, y: f64) -> Anchor {
+        Anchor::Free(DVec2::new(x, y))
+    }
+
+    #[test]
+    fn construction_lines_are_dashed_data_that_follow_deletes() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Line);
+        for (a, b) in [((0.0, 0.0), (10.0, 0.0)), ((0.0, 5.0), (10.0, 5.0)), ((0.0, 9.0), (10.0, 9.0))] {
+            ed.cancel();
+            ed.click(&mut sk, free(a.0, a.1));
+            ed.click(&mut sk, free(b.0, b.1));
+        }
+        sk.toggle_construction(&[Sel::Entity(1)]);
+        assert!(sk.is_construction(1) && !sk.is_construction(0) && !sk.is_construction(2));
+        sk.delete(&[Sel::Entity(0)]);
+        assert!(sk.is_construction(0) && !sk.is_construction(1), "flag moved with its line");
+        sk.toggle_construction(&[Sel::Entity(0), Sel::Entity(1)]);
+        assert!(sk.is_construction(0) && sk.is_construction(1), "mixed selection → all construction");
+        sk.toggle_construction(&[Sel::Entity(0), Sel::Entity(1)]);
+        assert!(sk.construction.is_empty(), "all normal again, nothing stored");
+    }
+
+    #[test]
+    fn construction_mode_marks_new_geometry_and_regions_ignore_it() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Rectangle);
+        ed.click(&mut sk, free(0.0, 0.0));
+        ed.click(&mut sk, free(20.0, 10.0));
+        assert_eq!(crate::profile::find_regions(&sk).len(), 1);
+        ed.construction = true;
+        ed.set_tool(Tool::Rectangle);
+        ed.click(&mut sk, free(30.0, 0.0));
+        ed.click(&mut sk, free(50.0, 10.0));
+        assert_eq!((0..4).filter(|&e| sk.is_construction(e)).count(), 0);
+        assert_eq!((4..8).filter(|&e| sk.is_construction(e)).count(), 4);
+        assert_eq!(crate::profile::find_regions(&sk).len(), 1, "construction rectangle isn't a profile");
+    }
+
+    #[test]
+    fn center_rectangle_gets_construction_diagonals_that_dont_split_it() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::RectangleCenter);
+        ed.click(&mut sk, free(0.0, 0.0));
+        ed.click(&mut sk, free(10.0, 5.0));
+        let diagonals: Vec<_> = (0..sk.entities.len()).filter(|&e| sk.is_construction(e)).collect();
+        assert_eq!(diagonals.len(), 2);
+        let regions = crate::profile::find_regions(&sk);
+        assert_eq!(regions.len(), 1);
+        assert!((regions[0].area() - 200.0).abs() < 1e-9);
     }
 }

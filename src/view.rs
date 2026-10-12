@@ -81,6 +81,36 @@ impl View<'_> {
         }
     }
 
+    /// A dashed arc (see `arc`): the dash pattern runs along the whole curve
+    /// on screen, so it reads as one dashed line.
+    pub fn dashed_arc(&self, plane: &Plane, center: DVec2, radius: f64, a0: f64, sweep: f64, stroke: Stroke) {
+        let n = ((sweep / std::f64::consts::TAU * CIRCLE_SEGMENTS as f64).ceil() as usize).max(2);
+        let pts: Vec<Vec2> = (0..=n)
+            .filter_map(|i| self.project(plane.to_world(center + DVec2::from_angle(a0 + sweep * i as f64 / n as f64) * radius)))
+            .collect();
+        let mut phase = 0.0f32; // distance travelled along the curve
+        for w in pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let len = a.distance(b);
+            let mut t = 0.0;
+            while t < len {
+                // 4 px on, 4 px off.
+                let pos = phase + t;
+                let in_dash = pos.rem_euclid(8.0) < 4.0;
+                let step = (4.0 - pos.rem_euclid(4.0)).min(len - t).max(1e-3);
+                if in_dash {
+                    self.seg(a + (b - a) * (t / len), a + (b - a) * ((t + step) / len), stroke);
+                }
+                t += step;
+            }
+            phase += len;
+        }
+    }
+
+    pub fn dashed_circle(&self, plane: &Plane, center: DVec2, radius: f64, stroke: Stroke) {
+        self.dashed_arc(plane, center, radius, 0.0, std::f64::consts::TAU, stroke);
+    }
+
     pub fn line(&self, a: Vec3, b: Vec3, stroke: Stroke) {
         if let Some((ca, cb)) = clip_segment(&self.vp, a, b) {
             let pa = pixel_from_clip(ca, self.min, self.size);

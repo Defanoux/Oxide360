@@ -17,6 +17,7 @@ pub enum Icon {
     Revolve,
     Fillet,
     Chamfer,
+    Construction,
     Select,
     Line,
     Rectangle,
@@ -156,6 +157,16 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             poly(&[(0.15, 0.85), (0.15, 0.15), (0.5, 0.15), (0.85, 0.5), (0.85, 0.85)], blue);
             line((0.5, 0.15), (0.85, 0.5), Stroke::new(thin.width * 1.4, orange));
             line((0.15, 0.85), (0.85, 0.85), thin);
+        }
+        Icon::Construction => {
+            // A dashed line with its end dots.
+            let s = Stroke::new(thin.width * 1.2, orange);
+            for k in 0..3 {
+                let t = |u: f32| (0.15 + 0.7 * u, 0.82 - 0.64 * u);
+                line(t(k as f32 / 3.0 + 0.02), t(k as f32 / 3.0 + 0.2), s);
+            }
+            dot(0.15, 0.82, ink);
+            dot(0.85, 0.18, ink);
         }
         Icon::Select => {
             poly(&[(0.25, 0.1), (0.25, 0.78), (0.42, 0.62), (0.6, 0.62)], ink);

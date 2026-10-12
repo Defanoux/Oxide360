@@ -1173,6 +1173,21 @@ impl OpenCad {
         self.report(r);
     }
 
+    /// Fusion's X: with geometry selected, switch it between normal and
+    /// construction; with nothing selected, switch construction mode for what
+    /// you draw next.
+    fn toggle_construction(&mut self) {
+        let Some(i) = self.active else { return };
+        let sel = self.editor.selection.clone();
+        if sel.iter().any(|s| matches!(s, Sel::Entity(_))) {
+            let r = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| sk.toggle_construction(&sel));
+            self.report(r);
+        } else {
+            self.editor.construction = !self.editor.construction;
+            self.notify(if self.editor.construction { "Construction mode on: new geometry is construction" } else { "Construction mode off" }.into());
+        }
+    }
+
     /// Switch dimension `ci` between driving and driven (reference).
     fn toggle_driven(&mut self, ci: usize) {
         let Some(i) = self.active else { return };
@@ -1738,6 +1753,10 @@ impl OpenCad {
                         if icons::button(ui, icon, tip, true, self.editor.tool == tool).clicked() {
                             self.editor.set_tool(tool);
                         }
+                    }
+                    let tip = "Construction (X): toggle the selected geometry, or what you draw next";
+                    if icons::button(ui, Icon::Construction, tip, true, self.editor.construction).clicked() {
+                        self.toggle_construction();
                     }
                 });
                 let mut chosen = None;
@@ -2471,6 +2490,7 @@ impl OpenCad {
             self.focus_distance();
         }
 
+        let key_x = ui.input(|i| i.key_pressed(egui::Key::X) && !i.modifiers.command);
         let (key_l, key_r, key_c, key_g, key_d, key_e, key_f, esc, del, undo) = ui.input(|i| {
             (
                 i.key_pressed(egui::Key::L),
@@ -2791,6 +2811,9 @@ impl OpenCad {
                 }
                 if key_g {
                     self.grid_snap = !self.grid_snap;
+                }
+                if key_x {
+                    self.toggle_construction();
                 }
                 if key_d {
                     self.constraint_button("Dimension");
@@ -3359,13 +3382,22 @@ impl OpenCad {
             };
             for (e, ent) in sk.entities.iter().enumerate() {
                 let stroke = Stroke::new(if active { 2.0 } else { 1.5 }, colour_of(Sel::Entity(e)));
+                let dashed = sk.is_construction(e);
                 match *ent {
+                    Entity::Line { a, b } if dashed => {
+                        view.dashed(plane.to_world(sk.points[a]), plane.to_world(sk.points[b]), stroke)
+                    }
                     Entity::Line { a, b } => view.line(plane.to_world(sk.points[a]), plane.to_world(sk.points[b]), stroke),
+                    Entity::Circle { center, radius } if dashed => view.dashed_circle(&plane, sk.points[center], radius, stroke),
                     Entity::Circle { center, radius } => view.circle(&plane, sk.points[center], radius, stroke),
                     Entity::Point { .. } => {} // drawn with the points
                     Entity::Arc { .. } => {
                         if let Some((c, r, a0, sweep)) = sk.arc_geometry(e) {
-                            view.arc(&plane, c, r, a0, sweep, stroke);
+                            if dashed {
+                                view.dashed_arc(&plane, c, r, a0, sweep, stroke);
+                            } else {
+                                view.arc(&plane, c, r, a0, sweep, stroke);
+                            }
                         }
                     }
                 }

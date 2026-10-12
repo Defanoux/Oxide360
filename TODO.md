@@ -4,11 +4,6 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Next
 
-4. **Construction geometry** (Fusion's X key): a per-entity `construction`
-   flag. Construction lines/circles/arcs draw dashed, are ignored by
-   `find_regions`, still take constraints. Toolbar toggle + X shortcut.
-   Then make the Center Rectangle use construction diagonals like Fusion.
-
 5. **Persist settings**: touchpad/mouse choice and "show XYZ on view cube" in
    eframe storage; body/sketch visibility and the Home pose in the `.ocad`
    file (`#[serde(default)]`), excluded from undo/dirty comparison the way
@@ -46,6 +41,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Construction geometry: per-entity flag (`Sketch.construction`, serde default), X key / toolbar toggle (selection → toggle it; nothing selected → construction mode for new geometry), dashed, ignored by `find_regions`, follows deletes. Center Rectangle now adds construction diagonals.
 - Sketch fillet/chamfer also take two lines that meet (click both), same as clicking their corner.
 - Driven (reference) dimensions: a dimension that would over-constrain is added greyed in (brackets), read-only, not solved, value follows the geometry; right-click a dimension toggles driving ⇄ driven. `Sketch.driven` is `#[serde(default)]`.
 - 3-Point Arc snapping: raw third point (no grid), half-circle centre snap with ½ marker, grid-centre snap on the chord bisector. (Tangent-to-line start snap not done — it was optional.)

@@ -237,6 +237,9 @@ fn arrangement(sk: &Sketch) -> (Graph, Vec<(DVec2, f64)>) {
     // Per circle: None for a whole circle, or an arc's (start angle, sweep).
     let mut spans: Vec<Option<(f64, f64)>> = Vec::new();
     for (i, e) in sk.entities.iter().enumerate() {
+        if sk.is_construction(i) {
+            continue; // construction geometry never bounds a region
+        }
         match *e {
             Entity::Line { a, b } if sk.points[a].distance(sk.points[b]) > TOL => {
                 lines.push((sk.points[a], sk.points[b]))
