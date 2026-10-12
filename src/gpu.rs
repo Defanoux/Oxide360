@@ -117,6 +117,9 @@ pub struct Scene {
     pub edges: Vec<[f32; 3]>,
     /// Coloured, depth-tested lines (grid, axes): pairs of position + RGBA.
     pub lines: Vec<[f32; 7]>,
+    /// Translucent triangles (origin planes): position + RGBA, depth-tested
+    /// against the bodies but not written to the depth buffer.
+    pub glass: Vec<[f32; 7]>,
 }
 
 impl Scene {
@@ -171,6 +174,18 @@ impl Scene {
             for p in [a, b] {
                 let q = p + cam.to_eye(p) * nudge;
                 self.lines.push([q.x, q.y, q.z, c[0], c[1], c[2], c[3]]);
+            }
+        }
+    }
+
+    /// Add translucent triangles. They're pushed a hair away from the viewer,
+    /// so a body face lying in the same plane covers them cleanly.
+    pub fn add_glass(&mut self, tris: &[([Vec3; 3], [f32; 4])], cam: &OrbitCamera) {
+        let nudge = cam.distance * 0.0005;
+        for &(corners, c) in tris {
+            for p in corners {
+                let q = p - cam.to_eye(p) * nudge;
+                self.glass.push([q.x, q.y, q.z, c[0], c[1], c[2], c[3]]);
             }
         }
     }
@@ -235,6 +250,7 @@ pub struct Gpu {
     tri_pipeline: wgpu::RenderPipeline,
     edge_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
+    glass_pipeline: wgpu::RenderPipeline,
     blit_pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     scene_group: wgpu::BindGroup,
@@ -243,7 +259,8 @@ pub struct Gpu {
     tris: GrowBuffer,
     edges: GrowBuffer,
     lines: GrowBuffer,
-    counts: (u32, u32, u32),
+    glass: GrowBuffer,
+    counts: (u32, u32, u32, u32),
     targets: Option<Targets>,
 }
 
@@ -392,6 +409,36 @@ impl Gpu {
             cache: None,
         });
 
+        let glass_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("opencad glass"),
+            layout: Some(&scene_pl),
+            vertex: wgpu::VertexState {
+                module: &scene_module,
+                entry_point: Some("vs_line"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: LINE_STRIDE,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &line_attrs,
+                })],
+            },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
+            depth_stencil: Some(depth(false)),
+            multisample: msaa,
+            fragment: Some(wgpu::FragmentState {
+                module: &scene_module,
+                entry_point: Some("fs_line"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: COLOR_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("opencad blit layout"),
             entries: &[
@@ -454,6 +501,7 @@ impl Gpu {
             tri_pipeline,
             edge_pipeline,
             line_pipeline,
+            glass_pipeline,
             blit_pipeline,
             uniforms,
             scene_group,
@@ -462,7 +510,8 @@ impl Gpu {
             tris: GrowBuffer::new(device, "opencad triangles"),
             edges: GrowBuffer::new(device, "opencad edges"),
             lines: GrowBuffer::new(device, "opencad lines"),
-            counts: (0, 0, 0),
+            glass: GrowBuffer::new(device, "opencad glass"),
+            counts: (0, 0, 0, 0),
             targets: None,
         }
     }
@@ -523,7 +572,8 @@ impl Gpu {
         self.tris.upload(device, queue, &f32_bytes(&scene.tris));
         self.edges.upload(device, queue, &f32_bytes(&scene.edges));
         self.lines.upload(device, queue, &f32_bytes(&scene.lines));
-        self.counts = (scene.tris.len() as u32, scene.edges.len() as u32, scene.lines.len() as u32);
+        self.glass.upload(device, queue, &f32_bytes(&scene.glass));
+        self.counts = (scene.tris.len() as u32, scene.edges.len() as u32, scene.lines.len() as u32, scene.glass.len() as u32);
 
         let t = self.targets.as_ref().expect("targets were just created");
         let resolved_view = t.resolved.create_view(&Default::default());
@@ -547,6 +597,11 @@ impl Gpu {
             pass.set_pipeline(&self.tri_pipeline);
             pass.set_vertex_buffer(0, self.tris.buffer.slice(..self.counts.0 as u64 * TRI_STRIDE));
             pass.draw(0..self.counts.0, 0..1);
+        }
+        if self.counts.3 > 0 {
+            pass.set_pipeline(&self.glass_pipeline);
+            pass.set_vertex_buffer(0, self.glass.buffer.slice(..self.counts.3 as u64 * LINE_STRIDE));
+            pass.draw(0..self.counts.3, 0..1);
         }
         if self.counts.1 > 0 {
             pass.set_pipeline(&self.edge_pipeline);
@@ -754,6 +809,28 @@ mod tests {
         let from_below = look(-90.0).unwrap();
         assert!(blue(&from_below, 32) >= 200, "from below, the grid shows on the block's bottom face");
         assert!(blue(&from_below, 4) >= 200);
+    }
+
+    #[test]
+    fn glass_sits_behind_bodies_even_when_lying_in_their_face() {
+        let block = rect_body(-20.0, -20.0, 20.0, 20.0, 20.0);
+        let blue = [0.0, 0.0, 1.0, 1.0];
+        let quad_at = |z: f32| {
+            let c = |x: f32, y: f32| Vec3::new(x, y, z);
+            [([c(-45.0, -45.0), c(45.0, -45.0), c(45.0, 45.0)], blue), ([c(-45.0, -45.0), c(45.0, 45.0), c(-45.0, 45.0)], blue)]
+        };
+        let look = |z: f32| {
+            let cam = top_camera();
+            let mut scene = Scene::build(&[(&block, [1.0, 0.0, 0.0])], &cam, 1.0);
+            scene.add_glass(&quad_at(z), &cam);
+            render_pixels(&scene, [64, 64], wgpu::TextureFormat::Rgba8Unorm)
+        };
+        let b = |px: &[u8], x: usize, y: usize| px[(y * 64 + x) * 4 + 2];
+        let Some(under) = look(0.0) else { return };
+        assert!(b(&under, 32, 32) < 30, "a plane under the block is covered by it");
+        assert!(b(&under, 4, 32) > 200, "beyond the block the plane shows");
+        let flush = look(20.0).unwrap();
+        assert!(b(&flush, 32, 32) < 30, "a plane lying in the block's top face stays behind it");
     }
 
     #[test]

@@ -80,7 +80,7 @@ const CUBE_SCALE: f32 = 34.0; // view cube half-size in pixels
 const CUBE_MARGIN: f32 = 80.0; // view cube centre from the viewport's right edge
 const CUBE_TOP: f32 = 100.0; // ...and from its top (room for the Z label)
 const TURN_SECONDS: f64 = 0.35; // camera animation to a view-cube view
-const SKETCH_TURN_SECONDS: f64 = 1.0; // slower, gentler glide when a sketch starts
+const SKETCH_TURN_SECONDS: f64 = 0.6; // slower, gentler glide when a sketch starts
 const FOLLOW_TOL: f64 = 1e-5; // mm: is a picked face/edge on a feature's far end?
 
 fn profile_fill(alpha: u8) -> Color32 {
@@ -410,7 +410,7 @@ struct OpenCad {
     label_carry: bool,                         // touchpad: a dimension label picked up, following the cursor
     dim_preview: Option<(Constraint, DVec2)>,  // Dimension tool: what a click would place, and its label shift
     face_pick: bool,                         // waiting for a click on an origin plane or a flat face to sketch on
-    origin_visible: bool,                    // the origin axes and planes in the 3D view
+    origin_shown: origin::Shown,             // the browser's Origin folder: what the 3D view shows
     origin_hover: Option<OriginPlane>,       // the origin plane under the mouse
     selected_plane: Option<OriginPlane>,     // the origin plane clicked in the 3D view
     ctx_plane: Option<OriginPlane>,          // the origin plane a right-click landed on
@@ -494,7 +494,7 @@ impl Default for OpenCad {
             label_carry: false,
             dim_preview: None,
             face_pick: false,
-            origin_visible: true,
+            origin_shown: origin::Shown::default(),
             origin_hover: None,
             selected_plane: None,
             ctx_plane: None,
@@ -2248,7 +2248,20 @@ impl OpenCad {
 
     fn browser(&mut self, ui: &mut egui::Ui) {
         ui.heading("Browser");
-        ui.checkbox(&mut self.origin_visible, "Origin").on_hover_text("Show the origin axes and planes");
+        // The Origin folder: one switch for all of it, then each plane and axis.
+        let folder = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), egui::Id::new("origin_folder"), false);
+        folder
+            .show_header(ui, |ui| {
+                ui.checkbox(&mut self.origin_shown.all, "Origin").on_hover_text("Show or hide the whole origin");
+            })
+            .body(|ui| {
+                for op in OriginPlane::ALL {
+                    ui.checkbox(&mut self.origin_shown.planes[op as usize], format!("{} plane", op.name()));
+                }
+                for (k, name) in ["X axis", "Y axis", "Z axis"].into_iter().enumerate() {
+                    ui.checkbox(&mut self.origin_shown.axes[k], name);
+                }
+            });
         ui.label("Bodies");
         let mut rename_done: Option<(BodyId, Option<String>)> = None;
         for id in self.body_ids.clone() {
@@ -2492,8 +2505,15 @@ impl OpenCad {
     fn extrude_panel(&mut self, ui: &mut egui::Ui) {
         // Until the user picks an operation: Join what it touches, else a new body.
         if let (Some(touches), true) = (self.extrude_touches_bodies(), self.dialog.as_ref().is_some_and(|d| !d.op_chosen)) {
+            let toward = self.dialog.as_ref().and_then(|d| d.sketch).map(|s| self.cut_direction(s));
             if let Some(d) = self.dialog.as_mut() {
-                d.op = if touches { Operation::Join } else { Operation::NewBody };
+                // Pulled into the body: Cut. Away from it: Join. Clear of every body: New Body.
+                let into = toward.is_some_and(|t| d.distance * t > 0.0);
+                d.op = match (touches, into) {
+                    (true, true) => Operation::Cut,
+                    (true, false) => Operation::Join,
+                    _ => Operation::NewBody,
+                };
             }
         }
         let dialog_error = self.dialog_error.clone();
@@ -3207,7 +3227,7 @@ impl OpenCad {
                 let found = self.pick_face(&ray);
                 // The origin planes count too; whichever is nearer wins, and a
                 // body's face wins a tie (a plane lying in a face is covered by it).
-                let plane = origin::pick(&ray, origin::size_for(self.camera.distance));
+                let plane = origin::pick(&ray, origin::size_for(self.camera.distance), |_| true);
                 match (plane, found) {
                     (Some((op, tp)), f) if f.is_none_or(|(tf, ..)| tp < tf - origin::tie_tolerance(tf)) => {
                         self.origin_hover = Some(op)
@@ -3236,20 +3256,16 @@ impl OpenCad {
                 let face = self.pick_face(&ray);
                 // A plane counts only where nothing of a body is in front of it
                 // (or in it: a face lying in the plane covers it).
-                let plane = if self.origin_visible {
-                    origin::pick(&ray, origin::size_for(self.camera.distance)).filter(|&(_, t_plane)| {
-                        let t_body = self
-                            .model(Slot::Committed)
-                            .bodies
-                            .iter()
-                            .filter(|b| !self.hidden_bodies.contains(&b.id))
-                            .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir))
-                            .fold(f32::MAX, f32::min);
-                        t_plane < t_body - origin::tie_tolerance(t_body.min(t_plane))
-                    })
-                } else {
-                    None
-                };
+                let plane = origin::pick(&ray, origin::size_for(self.camera.distance), |p| self.origin_shown.plane(p)).filter(|&(_, t_plane)| {
+                    let t_body = self
+                        .model(Slot::Committed)
+                        .bodies
+                        .iter()
+                        .filter(|b| !self.hidden_bodies.contains(&b.id))
+                        .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir))
+                        .fold(f32::MAX, f32::min);
+                    t_plane < t_body - origin::tie_tolerance(t_body.min(t_plane))
+                });
                 match plane {
                     Some((op, _)) => self.origin_hover = Some(op),
                     None => self.face_hover = face.map(|(_, b, f)| (b, f)),
@@ -3954,7 +3970,9 @@ impl OpenCad {
         // origin instead: short axes and three small planes.
         let sketching = self.active.is_some();
         let origin_size = origin::size_for(self.camera.distance);
-        let show_origin = !sketching && (self.origin_visible || self.face_pick);
+        // Create Sketch shows the whole origin, whatever the browser says.
+        let shown = if self.face_pick { origin::Shown::default() } else { self.origin_shown };
+        let show_origin = !sketching && (shown.all || self.face_pick);
         let mut grid_segments: Vec<(Vec3, Vec3, [f32; 4])> = if sketching {
             sketch::grid_lines(&dplane, centre, grid, GRID_HALF_LINES)
                 .into_iter()
@@ -3970,7 +3988,7 @@ impl OpenCad {
             vec![(dplane.u * -extent, dplane.u * extent, dplane.u), (dplane.v * -extent, dplane.v * extent, dplane.v)]
         } else if show_origin {
             let reach = origin_size * 1.35;
-            vec![(Vec3::ZERO, Vec3::X * reach, Vec3::X), (Vec3::ZERO, Vec3::Y * reach, Vec3::Y), (Vec3::ZERO, Vec3::Z * reach, Vec3::Z)]
+            [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate().filter(|&(k, _)| shown.axis(k)).map(|(_, a)| (Vec3::ZERO, a * reach, a)).collect()
         } else {
             Vec::new()
         };
@@ -3987,6 +4005,53 @@ impl OpenCad {
             }
         }
 
+        // --- draw: the origin planes (3D view) ---
+        let mut origin_glass: Vec<([Vec3; 3], [f32; 4])> = Vec::new();
+        let mut origin_outlines: Vec<(Vec3, Vec3, [f32; 4])> = Vec::new();
+        if show_origin {
+            const GLASS: [f32; 3] = [1.0, 0.667, 0.235];
+            let mut glass: Vec<([Vec3; 3], [f32; 4])> = Vec::new();
+            let mut outlines: Vec<(Vec3, Vec3, [f32; 4])> = Vec::new();
+            for op in OriginPlane::ALL.into_iter().filter(|&p| shown.plane(p)) {
+                let hot = self.origin_hover == Some(op);
+                let chosen = self.selected_plane == Some(op);
+                let alpha = if hot { 150 } else if chosen { 120 } else if self.face_pick { 80 } else { 55 };
+                let p = op.plane();
+                let s = origin_size;
+                let q = [Vec3::ZERO, p.u * s, p.u * s + p.v * s, p.v * s];
+                if self.gpu {
+                    let c = [GLASS[0], GLASS[1], GLASS[2], alpha as f32 / 255.0];
+                    glass.push(([q[0], q[1], q[2]], c));
+                    glass.push(([q[0], q[2], q[3]], c));
+                    let lc = [1.0, 0.745, 0.353, if hot || chosen { 1.0 } else { 0.55 }];
+                    for k in 0..4 {
+                        outlines.push((q[k], q[(k + 1) % 4], lc));
+                    }
+                } else {
+                    let fill = Color32::from_rgba_unmultiplied(255, 170, 60, alpha);
+                    let edge = Stroke::new(
+                        if hot || chosen { 2.0 } else { 1.0 },
+                        Color32::from_rgba_unmultiplied(255, 190, 90, if hot || chosen { 255 } else { 140 }),
+                    );
+                    let pts: Vec<Option<Vec2>> = q.iter().map(|&v| view.project(v)).collect();
+                    if let [Some(a), Some(b), Some(c), Some(d)] = pts[..] {
+                        let mut mesh = egui::Mesh::default();
+                        for v in [a, b, c, d] {
+                            mesh.colored_vertex(to_pos(v), fill);
+                        }
+                        mesh.add_triangle(0, 1, 2);
+                        mesh.add_triangle(0, 2, 3);
+                        painter.add(egui::Shape::mesh(mesh));
+                        for (v, w) in [(a, b), (b, c), (c, d), (d, a)] {
+                            painter.line_segment([to_pos(v), to_pos(w)], edge);
+                        }
+                    }
+                }
+            }
+            origin_glass = glass;
+            origin_outlines = outlines;
+        }
+
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
         let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
@@ -3999,7 +4064,7 @@ impl OpenCad {
         // With a body in the scene the origin gets out of the way (Create Sketch
         // and the browser's Origin box bring it back).
         if self.body_count > 0 && self.prev_body_count == 0 {
-            self.origin_visible = false;
+            self.origin_shown.all = false;
         }
         self.prev_body_count = self.body_count;
         self.body_ids = self.model(Slot::Committed).bodies.iter().map(|b| b.id).collect();
@@ -4036,6 +4101,8 @@ impl OpenCad {
             let list: Vec<(&Mesh, [f32; 3])> = meshes.iter().map(|(m, c)| (*m, rgb(*c))).collect();
             let mut scene = gpu::Scene::build(&list, &self.camera, aspect);
             scene.add_lines(&grid_segments, &self.camera);
+            scene.add_lines(&origin_outlines, &self.camera);
+            scene.add_glass(&origin_glass, &self.camera);
             painter.add(egui::Shape::Callback(eframe::egui_wgpu::Callback::new_paint_callback(
                 rect,
                 SceneCallback { scene, size_points: [rect.width(), rect.height()] },
@@ -4076,69 +4143,8 @@ impl OpenCad {
             );
         }
 
-        // --- draw: the origin planes (3D view) ---
+        // --- draw: the origin's centre dot ---
         if show_origin {
-            // Bodies hide the parts of a plane behind (or in) them.
-            self.ensure_model(Slot::Committed);
-            let bodies: Vec<&Mesh> =
-                self.model(Slot::Committed).bodies.iter().filter(|b| !self.hidden_bodies.contains(&b.id)).map(|b| &b.mesh).collect();
-            let cam = &self.camera;
-            let covered = |p: Vec3| {
-                if bodies.is_empty() {
-                    return false;
-                }
-                let ray = if cam.is_ortho() {
-                    let f = cam.basis().0;
-                    Ray { origin: p - f * cam.distance * 4.0, dir: f }
-                } else {
-                    let e = cam.eye();
-                    Ray { origin: e, dir: (p - e).normalize() }
-                };
-                let t_cell = (p - ray.origin).length();
-                bodies
-                    .iter()
-                    .filter_map(|m| model::ray_hit(m, ray.origin, ray.dir))
-                    .any(|t| t < t_cell + origin::tie_tolerance(t_cell))
-            };
-            const CELLS: usize = 12;
-            for op in OriginPlane::ALL {
-                let hot = self.origin_hover == Some(op);
-                let chosen = self.selected_plane == Some(op);
-                let fill = Color32::from_rgba_unmultiplied(
-                    255,
-                    170,
-                    60,
-                    if hot { 150 } else if chosen { 120 } else if self.face_pick { 80 } else { 55 },
-                );
-                let edge = Stroke::new(
-                    if hot || chosen { 2.0 } else { 1.0 },
-                    Color32::from_rgba_unmultiplied(255, 190, 90, if hot || chosen { 255 } else { 140 }),
-                );
-                let mut mesh = egui::Mesh::default();
-                for cell in origin::visible_cells(op, origin_size, CELLS, &covered) {
-                    let pts: Vec<Option<Vec2>> = cell.quad.iter().map(|&p| view.project(p)).collect();
-                    let [Some(a), Some(b), Some(c), Some(d)] = pts[..] else { continue };
-                    let base = mesh.vertices.len() as u32;
-                    for p in [a, b, c, d] {
-                        mesh.colored_vertex(to_pos(p), fill);
-                    }
-                    mesh.add_triangle(base, base + 1, base + 2);
-                    mesh.add_triangle(base, base + 2, base + 3);
-                    // The square's outline, along the cells that touch its border.
-                    let pts = [a, b, c, d];
-                    for (k, on_border) in [
-                        (0, cell.j == 0),
-                        (1, cell.i == CELLS - 1),
-                        (2, cell.j == CELLS - 1),
-                        (3, cell.i == 0),
-                    ] {
-                        if on_border {
-                            painter.line_segment([to_pos(pts[k]), to_pos(pts[(k + 1) % 4])], edge);
-                        }
-                    }
-                }
-                painter.add(egui::Shape::mesh(mesh));
-            }
             if let Some(o) = view.project(Vec3::ZERO) {
                 painter.circle_filled(to_pos(o), 4.0, Color32::from_gray(235));
                 painter.circle_stroke(to_pos(o), 4.0, Stroke::new(1.0, Color32::from_gray(60)));
@@ -4422,12 +4428,16 @@ impl OpenCad {
         response.context_menu(|ui| {
             if let Some(i) = self.active {
                 let has_sel = !self.editor.selection.is_empty() || !self.dim_selection.is_empty();
-                if self.editor.tool != Tool::Select || !has_sel {
-                    ui.close();
-                    return;
-                }
-                if ui.button("Delete").clicked() {
-                    self.delete_selection();
+                if self.editor.tool == Tool::Select && has_sel {
+                    if ui.button("Delete").clicked() {
+                        self.delete_selection();
+                        ui.close();
+                        return;
+                    }
+                } else {
+                    if ui.button("Finish Sketch").clicked() {
+                        self.finish_sketch();
+                    }
                     ui.close();
                     return;
                 }
@@ -4441,6 +4451,11 @@ impl OpenCad {
                         self.toggle_driven(ci);
                         ui.close();
                     }
+                }
+                ui.separator();
+                if ui.button("Finish Sketch").clicked() {
+                    self.finish_sketch();
+                    ui.close();
                 }
             } else if let Some(op) = self.ctx_plane {
                 if ui.button(format!("Create Sketch on the {} plane", op.name())).clicked() {

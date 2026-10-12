@@ -5,7 +5,7 @@
 
 use crate::camera::Ray;
 use crate::sketch::OriginPlane;
-use glam::{DVec2, Vec3};
+use glam::DVec2;
 
 /// How big the origin planes are for a camera `distance` away: a 1-2-5 size
 /// near a fifth of the distance, so they stay a similar size on screen but
@@ -33,10 +33,11 @@ pub fn tie_tolerance(t: f32) -> f32 {
 }
 
 /// The origin plane under the cursor ray, nearest first: (plane, distance).
-pub fn pick(ray: &Ray, size: f32) -> Option<(OriginPlane, f32)> {
+pub fn pick(ray: &Ray, size: f32, shown: impl Fn(OriginPlane) -> bool) -> Option<(OriginPlane, f32)> {
     let s = size as f64;
     OriginPlane::ALL
         .into_iter()
+        .filter(|&op| shown(op))
         .filter_map(|op| {
             let (t, DVec2 { x, y }) = op.plane().intersect_t(ray)?;
             ((0.0..=s).contains(&x) && (0.0..=s).contains(&y)).then_some((op, t))
@@ -44,35 +45,35 @@ pub fn pick(ray: &Ray, size: f32) -> Option<(OriginPlane, f32)> {
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
-/// One cell of an origin plane's square, split `n`×`n`.
+/// What the browser's Origin folder shows: the folder switch, then each
+/// plane and axis on its own.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Cell {
-    pub i: usize,
-    pub j: usize,
-    pub quad: [Vec3; 4],
+pub struct Shown {
+    pub all: bool,
+    pub planes: [bool; 3],
+    pub axes: [bool; 3],
 }
 
-/// The cells of a plane that nothing covers: `covered(point)` says whether a
-/// body hides that point of the plane (tested at each cell's middle).
-pub fn visible_cells(plane: OriginPlane, size: f32, n: usize, mut covered: impl FnMut(Vec3) -> bool) -> Vec<Cell> {
-    let p = plane.plane();
-    let step = size / n as f32;
-    let at = |i: usize, j: usize| p.u * (step * i as f32) + p.v * (step * j as f32);
-    let mut out = Vec::new();
-    for i in 0..n {
-        for j in 0..n {
-            let mid = at(i, j) + (p.u + p.v) * (step * 0.5);
-            if !covered(mid) {
-                out.push(Cell { i, j, quad: [at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)] });
-            }
-        }
+impl Default for Shown {
+    fn default() -> Self {
+        Shown { all: true, planes: [true; 3], axes: [true; 3] }
     }
-    out
+}
+
+impl Shown {
+    pub fn plane(&self, p: OriginPlane) -> bool {
+        self.all && self.planes[p as usize]
+    }
+
+    pub fn axis(&self, k: usize) -> bool {
+        self.all && self.axes[k]
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
 
     #[test]
     fn size_follows_the_view_in_nice_steps() {
@@ -89,40 +90,38 @@ mod tests {
     fn a_ray_picks_the_plane_it_passes_through_and_misses_outside_the_square() {
         // From above and in front, looking down at (3, 3, 0): the XY square.
         let ray = Ray { origin: Vec3::new(3.0, 3.0, 50.0), dir: Vec3::new(0.0, 0.0, -1.0) };
-        assert_eq!(pick(&ray, 10.0).map(|p| p.0), Some(OriginPlane::XY));
+        assert_eq!(pick(&ray, 10.0, |_| true).map(|p| p.0), Some(OriginPlane::XY));
         // Outside the quadrant (negative x): no plane.
         let ray = Ray { origin: Vec3::new(-3.0, 3.0, 50.0), dir: Vec3::new(0.0, 0.0, -1.0) };
-        assert!(pick(&ray, 10.0).is_none());
+        assert!(pick(&ray, 10.0, |_| true).is_none());
         // Past the far edge.
         let ray = Ray { origin: Vec3::new(30.0, 3.0, 50.0), dir: Vec3::new(0.0, 0.0, -1.0) };
-        assert!(pick(&ray, 10.0).is_none());
+        assert!(pick(&ray, 10.0, |_| true).is_none());
         // Along +X toward the origin at height 4, y = 5: crosses YZ (x = 0) first.
         let ray = Ray { origin: Vec3::new(40.0, 5.0, 4.0), dir: Vec3::new(-1.0, 0.0, 0.0) };
-        assert_eq!(pick(&ray, 10.0).map(|p| p.0), Some(OriginPlane::YZ));
+        assert_eq!(pick(&ray, 10.0, |_| true).map(|p| p.0), Some(OriginPlane::YZ));
     }
 
     #[test]
     fn where_planes_overlap_the_nearer_one_wins() {
         // Looking along -Y from in front at x = 2, z = 2: only XZ (y = 0) is crossed.
         let ray = Ray { origin: Vec3::new(2.0, 40.0, 2.0), dir: Vec3::new(0.0, -1.0, 0.0) };
-        assert_eq!(pick(&ray, 10.0).map(|p| p.0), Some(OriginPlane::XZ));
+        assert_eq!(pick(&ray, 10.0, |_| true).map(|p| p.0), Some(OriginPlane::XZ));
         // A slanted ray crossing XY (z = 0) near x=2 and then... nearest by distance.
         let ray = Ray { origin: Vec3::new(2.0, 2.0, 30.0), dir: Vec3::new(0.0, 0.0, -1.0) };
-        assert_eq!(pick(&ray, 10.0).map(|p| p.0), Some(OriginPlane::XY));
+        assert_eq!(pick(&ray, 10.0, |_| true).map(|p| p.0), Some(OriginPlane::XY));
     }
 
     #[test]
-    fn covered_parts_of_a_plane_are_left_out() {
-        // A box standing on the XY plane from x = 0 to 5 covers that part of the square.
-        let all = visible_cells(OriginPlane::XY, 10.0, 10, |_| false);
-        assert_eq!(all.len(), 100);
-        let some = visible_cells(OriginPlane::XY, 10.0, 10, |p| p.x < 5.0);
-        assert_eq!(some.len(), 50);
-        assert!(some.iter().all(|c| c.quad.iter().all(|v| v.x >= 5.0 - 1e-6)));
-        assert!(visible_cells(OriginPlane::XY, 10.0, 10, |_| true).is_empty());
-        // The cells tile the square exactly.
-        let q = all.iter().find(|c| (c.i, c.j) == (9, 9)).unwrap().quad;
-        assert_eq!(q[2], Vec3::new(10.0, 10.0, 0.0));
+    fn hidden_planes_are_not_picked_and_the_folder_switch_hides_all() {
+        let ray = Ray { origin: Vec3::new(3.0, 3.0, 50.0), dir: Vec3::new(0.0, 0.0, -1.0) };
+        assert!(pick(&ray, 10.0, |p| p != OriginPlane::XY).is_none());
+        let mut s = Shown::default();
+        assert!(s.plane(OriginPlane::XZ) && s.axis(2));
+        s.planes[OriginPlane::XZ as usize] = false;
+        assert!(!s.plane(OriginPlane::XZ) && s.plane(OriginPlane::XY));
+        s.all = false;
+        assert!(!s.plane(OriginPlane::XY) && !s.axis(0));
     }
 
     #[test]
