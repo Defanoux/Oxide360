@@ -1409,7 +1409,7 @@ mod tests {
         assert!(close(total(&m), (1200.0 - 25.0 * (1.0 - PI / 4.0)) * 2.0), "{}", total(&m));
         // Bevel it by 5 instead.
         let mut sk = base();
-        let cs = sk.chamfer_corner(corner, 5.0).unwrap();
+        let cs = sk.chamfer_corner2(corner, 5.0, 5.0, None).unwrap();
         crate::solver::add_constraints(&mut sk, &cs).unwrap();
         let m = build4(&[sk], &[ex(0, vec![0], 2.0, Operation::NewBody)], &[], &timeline(1, 1));
         assert!(close(total(&m), (1200.0 - 12.5) * 2.0), "{}", total(&m));

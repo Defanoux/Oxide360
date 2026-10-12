@@ -427,6 +427,29 @@ pub struct PolygonShape {
     pub verts: Vec<DVec2>,
 }
 
+/// A fillet / chamfer shown before it is made.
+#[derive(Clone, Copy, Debug)]
+pub struct CornerCut {
+    /// Where the cut meets each line.
+    pub a: DVec2,
+    pub b: DVec2,
+    /// A fillet's arc: (centre, radius, start angle, sweep), counter-clockwise.
+    pub arc: Option<(DVec2, f64, f64, f64)>,
+}
+
+/// "5" → (5, None); "2, 5" or "2 5" → (2, Some(5)). For the size box of
+/// chamfers, which can take a different distance along each side.
+pub fn parse_sizes(text: &str) -> Option<(f64, Option<f64>)> {
+    let num = |t: &str| t.parse::<f64>().ok().filter(|v| v.is_finite());
+    let text = text.replace("mm", " ");
+    let mut parts = text.split(|c: char| c == ',' || c == ';' || c.is_whitespace()).filter(|t| !t.is_empty());
+    let first = num(parts.next()?)?;
+    match parts.next() {
+        None => Some((first, None)),
+        Some(second) => parts.next().is_none().then(|| num(second)).flatten().map(|v| (first, Some(v))),
+    }
+}
+
 /// What the 3-Point Arc's third click snapped to (see `Editor::arc3_snap`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Arc3Snap {
@@ -1058,16 +1081,17 @@ impl Sketch {
     /// Shared part of fillet/chamfer: move the corner's two line ends to new
     /// points at `t` from the corner, keep the old corner point as a "virtual
     /// sharp" held where the lines meet, and turn lengths measured to the
-    /// corner into distances to that sharp. Returns (line1, line2, new end 1,
+    /// corner into distances to that sharp. `t` is the distance along each of the
+    /// two lines (in `corner_lines` order). Returns (line1, line2, new end 1,
     /// new end 2, the constraints to add).
-    fn cut_corner(&mut self, p: PointId, t: f64) -> Result<(EntityId, EntityId, PointId, PointId, Vec<Constraint>), String> {
+    fn cut_corner(&mut self, p: PointId, t: (f64, f64)) -> Result<(EntityId, EntityId, PointId, PointId, Vec<Constraint>), String> {
         let (l1, q1, l2, q2) = self.corner_lines(p).ok_or("pick a corner where exactly two lines meet")?;
         let corner = self.points[p];
         let (d1, d2) = (self.points[q1] - corner, self.points[q2] - corner);
-        if t >= d1.length() - MIN_SIZE || t >= d2.length() - MIN_SIZE {
+        if t.0 >= d1.length() - MIN_SIZE || t.1 >= d2.length() - MIN_SIZE {
             return Err("too large for these lines".into());
         }
-        let (t1, t2) = (corner + d1.normalize() * t, corner + d2.normalize() * t);
+        let (t1, t2) = (corner + d1.normalize() * t.0, corner + d2.normalize() * t.1);
         self.points.push(t1);
         let n1 = self.points.len() - 1;
         self.points.push(t2);
@@ -1110,7 +1134,7 @@ impl Sketch {
             return Err("the lines are in line — there's no corner to round".into());
         }
         let mut trial = self.clone();
-        let (l1, l2, n1, n2, mut out) = trial.cut_corner(p, r / half.tan())?;
+        let (l1, l2, n1, n2, mut out) = trial.cut_corner(p, (r / half.tan(), r / half.tan()))?;
         let center = corner + (u1 + u2).normalize() * (r / half.sin());
         trial.points.push(center);
         let c = trial.points.len() - 1;
@@ -1123,17 +1147,57 @@ impl Sketch {
         Ok(out)
     }
 
-    /// Bevel the corner at point `p`, cutting `d` off each line.
-    pub fn chamfer_corner(&mut self, p: PointId, d: f64) -> Result<Vec<Constraint>, String> {
-        if !(d > 0.0) {
-            return Err("the distance must be greater than zero".into());
+    /// Bevel the corner at `p` taking `d1` off one line and `d2` off the
+    /// other. `first` says which line `d1` is for (else the lower-numbered one).
+    pub fn chamfer_corner2(&mut self, p: PointId, d1: f64, d2: f64, first: Option<EntityId>) -> Result<Vec<Constraint>, String> {
+        if !(d1 > 0.0 && d2 > 0.0) {
+            return Err("the distances must be greater than zero".into());
         }
+        let (l1, ..) = self.corner_lines(p).ok_or("pick a corner where exactly two lines meet")?;
+        let t = if first.is_some_and(|f| f != l1) { (d2, d1) } else { (d1, d2) };
         let mut trial = self.clone();
-        let (_, _, n1, n2, mut out) = trial.cut_corner(p, d)?;
+        let (_, _, n1, n2, mut out) = trial.cut_corner(p, t)?;
         trial.entities.push(Entity::Line { a: n1, b: n2 });
-        out.extend([Constraint::Distance(n1, p, d), Constraint::Distance(n2, p, d)]);
+        out.extend([Constraint::Distance(n1, p, t.0), Constraint::Distance(n2, p, t.1)]);
         *self = trial;
         Ok(out)
+    }
+
+    /// What a fillet (`d1` = radius) or chamfer (`d1`, `d2` along the lines,
+    /// `first` as in `chamfer_corner2`) at corner `p` would look like, for the
+    /// preview and the drag arrow. None if it can't be made.
+    pub fn corner_cut(&self, p: PointId, fillet: bool, d1: f64, d2: f64, first: Option<EntityId>) -> Option<CornerCut> {
+        let (l1, q1, _, q2) = self.corner_lines(p)?;
+        let corner = *self.points.get(p)?;
+        let (u1, u2) = ((self.points[q1] - corner).try_normalize()?, (self.points[q2] - corner).try_normalize()?);
+        let bisector = (u1 + u2).try_normalize()?;
+        let (len1, len2) = (self.points[q1].distance(corner), self.points[q2].distance(corner));
+        if fillet {
+            let half = u1.dot(u2).clamp(-1.0, 1.0).acos() / 2.0;
+            if !(d1 > 0.0) || half < 1e-6 || std::f64::consts::FRAC_PI_2 - half < 1e-6 {
+                return None;
+            }
+            let t = d1 / half.tan();
+            if t >= len1 - MIN_SIZE || t >= len2 - MIN_SIZE {
+                return None;
+            }
+            let (a, b) = (corner + u1 * t, corner + u2 * t);
+            let center = corner + bisector * (d1 / half.sin());
+            let (ea, eb) = (a - center, b - center);
+            let (start, end) = if ea.perp_dot(eb) > 0.0 { (ea, eb) } else { (eb, ea) };
+            let a0 = start.y.atan2(start.x);
+            let sweep = (end.y.atan2(end.x) - a0).rem_euclid(std::f64::consts::TAU);
+            Some(CornerCut { a, b, arc: Some((center, d1, a0, sweep)) })
+        } else {
+            if !(d1 > 0.0 && d2 > 0.0) {
+                return None;
+            }
+            let (t1, t2) = if first.is_some_and(|f| f != l1) { (d2, d1) } else { (d1, d2) };
+            if t1 >= len1 - MIN_SIZE || t2 >= len2 - MIN_SIZE {
+                return None;
+            }
+            Some(CornerCut { a: corner + u1 * t1, b: corner + u2 * t2, arc: None })
+        }
     }
 
     /// Where line `e` is cut by other geometry: (parameter t along the line,
@@ -3045,5 +3109,86 @@ mod polygon_tests {
         assert_eq!(regions.len(), 1, "the construction circle doesn't make a second profile");
         let want = 3.0 * 3f64.sqrt() / 2.0 * 100.0;
         assert!((regions[0].area() - want).abs() < 1e-6, "{}", regions[0].area());
+    }
+}
+
+#[cfg(test)]
+mod corner_tests {
+    use super::*;
+
+    /// An L: (0,0)–(30,0) and (0,0)–(0,30) meeting at point `corner`.
+    fn ell() -> (Sketch, PointId, EntityId, EntityId) {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Line);
+        for (x, y) in [(30.0, 0.0), (0.0, 0.0), (0.0, 30.0)] {
+            ed.click(&mut sk, Anchor::Free(DVec2::new(x, y)));
+        }
+        // Point 0 is the sketch origin, a separate point: find the one the lines share.
+        let shared = (1..sk.points.len()).find(|&p| sk.corner_lines(p).is_some()).unwrap();
+        (sk, shared, 0, 1)
+    }
+
+    #[test]
+    fn chamfer_with_two_distances_cuts_each_line_by_its_own_amount() {
+        let (mut sk, p, l_first, l_second) = ell();
+        let cs = sk.chamfer_corner2(p, 2.0, 5.0, Some(l_first)).unwrap();
+        // d1 = 2 on the first line (the x axis one), d2 = 5 on the second.
+        let ends = |sk: &Sketch, l: EntityId| {
+            let Entity::Line { a, b } = sk.entities[l] else { panic!() };
+            [sk.points[a], sk.points[b]]
+        };
+        let on_first = ends(&sk, l_first).iter().any(|q| q.distance(DVec2::new(2.0, 0.0)) < 1e-9);
+        let on_second = ends(&sk, l_second).iter().any(|q| q.distance(DVec2::new(0.0, 5.0)) < 1e-9);
+        assert!(on_first && on_second);
+        assert!(cs.iter().any(|c| matches!(c, Constraint::Distance(_, _, d) if (*d - 2.0).abs() < 1e-12)));
+        assert!(cs.iter().any(|c| matches!(c, Constraint::Distance(_, _, d) if (*d - 5.0).abs() < 1e-12)));
+        assert!(crate::solver::add_constraints(&mut sk, &cs).is_ok());
+    }
+
+    #[test]
+    fn first_line_choice_swaps_which_distance_goes_where() {
+        let (mut sk, p, l_first, l_second) = ell();
+        sk.chamfer_corner2(p, 2.0, 5.0, Some(l_second)).unwrap();
+        let Entity::Line { a, b } = sk.entities[l_first] else { panic!() };
+        let end = [sk.points[a], sk.points[b]].into_iter().find(|q| q.x > 0.0 && q.x < 30.0).unwrap();
+        assert!((end.x - 5.0).abs() < 1e-9, "the first line lost 5, the second 2: {end:?}");
+    }
+
+    #[test]
+    fn equal_chamfer_is_unchanged_and_too_big_is_refused() {
+        let (mut sk, p, ..) = ell();
+        assert!(sk.clone().chamfer_corner2(p, 4.0, 40.0, None).is_err(), "second side is only 30 long");
+        assert!(sk.clone().chamfer_corner2(p, 0.0, 4.0, None).is_err());
+        let cs = sk.chamfer_corner2(p, 3.0, 3.0, None).unwrap();
+        assert_eq!(cs.iter().filter(|c| matches!(c, Constraint::Distance(..))).count(), 2);
+    }
+
+    #[test]
+    fn corner_cut_describes_the_preview() {
+        let (sk, p, l1, _) = ell();
+        let c = sk.corner_cut(p, false, 2.0, 5.0, Some(l1)).unwrap();
+        assert!((c.a - DVec2::new(2.0, 0.0)).length() < 1e-9 && (c.b - DVec2::new(0.0, 5.0)).length() < 1e-9);
+        let f = sk.corner_cut(p, true, 4.0, 0.0, None).unwrap();
+        let (center, r, a0, sweep) = f.arc.unwrap();
+        assert!((center - DVec2::new(4.0, 4.0)).length() < 1e-9 && (r - 4.0).abs() < 1e-12);
+        assert!((sweep - std::f64::consts::FRAC_PI_2).abs() < 1e-9, "a right-angle corner rounds through 90°");
+        // Counter-clockwise from the point on the vertical line, (0, 4) at 180°, round the corner.
+        assert!((a0.abs() - std::f64::consts::PI).abs() < 1e-9, "{a0}");
+        let mid = center + DVec2::from_angle(a0 + sweep / 2.0) * r;
+        assert!(mid.x < 4.0 && mid.y < 4.0, "the arc bulges toward the corner: {mid:?}");
+        assert!(sk.corner_cut(p, true, 40.0, 0.0, None).is_none(), "radius too big");
+    }
+
+    #[test]
+    fn sizes_parse_one_or_two_numbers() {
+        assert_eq!(parse_sizes("5"), Some((5.0, None)));
+        assert_eq!(parse_sizes(" 2.5 mm "), Some((2.5, None)));
+        assert_eq!(parse_sizes("2, 5"), Some((2.0, Some(5.0))));
+        assert_eq!(parse_sizes("2 5"), Some((2.0, Some(5.0))));
+        assert_eq!(parse_sizes("2;5mm"), Some((2.0, Some(5.0))));
+        assert_eq!(parse_sizes("2,5,7"), None);
+        assert_eq!(parse_sizes("x"), None);
+        assert_eq!(parse_sizes(""), None);
     }
 }

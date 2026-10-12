@@ -302,6 +302,7 @@ enum HandleTarget {
     Extrude,
     EdgeSize,
     RevolveAngle,
+    Corner,
 }
 
 struct EdgeDialog {
@@ -355,6 +356,7 @@ struct OpenCad {
     arc_tool: Tool,  // which arc tool the toolbar's arc button is
     poly_tool: Tool, // which polygon tool the toolbar's polygon button is
     corner_size: f64, // last sketch fillet radius / chamfer distance
+    corner_first: Option<usize>, // chamfer: the line the first distance is for (when picked as two lines)
     feature_errors: Vec<Option<String>>, // per extrude, from the last committed build
     body_count: usize,
     dialog_error: Option<String>,
@@ -419,6 +421,7 @@ impl Default for OpenCad {
             arc_tool: Tool::Arc3Point,
             poly_tool: Tool::PolygonCircumscribed,
             corner_size: 2.0,
+            corner_first: None,
             feature_errors: Vec::new(),
             body_count: 0,
             dialog_error: None,
@@ -1141,14 +1144,28 @@ impl OpenCad {
         self.editor.selection.clear();
     }
 
+    /// The fillet / chamfer the open size box would make right now.
+    fn corner_preview(&self, i: usize, p: PointId) -> Option<sketch::CornerCut> {
+        let text = &self.float.as_ref()?.text;
+        let (d1, d2) = sketch::parse_sizes(text).unwrap_or((self.corner_size, None));
+        let fillet = self.editor.tool == Tool::SketchFillet;
+        self.sketches.get(i)?.corner_cut(p, fillet, d1, d2.unwrap_or(d1), self.corner_first)
+    }
+
     /// Sketch fillet / chamfer: round or bevel the corner at point `p`.
-    fn finish_corner(&mut self, p: PointId, size: f64) {
+    /// A chamfer can take two distances (`size2`); a fillet only has a radius.
+    fn finish_corner(&mut self, p: PointId, size: f64, size2: Option<f64>) {
         let Some(i) = self.active else { return };
         let fillet = self.editor.tool == Tool::SketchFillet;
+        let first = self.corner_first;
         let mut why = None;
         let r = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
             let mut trial = sk.clone();
-            let made = if fillet { trial.fillet_corner(p, size) } else { trial.chamfer_corner(p, size) };
+            let made = if fillet {
+                trial.fillet_corner(p, size)
+            } else {
+                trial.chamfer_corner2(p, size, size2.unwrap_or(size), first)
+            };
             match made {
                 Ok(cs) => match solver::add_constraints(&mut trial, &cs) {
                     Ok(_) => *sk = trial,
@@ -1382,7 +1399,7 @@ impl OpenCad {
     /// Put the cursor back in the number box with its text selected.
     fn focus_distance(&mut self) {
         if let Some(fe) = self.float.as_mut() {
-            if matches!(fe.target, EditTarget::ExtrudeDistance | EditTarget::EdgeSize | EditTarget::RevolveAngle) {
+            if matches!(fe.target, EditTarget::ExtrudeDistance | EditTarget::EdgeSize | EditTarget::RevolveAngle | EditTarget::Corner(_)) {
                 fe.focus = true;
             }
         }
@@ -1391,6 +1408,18 @@ impl OpenCad {
     /// The drag arrow for whichever box is open (extrude distance, fillet /
     /// chamfer size, revolve angle), with the value it shows now.
     fn current_handle(&self, regions: &[Vec<Region>]) -> Option<Handle> {
+        if let (Some(FloatEdit { target: EditTarget::Corner(p), text, .. }), Some(i)) = (&self.float, self.active) {
+            let sk = &self.sketches[i];
+            let (_, q1, _, q2) = sk.corner_lines(*p)?;
+            let corner = sk.points[*p];
+            let bisector = ((sk.points[q1] - corner).normalize_or_zero() + (sk.points[q2] - corner).normalize_or_zero()).try_normalize()?;
+            let plane = self.plane_of(i);
+            let origin = plane.to_world(corner);
+            let dir = (plane.to_world(corner + bisector) - origin).normalize_or_zero();
+            let value = sketch::parse_sizes(text).map_or(self.corner_size, |(d, _)| d);
+            let line = LineHandle { origin: origin.as_dvec3(), dir: dir.as_dvec3() };
+            return Some(Handle::Line { line, value, target: HandleTarget::Corner });
+        }
         if let Some(d) = &self.dialog {
             let (origin, normal) = self.extrude_axis(regions)?;
             let line = LineHandle { origin: origin.as_dvec3(), dir: normal.as_dvec3() };
@@ -1427,6 +1456,16 @@ impl OpenCad {
             HandleTarget::RevolveAngle => {
                 if let Some(d) = self.revolve_dialog.as_mut() {
                     d.angle = v.clamp(-360.0, 360.0);
+                }
+            }
+            HandleTarget::Corner => {
+                // Scales a chamfer's two distances together, keeping their ratio.
+                if let Some(fe) = self.float.as_mut() {
+                    let v = v.max(0.01);
+                    fe.text = match sketch::parse_sizes(&fe.text) {
+                        Some((d1, Some(d2))) if d1 > 0.0 => format!("{v:.2}, {:.2}", d2 * v / d1),
+                        _ => format!("{v:.2}"),
+                    };
                 }
             }
         }
@@ -1898,7 +1937,7 @@ impl OpenCad {
                 group(ui, "MODIFY", |ui| {
                     for (tool, icon, tip) in [
                         (Tool::SketchFillet, Icon::Fillet, "Fillet: click a corner (or its two lines), type the radius"),
-                        (Tool::SketchChamfer, Icon::Chamfer, "Chamfer: click a corner (or its two lines), type the distance"),
+                        (Tool::SketchChamfer, Icon::Chamfer, "Chamfer: click a corner (or its two lines), type the distance — or two, like 2, 5 (first = first line)"),
                     ] {
                         if icons::button(ui, icon, tip, true, self.editor.tool == tool).clicked() {
                             self.editor.set_tool(tool);
@@ -2393,6 +2432,7 @@ impl OpenCad {
         let mut commit: Option<Option<f64>> = None; // Some(parsed) when Enter was pressed
         let mut close = false;
         let mut live: Option<f64> = None;
+        let mut corner_text: Option<String> = None;
         let mut extrude_ok = false;
         let mut extrude_cancel = false;
         egui::Area::new(egui::Id::new("float_edit")).order(egui::Order::Foreground).fixed_pos(anchor).show(
@@ -2422,7 +2462,18 @@ impl OpenCad {
                         let (enter, esc) =
                             ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
                         match target {
-                            EditTarget::Dimension(_) | EditTarget::NewCircle | EditTarget::Corner(_) => {
+                            // Stays open until Enter / Esc, so its arrow can be dragged.
+                            EditTarget::Corner(_) => {
+                                if lost {
+                                    if enter {
+                                        corner_text = Some(fe.text.clone());
+                                    }
+                                    if enter || esc {
+                                        close = true;
+                                    }
+                                }
+                            }
+                            EditTarget::Dimension(_) | EditTarget::NewCircle => {
                                 if lost {
                                     if enter {
                                         commit = Some(parsed);
@@ -2449,10 +2500,11 @@ impl OpenCad {
         );
         match target {
             EditTarget::Corner(p) => {
-                match commit {
-                    Some(Some(v)) => self.finish_corner(p, v),
-                    Some(None) => self.message = Some("Type a number".into()),
-                    None => {}
+                if let Some(text) = corner_text {
+                    match sketch::parse_sizes(&text) {
+                        Some((d1, d2)) => self.finish_corner(p, d1, d2),
+                        None => self.message = Some("Type a number (a chamfer can take two: 2, 5)".into()),
+                    }
                 }
                 if close {
                     self.float = None;
@@ -2613,6 +2665,12 @@ impl OpenCad {
         let mm_per_px = (self.camera.distance * 2.0 * (FOV_Y * 0.5).tan() / size.y) as f64;
         let regions: Vec<Vec<Region>> = self.sketches.iter().map(find_regions).collect();
 
+        // The corner size box only lives while its tool does.
+        if matches!(self.float.as_ref().map(|f| f.target), Some(EditTarget::Corner(_)))
+            && !(matches!(self.editor.tool, Tool::SketchFillet | Tool::SketchChamfer) && self.active.is_some())
+        {
+            self.float = None;
+        }
         // --- arrow drag (extrude distance, fillet / chamfer size, revolve angle) ---
         if let Some(h) = self.current_handle(&regions) {
             // What the cursor at `px` means for this arrow: a distance along
@@ -3225,9 +3283,10 @@ impl OpenCad {
                 }
                 Tool::SketchFillet | Tool::SketchChamfer => {
                     // Click a corner, then type the size (Enter applies).
-                    if response.clicked() {
+                    if response.clicked() && !near_arrow(hover_px, self.arrow_screen) {
                         match hovered {
                             Some(Sel::Point(p)) => {
+                                self.corner_first = None;
                                 self.float = Some(FloatEdit {
                                     target: EditTarget::Corner(p),
                                     text: format!("{:.2}", self.corner_size),
@@ -3244,6 +3303,7 @@ impl OpenCad {
                                 match first.map(|f| self.sketches[i].corner_between(f, e)) {
                                     Some(Some(p)) => {
                                         self.editor.selection.clear();
+                                        self.corner_first = first; // a chamfer's first distance is on the first line picked
                                         self.float = Some(FloatEdit {
                                             target: EditTarget::Corner(p),
                                             text: format!("{:.2}", self.corner_size),
@@ -3260,6 +3320,7 @@ impl OpenCad {
                             }
                             _ => {
                                 self.editor.selection.clear();
+                                self.float = None;
                                 self.notify("Click a corner, or two lines that meet".into());
                             }
                         }
@@ -3491,6 +3552,18 @@ impl OpenCad {
             let (base, tip) = (base.as_vec3(), base.as_vec3() + dir.as_vec3() * (sign * len));
             let hot = self.arrow_drag.is_some() || near_arrow(hover_px, prev_arrow);
             self.arrow_screen = view.arrow3d(base, tip, if hot { COL_ARROW_HOT } else { COL_ARROW });
+        }
+
+        // --- draw: the fillet / chamfer the size box would make ---
+        if let (Some(EditTarget::Corner(p)), Some(i)) = (self.float.as_ref().map(|f| f.target), self.active) {
+            if let Some(cut) = self.corner_preview(i, p) {
+                let plane = self.plane_of(i);
+                let stroke = Stroke::new(2.0, COL_PREVIEW);
+                match cut.arc {
+                    Some((c, r, a0, sweep)) => view.arc(&plane, c, r, a0, sweep, stroke),
+                    None => view.line(plane.to_world(cut.a), plane.to_world(cut.b), stroke),
+                }
+            }
         }
 
         // --- draw: profile fills ---
