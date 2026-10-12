@@ -418,6 +418,15 @@ pub struct ArcShape {
     pub flipped: bool,
 }
 
+/// A regular polygon: its centre, the radius of the circle through its
+/// corners, and the corners in order.
+#[derive(Clone, Debug)]
+pub struct PolygonShape {
+    pub center: DVec2,
+    pub radius: f64,
+    pub verts: Vec<DVec2>,
+}
+
 /// What the 3-Point Arc's third click snapped to (see `Editor::arc3_snap`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Arc3Snap {
@@ -1425,6 +1434,9 @@ pub enum Tool {
     /// Bevel a corner where two lines meet.
     SketchChamfer,
     Trim,
+    PolygonCircumscribed,
+    PolygonInscribed,
+    PolygonEdge,
     /// Three lines it touches.
     Circle3Tangent,
     /// Pick geometry for a constraint ("Dimension", "Parallel", …): the
@@ -1435,6 +1447,9 @@ pub enum Tool {
 impl Tool {
     /// The arc tools, in the order of the toolbar's arc menu.
     pub const ARCS: [Tool; 2] = [Tool::Arc3Point, Tool::ArcCenter];
+
+    /// The polygon tools, in the order of the toolbar's polygon menu.
+    pub const POLYGONS: [Tool; 3] = [Tool::PolygonCircumscribed, Tool::PolygonInscribed, Tool::PolygonEdge];
 
     /// The rectangle tools, in the order of the toolbar's rectangle menu.
     pub const RECTANGLES: [Tool; 3] = [Tool::Rectangle, Tool::Rectangle3Point, Tool::RectangleCenter];
@@ -1461,6 +1476,9 @@ impl Tool {
             Tool::SketchFillet => "Fillet",
             Tool::SketchChamfer => "Chamfer",
             Tool::Trim => "Trim",
+            Tool::PolygonCircumscribed => "Circumscribed Polygon",
+            Tool::PolygonInscribed => "Inscribed Polygon",
+            Tool::PolygonEdge => "Edge Polygon",
             Tool::Constrain(label) => label,
         }
     }
@@ -1489,9 +1507,18 @@ pub struct Editor {
     pub selection: Vec<Sel>,
     /// Construction mode (Fusion's X while drawing): new geometry is construction.
     pub construction: bool,
+    /// Polygon tools: the number of sides (0 = not set yet, which means 6).
+    pub polygon_sides: usize,
 }
 
 impl Editor {
+    pub const MAX_SIDES: usize = 64;
+
+    /// Sides for the polygon tools, between 3 and 64 (Fusion starts at 6).
+    pub fn sides(&self) -> usize {
+        if self.polygon_sides < 3 { 6 } else { self.polygon_sides.min(Self::MAX_SIDES) }
+    }
+
     pub fn set_tool(&mut self, tool: Tool) {
         self.tool = tool;
         self.cancel();
@@ -1617,6 +1644,46 @@ impl Editor {
             }
         }
         (raw, Arc3Snap::None)
+    }
+
+    /// The regular polygon a polygon tool would make with the cursor at `at`.
+    pub fn polygon_preview(&self, sk: &Sketch, at: DVec2) -> Option<PolygonShape> {
+        use std::f64::consts::{PI, TAU};
+        let pos = |a: Option<Anchor>| a.filter(|&a| sk.is_valid_anchor(a)).map(|a| sk.pos(a));
+        let p = pos(self.start)?;
+        let n = self.sides();
+        let ring = |center: DVec2, radius: f64, first: f64, step: f64| -> Vec<DVec2> {
+            (0..n).map(|k| center + DVec2::from_angle(first + step * k as f64) * radius).collect()
+        };
+        let angle = |v: DVec2| v.y.atan2(v.x);
+        let shape = match self.tool {
+            Tool::PolygonInscribed => {
+                let r = p.distance(at);
+                PolygonShape { center: p, radius: r, verts: ring(p, r, angle(at - p), TAU / n as f64) }
+            }
+            Tool::PolygonCircumscribed => {
+                let apothem = p.distance(at);
+                let r = apothem / (PI / n as f64).cos();
+                PolygonShape { center: p, radius: r, verts: ring(p, r, angle(at - p) - PI / n as f64, TAU / n as f64) }
+            }
+            Tool::PolygonEdge => {
+                let q = pos(self.second)?;
+                let side = q - p;
+                let s = side.length();
+                if s < MIN_SIZE {
+                    return None;
+                }
+                let mid = (p + q) * 0.5;
+                let left = side.perp() / s;
+                // Built on whichever side of the edge the cursor is.
+                let (nrm, step) = if left.dot(at - mid) < 0.0 { (-left, -TAU / n as f64) } else { (left, TAU / n as f64) };
+                let center = mid + nrm * (s / (2.0 * (PI / n as f64).tan()));
+                let r = s / (2.0 * (PI / n as f64).sin());
+                PolygonShape { center, radius: r, verts: ring(center, r, angle(p - center), step) }
+            }
+            _ => return None,
+        };
+        (shape.radius >= MIN_SIZE).then_some(shape)
     }
 
     /// The four corners a rectangle tool would make with the cursor at `at`
@@ -1749,6 +1816,62 @@ impl Editor {
                     })
                     .into_iter()
                     .collect();
+                out.extend(ties);
+                out
+            }
+            Tool::PolygonEdge if self.second.is_none() => {
+                if size >= MIN_SIZE {
+                    self.second = Some(at); // the edge is set; the next click picks the side
+                }
+                Vec::new()
+            }
+            Tool::PolygonCircumscribed | Tool::PolygonInscribed | Tool::PolygonEdge => {
+                let second = self.second.take();
+                self.start = None;
+                let probe = Editor { tool: self.tool, start: Some(start), second, polygon_sides: self.polygon_sides, ..Default::default() };
+                let Some(shape) = probe.polygon_preview(sk, sk.pos(at)) else { return Vec::new() };
+                let n = shape.verts.len();
+                let inscribed = self.tool != Tool::PolygonCircumscribed;
+                // Centre point of its own (a clicked centre is kept as it is).
+                let center = if self.tool == Tool::PolygonEdge {
+                    sk.resolve(Anchor::Free(shape.center))
+                } else {
+                    resolve(sk, start)
+                };
+                let used = sk.entities.iter().any(|e| match *e {
+                    Entity::Point { p } => p == center,
+                    Entity::Line { a, b } => a == center || b == center,
+                    Entity::Circle { center: c, .. } => c == center,
+                    Entity::Arc { center: c, a, b } => c == center || a == center || b == center,
+                });
+                if !used {
+                    sk.entities.push(Entity::Point { p: center });
+                }
+                // Corners: the clicked ones are reused.
+                let corners: Vec<PointId> = shape
+                    .verts
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &v)| match (self.tool, k) {
+                        (Tool::PolygonEdge, 0) => resolve(sk, start),
+                        (Tool::PolygonEdge, 1) => resolve(sk, second.expect("edge set")),
+                        (Tool::PolygonInscribed, 0) => resolve(sk, at),
+                        _ => sk.resolve(Anchor::Free(v)),
+                    })
+                    .collect();
+                // The reference circle (construction): corners on it, or edges tangent to it.
+                let circle_r = if inscribed { shape.radius } else { shape.radius * (std::f64::consts::PI / n as f64).cos() };
+                sk.entities.push(Entity::Circle { center, radius: circle_r });
+                let circle = sk.entities.len() - 1;
+                sk.set_construction(circle, true);
+                let first = sk.entities.len();
+                for k in 0..n {
+                    sk.entities.push(Entity::Line { a: corners[k], b: corners[(k + 1) % n] });
+                }
+                let mut out: Vec<Constraint> = (0..n)
+                    .map(|k| if inscribed { Constraint::OnCircle(corners[k], circle) } else { Constraint::Tangent(first + k, circle) })
+                    .collect();
+                out.extend((1..n).map(|k| Constraint::Equal(first, first + k)));
                 out.extend(ties);
                 out
             }
@@ -2803,5 +2926,124 @@ mod trim_tests {
         ed.click(&mut sk, Anchor::Free(DVec2::new(0.0, 0.0)));
         ed.click(&mut sk, Anchor::Free(DVec2::new(10.0, 0.0)));
         assert!(sk.trim_line(0, DVec2::ZERO).is_err());
+    }
+}
+
+#[cfg(test)]
+mod polygon_tests {
+    use super::*;
+    use crate::solver;
+
+    fn free(x: f64, y: f64) -> Anchor {
+        Anchor::Free(DVec2::new(x, y))
+    }
+
+    /// Make a polygon the way the app does: clicks, then each constraint
+    /// through the solver, skipping redundant ones.
+    fn make(tool: Tool, sides: usize, clicks: &[Anchor]) -> Sketch {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor { polygon_sides: sides, ..Default::default() };
+        ed.set_tool(tool);
+        let mut cs = Vec::new();
+        for &c in clicks {
+            cs.extend(ed.click(&mut sk, c));
+        }
+        for c in cs {
+            let mut t = sk.clone();
+            if solver::add_constraints(&mut t, &[c]).is_ok() {
+                sk = t;
+            }
+        }
+        sk
+    }
+
+    fn side_lengths(sk: &Sketch) -> Vec<f64> {
+        (0..sk.entities.len()).filter(|&e| sk.is_line(e)).map(|e| sk.line_length(e).unwrap()).collect()
+    }
+
+    fn regular(sk: &Sketch, n: usize) {
+        let l = side_lengths(sk);
+        assert_eq!(l.len(), n);
+        assert!(l.iter().all(|x| (x - l[0]).abs() < 1e-6), "{l:?}");
+        let circle = (0..sk.entities.len()).find(|&e| matches!(sk.entities[e], Entity::Circle { .. })).unwrap();
+        assert!(sk.is_construction(circle), "the reference circle is construction");
+    }
+
+    #[test]
+    fn inscribed_hexagon_has_corners_on_the_circle_and_four_degrees_of_freedom() {
+        let mut sk = make(Tool::PolygonInscribed, 6, &[free(0.0, 0.0), free(10.0, 0.0)]);
+        regular(&sk, 6);
+        let Entity::Circle { center, radius } = sk.entities.iter().copied().find(|e| matches!(e, Entity::Circle { .. })).unwrap() else { panic!() };
+        assert!((radius - 10.0).abs() < 1e-9);
+        assert!(side_lengths(&sk).iter().all(|x| (x - 10.0).abs() < 1e-6), "hexagon side = radius");
+        assert!(sk.points[center].length() < 1e-9);
+        // centre (2) + size + rotation.
+        assert_eq!(solver::solve(&mut sk, &[]).unwrap().dof, 4);
+        // Resizing through the circle's diameter keeps it regular.
+        let ci = (0..sk.entities.len()).find(|&e| matches!(sk.entities[e], Entity::Circle { .. })).unwrap();
+        solver::add_constraints(&mut sk, &[Constraint::Diameter(ci, 40.0)]).unwrap();
+        assert!(side_lengths(&sk).iter().all(|x| (x - 20.0).abs() < 1e-5), "{:?}", side_lengths(&sk));
+    }
+
+    #[test]
+    fn circumscribed_polygon_has_edges_touching_the_circle() {
+        let mut sk = make(Tool::PolygonCircumscribed, 5, &[free(0.0, 0.0), free(8.0, 0.0)]);
+        regular(&sk, 5);
+        assert_eq!(solver::solve(&mut sk, &[]).unwrap().dof, 4);
+        let apothem = 8.0;
+        for e in 0..sk.entities.len() {
+            if sk.is_line(e) {
+                assert!((sk.line_distance(e, DVec2::ZERO).unwrap() - apothem).abs() < 1e-6);
+            }
+        }
+        // The edge midpoint was the click: the polygon has an edge centred at (8, 0).
+        let mid_hit = (0..sk.entities.len()).filter(|&e| sk.is_line(e)).any(|e| {
+            let Entity::Line { a, b } = sk.entities[e] else { unreachable!() };
+            ((sk.points[a] + sk.points[b]) * 0.5).distance(DVec2::new(8.0, 0.0)) < 1e-6
+        });
+        assert!(mid_hit);
+    }
+
+    #[test]
+    fn edge_polygon_uses_the_clicked_edge_and_builds_on_the_cursor_side() {
+        for (side_y, expect_above) in [(5.0, true), (-5.0, false)] {
+            let mut sk = make(Tool::PolygonEdge, 6, &[free(0.0, 0.0), free(10.0, 0.0), free(5.0, side_y)]);
+            regular(&sk, 6);
+            assert!(side_lengths(&sk).iter().all(|x| (x - 10.0).abs() < 1e-6));
+            let ys: Vec<f64> = sk.points.iter().map(|p| p.y).collect();
+            let far = ys.iter().cloned().fold(0.0f64, |m, y| if y.abs() > m.abs() { y } else { m });
+            assert_eq!(far > 0.0, expect_above, "{ys:?}");
+            assert!((far.abs() - 10.0 * 3f64.sqrt()).abs() < 1e-6, "hexagon with side 10 is 17.32 tall");
+        }
+    }
+
+    #[test]
+    fn side_count_is_clamped_and_defaults_to_six() {
+        let mut ed = Editor::default();
+        assert_eq!(ed.sides(), 6);
+        ed.polygon_sides = 2;
+        assert_eq!(ed.sides(), 6);
+        ed.polygon_sides = 500;
+        assert_eq!(ed.sides(), 64);
+        ed.polygon_sides = 3;
+        assert_eq!(ed.sides(), 3);
+    }
+
+    #[test]
+    fn a_triangle_and_a_many_sided_polygon_both_solve() {
+        for n in [3, 12, 40] {
+            let mut sk = make(Tool::PolygonInscribed, n, &[free(1.0, 2.0), free(11.0, 2.0)]);
+            regular(&sk, n);
+            assert_eq!(solver::solve(&mut sk, &[]).unwrap().dof, 4, "n = {n}");
+        }
+    }
+
+    #[test]
+    fn polygon_makes_a_single_extrudable_region() {
+        let sk = make(Tool::PolygonInscribed, 6, &[free(0.0, 0.0), free(10.0, 0.0)]);
+        let regions = crate::profile::find_regions(&sk);
+        assert_eq!(regions.len(), 1, "the construction circle doesn't make a second profile");
+        let want = 3.0 * 3f64.sqrt() / 2.0 * 100.0;
+        assert!((regions[0].area() - want).abs() < 1e-6, "{}", regions[0].area());
     }
 }

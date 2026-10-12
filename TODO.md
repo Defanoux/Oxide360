@@ -19,7 +19,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 8. **Project geometry** into a face sketch (body edges → construction lines).
 
-9. **Sketch Extend / Offset**, then **Polygon**, **Slot**, **Spline**. (Trim done for lines; trimming circles/arcs themselves not yet.)
+9. **Sketch Extend / Offset**, then **Slot**, **Spline**. (Trim done for lines; trimming circles/arcs themselves not yet.)
 
 10. **Timeline**: rename, suppress, drag to reorder (with error checking);
     browser: select/delete bodies; **Measure** tool.
@@ -41,6 +41,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Polygon tools (Circumscribed / Inscribed / Edge), 3–64 sides (toolbar box or ↑/↓): lines + construction reference circle, equal sides, corners on / edges tangent to the circle, 4 DOF left (centre, size, rotation).
 - Sketch Trim (lines): click the stretch to remove; end pieces shorten to the cutting line/circle/arc (joined if it ends there, else tied on), middle pieces split the line, uncrossed lines are deleted.
 - Construction geometry: per-entity flag (`Sketch.construction`, serde default), X key / toolbar toggle (selection → toggle it; nothing selected → construction mode for new geometry), dashed, ignored by `find_regions`, follows deletes. Center Rectangle now adds construction diagonals.
 - Sketch fillet/chamfer also take two lines that meet (click both), same as clicking their corner.

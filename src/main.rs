@@ -337,6 +337,7 @@ struct OpenCad {
     dim_hover: Option<usize>,
     rect_tool: Tool, // which rectangle tool the toolbar's rectangle button is
     arc_tool: Tool,  // which arc tool the toolbar's arc button is
+    poly_tool: Tool, // which polygon tool the toolbar's polygon button is
     corner_size: f64, // last sketch fillet radius / chamfer distance
     feature_errors: Vec<Option<String>>, // per extrude, from the last committed build
     body_count: usize,
@@ -399,6 +400,7 @@ impl Default for OpenCad {
             dim_hover: None,
             rect_tool: Tool::Rectangle,
             arc_tool: Tool::Arc3Point,
+            poly_tool: Tool::PolygonCircumscribed,
             corner_size: 2.0,
             feature_errors: Vec::new(),
             body_count: 0,
@@ -1771,6 +1773,28 @@ impl OpenCad {
                             }
                         }
                     });
+                    // Polygon: the last polygon tool used, ▾ for the others, and the side count.
+                    let poly_tool = self.poly_tool;
+                    if icons::button(ui, Icon::Polygon, poly_tool.name(), true, Tool::POLYGONS.contains(&self.editor.tool)).clicked() {
+                        self.editor.set_tool(poly_tool);
+                    }
+                    let more_polys = icons::dropdown(ui, "More polygon tools");
+                    egui::Popup::menu(&more_polys).show(|ui| {
+                        for tool in Tool::POLYGONS {
+                            if ui.selectable_label(tool == poly_tool, tool.name()).clicked() {
+                                self.poly_tool = tool;
+                                self.editor.set_tool(tool);
+                                ui.close();
+                            }
+                        }
+                    });
+                    let mut sides = self.editor.sides();
+                    let r = ui
+                        .add(egui::DragValue::new(&mut sides).range(3..=Editor::MAX_SIDES).prefix("sides "))
+                        .on_hover_text("Number of sides (also ↑ / ↓ while a polygon tool is active)");
+                    if r.changed() {
+                        self.editor.polygon_sides = sides;
+                    }
                 });
                 let _ = i;
                 group(ui, "MODIFY", |ui| {
@@ -2850,6 +2874,13 @@ impl OpenCad {
                 if key_x {
                     self.toggle_construction();
                 }
+                if Tool::POLYGONS.contains(&self.editor.tool) {
+                    let step = ui.input(|i| i.key_pressed(egui::Key::ArrowUp) as i32 - i.key_pressed(egui::Key::ArrowDown) as i32);
+                    if step != 0 {
+                        let n = (self.editor.sides() as i32 + step).clamp(3, Editor::MAX_SIDES as i32);
+                        self.editor.polygon_sides = n as usize;
+                    }
+                }
                 if key_d {
                     self.constraint_button("Dimension");
                 }
@@ -3158,7 +3189,10 @@ impl OpenCad {
                 | Tool::Circle2Point
                 | Tool::Circle3Point
                 | Tool::Arc3Point
-                | Tool::ArcCenter => {
+                | Tool::ArcCenter
+                | Tool::PolygonCircumscribed
+                | Tool::PolygonInscribed
+                | Tool::PolygonEdge => {
                     // Centre circle: after the centre, typing a number sets the diameter.
                     if self.editor.tool == Tool::Circle && self.editor.start.is_some() && !typing && self.float.is_none() {
                         let typed: String = ui.input(|inp| {
@@ -3640,6 +3674,22 @@ impl OpenCad {
                                 }
                                 None => {
                                     // 3-point, first side: just that side so far.
+                                    view.line(plane.to_world(from), plane.to_world(here), preview);
+                                    format!("{:.2} mm", from.distance(here))
+                                }
+                            }
+                        }
+                        Tool::PolygonCircumscribed | Tool::PolygonInscribed | Tool::PolygonEdge => {
+                            match self.editor.polygon_preview(sk, here) {
+                                Some(p) => {
+                                    let n = p.verts.len();
+                                    for k in 0..n {
+                                        view.line(plane.to_world(p.verts[k]), plane.to_world(p.verts[(k + 1) % n]), preview);
+                                    }
+                                    format!("{n} sides   side {:.2} mm   (↑/↓ changes the sides)", p.verts[0].distance(p.verts[1]))
+                                }
+                                None => {
+                                    // Edge polygon, first edge so far.
                                     view.line(plane.to_world(from), plane.to_world(here), preview);
                                     format!("{:.2} mm", from.distance(here))
                                 }

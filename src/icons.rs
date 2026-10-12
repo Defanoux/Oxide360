@@ -19,6 +19,7 @@ pub enum Icon {
     Chamfer,
     Construction,
     Trim,
+    Polygon,
     Select,
     Line,
     Rectangle,
@@ -158,6 +159,16 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             poly(&[(0.15, 0.85), (0.15, 0.15), (0.5, 0.15), (0.85, 0.5), (0.85, 0.85)], blue);
             line((0.5, 0.15), (0.85, 0.5), Stroke::new(thin.width * 1.4, orange));
             line((0.15, 0.85), (0.85, 0.85), thin);
+        }
+        Icon::Polygon => {
+            let pts: Vec<(f32, f32)> = (0..6)
+                .map(|k| {
+                    let a = std::f32::consts::TAU * k as f32 / 6.0 - std::f32::consts::FRAC_PI_2;
+                    (0.5 + 0.36 * a.cos(), 0.5 + 0.36 * a.sin())
+                })
+                .collect();
+            outline(&pts, Stroke::new(thin.width * 1.2, orange));
+            dot(0.5, 0.5, ink);
         }
         Icon::Trim => {
             // A line crossing another, the overhang struck out.
