@@ -1932,7 +1932,7 @@ impl OpenCad {
                         let dir = (plane.u * out.x as f32 + plane.v * out.y as f32).as_dvec3();
                         v.push(Handle::Line {
                             line: LineHandle { origin: from, dir },
-                            value: (d.centroid() - d.center).length() - reach + d.radial,
+                            value: d.radial,
                             target: HandleTarget::SketchRadial,
                         });
                     }
@@ -2006,7 +2006,7 @@ impl OpenCad {
                 // The distance arrow stands just outside the bodies, where the copies' ring is.
                 v.push(Handle::Line {
                     line: LineHandle { origin: g.pivot + out * g.reach, dir: out },
-                    value: g.base_radius - g.reach + d.radial,
+                    value: d.radial,
                     target: HandleTarget::PatternRadial,
                 });
                 v
@@ -2069,13 +2069,12 @@ impl OpenCad {
                 }
             }
             HandleTarget::PatternSpacing1 | HandleTarget::PatternSpacing2 | HandleTarget::PatternAngle | HandleTarget::PatternRadial => {
-                let base_radius = self.copy_dialog.as_ref().and_then(|d| self.copy_geometry(d)).map_or(0.0, |g| g.base_radius - g.reach);
                 if let Some(d) = self.copy_dialog.as_mut() {
                     match target {
                         HandleTarget::PatternSpacing1 => d.spacing = v,
                         HandleTarget::PatternSpacing2 => d.spacing2 = v,
                         HandleTarget::PatternAngle => d.angle = v.clamp(-360.0, 360.0),
-                        _ => d.radial = v - base_radius,
+                        _ => d.radial = v,
                     }
                 }
             }
@@ -2084,7 +2083,7 @@ impl OpenCad {
                     match target {
                         HandleTarget::SketchSpacing1 => d.spacing = v,
                         HandleTarget::SketchSpacing2 => d.spacing2 = v,
-                        HandleTarget::SketchRadial => d.radial = v - (d.centroid() - d.center).length() + d.reach(),
+                        HandleTarget::SketchRadial => d.radial = v,
                         _ => d.angle = v.clamp(-360.0, 360.0),
                     }
                 }
