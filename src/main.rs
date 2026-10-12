@@ -75,6 +75,7 @@ const COL_FIXED: Color32 = Color32::from_rgb(230, 80, 80);
 const COL_ORIGIN: Color32 = Color32::from_rgb(240, 180, 60);
 const COL_SNAP: Color32 = Color32::from_rgb(255, 120, 60);
 const COL_SELECT: Color32 = Color32::from_rgb(255, 170, 40);
+const COL_PROJECTED: Color32 = Color32::from_rgb(190, 120, 255); // projected from a body
 const COL_HOVER: Color32 = Color32::from_rgb(255, 220, 140);
 const COL_GLYPH: Color32 = Color32::from_rgb(170, 200, 170);
 const COL_DIM: Color32 = Color32::from_rgb(230, 230, 120);
@@ -334,6 +335,8 @@ struct CopyGeo {
     pivot: DVec3,
     base_radius: f64,
     out_dir: Option<DVec3>,
+    /// How far the bodies reach from their middle along `out_dir` (half their size that way).
+    reach: f64,
 }
 
 /// A drag arrow on the canvas and the value it controls (see `handles`).
@@ -454,6 +457,7 @@ struct OpenCad {
     plane_hidden: HashSet<usize>,            // construction planes switched off in the browser
     plane_dialog: Option<PlaneDialog>,
     plane_pick: bool,                        // Offset Plane: waiting for a click on the plane or face to measure from
+    selected_cplane: Option<usize>,          // the construction plane clicked in the 3D view
     cplane_hover: Option<usize>,             // the construction plane under the mouse
     ctx_cplane: Option<usize>,               // the one a right-click was on
     axis_pick: bool,                         // waiting for a click on a straight edge to put an axis on
@@ -560,6 +564,7 @@ impl Default for OpenCad {
             plane_hidden: HashSet::new(),
             plane_dialog: None,
             plane_pick: false,
+            selected_cplane: None,
             cplane_hover: None,
             ctx_cplane: None,
             axis_pick: false,
@@ -1190,6 +1195,23 @@ impl OpenCad {
     }
 
     // ---------- sketch lifecycle ----------
+
+    /// The Create Sketch tool (N): a plane that's already selected is used at
+    /// once, otherwise click one (or a flat face) in the view.
+    fn new_sketch_tool(&mut self) {
+        if let Some(op) = self.selected_plane.take() {
+            self.selected_cplane = None;
+            self.cancel_all_dialogs();
+            self.start_sketch(op);
+        } else if let Some(k) = self.selected_cplane.take().filter(|&k| k < self.planes.len()) {
+            self.cancel_all_dialogs();
+            self.start_sketch_on_plane(k);
+        } else {
+            let was = self.face_pick && !self.plane_pick;
+            self.cancel_all_dialogs();
+            self.face_pick = !was;
+        }
+    }
 
     fn start_sketch(&mut self, plane: OriginPlane) {
         self.dialog = None;
@@ -1939,13 +1961,16 @@ impl OpenCad {
         }
         let (lo, hi) = bounds?;
         let centroid = ((lo + hi) * 0.5).as_dvec3();
+        let half = ((hi - lo) * 0.5).as_dvec3();
         let (axis_point, axis_dir) = match d.custom {
             Some(k) => cache.model.axes.get(k).copied().flatten()?,
             None => (DVec3::ZERO, d.axis.dir()),
         };
         let pivot = axis_point + axis_dir * (centroid - axis_point).dot(axis_dir);
         let out = centroid - pivot;
-        Some(CopyGeo { centroid, axis_point, axis_dir, pivot, base_radius: out.length(), out_dir: out.try_normalize() })
+        let out_dir = out.try_normalize();
+        let reach = out_dir.map_or(0.0, |o| o.abs().dot(half));
+        Some(CopyGeo { centroid, axis_point, axis_dir, pivot, base_radius: out.length(), out_dir, reach })
     }
 
     /// The blue arrows of the open mirror / pattern dialog.
@@ -1965,9 +1990,10 @@ impl OpenCad {
                 if let Some(turn) = TurnHandle::new(g.axis_point, g.axis_dir, inner) {
                     v.push(Handle::Turn { turn, value: d.angle, target: HandleTarget::PatternAngle });
                 }
+                // The distance arrow stands just outside the bodies, where the copies' ring is.
                 v.push(Handle::Line {
-                    line: LineHandle { origin: g.pivot, dir: out },
-                    value: g.base_radius + d.radial,
+                    line: LineHandle { origin: g.pivot + out * g.reach, dir: out },
+                    value: g.base_radius - g.reach + d.radial,
                     target: HandleTarget::PatternRadial,
                 });
                 v
@@ -2030,7 +2056,7 @@ impl OpenCad {
                 }
             }
             HandleTarget::PatternSpacing1 | HandleTarget::PatternSpacing2 | HandleTarget::PatternAngle | HandleTarget::PatternRadial => {
-                let base_radius = self.copy_dialog.as_ref().and_then(|d| self.copy_geometry(d)).map_or(0.0, |g| g.base_radius);
+                let base_radius = self.copy_dialog.as_ref().and_then(|d| self.copy_geometry(d)).map_or(0.0, |g| g.base_radius - g.reach);
                 if let Some(d) = self.copy_dialog.as_mut() {
                     match target {
                         HandleTarget::PatternSpacing1 => d.spacing = v,
@@ -2970,12 +2996,9 @@ impl OpenCad {
                 let has_bodies = self.body_count > 0;
                 group(ui, "CREATE", |ui| {
                     // Like Fusion: click, then click the plane (or flat face) in the view.
-                    let tip = "Create Sketch: then click an origin plane or a flat face";
-                    if icons::button(ui, Icon::Sketch, tip, true, self.face_pick).clicked() {
-                        self.cancel_extrude();
-                        self.cancel_revolve();
-                        self.cancel_edge_dialog();
-                        self.face_pick = !self.face_pick;
+                    let tip = "Create Sketch (N): uses the selected plane, or click a plane or flat face";
+                    if icons::button(ui, Icon::Sketch, tip, true, self.face_pick && !self.plane_pick).clicked() {
+                        self.new_sketch_tool();
                     }
                     if icons::button(ui, Icon::Extrude, "Extrude (E)", can_profile, self.dialog.is_some()).clicked() {
                         self.open_extrude(None);
@@ -4043,6 +4066,10 @@ impl OpenCad {
         }
 
         let key_x = ui.input(|i| i.key_pressed(egui::Key::X) && !i.modifiers.command);
+        let (key_n, key_p) = ui.input(|i| {
+            let plain = !i.modifiers.command && !i.modifiers.alt;
+            (i.key_pressed(egui::Key::N) && plain, i.key_pressed(egui::Key::P) && plain)
+        });
         let (key_l, key_r, key_c, key_g, key_d, key_e, key_f, esc, del, undo) = ui.input(|i| {
             (
                 i.key_pressed(egui::Key::L),
@@ -4205,6 +4232,7 @@ impl OpenCad {
                 }
                 if response.clicked() {
                     self.selected_plane = self.origin_hover;
+                    self.selected_cplane = self.cplane_hover;
                 }
                 if response.secondary_clicked() {
                     self.ctx_plane = self.origin_hover;
@@ -4217,6 +4245,7 @@ impl OpenCad {
             }
         } else if self.active.is_some() {
             self.selected_plane = None;
+            self.selected_cplane = None;
         }
 
         // --- extrude / revolve input: pick profiles (and a revolve axis) ---
@@ -4343,6 +4372,8 @@ impl OpenCad {
             }
         } else if !sketching && key_e && !typing && regions.iter().any(|r| !r.is_empty()) {
             self.open_extrude(None);
+        } else if !sketching && key_n && !typing {
+            self.new_sketch_tool();
         } else if !sketching && key_f && !typing && self.body_count > 0 {
             self.open_edge_dialog(None, EdgeKind::Fillet);
         }
@@ -4498,6 +4529,9 @@ impl OpenCad {
                 }
                 if key_x {
                     self.toggle_construction();
+                }
+                if key_p && self.body_count > 0 && self.sketch_pattern.is_none() {
+                    self.editor.set_tool(Tool::Project);
                 }
                 if Tool::POLYGONS.contains(&self.editor.tool) {
                     let step = ui.input(|i| i.key_pressed(egui::Key::ArrowUp) as i32 - i.key_pressed(egui::Key::ArrowDown) as i32);
@@ -4677,7 +4711,9 @@ impl OpenCad {
                         if response.dragged_by(egui::PointerButton::Primary) && e < self.sketches[i].entities.len() {
                             let mut along = (now - start).dot(n);
                             if self.grid_snap {
-                                along = (along / (grid.step / 10.0)).round() * (grid.step / 10.0);
+                                // The line itself lands on a grid line (the grid follows the zoom).
+                                let at = from[0].dot(n);
+                                along = ((at + along) / grid.step).round() * grid.step - at;
                             }
                             let _ = solver::drag_line(&mut self.sketches[i], e, from, n * along);
                         }
@@ -5440,7 +5476,11 @@ impl OpenCad {
                 }
             };
             for (e, ent) in sk.entities.iter().enumerate() {
-                let stroke = Stroke::new(if active { 2.0 } else { 1.5 }, colour_of(Sel::Entity(e)));
+                let mut col = colour_of(Sel::Entity(e));
+                if col == base && sk.is_projected(e) {
+                    col = COL_PROJECTED;
+                }
+                let stroke = Stroke::new(if active { 2.0 } else { 1.5 }, col);
                 let dashed = sk.is_construction(e);
                 match *ent {
                     Entity::Line { a, b } if dashed => {

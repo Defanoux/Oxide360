@@ -740,6 +740,17 @@ impl Sketch {
         matches!(self.entities.get(e), Some(Entity::Circle { .. }))
     }
 
+    /// Geometry brought in by Project: construction, and locked where it lies.
+    pub fn is_projected(&self, e: EntityId) -> bool {
+        let pts: Vec<PointId> = match self.entities.get(e) {
+            Some(&Entity::Line { a, b }) => vec![a, b],
+            Some(&Entity::Circle { center, .. }) => vec![center],
+            Some(&Entity::Arc { center, a, b }) => vec![center, a, b],
+            _ => return false,
+        };
+        self.is_construction(e) && pts.iter().all(|&p| p != Self::ORIGIN && self.constraints.contains(&Constraint::Fix(p)))
+    }
+
     pub fn is_fixed(&self, p: PointId) -> bool {
         p == Self::ORIGIN || self.constraints.contains(&Constraint::Fix(p))
     }

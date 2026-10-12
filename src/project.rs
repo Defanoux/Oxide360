@@ -217,6 +217,11 @@ mod tests {
         let fixes = sk.add_projected(line).unwrap();
         assert_eq!(fixes.len(), 2);
         assert!(sk.is_construction(0), "construction, so it doesn't make regions");
+        assert!(!sk.is_projected(0), "until it's locked");
+        for c in fixes {
+            sk.constraints.push(c);
+        }
+        assert!(sk.is_projected(0), "locked construction geometry reads as projected");
         assert!(sk.add_projected(line).is_err());
         assert!(sk.add_projected(Projected::Line(DVec2::new(6.0, 1.0), DVec2::new(1.0, 1.0))).is_err(), "either direction");
         let arc = Projected::Arc { center: DVec2::ZERO, start: DVec2::new(3.0, 0.0), end: DVec2::new(0.0, 3.0) };
