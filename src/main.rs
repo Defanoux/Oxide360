@@ -101,6 +101,14 @@ fn apply_edit(
     Ok(Some(solved))
 }
 
+/// A size box's text: "5", or "2, 5" with a second distance.
+fn sizes_text(a: f64, b: Option<f64>) -> String {
+    match b {
+        Some(b) => format!("{a:.2}, {b:.2}"),
+        None => format!("{a:.2}"),
+    }
+}
+
 fn parse_mm(text: &str) -> Option<f64> {
     text.trim().trim_end_matches("mm").trim().parse::<f64>().ok().filter(|v| v.is_finite())
 }
@@ -309,6 +317,8 @@ struct EdgeDialog {
     editing: Option<usize>,
     kind: EdgeKind,
     size: f64,
+    /// A chamfer's second distance (type `2, 5`).
+    size2: Option<f64>,
     edges: Vec<EdgeRef>,
 }
 
@@ -1450,7 +1460,10 @@ impl OpenCad {
             }
             HandleTarget::EdgeSize => {
                 if let Some(d) = self.edge_dialog.as_mut() {
-                    d.size = v.max(0.01);
+                    let v = v.max(0.01);
+                    // A chamfer's two distances scale together.
+                    d.size2 = d.size2.map(|d2| d2 * v / d.size.max(1e-9));
+                    d.size = v;
                 }
             }
             HandleTarget::RevolveAngle => {
@@ -1645,10 +1658,11 @@ impl OpenCad {
         self.cancel_revolve();
         self.message = None;
         let d = match editing.and_then(|k| self.edge_features.get(k)) {
-            Some(f) => EdgeDialog { editing, kind: f.kind, size: f.size, edges: f.edges.clone() },
-            None => EdgeDialog { editing: None, kind, size: 2.0, edges: Vec::new() },
+            Some(f) => EdgeDialog { editing, kind: f.kind, size: f.size, size2: f.size2, edges: f.edges.clone() },
+            None => EdgeDialog { editing: None, kind, size: 2.0, size2: None, edges: Vec::new() },
         };
-        self.float = Some(FloatEdit { target: EditTarget::EdgeSize, text: format!("{:.2}", d.size), focus: true, keep_text: false });
+        let text = sizes_text(d.size, d.size2);
+        self.float = Some(FloatEdit { target: EditTarget::EdgeSize, text, focus: true, keep_text: false });
         self.edge_dialog = Some(d);
     }
 
@@ -1661,7 +1675,7 @@ impl OpenCad {
                 format!("{}{n}", d.kind.name())
             }
         };
-        Some(EdgeFeature { name, kind: d.kind, size: d.size, edges: d.edges.clone() })
+        Some(EdgeFeature { name, kind: d.kind, size: d.size, size2: d.size2, edges: d.edges.clone() })
     }
 
     fn commit_edge_feature(&mut self) {
@@ -1724,7 +1738,7 @@ impl OpenCad {
             }
             EditTarget::EdgeSize => {
                 if let Some(d) = self.edge_dialog.as_ref() {
-                    fe.text = format!("{:.2}", d.size);
+                    fe.text = sizes_text(d.size, d.size2);
                 }
             }
             EditTarget::RevolveAngle => {
@@ -2433,6 +2447,7 @@ impl OpenCad {
         let mut close = false;
         let mut live: Option<f64> = None;
         let mut corner_text: Option<String> = None;
+        let mut edge_sizes: Option<(f64, Option<f64>)> = None;
         let mut extrude_ok = false;
         let mut extrude_cancel = false;
         egui::Area::new(egui::Id::new("float_edit")).order(egui::Order::Foreground).fixed_pos(anchor).show(
@@ -2488,6 +2503,9 @@ impl OpenCad {
                                 if lost && enter {
                                     live = parsed;
                                     extrude_ok = true;
+                                }
+                                if target == EditTarget::EdgeSize && (changed || (lost && enter)) {
+                                    edge_sizes = sketch::parse_sizes(&fe.text);
                                 }
                                 if lost && esc {
                                     extrude_cancel = true;
@@ -2557,9 +2575,11 @@ impl OpenCad {
                 }
             }
             EditTarget::EdgeSize => {
-                if let (Some(v), Some(d)) = (live, self.edge_dialog.as_mut()) {
-                    if v > 0.0 {
-                        d.size = v;
+                if let (Some((a, b)), Some(d)) = (edge_sizes, self.edge_dialog.as_mut()) {
+                    if a > 0.0 {
+                        d.size = a;
+                        // (A fillet only has a radius.)
+                        d.size2 = b.filter(|v| *v > 0.0 && d.kind == EdgeKind::Chamfer);
                     }
                 }
                 if extrude_cancel {

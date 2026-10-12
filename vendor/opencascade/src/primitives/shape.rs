@@ -834,6 +834,34 @@ impl Shape {
         }
     }
 
+    /// opencad patch: chamfer cutting `d1` off one face and `d2` off the other
+    /// at each edge; `d1` is measured on the face paired with the edge.
+    pub fn try_chamfer_edges_two<E: AsRef<Edge>, F: AsRef<Face>>(
+        &self,
+        d1: f64,
+        d2: f64,
+        edges: impl IntoIterator<Item = (E, F)>,
+    ) -> Option<Self> {
+        let mut make = ffi::b_rep_fillet_api::BRepFilletAPI_MakeChamfer_new(&self.inner);
+        for (edge, face) in edges.into_iter() {
+            let ok = ffi::b_rep_fillet_api::BRepFilletAPI_MakeChamfer_try_add_two(
+                make.pin_mut(),
+                d1,
+                d2,
+                &edge.as_ref().inner,
+                &face.as_ref().inner,
+            );
+            if !ok {
+                return None;
+            }
+        }
+        if ffi::b_rep_fillet_api::BRepFilletAPI_MakeChamfer_try_build(make.pin_mut()) {
+            Some(Self::from_shape(make.pin_mut().Shape()))
+        } else {
+            None
+        }
+    }
+
     /// opencad patch: booleans that return None if the kernel reports failure,
     /// instead of asking a failed operation for its shape (which throws).
     pub fn try_union(&self, other: &Shape) -> Option<Self> {

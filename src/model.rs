@@ -250,6 +250,11 @@ pub struct EdgeFeature {
     pub kind: EdgeKind,
     /// Fillet radius or chamfer distance (mm).
     pub size: f64,
+    /// A chamfer's second distance. `size` is measured on the first face of
+    /// each edge reference (`EdgeRef::faces[0]`), this one on the other.
+    /// None: the same distance both ways.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size2: Option<f64>,
     pub edges: Vec<EdgeRef>,
 }
 

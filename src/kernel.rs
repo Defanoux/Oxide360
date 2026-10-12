@@ -523,7 +523,7 @@ fn apply_edges(bodies: Vec<Shape>, f: &EdgeFeature, ext: &[Option<End>], rev: &[
         all.extend(shape_edges(b).into_iter().map(|(e, r, _)| (i, e, r)));
     }
     let reach = (hi - lo).length() * 0.25;
-    let mut picked: Vec<Vec<usize>> = vec![Vec::new(); bodies.len()];
+    let mut picked: Vec<Vec<(usize, DVec3)>> = vec![Vec::new(); bodies.len()];
     let mut used: HashSet<(usize, usize)> = HashSet::new();
     for r in &f.edges {
         // An edge on the far end of an extrude/revolve moves with it first.
@@ -532,7 +532,8 @@ fn apply_edges(bodies: Vec<Shape>, f: &EdgeFeature, ext: &[Option<End>], rev: &[
         let hit = find_edge(&all, r, reach).ok_or("an edge it rounds no longer exists — edit it and pick again")?;
         let idx = all.iter().position(|c| std::ptr::eq(c, hit)).expect("hit is from this list");
         if used.insert((hit.0, idx)) {
-            picked[hit.0].push(idx);
+            // (A two-distance chamfer measures its first distance on the face the user's pick faced.)
+            picked[hit.0].push((idx, r.faces[0]));
         }
     }
     let mut out = Vec::new();
@@ -541,16 +542,47 @@ fn apply_edges(bodies: Vec<Shape>, f: &EdgeFeature, ext: &[Option<End>], rev: &[
             out.push(b);
             continue;
         }
-        let edges = picked[i].iter().map(|&j| &all[j].1);
-        let done = match f.kind {
-            EdgeKind::Fillet => b.try_fillet_edges(f.size, edges),
-            EdgeKind::Chamfer => b.try_chamfer_edges(f.size, edges),
+        let edges = picked[i].iter().map(|&(j, _)| &all[j].1);
+        let two = f.size2.filter(|d2| f.kind == EdgeKind::Chamfer && (d2 - f.size).abs() > 1e-12);
+        let done = match (f.kind, two) {
+            (EdgeKind::Fillet, _) => b.try_fillet_edges(f.size, edges),
+            (EdgeKind::Chamfer, None) => b.try_chamfer_edges(f.size, edges),
+            (EdgeKind::Chamfer, Some(d2)) => {
+                if !d2.is_finite() || d2 <= 0.0 {
+                    return Err("chamfer distance must be greater than zero".into());
+                }
+                let with_faces: Option<Vec<(&Edge, Face)>> =
+                    picked[i].iter().map(|&(j, want)| edge_face(&b, &all[j].2, want).map(|face| (&all[j].1, face))).collect();
+                let with_faces = with_faces.ok_or("couldn't find the face a chamfer distance is measured on")?;
+                b.try_chamfer_edges_two(f.size, d2, with_faces)
+            }
         }
         .filter(|s| s.volume() > MIN_VOLUME)
         .ok_or_else(|| format!("{} {} is too large for these edges", f.kind.size_label().to_lowercase(), f.size))?;
         out.extend(done.solids());
     }
     Ok(out)
+}
+
+/// The face of `shape` that has `edge` as one of its edges and whose outward
+/// normal there points most like `want` (any such face if `want` is zero).
+fn edge_face(shape: &Shape, edge: &EdgeRef, want: DVec3) -> Option<Face> {
+    let mut best: Option<(f64, Face)> = None;
+    for face in shape.faces() {
+        let has_edge = face.edges().any(|e| {
+            let pts: Vec<DVec3> = e.approximation_segments().map(|p| DVec3::new(p.x, p.y, p.z)).collect();
+            polyline_mid(&pts).is_some_and(|r| r.mid.distance(edge.mid) < 1e-6)
+        });
+        if !has_edge {
+            continue;
+        }
+        let n = face.normal_at(kv(edge.mid));
+        let score = DVec3::new(n.x, n.y, n.z).normalize_or_zero().dot(want);
+        if best.as_ref().is_none_or(|(s, _)| score > *s) {
+            best = Some((score, face));
+        }
+    }
+    best.map(|(_, f)| f)
 }
 
 /// Triangulate a body for drawing and mesh export. Faces are meshed
@@ -975,7 +1007,7 @@ mod tests {
         rect(&mut a, 0.0, 0.0, 50.0, 30.0);
         let features: Vec<EdgeFeature> = edge
             .into_iter()
-            .map(|(kind, size, r)| EdgeFeature { name: "F".into(), kind, size, edges: vec![r] })
+            .map(|(kind, size, r)| EdgeFeature { name: "F".into(), kind, size, size2: None, edges: vec![r] })
             .collect();
         let mut tl = timeline(1, 1);
         if !features.is_empty() {
@@ -1016,6 +1048,56 @@ mod tests {
         let m = plate_with(10.0, Some((EdgeKind::Fillet, 25.0, top_front(10.0))));
         assert!(m.edge_errors[0].is_some(), "radius larger than the plate is thick");
         assert!(close(total(&m), 15000.0), "the plate is still there, unrounded");
+    }
+
+    /// The top-front edge of a freshly built plate, the way the app picks it (with its faces).
+    fn picked_top_front(height: f64) -> EdgeRef {
+        let base = plate_with(height, None);
+        base.bodies[0]
+            .edges
+            .iter()
+            .map(|e| e.at)
+            .find(|r| r.dir.dot(DVec3::X).abs() > 0.99 && r.mid.y.abs() < 1e-6 && (r.mid.z - height).abs() < 1e-6)
+            .expect("top-front edge is offered")
+    }
+
+    fn two_distance_chamfer(d1: f64, d2: f64, first_face: DVec3) -> Model {
+        let mut r = picked_top_front(10.0);
+        let other = if r.faces[0].dot(first_face) > 0.99 { r.faces[1] } else { r.faces[0] };
+        r.faces = [first_face, other];
+        let mut a = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut a, 0.0, 0.0, 50.0, 30.0);
+        let f = EdgeFeature { name: "C".into(), kind: EdgeKind::Chamfer, size: d1, size2: Some(d2), edges: vec![r] };
+        let mut tl = timeline(1, 1);
+        tl.push(Feature::Edge(0));
+        build4(&[a], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[f], &tl)
+    }
+
+    #[test]
+    fn two_distance_chamfer_removes_d1_d2_over_two_times_length() {
+        // 2 on the top face, 5 on the front face: removes 2·5/2 × 50 = 250.
+        let m = two_distance_chamfer(2.0, 5.0, DVec3::Z);
+        assert_eq!(m.edge_errors, vec![None]);
+        assert!(close(total(&m), 15000.0 - 250.0), "{}", total(&m));
+        // The first distance is on the face the pick faced: the top face's front edge moved back 2.
+        let top_front_y = m.bodies[0].mesh.positions.iter().filter(|p| (p.z - 10.0).abs() < 1e-4).map(|p| p.y).fold(f32::MAX, f32::min);
+        assert!((top_front_y - 2.0).abs() < 1e-4, "top face starts at y = {top_front_y}");
+        // Swapping which face is first swaps where each distance goes.
+        let m = two_distance_chamfer(2.0, 5.0, DVec3::NEG_Y);
+        assert!(close(total(&m), 15000.0 - 250.0), "swapped: {}", total(&m));
+        let top_front_y = m.bodies[0].mesh.positions.iter().filter(|p| (p.z - 10.0).abs() < 1e-4).map(|p| p.y).fold(f32::MAX, f32::min);
+        assert!((top_front_y - 5.0).abs() < 1e-4, "top face starts at y = {top_front_y}");
+    }
+
+    #[test]
+    fn equal_second_distance_is_an_ordinary_chamfer_and_bad_ones_are_errors() {
+        let m = two_distance_chamfer(3.0, 3.0, DVec3::Z);
+        assert!(close(total(&m), 15000.0 - 9.0 / 2.0 * 50.0), "{}", total(&m));
+        let m = two_distance_chamfer(2.0, 0.0, DVec3::Z);
+        assert!(m.edge_errors[0].is_some());
+        let m = two_distance_chamfer(2.0, 25.0, DVec3::Z);
+        assert!(m.edge_errors[0].is_some(), "25 mm doesn't fit on a 10 mm tall face");
+        assert!(close(total(&m), 15000.0), "the plate is still there");
     }
 
     #[test]
@@ -1338,7 +1420,7 @@ mod tests {
             })
             .expect("outer edge of the end face");
         picked.follow = follow_for_edge(&m.caps, picked.mid, picked.dir, 1e-6);
-        let fillet = EdgeFeature { name: "F".into(), kind: EdgeKind::Fillet, size: 1.0, edges: vec![picked] };
+        let fillet = EdgeFeature { name: "F".into(), kind: EdgeKind::Fillet, size: 1.0, size2: None, edges: vec![picked] };
         let timeline = [Feature::Sketch(0), Feature::Revolve(0), Feature::Edge(0)];
         // The edge sits between a flat end and the curved outside, so the
         // material removed isn't the straight-edge formula — but it is the same

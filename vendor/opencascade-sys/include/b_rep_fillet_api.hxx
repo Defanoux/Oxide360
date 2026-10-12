@@ -44,3 +44,16 @@ inline bool BRepFilletAPI_MakeChamfer_try_build(BRepFilletAPI_MakeChamfer &make)
     return false;
   }
 }
+
+// opencad patch: chamfer with two distances; `dist1` is measured on `face`.
+// Add() throws when the edge isn't an edge of that face, so report failure.
+inline bool BRepFilletAPI_MakeChamfer_try_add_two(BRepFilletAPI_MakeChamfer &make, Standard_Real dist1,
+                                                  Standard_Real dist2, const TopoDS_Edge &edge,
+                                                  const TopoDS_Face &face) {
+  try {
+    make.Add(dist1, dist2, edge, face);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}

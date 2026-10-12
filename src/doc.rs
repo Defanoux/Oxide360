@@ -266,6 +266,7 @@ mod tests {
                 name: "Fillet1".into(),
                 kind: crate::model::EdgeKind::Fillet,
                 size: 2.5,
+                size2: None,
                 edges: vec![crate::model::EdgeRef {
                     mid: glam::DVec3::new(25.0, 0.0, 12.5),
                     dir: glam::DVec3::X,
