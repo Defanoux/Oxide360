@@ -21,6 +21,7 @@ mod camera;
 mod doc;
 mod export;
 mod gpu;
+mod handles;
 mod icons;
 mod kernel;
 mod model;
@@ -34,6 +35,7 @@ use camera::{
     ndc_from_pixel,
 };
 use doc::{Document, Feature, History};
+use handles::{LineHandle, TurnHandle};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use eframe::egui;
@@ -288,6 +290,20 @@ struct RevolveDialog {
     picking_axis: bool,
 }
 
+/// A drag arrow on the canvas and the value it controls (see `handles`).
+#[derive(Clone, Copy)]
+enum Handle {
+    Line { line: LineHandle, value: f64, target: HandleTarget },
+    Turn { turn: TurnHandle, value: f64 },
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum HandleTarget {
+    Extrude,
+    EdgeSize,
+    RevolveAngle,
+}
+
 struct EdgeDialog {
     editing: Option<usize>,
     kind: EdgeKind,
@@ -368,6 +384,7 @@ struct OpenCad {
     cube_axes: bool, // show the XYZ triad on the view cube
     arrow_screen: Option<(Vec2, Vec2)>, // extrude arrow on screen, last frame
     arrow_drag: Option<f64>,            // grab offset while dragging the arrow
+    arrow_turn: Option<(f64, f64)>,     // revolve arrow: cursor angle so far (unwrapped, last raw)
     path: Option<PathBuf>,              // where this design is saved
     saved: Document,                    // what's on disk, to detect unsaved changes
     cmd: Option<Cmd>,
@@ -431,6 +448,7 @@ impl Default for OpenCad {
             cube_axes: true,
             arrow_screen: None,
             arrow_drag: None,
+            arrow_turn: None,
             path: None,
             saved: Document::default(),
             cmd: None,
@@ -1370,6 +1388,72 @@ impl OpenCad {
         }
     }
 
+    /// The drag arrow for whichever box is open (extrude distance, fillet /
+    /// chamfer size, revolve angle), with the value it shows now.
+    fn current_handle(&self, regions: &[Vec<Region>]) -> Option<Handle> {
+        if let Some(d) = &self.dialog {
+            let (origin, normal) = self.extrude_axis(regions)?;
+            let line = LineHandle { origin: origin.as_dvec3(), dir: normal.as_dvec3() };
+            return Some(Handle::Line { line, value: d.distance, target: HandleTarget::Extrude });
+        }
+        if let Some(d) = &self.edge_dialog {
+            let line = handles::edge_handle(d.edges.first()?)?;
+            return Some(Handle::Line { line, value: d.size, target: HandleTarget::EdgeSize });
+        }
+        if let Some(d) = &self.revolve_dialog {
+            let s = d.sketch?;
+            let r = regions.get(s)?.get(*d.profiles.first()?)?;
+            let spot = self.plane_of(s).to_world(r.centroid());
+            let (a, b) = self.revolve_axis_line(s, d.axis, 1.0)?;
+            let turn = TurnHandle::new(a.as_dvec3(), (b - a).as_dvec3(), spot.as_dvec3())?;
+            return Some(Handle::Turn { turn, value: d.angle });
+        }
+        None
+    }
+
+    /// Put a dragged arrow's value into its box.
+    fn set_handle_value(&mut self, target: HandleTarget, v: f64) {
+        match target {
+            HandleTarget::Extrude => {
+                if let Some(d) = self.dialog.as_mut() {
+                    d.distance = v;
+                }
+            }
+            HandleTarget::EdgeSize => {
+                if let Some(d) = self.edge_dialog.as_mut() {
+                    d.size = v.max(0.01);
+                }
+            }
+            HandleTarget::RevolveAngle => {
+                if let Some(d) = self.revolve_dialog.as_mut() {
+                    d.angle = v.clamp(-360.0, 360.0);
+                }
+            }
+        }
+        self.set_distance_text();
+    }
+
+    /// A revolve axis as two world points `reach` × the view distance either
+    /// side of the sketch's origin / the line.
+    fn revolve_axis_line(&self, s: usize, which: RevolveAxis, reach: f64) -> Option<(Vec3, Vec3)> {
+        let sk = self.sketches.get(s)?;
+        let plane = self.plane_of(s);
+        let reach = (self.camera.distance as f64) * 2.0 * reach;
+        let (a, b) = match which {
+            RevolveAxis::SketchX => (DVec2::new(-reach, 0.0), DVec2::new(reach, 0.0)),
+            RevolveAxis::SketchY => (DVec2::new(0.0, -reach), DVec2::new(0.0, reach)),
+            RevolveAxis::Line(e) => match sk.entities.get(e)? {
+                Entity::Line { a, b } => {
+                    let (p, q) = (sk.points[*a], sk.points[*b]);
+                    let dir = (q - p).normalize_or_zero();
+                    (p - dir * reach, q + dir * reach)
+                }
+                _ => return None,
+            },
+        };
+        Some((plane.to_world(a), plane.to_world(b)))
+    }
+
     /// Axis the extrude arrow moves along: (point on the sketch plane, plane normal).
     fn extrude_axis(&self, regions: &[Vec<Region>]) -> Option<(Vec3, Vec3)> {
         let d = self.dialog.as_ref()?;
@@ -1592,10 +1676,24 @@ impl OpenCad {
     }
 
     fn set_distance_text(&mut self) {
-        if let (Some(fe), Some(d)) = (self.float.as_mut(), self.dialog.as_ref()) {
-            if fe.target == EditTarget::ExtrudeDistance {
-                fe.text = format!("{:.2}", d.distance);
+        let Some(fe) = self.float.as_mut() else { return };
+        match fe.target {
+            EditTarget::ExtrudeDistance => {
+                if let Some(d) = self.dialog.as_ref() {
+                    fe.text = format!("{:.2}", d.distance);
+                }
             }
+            EditTarget::EdgeSize => {
+                if let Some(d) = self.edge_dialog.as_ref() {
+                    fe.text = format!("{:.2}", d.size);
+                }
+            }
+            EditTarget::RevolveAngle => {
+                if let Some(d) = self.revolve_dialog.as_ref() {
+                    fe.text = format!("{:.1}", d.angle);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -2467,7 +2565,7 @@ impl OpenCad {
             _ => false,
         };
         // Grabbing the extrude arrow (decided before the camera, so it doesn't orbit).
-        let grab_arrow = self.dialog.is_some()
+        let grab_arrow = self.arrow_screen.is_some()
             && response.drag_started_by(egui::PointerButton::Primary)
             && near_arrow(press_px, self.arrow_screen);
         let arrow_active = grab_arrow || self.arrow_drag.is_some();
@@ -2515,33 +2613,52 @@ impl OpenCad {
         let mm_per_px = (self.camera.distance * 2.0 * (FOV_Y * 0.5).tan() / size.y) as f64;
         let regions: Vec<Vec<Region>> = self.sketches.iter().map(find_regions).collect();
 
-        // --- extrude arrow drag ---
-        if let Some((origin, normal)) = self.extrude_axis(&regions) {
-            let param_at = |px: Vec2| {
+        // --- arrow drag (extrude distance, fillet / chamfer size, revolve angle) ---
+        if let Some(h) = self.current_handle(&regions) {
+            // What the cursor at `px` means for this arrow: a distance along
+            // it, or the angle it has been swung to.
+            let sample = |px: Vec2| {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
-                closest_param_on_line(&ray, origin, normal).map(|s| s as f64)
+                match h {
+                    Handle::Line { line, .. } => {
+                        closest_param_on_line(&ray, line.origin.as_vec3(), line.dir.as_vec3()).map(|s| s as f64)
+                    }
+                    Handle::Turn { turn, .. } => turn.angle_at(ray.origin.as_dvec3(), ray.dir.as_dvec3()),
+                }
+            };
+            let (value, target) = match h {
+                Handle::Line { value, target, .. } => (value, target),
+                Handle::Turn { value, .. } => (value, HandleTarget::RevolveAngle),
             };
             if grab_arrow {
-                if let (Some(s), Some(dlg)) = (press_px.and_then(param_at), self.dialog.as_ref()) {
-                    self.arrow_drag = Some(s - dlg.distance); // keep the grab point under the cursor
+                if let Some(c) = press_px.and_then(sample) {
+                    self.arrow_drag = Some(c - value); // keep the grab point under the cursor
+                    self.arrow_turn = Some((c, c));
                 }
             }
             if let (Some(offset), Some(px)) = (self.arrow_drag, hover_px) {
                 if response.dragged_by(egui::PointerButton::Primary) {
-                    if let (Some(s), Some(dlg)) = (param_at(px), self.dialog.as_mut()) {
-                        let mut v = s - offset;
+                    if let Some(c) = sample(px) {
+                        let mut v = match (h, self.arrow_turn) {
+                            (Handle::Turn { .. }, Some((acc, raw))) => {
+                                let acc = acc + handles::angle_step(raw, c);
+                                self.arrow_turn = Some((acc, c));
+                                acc - offset
+                            }
+                            _ => c - offset,
+                        };
                         if self.grid_snap {
-                            let step = grid.step / 10.0;
+                            let step = if matches!(h, Handle::Turn { .. }) { 1.0 } else { grid.step / 10.0 };
                             v = (v / step).round() * step;
                         }
-                        dlg.distance = v;
+                        self.set_handle_value(target, v);
                     }
-                    self.set_distance_text();
                 }
             }
         }
         if self.arrow_drag.is_some() && response.drag_stopped() {
             self.arrow_drag = None;
+            self.arrow_turn = None;
             self.focus_distance();
         }
 
@@ -3362,12 +3479,16 @@ impl OpenCad {
         }
 
 
-        // --- draw: extrude arrow ---
+        // --- draw: the drag arrow ---
         let prev_arrow = self.arrow_screen.take();
-        if let (Some((origin, normal)), Some(d)) = (self.extrude_axis(&regions), self.dialog.as_ref()) {
-            let sign = if d.distance < 0.0 { -1.0 } else { 1.0 };
-            let base = origin + normal * d.distance as f32;
-            let tip = base + normal * (sign * ARROW_PX * mm_per_px as f32);
+        if let Some(h) = self.current_handle(&regions) {
+            let len = ARROW_PX * mm_per_px as f32;
+            let (base, dir, value) = match h {
+                Handle::Line { line, value, .. } => (line.origin + line.dir * value, line.dir, value),
+                Handle::Turn { turn, value } => (turn.position(value), turn.direction(value), value),
+            };
+            let sign = if value < 0.0 { -1.0 } else { 1.0 };
+            let (base, tip) = (base.as_vec3(), base.as_vec3() + dir.as_vec3() * (sign * len));
             let hot = self.arrow_drag.is_some() || near_arrow(hover_px, prev_arrow);
             self.arrow_screen = view.arrow3d(base, tip, if hot { COL_ARROW_HOT } else { COL_ARROW });
         }
@@ -3397,24 +3518,7 @@ impl OpenCad {
 
         // --- draw: the revolve axis (and a line it could be) ---
         if let Some(d) = &self.revolve_dialog {
-            let axis_line = |s: usize, which: RevolveAxis| -> Option<(Vec3, Vec3)> {
-                let sk = self.sketches.get(s)?;
-                let plane = self.plane_of(s);
-                let reach = (self.camera.distance as f64) * 2.0;
-                let (a, b) = match which {
-                    RevolveAxis::SketchX => (DVec2::new(-reach, 0.0), DVec2::new(reach, 0.0)),
-                    RevolveAxis::SketchY => (DVec2::new(0.0, -reach), DVec2::new(0.0, reach)),
-                    RevolveAxis::Line(e) => match sk.entities.get(e)? {
-                        Entity::Line { a, b } => {
-                            let (p, q) = (sk.points[*a], sk.points[*b]);
-                            let dir = (q - p).normalize_or_zero();
-                            (p - dir * reach, q + dir * reach)
-                        }
-                        _ => return None,
-                    },
-                };
-                Some((plane.to_world(a), plane.to_world(b)))
-            };
+            let axis_line = |s: usize, which: RevolveAxis| self.revolve_axis_line(s, which, 1.0);
             if let Some((a, b)) = d.sketch.and_then(|s| axis_line(s, d.axis)) {
                 view.line(a, b, Stroke::new(2.0, COL_SELECT));
             }

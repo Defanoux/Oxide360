@@ -41,6 +41,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Drag arrows for solid fillet / chamfer (along the edge's face bisector, into the part) and revolve (swings round the axis from the profile), same grab/drag as the extrude arrow. Math in `handles.rs` (tested); main.rs has one generic `Handle`.
 - Polygon tools (Circumscribed / Inscribed / Edge), 3–64 sides (toolbar box or ↑/↓): lines + construction reference circle, equal sides, corners on / edges tangent to the circle, 4 DOF left (centre, size, rotation).
 - Sketch Trim (lines): click the stretch to remove; end pieces shorten to the cutting line/circle/arc (joined if it ends there, else tied on), middle pieces split the line, uncrossed lines are deleted.
 - Construction geometry: per-entity flag (`Sketch.construction`, serde default), X key / toolbar toggle (selection → toggle it; nothing selected → construction mode for new geometry), dashed, ignored by `find_regions`, follows deletes. Center Rectangle now adds construction diagonals.
