@@ -458,6 +458,38 @@ pub enum Arc3Snap {
     GridCenter(DVec2),
 }
 
+/// Nearest and farthest distance from `c` to the rectangle `lo`–`hi`
+/// (nearest is 0 when `c` is inside it).
+fn rect_distances(c: DVec2, lo: DVec2, hi: DVec2) -> (f64, f64) {
+    let nearest = c.clamp(lo, hi);
+    let far = DVec2::new((c.x - lo.x).abs().max((c.x - hi.x).abs()), (c.y - lo.y).abs().max((c.y - hi.y).abs()));
+    (c.distance(nearest), far.length())
+}
+
+/// Does the segment `p`–`q` touch the rectangle `lo`–`hi` (Liang–Barsky)?
+fn segment_touches_rect(p: DVec2, q: DVec2, lo: DVec2, hi: DVec2) -> bool {
+    let d = q - p;
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    for (dir, from, min, max) in [(d.x, p.x, lo.x, hi.x), (d.y, p.y, lo.y, hi.y)] {
+        if dir.abs() < 1e-12 {
+            if from < min || from > max {
+                return false;
+            }
+        } else {
+            let (mut u0, mut u1) = ((min - from) / dir, (max - from) / dir);
+            if u0 > u1 {
+                std::mem::swap(&mut u0, &mut u1);
+            }
+            t0 = t0.max(u0);
+            t1 = t1.min(u1);
+            if t0 > t1 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Parameters t where `p + t·d` crosses the circle (centre `c`, radius `r`).
 fn line_circle(p: DVec2, d: DVec2, c: DVec2, r: f64) -> Vec<f64> {
     let f = p - c;
@@ -741,6 +773,54 @@ impl Sketch {
             .filter(|&(_, d)| d <= tol)
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(id, _)| Sel::Entity(id))
+    }
+
+    /// Drag-select: what the rectangle `a`–`b` takes in. `crossing` (dragging
+    /// right to left, as in Fusion) takes anything the rectangle touches;
+    /// otherwise only what lies completely inside it. Free-standing points
+    /// come along; a line's end points don't (deleting one would take the
+    /// whole line with it).
+    pub fn select_in_rect(&self, a: DVec2, b: DVec2, crossing: bool) -> Vec<Sel> {
+        let (lo, hi) = (a.min(b), a.max(b));
+        let inside = |p: DVec2| p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y;
+        let mut out = Vec::new();
+        for (e, ent) in self.entities.iter().enumerate() {
+            let hit = match *ent {
+                Entity::Point { p } => {
+                    if inside(self.points[p]) {
+                        out.push(Sel::Point(p));
+                    }
+                    continue;
+                }
+                Entity::Line { a, b } => {
+                    let (p, q) = (self.points[a], self.points[b]);
+                    if crossing { segment_touches_rect(p, q, lo, hi) } else { inside(p) && inside(q) }
+                }
+                Entity::Circle { center, radius } => {
+                    let c = self.points[center];
+                    let (near, far) = rect_distances(c, lo, hi);
+                    if crossing {
+                        // Touches the rectangle: the rim comes within reach, or lies inside it.
+                        near <= radius && (far >= radius || inside(c + DVec2::X * radius))
+                    } else {
+                        inside(c - DVec2::splat(radius)) && inside(c + DVec2::splat(radius))
+                    }
+                }
+                Entity::Arc { .. } => {
+                    let Some((c, r, a0, sweep)) = self.arc_geometry(e) else { continue };
+                    let pts: Vec<DVec2> = (0..=48).map(|i| c + DVec2::from_angle(a0 + sweep * i as f64 / 48.0) * r).collect();
+                    if crossing {
+                        pts.windows(2).any(|w| segment_touches_rect(w[0], w[1], lo, hi))
+                    } else {
+                        pts.iter().all(|&p| inside(p))
+                    }
+                }
+            };
+            if hit {
+                out.push(Sel::Entity(e));
+            }
+        }
+        out
     }
 
     /// Delete entities and points (a deleted point takes its entities with it).
@@ -3190,5 +3270,69 @@ mod corner_tests {
         assert_eq!(parse_sizes("2,5,7"), None);
         assert_eq!(parse_sizes("x"), None);
         assert_eq!(parse_sizes(""), None);
+    }
+}
+
+#[cfg(test)]
+mod marquee_tests {
+    use super::*;
+
+    fn seg(sk: &mut Sketch, a: (f64, f64), b: (f64, f64)) {
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Line);
+        ed.click(sk, Anchor::Free(DVec2::new(a.0, a.1)));
+        ed.click(sk, Anchor::Free(DVec2::new(b.0, b.1)));
+    }
+
+    fn picture() -> Sketch {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        seg(&mut sk, (1.0, 1.0), (4.0, 1.0)); // 0: well inside the box 0..5
+        seg(&mut sk, (3.0, 3.0), (9.0, 3.0)); // 1: sticks out of it
+        seg(&mut sk, (20.0, 20.0), (30.0, 20.0)); // 2: far away
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Circle);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(2.0, 2.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(3.0, 2.0))); // 3: r = 1 at (2,2)
+        ed.set_tool(Tool::Point);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(0.5, 4.5))); // 4: a lone point
+        sk
+    }
+
+    #[test]
+    fn window_selection_takes_only_what_is_completely_inside() {
+        let sk = picture();
+        let got = sk.select_in_rect(DVec2::new(0.0, 0.0), DVec2::new(5.0, 5.0), false);
+        assert!(got.contains(&Sel::Entity(0)) && got.contains(&Sel::Entity(3)));
+        assert!(!got.contains(&Sel::Entity(1)), "line 1 pokes out");
+        assert!(!got.contains(&Sel::Entity(2)));
+        assert!(got.iter().any(|s| matches!(s, Sel::Point(_))), "the lone point");
+        // A line's own end points are never selected by themselves.
+        assert_eq!(got.iter().filter(|s| matches!(s, Sel::Point(_))).count(), 1);
+    }
+
+    #[test]
+    fn crossing_selection_takes_whatever_it_touches() {
+        let sk = picture();
+        let got = sk.select_in_rect(DVec2::new(0.0, 0.0), DVec2::new(5.0, 5.0), true);
+        assert!(got.contains(&Sel::Entity(1)), "line 1 enters the box");
+        assert!(!got.contains(&Sel::Entity(2)));
+        // A thin box that only crosses a line's middle (no end point inside it).
+        let thin = sk.select_in_rect(DVec2::new(5.9, 2.0), DVec2::new(6.1, 4.0), true);
+        assert_eq!(thin, vec![Sel::Entity(1)]);
+        // A circle: its rim crosses a box that doesn't contain its centre.
+        let rim = sk.select_in_rect(DVec2::new(2.9, 1.5), DVec2::new(3.5, 2.5), true);
+        assert!(rim.contains(&Sel::Entity(3)));
+        // A box wholly inside the circle doesn't touch the rim.
+        let hole = sk.select_in_rect(DVec2::new(1.8, 1.8), DVec2::new(2.2, 2.2), true);
+        assert!(!hole.contains(&Sel::Entity(3)));
+    }
+
+    #[test]
+    fn corners_can_be_dragged_in_either_direction() {
+        let sk = picture();
+        let a = sk.select_in_rect(DVec2::new(5.0, 5.0), DVec2::new(0.0, 0.0), false);
+        let b = sk.select_in_rect(DVec2::new(0.0, 0.0), DVec2::new(5.0, 5.0), false);
+        assert_eq!(a, b);
+        assert!(sk.select_in_rect(DVec2::new(100.0, 100.0), DVec2::new(110.0, 110.0), true).is_empty());
     }
 }

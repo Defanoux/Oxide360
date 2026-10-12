@@ -404,7 +404,10 @@ struct OpenCad {
     dim_preview: Option<(Constraint, DVec2)>,  // Dimension tool: what a click would place, and its label shift
     face_pick: bool,                         // waiting for a click on an origin plane or a flat face to sketch on
     origin_visible: bool,                    // the origin axes and planes in the 3D view
-    origin_hover: Option<OriginPlane>,       // the origin plane under the mouse while picking
+    origin_hover: Option<OriginPlane>,       // the origin plane under the mouse
+    selected_plane: Option<OriginPlane>,     // the origin plane clicked in the 3D view
+    ctx_plane: Option<OriginPlane>,          // the origin plane a right-click landed on
+    marquee: Option<(DVec2, DVec2)>,         // sketch drag-select: where it started and the cursor now
     face_hover: Option<(usize, FacePlane)>, // body index + the face plane under the mouse
     turn: Option<CameraTurn>,
     home: Pose,      // where Home goes (set it from the view cube menu)
@@ -480,6 +483,9 @@ impl Default for OpenCad {
             face_pick: false,
             origin_visible: true,
             origin_hover: None,
+            selected_plane: None,
+            ctx_plane: None,
+            marquee: None,
             face_hover: None,
             turn: None,
             home: OrbitCamera::default().pose(),
@@ -3167,6 +3173,40 @@ impl OpenCad {
             }
         }
 
+        // --- origin planes in the 3D view: hover, click to select, right-click for a menu ---
+        if !self.face_pick && self.active.is_none() && self.origin_visible {
+            self.marquee = None;
+            let free_view = self.dialog.is_none() && self.edge_dialog.is_none() && self.revolve_dialog.is_none();
+            if let (Some(px), true) = (hover_px, free_view) {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                if let Some((op, t_plane)) = origin::pick(&ray, origin::size_for(self.camera.distance)) {
+                    // A body in front of the plane hides it.
+                    self.ensure_model(Slot::Committed);
+                    let t_body = self
+                        .model(Slot::Committed)
+                        .bodies
+                        .iter()
+                        .filter(|b| !self.hidden_bodies.contains(&b.id))
+                        .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir))
+                        .fold(f32::MAX, f32::min);
+                    if t_plane < t_body {
+                        self.origin_hover = Some(op);
+                    }
+                }
+                if response.clicked() {
+                    self.selected_plane = self.origin_hover;
+                }
+                if response.secondary_clicked() {
+                    self.ctx_plane = self.origin_hover;
+                    if self.ctx_plane.is_some() {
+                        self.selected_plane = self.ctx_plane;
+                    }
+                }
+            }
+        } else if self.active.is_some() {
+            self.selected_plane = None;
+        }
+
         // --- extrude / revolve input: pick profiles (and a revolve axis) ---
         let mut hover_profile: Option<(usize, usize)> = None;
         self.axis_hover = None;
@@ -3463,10 +3503,30 @@ impl OpenCad {
                 }
             }
             if response.secondary_clicked() {
-                match self.dim_hover.filter(|&ci| ci < self.sketches[i].constraints.len()) {
-                    // Right-click a dimension: driving ⇄ driven.
-                    Some(ci) => self.toggle_driven(ci),
-                    None => self.editor.cancel(),
+                if self.editor.tool == Tool::Select {
+                    // The Select tool shows a menu for what's under the cursor
+                    // (see the context menu at the end of the viewport).
+                    match (self.dim_hover.filter(|&ci| ci < self.sketches[i].constraints.len()), hovered) {
+                        (Some(ci), _) => {
+                            if !self.dim_selection.contains(&ci) {
+                                self.dim_selection = vec![ci];
+                                self.editor.selection.clear();
+                            }
+                        }
+                        (None, Some(sel)) => {
+                            if !self.editor.selection.contains(&sel) {
+                                self.editor.selection = vec![sel];
+                                self.dim_selection.clear();
+                            }
+                        }
+                        (None, None) => {}
+                    }
+                } else {
+                    match self.dim_hover.filter(|&ci| ci < self.sketches[i].constraints.len()) {
+                        // Right-click a dimension: driving ⇄ driven.
+                        Some(ci) => self.toggle_driven(ci),
+                        None => self.editor.cancel(),
+                    }
                 }
             }
 
@@ -3499,6 +3559,30 @@ impl OpenCad {
                             if !sk.is_fixed(p) {
                                 self.undo.push(sk.clone());
                                 self.drag = Some(p);
+                            }
+                        } else if let Some(q) = raw_press.filter(|q| sk.hit(*q, SNAP_PX as f64 * mm_per_px).is_none()) {
+                            // Dragging from empty space: drag-select.
+                            self.marquee = Some((q, q));
+                        }
+                    }
+                    if let (Some((start, _)), Some(now)) = (self.marquee, raw_hover) {
+                        if response.dragged_by(egui::PointerButton::Primary) {
+                            self.marquee = Some((start, now));
+                        }
+                    }
+                    if response.drag_stopped() {
+                        if let Some((start, end)) = self.marquee.take() {
+                            // Left to right takes what's completely inside, right
+                            // to left whatever it touches; Shift adds.
+                            let picked = self.sketches[i].select_in_rect(start, end, end.x < start.x);
+                            if !ui.input(|inp| inp.modifiers.shift) {
+                                self.editor.selection.clear();
+                                self.dim_selection.clear();
+                            }
+                            for s in picked {
+                                if !self.editor.selection.contains(&s) {
+                                    self.editor.selection.push(s);
+                                }
                             }
                         }
                     }
@@ -3929,7 +4013,13 @@ impl OpenCad {
             for op in OriginPlane::ALL {
                 let q = origin::quad(op, origin_size);
                 let hot = self.origin_hover == Some(op);
-                let fill = Color32::from_rgba_unmultiplied(255, 170, 60, if hot { 150 } else if self.face_pick { 80 } else { 55 });
+                let chosen = self.selected_plane == Some(op);
+                let fill = Color32::from_rgba_unmultiplied(
+                    255,
+                    170,
+                    60,
+                    if hot { 150 } else if chosen { 120 } else if self.face_pick { 80 } else { 55 },
+                );
                 let corners: Vec<Option<Vec2>> = q.iter().map(|&p| view.project(p)).collect();
                 if let [Some(a), Some(b), Some(c), Some(d)] = corners[..] {
                     let mut mesh = egui::Mesh::default();
@@ -3939,7 +4029,10 @@ impl OpenCad {
                     mesh.add_triangle(0, 1, 2);
                     mesh.add_triangle(0, 2, 3);
                     painter.add(egui::Shape::mesh(mesh));
-                    let edge = Stroke::new(if hot { 2.0 } else { 1.0 }, Color32::from_rgba_unmultiplied(255, 190, 90, if hot { 255 } else { 140 }));
+                    let edge = Stroke::new(
+                        if hot || chosen { 2.0 } else { 1.0 },
+                        Color32::from_rgba_unmultiplied(255, 190, 90, if hot || chosen { 255 } else { 140 }),
+                    );
                     painter.add(egui::Shape::closed_line(vec![to_pos(a), to_pos(b), to_pos(c), to_pos(d)], edge));
                 }
             }
@@ -3982,6 +4075,22 @@ impl OpenCad {
             let (base, tip) = (base.as_vec3(), base.as_vec3() + dir.as_vec3() * (sign * len));
             let hot = self.arrow_drag.is_some() || near_arrow(hover_px, prev_arrow);
             self.arrow_screen = view.arrow3d(base, tip, if hot { COL_ARROW_HOT } else { COL_ARROW });
+        }
+
+        // --- draw: the drag-select rectangle ---
+        if let (Some((a, b)), Some(i)) = (self.marquee, self.active) {
+            let plane = self.plane_of(i);
+            let corners = [a, DVec2::new(b.x, a.y), b, DVec2::new(a.x, b.y)];
+            let crossing = b.x < a.x;
+            let stroke = Stroke::new(1.5, if crossing { Color32::from_rgb(120, 220, 140) } else { COL_SELECT });
+            for k in 0..4 {
+                let (p, q) = (plane.to_world(corners[k]), plane.to_world(corners[(k + 1) % 4]));
+                if crossing {
+                    view.dashed(p, q, stroke);
+                } else {
+                    view.line(p, q, stroke);
+                }
+            }
         }
 
         // --- draw: the fillet / chamfer the size box would make ---
@@ -4205,6 +4314,40 @@ impl OpenCad {
                 }
             }
         }
+
+        // --- right-click menu: a sketch's selection, or an origin plane ---
+        response.context_menu(|ui| {
+            if let Some(i) = self.active {
+                let has_sel = !self.editor.selection.is_empty() || !self.dim_selection.is_empty();
+                if self.editor.tool != Tool::Select || !has_sel {
+                    ui.close();
+                    return;
+                }
+                if ui.button("Delete").clicked() {
+                    self.delete_selection();
+                    ui.close();
+                    return;
+                }
+                if self.editor.selection.iter().any(|s| matches!(s, Sel::Entity(_))) && ui.button("Construction (X)").clicked() {
+                    self.toggle_construction();
+                    ui.close();
+                }
+                if let [ci] = self.dim_selection[..] {
+                    let driven = self.sketches.get(i).is_some_and(|sk| sk.is_driven(ci));
+                    if ui.button(if driven { "Make driving" } else { "Make reference (driven)" }).clicked() {
+                        self.toggle_driven(ci);
+                        ui.close();
+                    }
+                }
+            } else if let Some(op) = self.ctx_plane {
+                if ui.button(format!("Create Sketch on the {} plane", op.name())).clicked() {
+                    self.start_sketch(op);
+                    ui.close();
+                }
+            } else {
+                ui.close();
+            }
+        });
 
         // --- floating editor position ---
         self.float_anchor = match self.float.as_ref().map(|f| f.target) {

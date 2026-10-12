@@ -31,6 +31,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Origin planes are selectable (click) with a right-click menu → Create Sketch; ribbon scrolls sideways; body double-click rename, per-body default colours + colour picker (right-click → Color…, saved as `body_colors`); timeline shows feature icons underlined in the colour of the body they worked on (`Model.touched`); Cut aims into the body automatically; sketch drag-select (left→right = inside, right→left = touching, Shift adds) and a right-click menu (Delete, Construction, driven toggle).
 - Timeline rollback marker (Fusion's): drag the bar (or ⏮ ◀ ▶ ⏭) back along the timeline; later features stay but aren't built and are greyed (click one to roll forward to it). New features insert at the marker. Saved with the file (`ViewState.marker`).
 - Body identity: every body has a `BodyId` (feature that made it + piece number) that survives Join/Cut/Intersect/fillets and feature deletes. Browser shows feature names ("Extrude1", "Extrude1 (2)" for split pieces), right-click → Rename (saved in the .ocad as `body_names`), hiding is by id, exports use the names.
 - Fixed: editing a chamfer distance slid the rectangle corner (virtual sharp now pinned when a distance dimension is edited).
