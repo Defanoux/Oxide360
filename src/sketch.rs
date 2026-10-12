@@ -1578,6 +1578,8 @@ pub enum Tool {
     /// Bevel a corner where two lines meet.
     SketchChamfer,
     Trim,
+    /// Copy the geometry that was selected across a clicked line.
+    Mirror,
     PolygonCircumscribed,
     PolygonInscribed,
     PolygonEdge,
@@ -1620,6 +1622,7 @@ impl Tool {
             Tool::SketchFillet => "Fillet",
             Tool::SketchChamfer => "Chamfer",
             Tool::Trim => "Trim",
+            Tool::Mirror => "Mirror",
             Tool::PolygonCircumscribed => "Circumscribed Polygon",
             Tool::PolygonInscribed => "Inscribed Polygon",
             Tool::PolygonEdge => "Edge Polygon",
@@ -1904,6 +1907,7 @@ impl Editor {
                 | Tool::SketchFillet
                 | Tool::SketchChamfer
                 | Tool::Trim
+                | Tool::Mirror
         ) {
             return Vec::new();
         }
@@ -2181,7 +2185,7 @@ impl Editor {
                 ties
             }
             Tool::Circle2Tangent | Tool::Circle3Tangent | Tool::Constrain(_) | Tool::Point => Vec::new(),
-            Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim => Vec::new(),
+            Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Mirror => Vec::new(),
             Tool::Select => Vec::new(),
         }
     }

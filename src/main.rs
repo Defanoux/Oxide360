@@ -28,6 +28,7 @@ mod inertia;
 mod kernel;
 mod model;
 mod origin;
+mod pattern;
 mod profile;
 mod settings;
 mod sketch;
@@ -410,6 +411,7 @@ struct OpenCad {
     label_carry: bool,                         // touchpad: a dimension label picked up, following the cursor
     dim_preview: Option<(Constraint, DVec2)>,  // Dimension tool: what a click would place, and its label shift
     face_pick: bool,                         // waiting for a click on an origin plane or a flat face to sketch on
+    mirror_objects: Vec<Sel>,                // what the Mirror tool will copy
     origin_shown: origin::Shown,             // the browser's Origin folder: what the 3D view shows
     origin_hover: Option<OriginPlane>,       // the origin plane under the mouse
     selected_plane: Option<OriginPlane>,     // the origin plane clicked in the 3D view
@@ -494,6 +496,7 @@ impl Default for OpenCad {
             label_carry: false,
             dim_preview: None,
             face_pick: false,
+            mirror_objects: Vec::new(),
             origin_shown: origin::Shown::default(),
             origin_hover: None,
             selected_plane: None,
@@ -1439,6 +1442,45 @@ impl OpenCad {
         }
     }
 
+    /// The Mirror button: the current selection is what gets copied; next click picks the line.
+    fn start_mirror(&mut self) {
+        let sel = self.editor.selection.clone();
+        if sel.is_empty() {
+            self.notify("Select the geometry to mirror first (click or drag a box), then press Mirror".into());
+            return;
+        }
+        self.mirror_objects = sel;
+        self.editor.set_tool(Tool::Mirror);
+        self.notify("Click the line to mirror across".into());
+    }
+
+    fn mirror_across(&mut self, line: usize) {
+        let Some(i) = self.active else { return };
+        let objects = std::mem::take(&mut self.mirror_objects);
+        let mut why = None;
+        let r = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
+            let mut trial = sk.clone();
+            match pattern::mirror(&mut trial, &objects, line) {
+                Ok((cs, _)) => {
+                    for c in cs {
+                        let mut t = trial.clone();
+                        if solver::add_constraints(&mut t, &[c]).is_ok() {
+                            trial = t;
+                        }
+                    }
+                    *sk = trial;
+                }
+                Err(e) => why = Some(e),
+            }
+        });
+        self.editor.selection.clear();
+        self.editor.set_tool(Tool::Select);
+        match why {
+            Some(e) => self.notify(format!("Can't mirror: {e}")),
+            None => self.report(r),
+        }
+    }
+
     /// Trim tool: cut line `e` back at the click `p`.
     fn trim_at(&mut self, e: usize, p: DVec2) {
         let Some(i) = self.active else { return };
@@ -2165,6 +2207,9 @@ impl OpenCad {
                     }
                     if icons::button(ui, Icon::Trim, "Trim: click the part of a line to remove, back to the nearest crossing", true, self.editor.tool == Tool::Trim).clicked() {
                         self.editor.set_tool(Tool::Trim);
+                    }
+                    if icons::button(ui, Icon::Mirror, "Mirror: select geometry first, then click this and the mirror line", true, self.editor.tool == Tool::Mirror).clicked() {
+                        self.start_mirror();
                     }
                     let tip = "Construction (X): toggle the selected geometry, or what you draw next";
                     if icons::button(ui, Icon::Construction, tip, true, self.editor.construction).clicked() {
@@ -3451,13 +3496,14 @@ impl OpenCad {
                         | Tool::SketchFillet
                         | Tool::SketchChamfer
                         | Tool::Trim
+                        | Tool::Mirror
                 ) && over_label.is_none()
                 {
                     hovered = raw_hover.and_then(|p| sk.hit(p, SNAP_PX as f64 * mm_per_px));
                     if tool.tangent_lines() > 0 {
                         hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e)));
                     }
-                    if tool == Tool::Trim {
+                    if matches!(tool, Tool::Trim | Tool::Mirror) {
                         hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e)));
                     }
                     if matches!(tool, Tool::SketchFillet | Tool::SketchChamfer) {
@@ -3470,7 +3516,7 @@ impl OpenCad {
                     }
                 }
                 // …drawing tools a snapped cursor.
-                if matches!(tool, Tool::Select | Tool::Constrain(_) | Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim) {
+                if matches!(tool, Tool::Select | Tool::Constrain(_) | Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Mirror) {
                 } else if let Some(px) = hover_px {
                     let nearest = sk
                         .points
@@ -3816,6 +3862,14 @@ impl OpenCad {
                             self.constraint_pick(label, sel);
                         } else {
                             self.editor.selection.clear();
+                        }
+                    }
+                }
+                Tool::Mirror => {
+                    if response.clicked() {
+                        match hovered {
+                            Some(Sel::Entity(e)) => self.mirror_across(e),
+                            _ => self.notify("Click the line to mirror across".into()),
                         }
                     }
                 }

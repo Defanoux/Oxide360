@@ -19,6 +19,7 @@ pub enum Icon {
     Chamfer,
     Construction,
     Trim,
+    Mirror,
     Polygon,
     Select,
     Line,
@@ -177,6 +178,21 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             line((0.62, 0.15), (0.62, 0.85), thin);
             line((0.74, 0.3), (0.86, 0.7), Stroke::new(thin.width * 1.2, ink));
             line((0.86, 0.3), (0.74, 0.7), Stroke::new(thin.width * 1.2, ink));
+        }
+        Icon::Mirror => {
+            // A shape and its reflection either side of a dashed axis.
+            let dash = Stroke::new(thin.width, Color32::from_gray(140));
+            for k in 0..4 {
+                let y = 0.1 + 0.22 * k as f32;
+                line((0.5, y), (0.5, y + 0.12), dash);
+            }
+            let s = Stroke::new(thin.width * 1.2, orange);
+            line((0.12, 0.7), (0.4, 0.7), s);
+            line((0.4, 0.7), (0.4, 0.3), s);
+            line((0.4, 0.3), (0.12, 0.7), s);
+            line((0.88, 0.7), (0.6, 0.7), Stroke::new(thin.width * 1.2, ink));
+            line((0.6, 0.7), (0.6, 0.3), Stroke::new(thin.width * 1.2, ink));
+            line((0.6, 0.3), (0.88, 0.7), Stroke::new(thin.width * 1.2, ink));
         }
         Icon::Construction => {
             // A dashed line with its end dots.
