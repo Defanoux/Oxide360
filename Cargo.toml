@@ -1,0 +1,27 @@
+[package]
+name = "opencad"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.36.2"
+egui = "0.36.2"
+glam = { version = "0.34.1", features = ["serde"] }
+earcutr = "=0.5.0"
+serde = { version = "1.0.229", features = ["derive"] }
+# float_roundtrip: every number in a saved file reads back bit-for-bit.
+serde_json = { version = "1.0.152", features = ["float_roundtrip"] }
+# Native file dialogs through the desktop portal (KDE's own dialog on Plasma).
+rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal", "pollster"] }
+# Same wgpu that eframe uses (they share one copy) — for the 3D renderer.
+wgpu = "30.0.1"
+# OpenCASCADE solid-modeling kernel (Fedora's opencascade-devel), with small
+# fixes for OCCT 7.9 / CMake 4 — see "opencad patch" comments in vendor/.
+opencascade = { path = "vendor/opencascade", default-features = false }
+glam24 = { package = "glam", version = "0.24" }
+
+[dev-dependencies]
+pollster = "0.4"
+
+[patch.crates-io]
+opencascade-sys = { path = "vendor/opencascade-sys" }

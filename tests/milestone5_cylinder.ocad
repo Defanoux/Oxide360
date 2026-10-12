@@ -1,0 +1,46 @@
+{
+  "format": "opencad",
+  "version": 1,
+  "units": "mm",
+  "document": {
+    "sketches": [
+      {
+        "name": "Sketch1",
+        "plane": "XY",
+        "points": [
+          [
+            0.0,
+            0.0
+          ]
+        ],
+        "entities": [
+          {
+            "Circle": {
+              "center": 0,
+              "radius": 28.284271247461902
+            }
+          }
+        ],
+        "constraints": []
+      }
+    ],
+    "extrudes": [
+      {
+        "name": "Extrude1",
+        "sketch": 0,
+        "profiles": [
+          0
+        ],
+        "distance": 30.0
+      }
+    ],
+    "timeline": [
+      {
+        "Sketch": 0
+      },
+      {
+        "Extrude": 0
+      }
+    ]
+  }
+}
