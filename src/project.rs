@@ -107,6 +107,27 @@ impl Sketch {
     }
 }
 
+/// Project every edge that can be (the ones seen edge-on, ellipses and
+/// repeats are skipped), locked and as construction geometry. Returns how many
+/// were added.
+pub fn project_all(sk: &mut Sketch, origin: DVec3, u: DVec3, v: DVec3, edges: &[Vec<DVec3>]) -> usize {
+    let mut added = 0;
+    for pts in edges {
+        let Ok(pr) = project_edge(origin, u, v, pts) else { continue };
+        let mut trial = sk.clone();
+        let Ok(fixes) = trial.add_projected(pr) else { continue };
+        for c in fixes {
+            let mut t = trial.clone();
+            if crate::solver::add_constraints(&mut t, &[c]).is_ok() {
+                trial = t;
+            }
+        }
+        *sk = trial;
+        added += 1;
+    }
+    added
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +173,32 @@ mod tests {
         let mut back = arc.clone();
         back.reverse();
         assert!(near(project_edge(o, u, v, &back).unwrap(), expect));
+    }
+
+    #[test]
+    fn projecting_a_box_gives_its_outline_once() {
+        // A 4 × 3 × 2 box: 12 edges. Seen from above the verticals are points and the
+        // top and bottom edges coincide, leaving 4 lines.
+        let c = |x: f64, y: f64, z: f64| DVec3::new(x, y, z);
+        let mut edges = Vec::new();
+        for z in [0.0, 2.0] {
+            edges.extend([
+                vec![c(0.0, 0.0, z), c(4.0, 0.0, z)],
+                vec![c(4.0, 0.0, z), c(4.0, 3.0, z)],
+                vec![c(4.0, 3.0, z), c(0.0, 3.0, z)],
+                vec![c(0.0, 3.0, z), c(0.0, 0.0, z)],
+            ]);
+        }
+        for (x, y) in [(0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0)] {
+            edges.push(vec![c(x, y, 0.0), c(x, y, 2.0)]);
+        }
+        let (o, u, v) = flat_xy();
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        assert_eq!(project_all(&mut sk, o, u, v, &edges), 4);
+        assert_eq!(sk.entities.len(), 4);
+        assert!((0..4).all(|e| sk.is_construction(e)));
+        // Doing it again adds nothing.
+        assert_eq!(project_all(&mut sk, o, u, v, &edges), 0);
     }
 
     #[test]

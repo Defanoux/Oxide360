@@ -2118,6 +2118,8 @@ impl Editor {
                     .map(|k| if inscribed { Constraint::OnCircle(corners[k], circle) } else { Constraint::Tangent(first + k, circle) })
                     .collect();
                 out.extend((1..n).map(|k| Constraint::Equal(first, first + k)));
+                // Its size is a dimension on the reference circle (edit it like any other).
+                out.push(Constraint::Diameter(circle, 2.0 * circle_r));
                 out.extend(ties);
                 out
             }
@@ -3284,7 +3286,7 @@ mod polygon_tests {
     }
 
     #[test]
-    fn inscribed_hexagon_has_corners_on_the_circle_and_four_degrees_of_freedom() {
+    fn inscribed_hexagon_has_corners_on_the_circle_and_three_degrees_of_freedom() {
         let mut sk = make(Tool::PolygonInscribed, 6, &[free(0.0, 0.0), free(10.0, 0.0)]);
         regular(&sk, 6);
         let Entity::Circle { center, radius } = sk.entities.iter().copied().find(|e| matches!(e, Entity::Circle { .. })).unwrap() else { panic!() };
@@ -3292,10 +3294,10 @@ mod polygon_tests {
         assert!(side_lengths(&sk).iter().all(|x| (x - 10.0).abs() < 1e-6), "hexagon side = radius");
         assert!(sk.points[center].length() < 1e-9);
         // centre (2) + size + rotation.
-        assert_eq!(solver::solve(&mut sk, &[]).unwrap().dof, 4);
-        // Resizing through the circle's diameter keeps it regular.
-        let ci = (0..sk.entities.len()).find(|&e| matches!(sk.entities[e], Entity::Circle { .. })).unwrap();
-        solver::add_constraints(&mut sk, &[Constraint::Diameter(ci, 40.0)]).unwrap();
+        assert_eq!(solver::solve(&mut sk, &[]).unwrap().dof, 3);
+        // The size is a Diameter dimension on the reference circle; editing it keeps the polygon regular.
+        let di = sk.constraints.iter().position(|c| matches!(c, Constraint::Diameter(..))).expect("the polygon's size dimension");
+        solver::set_dimension_value(&mut sk, di, 40.0).unwrap();
         assert!(side_lengths(&sk).iter().all(|x| (x - 20.0).abs() < 1e-5), "{:?}", side_lengths(&sk));
     }
 
@@ -3303,7 +3305,7 @@ mod polygon_tests {
     fn circumscribed_polygon_has_edges_touching_the_circle() {
         let mut sk = make(Tool::PolygonCircumscribed, 5, &[free(0.0, 0.0), free(8.0, 0.0)]);
         regular(&sk, 5);
-        assert_eq!(solver::solve(&mut sk, &[]).unwrap().dof, 4);
+        assert_eq!(solver::solve(&mut sk, &[]).unwrap().dof, 3);
         let apothem = 8.0;
         for e in 0..sk.entities.len() {
             if sk.is_line(e) {
@@ -3348,7 +3350,7 @@ mod polygon_tests {
         for n in [3, 12, 40] {
             let mut sk = make(Tool::PolygonInscribed, n, &[free(1.0, 2.0), free(11.0, 2.0)]);
             regular(&sk, n);
-            assert_eq!(solver::solve(&mut sk, &[]).unwrap().dof, 4, "n = {n}");
+            assert_eq!(solver::solve(&mut sk, &[]).unwrap().dof, 3, "n = {n}");
         }
     }
 

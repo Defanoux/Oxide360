@@ -452,6 +452,7 @@ struct OpenCad {
     ctx_cplane: Option<usize>,               // the one a right-click was on
     axis_pick: bool,                         // waiting for a click on a straight edge to put an axis on
     revolve_errors: Vec<Option<String>>,
+    project_body_hover: Option<usize>,       // the body under the mouse when no edge is (Project tool: takes all its edges)
     project_hover: Option<EdgeRef>,          // the body edge under the mouse (Project tool)
     copy_axis_hover: Option<AxisChoice>, // the axis under the mouse while a pattern's axis is being picked
     axis_hover: Option<(usize, usize)>, // sketch, line entity under the mouse (revolve axis picking)
@@ -481,6 +482,7 @@ struct OpenCad {
     selected_plane: Option<OriginPlane>,     // the origin plane clicked in the 3D view
     ctx_plane: Option<OriginPlane>,          // the origin plane a right-click landed on
     ctx_face: Option<(usize, FacePlane)>,    // the body face a right-click landed on
+    drag_line: Option<(usize, DVec2, DVec2, [DVec2; 2])>, // a line being slid sideways: entity, its normal, where the drag began, its ends then
     marquee: Option<(DVec2, DVec2)>,         // sketch drag-select: where it started and the cursor now
     face_hover: Option<(usize, FacePlane)>, // body index + the face plane under the mouse
     turn: Option<CameraTurn>,
@@ -554,6 +556,7 @@ impl Default for OpenCad {
             ctx_cplane: None,
             axis_pick: false,
             revolve_errors: Vec::new(),
+            project_body_hover: None,
             project_hover: None,
             copy_axis_hover: None,
             axis_hover: None,
@@ -583,6 +586,7 @@ impl Default for OpenCad {
             selected_plane: None,
             ctx_plane: None,
             ctx_face: None,
+            drag_line: None,
             marquee: None,
             face_hover: None,
             turn: None,
@@ -1622,6 +1626,23 @@ impl OpenCad {
             Some(e) => self.notify(e),
             None => self.report(res),
         }
+    }
+
+    /// Project tool, clicked on a body: every edge of it that can be projected.
+    fn project_body_into(&mut self, i: usize, body: usize) {
+        let Some(edges) = self.model(Slot::Committed).bodies.get(body).map(|b| {
+            b.edges.iter().map(|e| e.points.iter().map(|p| p.as_dvec3()).collect::<Vec<_>>()).collect::<Vec<_>>()
+        }) else {
+            return;
+        };
+        let plane = self.plane_of(i);
+        let (o, u, v) = (plane.origin.as_dvec3(), plane.u.as_dvec3(), plane.v.as_dvec3());
+        let mut added = 0;
+        let res = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
+            added = project::project_all(sk, o, u, v, &edges);
+        });
+        self.notify(if added == 0 { "Nothing new to project from that body".into() } else { format!("Projected {added} edges") });
+        self.report(res);
     }
 
     /// The Mirror button: the current selection is what gets copied; next click picks the line.
@@ -4434,10 +4455,23 @@ impl OpenCad {
 
             // Project: the body edge under the cursor.
             self.project_hover = None;
+            self.project_body_hover = None;
             if let (Tool::Project, Some(px)) = (self.editor.tool, hover_px) {
                 self.ensure_model(Slot::Committed);
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 self.project_hover = self.edge_under(&view, Slot::Committed, px, &ray, false);
+                if self.project_hover.is_none() {
+                    // Not on an edge: on a body, which takes all of its edges.
+                    self.project_body_hover = self
+                        .model(Slot::Committed)
+                        .bodies
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, b)| !self.hidden_bodies.contains(&b.id))
+                        .filter_map(|(k, b)| model::ray_hit(&b.mesh, ray.origin, ray.dir).map(|t| (k, t)))
+                        .min_by(|a, b| a.1.total_cmp(&b.1))
+                        .map(|(k, _)| k);
+                }
             }
 
             match self.editor.tool {
@@ -4451,6 +4485,15 @@ impl OpenCad {
                             if !sk.is_fixed(p) {
                                 self.undo.push(sk.clone());
                                 self.drag = Some(p);
+                            }
+                        } else if let (Some(Sel::Entity(e)), Some(q)) = (raw_press.and_then(|q| sk.hit(q, SNAP_PX as f64 * mm_per_px)), raw_press) {
+                            // Dragging a line slides it sideways (only along its normal).
+                            if let Some(&Entity::Line { a, b }) = sk.entities.get(e) {
+                                let d = sk.points[b] - sk.points[a];
+                                if let Some(n) = d.perp().try_normalize() {
+                                    self.undo.push(sk.clone());
+                                    self.drag_line = Some((e, n, q, [sk.points[a], sk.points[b]]));
+                                }
                             }
                         } else if let Some(q) = raw_press.filter(|q| sk.hit(*q, SNAP_PX as f64 * mm_per_px).is_none()) {
                             // Dragging from empty space: drag-select.
@@ -4491,6 +4534,22 @@ impl OpenCad {
                             let target = if self.grid_snap { grid.snap(target) } else { target };
                             // Follows the cursor as far as the constraints allow.
                             let _ = solver::drag(&mut self.sketches[i], p, target);
+                        }
+                    }
+                    if let (Some((e, n, start, from)), Some(now)) = (self.drag_line, raw_hover) {
+                        if response.dragged_by(egui::PointerButton::Primary) && e < self.sketches[i].entities.len() {
+                            let mut along = (now - start).dot(n);
+                            if self.grid_snap {
+                                along = (along / (grid.step / 10.0)).round() * (grid.step / 10.0);
+                            }
+                            let _ = solver::drag_line(&mut self.sketches[i], e, from, n * along);
+                        }
+                    }
+                    if self.drag_line.is_some() && response.drag_stopped() {
+                        self.drag_line = None;
+                        self.dof = solver::solve(&mut self.sketches[i].clone(), &[]).ok().map(|s| s.dof);
+                        if self.undo.last() == Some(&self.sketches[i]) {
+                            self.undo.pop();
                         }
                     }
                     if self.drag.is_some() && response.drag_stopped() {
@@ -4642,6 +4701,8 @@ impl OpenCad {
                 Tool::Project => {
                     if let Some(r) = self.project_hover.filter(|_| response.clicked()) {
                         self.project_edge_into(i, r);
+                    } else if let Some(b) = self.project_body_hover.filter(|_| response.clicked()) {
+                        self.project_body_into(i, b);
                     }
                 }
                 Tool::Mirror => {
@@ -5048,6 +5109,17 @@ impl OpenCad {
             if let Some(o) = view.project(Vec3::ZERO) {
                 painter.circle_filled(to_pos(o), 4.0, Color32::from_gray(235));
                 painter.circle_stroke(to_pos(o), 4.0, Stroke::new(1.0, Color32::from_gray(60)));
+            }
+        }
+
+        // --- draw: the body the Project tool would bring in whole ---
+        if let (Some(b), true) = (self.project_body_hover, self.active.is_some()) {
+            if let Some(body) = self.model(Slot::Committed).bodies.get(b) {
+                for e in &body.edges {
+                    for w in e.points.windows(2) {
+                        view.line(w[0], w[1], Stroke::new(2.0, COL_HOVER));
+                    }
+                }
             }
         }
 

@@ -390,6 +390,31 @@ pub fn drag(sk: &mut Sketch, p: PointId, target: DVec2) -> Result<Solved, SolveE
     Ok(s)
 }
 
+/// Drag a whole line by `shift`: both ends move together to where `shift`
+/// puts them from `from` (their positions when the drag started), keeping every
+/// constraint. If the constraints won't allow the full move it goes as far as it
+/// can (a half, a quarter … of it); never an error for that, the line just stays.
+pub fn drag_line(sk: &mut Sketch, e: usize, from: [DVec2; 2], shift: DVec2) -> Result<Solved, SolveError> {
+    let Some(&Entity::Line { a, b }) = sk.entities.get(e) else { return Err(SolveError::Invalid) };
+    // A line with a fixed end stays put (as a fixed point does when dragged).
+    if sk.is_fixed(a) || sk.is_fixed(b) {
+        return solve(&mut sk.clone(), &[]);
+    }
+    let stiff = stiffness(sk, a);
+    let mut scale = 1.0;
+    for _ in 0..8 {
+        let mut trial = sk.clone();
+        trial.points[a] = from[0] + shift * scale;
+        trial.points[b] = from[1] + shift * scale;
+        if let Ok(s) = solve_with(&mut trial, &[a, b], None, Some(&stiff)) {
+            *sk = trial;
+            return Ok(s);
+        }
+        scale *= 0.5;
+    }
+    solve(&mut sk.clone(), &[])
+}
+
 /// How willing each point is to move while `p` is dragged: points joined to
 /// it move freely, points further away along the shape barely move. So
 /// dragging a rectangle's corner moves the two corners next to it (changing
@@ -833,6 +858,37 @@ mod tests {
         let s = solve(&mut sk, &[]).unwrap();
         assert_eq!(s.dof, 2, "only width and height left, like a drawn rectangle in Fusion");
         assert!(close(sk.points[3].x, 0.0) && close(sk.points[1].y, 0.0));
+    }
+
+    #[test]
+    fn dragging_a_line_slides_it_sideways_and_stretches_what_is_joined_to_it() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Rectangle);
+        ed.click(&mut sk, free(10.0, 10.0));
+        for c in ed.click(&mut sk, free(60.0, 40.0)) {
+            add_constraints(&mut sk, &[c]).unwrap();
+        }
+        // The top line: the one with both ends at y = 40.
+        let top = (0..sk.entities.len())
+            .find(|&e| matches!(sk.entities[e], Entity::Line { a, b } if close(sk.points[a].y, 40.0) && close(sk.points[b].y, 40.0)))
+            .unwrap();
+        let Entity::Line { a, b } = sk.entities[top] else { unreachable!() };
+        let from = [sk.points[a], sk.points[b]];
+        // Slide it 5 up (a sideways pull is ignored by the caller; here only the shift matters).
+        drag_line(&mut sk, top, from, DVec2::new(0.0, 5.0)).unwrap();
+        assert!(close(sk.points[a].y, 45.0) && close(sk.points[b].y, 45.0), "{:?}", sk.points);
+        // Horizontal stays horizontal and the bottom edge hasn't moved: the sides got longer.
+        assert!(close(sk.points[a].x, from[0].x) && close(sk.points[b].x, from[1].x));
+        let bottom_y: Vec<f64> = sk.points.iter().map(|p| p.y).filter(|y| close(*y, 10.0)).collect();
+        assert_eq!(bottom_y.len(), 2, "the two bottom corners stayed at y = 10");
+        // A line pinned by a distance can't go: it stays where it is instead of failing.
+        let mut tied = sk.clone();
+        tied.constraints.push(Constraint::Fix(a));
+        let before = tied.points.clone();
+        let ends = [before[a], before[b]];
+        drag_line(&mut tied, top, ends, DVec2::new(0.0, 20.0)).unwrap();
+        assert!(tied.points.iter().zip(&before).all(|(x, y)| x.distance(*y) < 1e-6), "a fixed corner holds the line");
     }
 
     #[test]
