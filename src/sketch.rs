@@ -918,6 +918,18 @@ impl Sketch {
         }
     }
 
+    /// The corner where lines `l1` and `l2` (and only they) meet.
+    pub fn corner_between(&self, l1: EntityId, l2: EntityId) -> Option<PointId> {
+        let ends = |e: EntityId| match self.entities.get(e) {
+            Some(&Entity::Line { a, b }) => Some([a, b]),
+            _ => None,
+        };
+        let (e1, e2) = (ends(l1)?, ends(l2)?);
+        e1.into_iter()
+            .filter(|p| e2.contains(p))
+            .find(|&p| self.corner_lines(p).is_some_and(|(x, _, y, _)| (x, y) == (l1, l2) || (x, y) == (l2, l1)))
+    }
+
     /// Shared part of fillet/chamfer: move the corner's two line ends to new
     /// points at `t` from the corner, keep the old corner point as a "virtual
     /// sharp" held where the lines meet, and turn lengths measured to the
@@ -2126,6 +2138,25 @@ mod tests {
         let ed = arc3_editor(&mut sk, (0.0, 0.0), (20.0, 0.0));
         let raw = DVec2::new(7.3, 4.1);
         assert_eq!(ed.arc3_snap(&sk, raw, Some(GridSpec { step: 5.0, major_every: 5 }), 0.5), (raw, Arc3Snap::None));
+    }
+
+    #[test]
+    fn corner_between_two_lines_finds_their_shared_corner() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        // A chain (the line tool continues from the last end), then a stray line.
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Line);
+        for (x, y) in [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)] {
+            ed.click(&mut sk, free(x, y));
+        }
+        ed.cancel();
+        let mut l = vec![0, 1];
+        l.extend(lines(&mut sk, &[((20.0, 0.0), (30.0, 0.0))]));
+        let p = sk.corner_between(l[0], l[1]).expect("they meet");
+        assert_eq!(sk.corner_lines(p).map(|c| (c.0, c.2)), Some((l[0], l[1])));
+        assert_eq!(sk.corner_between(l[1], l[0]), Some(p));
+        assert_eq!(sk.corner_between(l[0], l[2]), None);
+        assert_eq!(sk.corner_between(l[0], l[0]), None);
     }
 
     #[test]

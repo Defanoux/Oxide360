@@ -1672,8 +1672,8 @@ impl OpenCad {
                 let _ = i;
                 group(ui, "MODIFY", |ui| {
                     for (tool, icon, tip) in [
-                        (Tool::SketchFillet, Icon::Fillet, "Fillet: click a corner where two lines meet, type the radius"),
-                        (Tool::SketchChamfer, Icon::Chamfer, "Chamfer: click a corner where two lines meet, type the distance"),
+                        (Tool::SketchFillet, Icon::Fillet, "Fillet: click a corner (or its two lines), type the radius"),
+                        (Tool::SketchChamfer, Icon::Chamfer, "Chamfer: click a corner (or its two lines), type the distance"),
                     ] {
                         if icons::button(ui, icon, tip, true, self.editor.tool == tool).clicked() {
                             self.editor.set_tool(tool);
@@ -2644,8 +2644,12 @@ impl OpenCad {
                         hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e)));
                     }
                     if matches!(tool, Tool::SketchFillet | Tool::SketchChamfer) {
-                        // Only corners where exactly two lines meet.
-                        hovered = hovered.filter(|h| matches!(h, Sel::Point(p) if sk.corner_lines(*p).is_some()));
+                        // Corners where exactly two lines meet, or lines to pick in pairs.
+                        hovered = hovered.filter(|h| match h {
+                            Sel::Point(p) => sk.corner_lines(*p).is_some(),
+                            // Or a line: pick two lines instead of their corner.
+                            Sel::Entity(e) => sk.is_line(*e),
+                        });
                     }
                 }
                 // …drawing tools a snapped cursor.
@@ -2948,7 +2952,33 @@ impl OpenCad {
                                     keep_text: false,
                                 });
                             }
-                            _ => self.notify("Click a corner where exactly two lines meet".into()),
+                            Some(Sel::Entity(e)) => {
+                                // Two lines that meet at a corner work like the corner.
+                                let first = match self.editor.selection.as_slice() {
+                                    [Sel::Entity(f)] if *f != e => Some(*f),
+                                    _ => None,
+                                };
+                                match first.map(|f| self.sketches[i].corner_between(f, e)) {
+                                    Some(Some(p)) => {
+                                        self.editor.selection.clear();
+                                        self.float = Some(FloatEdit {
+                                            target: EditTarget::Corner(p),
+                                            text: format!("{:.2}", self.corner_size),
+                                            focus: true,
+                                            keep_text: false,
+                                        });
+                                    }
+                                    Some(None) => {
+                                        self.editor.selection = vec![Sel::Entity(e)];
+                                        self.notify("Those two lines don't meet in a corner of just two lines".into());
+                                    }
+                                    None => self.editor.selection = vec![Sel::Entity(e)],
+                                }
+                            }
+                            _ => {
+                                self.editor.selection.clear();
+                                self.notify("Click a corner, or two lines that meet".into());
+                            }
                         }
                     }
                 }
