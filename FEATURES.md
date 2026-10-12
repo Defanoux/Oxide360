@@ -57,7 +57,7 @@ Suggested crates: `wgpu`, `winit`, `egui`/`eframe` (UI), `glam` or `nalgebra` (m
 **Entities**
 - [ ] Line, polyline, rectangle (2-point, 3-point, centre), circle (centre, 2-pt, 3-pt, tangent), arc (3-pt, centre, tangent), ellipse — all but ellipse; polyline not separate
 - [ ] Polygon, slot (centre-to-centre, overall), spline (fit point, control point), conic, point — polygon and point done; slot/spline/conic not yet
-- [ ] Text, construction geometry toggle, mirror, circular/rectangular pattern — construction toggle and mirror done
+- [ ] Text, construction geometry toggle, mirror, circular/rectangular pattern — construction toggle, mirror and rectangular/circular pattern done
 - [ ] Fillet and chamfer (2D), trim, extend, break, offset, project/include (from 3D edges), intersect — fillet, chamfer, trim (lines) done; extend/break/offset/project/intersect not yet
 
 **Constraints**

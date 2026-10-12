@@ -35,6 +35,7 @@ mod profile;
 mod project;
 mod settings;
 mod sketch;
+mod sketch_pattern;
 mod solver;
 mod view;
 
@@ -52,6 +53,7 @@ use egui::{Color32, Stroke};
 use glam::{DVec2, DVec3, Vec2, Vec3};
 use copy_dialog::{CopyDialog, Mode as CopyMode};
 use plane_dialog::PlaneDialog;
+use sketch_pattern::{Mode as SpMode, SketchPattern};
 use model::{PlaneFeature, AxisFeature, CopyFeature, EdgeFeature, EdgeKind, EdgeRef, Extrude, Mesh, Operation, Revolve, RevolveAxis};
 use icons::Icon;
 use profile::{Region, find_regions};
@@ -368,6 +370,10 @@ enum HandleTarget {
     PatternAngle,
     PatternRadial,
     PlaneOffset,
+    /// A sketch pattern's spacing along X / Y, and its angle.
+    SketchSpacing1,
+    SketchSpacing2,
+    SketchAngle,
 }
 
 struct EdgeDialog {
@@ -452,6 +458,8 @@ struct OpenCad {
     ctx_cplane: Option<usize>,               // the one a right-click was on
     axis_pick: bool,                         // waiting for a click on a straight edge to put an axis on
     revolve_errors: Vec<Option<String>>,
+    sketch_pattern: Option<SketchPattern>,   // an open Rectangular / Circular Pattern in a sketch
+    sp_applied: Option<pattern::Layout>,     // the layout the sketch is showing now
     project_body_hover: Option<usize>,       // the body under the mouse when no edge is (Project tool: takes all its edges)
     project_hover: Option<EdgeRef>,          // the body edge under the mouse (Project tool)
     copy_axis_hover: Option<AxisChoice>, // the axis under the mouse while a pattern's axis is being picked
@@ -556,6 +564,8 @@ impl Default for OpenCad {
             ctx_cplane: None,
             axis_pick: false,
             revolve_errors: Vec::new(),
+            sketch_pattern: None,
+            sp_applied: None,
             project_body_hover: None,
             project_hover: None,
             copy_axis_hover: None,
@@ -1278,6 +1288,8 @@ impl OpenCad {
     }
 
     fn enter_sketch(&mut self, i: usize) {
+        self.sketch_pattern = None;
+        self.sp_applied = None;
         self.revolve_dialog = None;
         self.copy_dialog = None;
         self.dim_selection.clear();
@@ -1301,6 +1313,7 @@ impl OpenCad {
     /// Leave sketch mode. An empty sketch nothing depends on is discarded.
     /// Returns the index of a removed sketch so callers can fix up indices.
     fn finish_sketch(&mut self) -> Option<usize> {
+        self.cancel_sketch_pattern();
         let i = self.active.take()?;
         self.editor = Editor::default();
         self.undo.clear();
@@ -1875,6 +1888,23 @@ impl OpenCad {
     /// The drag arrow for whichever box is open (extrude distance, fillet /
     /// chamfer size, revolve angle), with the value it shows now.
     fn current_handles(&self, regions: &[Vec<Region>]) -> Vec<Handle> {
+        if let (Some(d), Some(i)) = (&self.sketch_pattern, self.active) {
+            let plane = self.plane_of(i);
+            let at = plane.to_world(d.centroid()).as_dvec3();
+            return match d.mode {
+                SpMode::Rectangular => vec![
+                    Handle::Line { line: LineHandle { origin: at, dir: plane.u.as_dvec3() }, value: d.spacing, target: HandleTarget::SketchSpacing1 },
+                    Handle::Line { line: LineHandle { origin: at, dir: plane.v.as_dvec3() }, value: d.spacing2, target: HandleTarget::SketchSpacing2 },
+                ],
+                SpMode::Circular => {
+                    let pivot = plane.to_world(d.center).as_dvec3();
+                    TurnHandle::new(pivot, plane.normal().as_dvec3(), at)
+                        .map(|turn| Handle::Turn { turn, value: d.angle, target: HandleTarget::SketchAngle })
+                        .into_iter()
+                        .collect()
+                }
+            };
+        }
         if let Some(d) = &self.plane_dialog {
             let size = origin::size_for(self.camera.distance);
             let (lo, hi) = self.plane_rect(d.extent, &d.base, d.on_origin, size);
@@ -2007,6 +2037,15 @@ impl OpenCad {
                         HandleTarget::PatternSpacing2 => d.spacing2 = v,
                         HandleTarget::PatternAngle => d.angle = v.clamp(-360.0, 360.0),
                         _ => d.radial = v - base_radius,
+                    }
+                }
+            }
+            HandleTarget::SketchSpacing1 | HandleTarget::SketchSpacing2 | HandleTarget::SketchAngle => {
+                if let Some(d) = self.sketch_pattern.as_mut() {
+                    match target {
+                        HandleTarget::SketchSpacing1 => d.spacing = v,
+                        HandleTarget::SketchSpacing2 => d.spacing2 = v,
+                        _ => d.angle = v.clamp(-360.0, 360.0),
                     }
                 }
             }
@@ -2437,6 +2476,22 @@ impl OpenCad {
 
     /// The quantity boxes that sit beside a pattern's arrows.
     fn copy_quantity_boxes(&mut self, ctx: &egui::Context) {
+        if let Some(d) = self.sketch_pattern.as_mut() {
+            let tips: Vec<Option<egui::Pos2>> = self.arrows.iter().map(|a| a.map(|(_, tip)| to_pos(tip))).collect();
+            let slots: Vec<(&'static str, &mut u32)> = match d.mode {
+                SpMode::Rectangular => vec![("sp_qty1", &mut d.count), ("sp_qty2", &mut d.count2)],
+                SpMode::Circular => vec![("sp_qty1", &mut d.count_round)],
+            };
+            for ((id, n), tip) in slots.into_iter().zip(tips) {
+                let Some(tip) = tip else { continue };
+                egui::Area::new(egui::Id::new(id)).order(egui::Order::Foreground).fixed_pos(tip + egui::vec2(8.0, -30.0)).show(ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.add(egui::DragValue::new(n).range(1..=pattern::MAX_COPIES).speed(0.2).prefix("× "));
+                    });
+                });
+            }
+            return;
+        }
         let Some(d) = self.copy_dialog.as_mut() else { return };
         let tips: Vec<Option<egui::Pos2>> = self.arrows.iter().map(|a| a.map(|(_, tip)| to_pos(tip))).collect();
         let slots: Vec<(&'static str, &mut u32)> = match d.mode {
@@ -2452,6 +2507,61 @@ impl OpenCad {
                 });
             });
         }
+    }
+
+    /// The Rectangular / Circular Pattern buttons in a sketch: the selection is what gets copied.
+    fn start_sketch_pattern(&mut self, mode: SpMode) {
+        let Some(i) = self.active else { return };
+        let sel: Vec<sketch::Sel> = self.editor.selection.clone();
+        if sel.is_empty() {
+            self.notify("Select the geometry to pattern first (click or drag a box), then press the pattern button".into());
+            return;
+        }
+        self.cancel_sketch_pattern();
+        self.editor.set_tool(Tool::Select);
+        self.editor.selection = sel.clone();
+        self.sketch_pattern = Some(SketchPattern::new(mode, self.sketches[i].clone(), sel));
+        self.sp_applied = None;
+        self.notify("Set the pattern, then press Enter to apply (Esc cancels)".into());
+    }
+
+    /// Put the sketch back as it was before the pattern.
+    fn cancel_sketch_pattern(&mut self) {
+        if let (Some(d), Some(i)) = (self.sketch_pattern.take(), self.active) {
+            if i < self.sketches.len() {
+                self.sketches[i] = d.base;
+            }
+        }
+        self.sp_applied = None;
+        self.arrows.clear();
+    }
+
+    fn commit_sketch_pattern(&mut self) {
+        let (Some(d), Some(i)) = (self.sketch_pattern.as_ref(), self.active) else { return };
+        match d.result() {
+            Ok(done) => {
+                self.undo.push(d.base.clone());
+                self.sketches[i] = done;
+                self.sketch_pattern = None;
+                self.sp_applied = None;
+                self.arrows.clear();
+                self.editor.selection.clear();
+                self.dof = solver::solve(&mut self.sketches[i].clone(), &[]).ok().map(|s| s.dof);
+            }
+            Err(e) => self.notify(e),
+        }
+    }
+
+    /// Keep the sketch showing what the open pattern would make.
+    fn refresh_sketch_pattern(&mut self) {
+        let (Some(d), Some(i)) = (self.sketch_pattern.as_ref(), self.active) else { return };
+        let layout = d.layout();
+        if self.sp_applied == Some(layout) || i >= self.sketches.len() {
+            return;
+        }
+        // (A one-copy layout makes nothing: show the plain sketch.)
+        self.sketches[i] = d.preview().unwrap_or_else(|_| d.base.clone());
+        self.sp_applied = Some(layout);
     }
 
     /// Right panel while mirroring / patterning.
@@ -2795,6 +2905,15 @@ impl OpenCad {
                     }
                     if icons::button(ui, Icon::Trim, "Trim: click the part of a line to remove, back to the nearest crossing", true, self.editor.tool == Tool::Trim).clicked() {
                         self.editor.set_tool(Tool::Trim);
+                    }
+                    for (mode, icon, tip) in [
+                        (SpMode::Rectangular, Icon::RectPattern, "Rectangular Pattern: select geometry first, then click this"),
+                        (SpMode::Circular, Icon::CircPattern, "Circular Pattern: select geometry first, then click this"),
+                    ] {
+                        let on = self.sketch_pattern.as_ref().is_some_and(|d| d.mode == mode);
+                        if icons::button(ui, icon, tip, true, on).clicked() {
+                            self.start_sketch_pattern(mode);
+                        }
                     }
                     if icons::button(ui, Icon::Mirror, "Mirror: select geometry first, then click this and the mirror line", true, self.editor.tool == Tool::Mirror).clicked() {
                         self.start_mirror();
@@ -4229,6 +4348,7 @@ impl OpenCad {
         }
 
         // --- sketch input ---
+        self.refresh_sketch_pattern();
         let mut cursor: Option<Anchor> = None; // drawing target (snapped)
         let mut hovered: Option<Sel> = None; // select-tool hover
         if let Some(i) = self.active {
@@ -4403,7 +4523,7 @@ impl OpenCad {
                         self.editor.selection.clear();
                     }
                 }
-                if undo {
+                if undo && self.sketch_pattern.is_none() {
                     self.undo_last();
                 }
             }
@@ -4474,7 +4594,24 @@ impl OpenCad {
                 }
             }
 
+            // A pattern dialog is open: Enter applies, Esc cancels, and (circular) a click on a point sets the centre.
+            if self.sketch_pattern.is_some() {
+                let enter = ui.input(|inp| inp.key_pressed(egui::Key::Enter));
+                if enter && !typing {
+                    self.commit_sketch_pattern();
+                } else if esc && !typing {
+                    self.cancel_sketch_pattern();
+                } else if let Some(d) = self.sketch_pattern.as_mut() {
+                    if d.picking_center && response.clicked() {
+                        if let Some(Sel::Point(p)) = raw_hover.and_then(|h| self.sketches[i].hit(h, SNAP_PX as f64 * mm_per_px)) {
+                            d.center = self.sketches[i].points[p];
+                            d.picking_center = false;
+                        }
+                    }
+                }
+            }
             match self.editor.tool {
+                _ if self.sketch_pattern.is_some() => {}
                 Tool::Select => {
                     if response.drag_started_by(egui::PointerButton::Primary) {
                         let sk = &self.sketches[i];
@@ -5804,7 +5941,7 @@ impl eframe::App for OpenCad {
             self.cmd = shortcut;
         }
         // Undo / redo for the whole design (text boxes keep their own Ctrl+Z).
-        if !ctx.text_edit_focused() && self.confirm.is_none() {
+        if !ctx.text_edit_focused() && self.confirm.is_none() && self.sketch_pattern.is_none() {
             let (redo, undo) = ctx.input_mut(|i| {
                 use egui::{Key, Modifiers};
                 let redo = i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y);
@@ -5851,7 +5988,18 @@ impl eframe::App for OpenCad {
                 .collapsible(false)
                 .default_width(240.0)
         };
-        if self.dialog.is_some() && self.active.is_none() {
+        if self.sketch_pattern.is_some() && self.active.is_some() {
+            float("sketch_pattern").show(&ctx, |ui| {
+                let error = self.sketch_pattern.as_ref().and_then(|d| d.preview().err());
+                if let Some(d) = self.sketch_pattern.as_mut() {
+                    match d.panel(ui, error.as_deref()) {
+                        copy_dialog::Action::Ok => self.commit_sketch_pattern(),
+                        copy_dialog::Action::Cancel => self.cancel_sketch_pattern(),
+                        copy_dialog::Action::None => {}
+                    }
+                }
+            });
+        } else if self.dialog.is_some() && self.active.is_none() {
             float("extrude").show(&ctx, |ui| self.extrude_panel(ui));
         } else if self.edge_dialog.is_some() && self.active.is_none() {
             float("edges").show(&ctx, |ui| self.edge_panel(ui));

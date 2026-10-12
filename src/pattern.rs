@@ -40,25 +40,42 @@ pub fn mirror(sk: &mut Sketch, objects: &[Sel], across: MirrorLine) -> Result<(V
     if pa.distance(pb) < 1e-9 {
         return Err("the mirror line has no length".into());
     }
-    let mut chosen: Vec<EntityId> = Vec::new();
-    for s in objects {
-        let found = match *s {
-            Sel::Entity(e) => Some(e),
-            Sel::Point(p) => sk.entities.iter().position(|e| matches!(e, Entity::Point { p: q } if *q == p)),
-        };
-        if let Some(e) = found.filter(|&e| Some(e) != line && e < sk.entities.len() && !chosen.contains(&e)) {
-            chosen.push(e);
-        }
-    }
+    let mut chosen = chosen_entities(sk, objects);
+    chosen.retain(|&e| Some(e) != line);
     if chosen.is_empty() {
         return Err("select geometry to mirror first".into());
     }
+    let theta = (pb - pa).to_angle().to_degrees();
+    // A line at `deg` mirrors to 2θ − deg: horizontal or vertical only for some angles.
+    let hv = |deg: f64| copy_is_horizontal(2.0 * theta - deg);
+    Ok(copy_chosen(sk, &chosen, &|p| reflect(p, pa, pb), true, &hv))
+}
+
+/// Does a line at `deg` degrees lie horizontally (Some(true)), vertically (Some(false)) or neither?
+fn copy_is_horizontal(deg: f64) -> Option<bool> {
+    let r = deg.rem_euclid(180.0);
+    let near = |t: f64| (r - t).abs() < 1e-7 || (r - t - 180.0).abs() < 1e-7;
+    if near(0.0) { Some(true) } else if near(90.0) { Some(false) } else { None }
+}
+
+/// Copy `chosen` entities with every point moved by `f`. `reverse_arcs`:
+/// a reflection runs arcs the other way round. `hv(deg)` says whether the copy
+/// of a line at `deg` is horizontal / vertical. Shared points stay shared; a
+/// point `f` leaves where it is is reused. Returns the constraints worth adding
+/// (those among the copied pieces, then equal-to-original) and the new entities.
+fn copy_chosen(
+    sk: &mut Sketch,
+    chosen: &[EntityId],
+    f: &dyn Fn(DVec2) -> DVec2,
+    reverse_arcs: bool,
+    hv: &dyn Fn(f64) -> Option<bool>,
+) -> (Vec<Constraint>, Vec<EntityId>) {
     let tol = 1e-7;
     let mut map: HashMap<PointId, PointId> = HashMap::new();
     let mut image = |sk: &mut Sketch, p: PointId| -> PointId {
         *map.entry(p).or_insert_with(|| {
             let at = sk.points[p];
-            let r = reflect(at, pa, pb);
+            let r = f(at);
             if r.distance(at) < tol {
                 p
             } else {
@@ -70,13 +87,13 @@ pub fn mirror(sk: &mut Sketch, objects: &[Sel], across: MirrorLine) -> Result<(V
     let mut equal = Vec::new();
     let mut made = Vec::new();
     let mut emap: HashMap<EntityId, EntityId> = HashMap::new();
-    for e in chosen {
+    for &e in chosen {
         let copy = match sk.entities[e] {
             Entity::Line { a, b } => Entity::Line { a: image(sk, a), b: image(sk, b) },
             Entity::Circle { center, radius } => Entity::Circle { center: image(sk, center), radius },
             Entity::Point { p } => Entity::Point { p: image(sk, p) },
-            // Reflection reverses the sweep, so the new arc runs from the image of b to the image of a.
-            Entity::Arc { center, a, b } => Entity::Arc { center: image(sk, center), a: image(sk, b), b: image(sk, a) },
+            Entity::Arc { center, a, b } if reverse_arcs => Entity::Arc { center: image(sk, center), a: image(sk, b), b: image(sk, a) },
+            Entity::Arc { center, a, b } => Entity::Arc { center: image(sk, center), a: image(sk, a), b: image(sk, b) },
         };
         let was_construction = sk.is_construction(e);
         sk.entities.push(copy);
@@ -90,27 +107,20 @@ pub fn mirror(sk: &mut Sketch, objects: &[Sel], across: MirrorLine) -> Result<(V
         emap.insert(e, n);
         made.push(n);
     }
-    // The constraints among the selected pieces apply to their copies too, so
+    // The constraints among the copied pieces apply to their copies too, so
     // the copy keeps the shape (a rectangle stays a rectangle) …
-    let theta = (pb - pa).to_angle();
-    // A horizontal line (0°) mirrors to 2θ, a vertical one (90°) to 2θ − 90°.
-    let keeps = |deg: f64| -> Option<bool> {
-        let r = (2.0 * theta.to_degrees() - deg).rem_euclid(180.0);
-        let near = |t: f64| (r - t).abs() < 1e-7 || (r - t - 180.0).abs() < 1e-7;
-        if near(0.0) { Some(true) } else if near(90.0) { Some(false) } else { None }
-    };
     let e = |x: &EntityId| emap.get(x).copied();
     let q = |x: &PointId| map.get(x).copied();
     let mut constraints = Vec::new();
     for c in sk.constraints.clone() {
         use Constraint::*;
         let copy = match c {
-            Horizontal(l) => match (e(&l), keeps(0.0)) {
+            Horizontal(l) => match (e(&l), hv(0.0)) {
                 (Some(m), Some(true)) => Some(Horizontal(m)),
                 (Some(m), Some(false)) => Some(Vertical(m)),
                 _ => None,
             },
-            Vertical(l) => match (e(&l), keeps(90.0)) {
+            Vertical(l) => match (e(&l), hv(90.0)) {
                 (Some(m), Some(true)) => Some(Horizontal(m)),
                 (Some(m), Some(false)) => Some(Vertical(m)),
                 _ => None,
@@ -134,6 +144,78 @@ pub fn mirror(sk: &mut Sketch, objects: &[Sel], across: MirrorLine) -> Result<(V
     }
     // … and each copy is equal to its original.
     constraints.extend(equal);
+    (constraints, made)
+}
+
+/// The entities a selection means (a lone point stands for its Point entity).
+fn chosen_entities(sk: &Sketch, objects: &[Sel]) -> Vec<EntityId> {
+    let mut chosen: Vec<EntityId> = Vec::new();
+    for s in objects {
+        let found = match *s {
+            Sel::Entity(e) => Some(e),
+            Sel::Point(p) => sk.entities.iter().position(|e| matches!(e, Entity::Point { p: q } if *q == p)),
+        };
+        if let Some(e) = found.filter(|&e| e < sk.entities.len() && !chosen.contains(&e)) {
+            chosen.push(e);
+        }
+    }
+    chosen
+}
+
+/// How the copies of a pattern are laid out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Layout {
+    /// `count` copies (the original included) every `spacing` along direction
+    /// 1 (sketch X) and `count2` along direction 2 (sketch Y).
+    Rectangular { count: u32, spacing: f64, count2: u32, spacing2: f64 },
+    /// `count` copies (the original included) round `center`, over `angle` degrees
+    /// (360 spaces them evenly all the way round).
+    Circular { center: DVec2, count: u32, angle: f64 },
+}
+
+/// Most copies in one direction.
+pub const MAX_COPIES: u32 = 100;
+
+/// Add the copies a pattern makes of the selected geometry. Returns the
+/// constraints to add (one at a time, through the solver) and the new entities.
+pub fn pattern(sk: &mut Sketch, objects: &[Sel], layout: Layout) -> Result<(Vec<Constraint>, Vec<EntityId>), String> {
+    let chosen = chosen_entities(sk, objects);
+    if chosen.is_empty() {
+        return Err("select geometry to pattern first".into());
+    }
+    let mut constraints = Vec::new();
+    let mut made = Vec::new();
+    let mut add = |sk: &mut Sketch, f: &dyn Fn(DVec2) -> DVec2, hv: &dyn Fn(f64) -> Option<bool>| {
+        let (c, m) = copy_chosen(sk, &chosen, f, false, hv);
+        constraints.extend(c);
+        made.extend(m);
+    };
+    match layout {
+        Layout::Rectangular { count, spacing, count2, spacing2 } => {
+            for j in 0..count2.clamp(1, MAX_COPIES) {
+                for i in 0..count.clamp(1, MAX_COPIES) {
+                    if i == 0 && j == 0 {
+                        continue;
+                    }
+                    let shift = DVec2::new(spacing * i as f64, spacing2 * j as f64);
+                    add(sk, &|p| p + shift, &|deg| copy_is_horizontal(deg));
+                }
+            }
+        }
+        Layout::Circular { center, count, angle } => {
+            let count = count.clamp(1, MAX_COPIES);
+            let full = angle.abs() >= 360.0 - 1e-9;
+            let step = if count < 2 { 0.0 } else if full { angle / count as f64 } else { angle / (count - 1) as f64 };
+            for i in 1..count {
+                let deg = step * i as f64;
+                let rot = DVec2::from_angle(deg.to_radians());
+                add(sk, &|p| center + rot.rotate(p - center), &|d| copy_is_horizontal(d + deg));
+            }
+        }
+    }
+    if made.is_empty() {
+        return Err("it makes no copies — raise the quantity".into());
+    }
     Ok((constraints, made))
 }
 
@@ -303,6 +385,59 @@ mod tests {
         let (_, made) = mirror(&mut sk, &[Sel::Entity(0)], MirrorLine::Axis(0)).unwrap();
         let Entity::Line { a, b } = sk.entities[made[0]] else { panic!() };
         assert!(sk.points[a].distance(DVec2::new(0.0, -3.0)) < 1e-12 && sk.points[b].distance(DVec2::new(5.0, -6.0)) < 1e-12);
+    }
+
+    #[test]
+    fn a_rectangular_pattern_repeats_the_selection_on_a_grid() {
+        let mut sk = rectangle(); // 4 × 2 at (2, 0), four lines with H/V/= constraints
+        let all: Vec<Sel> = (0..4).map(Sel::Entity).collect();
+        let (cs, made) = pattern(&mut sk, &all, Layout::Rectangular { count: 3, spacing: 10.0, count2: 2, spacing2: 5.0 }).unwrap();
+        assert_eq!(made.len(), 4 * 5, "five new copies of four lines");
+        assert_eq!(sk.entities.len(), 4 + 20);
+        // Each copy keeps H/V (translation never turns anything): 4 per copy, and =, and equal-to-original.
+        let hs = cs.iter().filter(|c| matches!(c, Constraint::Horizontal(_))).count();
+        assert_eq!(hs, 2 * 5);
+        // Where the copies landed: bottom-left corners at x 12, 22 / y 0, 5.
+        let mut spots: Vec<(i64, i64)> = made
+            .chunks(4)
+            .map(|c| match sk.entities[c[0]] {
+                Entity::Line { a, .. } => (sk.points[a].x.round() as i64, sk.points[a].y.round() as i64),
+                _ => unreachable!(),
+            })
+            .collect();
+        spots.sort();
+        assert_eq!(spots, vec![(2, 5), (12, 0), (12, 5), (22, 0), (22, 5)]);
+        // A single copy asks for nothing.
+        let mut sk = rectangle();
+        assert!(pattern(&mut sk, &all, Layout::Rectangular { count: 1, spacing: 10.0, count2: 1, spacing2: 5.0 }).is_err());
+    }
+
+    #[test]
+    fn a_circular_pattern_turns_copies_round_a_centre() {
+        let mut sk = lines(&[((2.0, 0.0), (6.0, 0.0))]);
+        sk.constraints.push(Constraint::Horizontal(0));
+        let (cs, made) = pattern(&mut sk, &[Sel::Entity(0)], Layout::Circular { center: DVec2::ZERO, count: 4, angle: 360.0 }).unwrap();
+        assert_eq!(made.len(), 3);
+        let ends = |e: usize| match sk.entities[e] {
+            Entity::Line { a, b } => (sk.points[a], sk.points[b]),
+            _ => unreachable!(),
+        };
+        // 90° steps: (2,0)-(6,0) → (0,2)-(0,6) → (-2,0)-(-6,0) → (0,-2)-(0,-6).
+        assert!(ends(made[0]).0.distance(DVec2::new(0.0, 2.0)) < 1e-9 && ends(made[0]).1.distance(DVec2::new(0.0, 6.0)) < 1e-9);
+        assert!(ends(made[1]).1.distance(DVec2::new(-6.0, 0.0)) < 1e-9);
+        assert!(ends(made[2]).1.distance(DVec2::new(0.0, -6.0)) < 1e-9);
+        // The turned copies are vertical, horizontal, vertical — the constraint follows the turn.
+        assert!(cs.contains(&Constraint::Vertical(made[0])) && cs.contains(&Constraint::Horizontal(made[1])) && cs.contains(&Constraint::Vertical(made[2])));
+        // Over 180° the last copy sits at the end of the angle: 0°, 90°, 180° for three.
+        let mut sk = lines(&[((2.0, 0.0), (6.0, 0.0))]);
+        let (_, made) = pattern(&mut sk, &[Sel::Entity(0)], Layout::Circular { center: DVec2::ZERO, count: 3, angle: 180.0 }).unwrap();
+        let Entity::Line { b, .. } = sk.entities[made[1]] else { panic!() };
+        assert!(sk.points[b].distance(DVec2::new(-6.0, 0.0)) < 1e-9);
+        // 30° steps: a horizontal line is no longer horizontal or vertical.
+        let mut sk = lines(&[((2.0, 0.0), (6.0, 0.0))]);
+        sk.constraints.push(Constraint::Horizontal(0));
+        let (cs, made) = pattern(&mut sk, &[Sel::Entity(0)], Layout::Circular { center: DVec2::ZERO, count: 3, angle: 60.0 }).unwrap();
+        assert!(!cs.contains(&Constraint::Horizontal(made[0])) && !cs.contains(&Constraint::Vertical(made[0])));
     }
 
     #[test]
