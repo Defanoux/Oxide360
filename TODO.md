@@ -36,6 +36,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Origin like Fusion: no grid in the 3D view (grid only in sketches); short axes + three small translucent origin planes (`origin.rs`), browser Origin checkbox. Create Sketch now = click the button, then click an origin plane or a flat face. Camera type (perspective / orthographic / ortho faces) is persisted in the settings file.
 - Persisted settings: touchpad/mouse + view-cube axes in `~/.config/opencad/settings.json` (own small file — eframe storage needs a new crate); hidden bodies, sketch visibility and the Home pose saved in the `.ocad` (`Document.view`, `#[serde(default)]`, always compares equal so it's never an undo step or unsaved change).
 - Solid chamfer with two distances: type `2, 5` in the size box (`EdgeFeature.size2`, serde default). First distance is on `EdgeRef.faces[0]`'s face. New patched OCCT wrapper `BRepFilletAPI_MakeChamfer_try_add_two` / `Shape::try_chamfer_edges_two`; exact volume d1·d2/2·L tested.
 - Sketch fillet / chamfer: live preview while the size box is open, drag arrow (along the corner bisector), box stays open until Enter/Esc. Sketch chamfer takes two distances: type `2, 5` (first = first-picked line, or the lower-numbered line when clicking the corner point); dragging the arrow keeps the ratio.

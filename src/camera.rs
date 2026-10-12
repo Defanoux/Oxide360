@@ -8,7 +8,7 @@ pub const FOV_Y: f32 = 45.0 * std::f32::consts::PI / 180.0;
 const MAX_PITCH: f32 = 90.0 * std::f32::consts::PI / 180.0; // straight down/up is allowed
 
 /// How the 3D view is projected onto the screen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Projection {
     /// Far things look smaller, like a real camera.
     #[default]

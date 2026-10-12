@@ -25,6 +25,7 @@ mod handles;
 mod icons;
 mod kernel;
 mod model;
+mod origin;
 mod profile;
 mod settings;
 mod sketch;
@@ -392,7 +393,9 @@ struct OpenCad {
     touchpad: bool,                            // touchpad controls instead of mouse
     label_carry: bool,                         // touchpad: a dimension label picked up, following the cursor
     dim_preview: Option<(Constraint, DVec2)>,  // Dimension tool: what a click would place, and its label shift
-    face_pick: bool,                         // waiting for a click on a flat face to sketch on
+    face_pick: bool,                         // waiting for a click on an origin plane or a flat face to sketch on
+    origin_visible: bool,                    // the origin axes and planes in the 3D view
+    origin_hover: Option<OriginPlane>,       // the origin plane under the mouse while picking
     face_hover: Option<(usize, FacePlane)>, // body index + the face plane under the mouse
     turn: Option<CameraTurn>,
     home: Pose,      // where Home goes (set it from the view cube menu)
@@ -460,6 +463,8 @@ impl Default for OpenCad {
             label_carry: false,
             dim_preview: None,
             face_pick: false,
+            origin_visible: true,
+            origin_hover: None,
             face_hover: None,
             turn: None,
             home: OrbitCamera::default().pose(),
@@ -520,7 +525,7 @@ impl OpenCad {
 
     /// Write the preferences when one changed (checked every frame; cheap).
     fn save_settings_if_changed(&mut self) {
-        let now = settings::Settings { touchpad: self.touchpad, cube_axes: self.cube_axes };
+        let now = settings::Settings { touchpad: self.touchpad, cube_axes: self.cube_axes, projection: self.camera.projection };
         if now != self.settings_saved {
             if let Some(path) = settings::default_path() {
                 let _ = settings::save(&path, &now); // a lost preference isn't worth an error box
@@ -2055,26 +2060,14 @@ impl OpenCad {
                 let can_profile = self.sketches.iter().any(|s| !find_regions(s).is_empty());
                 let has_bodies = self.body_count > 0;
                 group(ui, "CREATE", |ui| {
-                    let sketch = icons::button(ui, Icon::Sketch, "Create Sketch: pick a plane or a face", true, false);
-                    egui::Popup::menu(&sketch).show(|ui| {
-                        for plane in OriginPlane::ALL {
-                            if ui.button(format!("{} plane", plane.name())).clicked() {
-                                self.start_sketch(plane);
-                                ui.close();
-                            }
-                        }
-                        ui.separator();
-                        let on_face = ui
-                            .add_enabled(has_bodies, egui::Button::new("On a face…"))
-                            .on_hover_text("Then click a flat face of a body");
-                        if on_face.clicked() {
-                            self.cancel_extrude();
-                            self.cancel_revolve();
-                            self.cancel_edge_dialog();
-                            self.face_pick = true;
-                            ui.close();
-                        }
-                    });
+                    // Like Fusion: click, then click the plane (or flat face) in the view.
+                    let tip = "Create Sketch: then click an origin plane or a flat face";
+                    if icons::button(ui, Icon::Sketch, tip, true, self.face_pick).clicked() {
+                        self.cancel_extrude();
+                        self.cancel_revolve();
+                        self.cancel_edge_dialog();
+                        self.face_pick = !self.face_pick;
+                    }
                     if icons::button(ui, Icon::Extrude, "Extrude (E)", can_profile, self.dialog.is_some()).clicked() {
                         self.open_extrude(None);
                     }
@@ -2103,7 +2096,7 @@ impl OpenCad {
 
     fn browser(&mut self, ui: &mut egui::Ui) {
         ui.heading("Browser");
-        ui.label("Origin");
+        ui.checkbox(&mut self.origin_visible, "Origin").on_hover_text("Show the origin axes and planes");
         ui.label("Bodies");
         for k in 0..self.body_count {
             ui.horizontal(|ui| {
@@ -2848,12 +2841,13 @@ impl OpenCad {
 
         // --- create sketch on a face: hover and click a flat face ---
         self.face_hover = None;
+        self.origin_hover = None;
         if self.face_pick {
             self.ensure_model(Slot::Committed);
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 let tol = self.camera.distance as f64 * 1e-3;
-                let found = {
+                let found: Option<(f32, usize, FacePlane)> = {
                     let m = self.model(Slot::Committed);
                     m.bodies
                         .iter()
@@ -2876,14 +2870,21 @@ impl OpenCad {
                                     // extrude/revolve, so the sketch moves with it.
                                     let mut face = FacePlane::from_face(fnormal, q);
                                     face.follow = kernel::follow_for_plane(&m.caps, fnormal, q, FOLLOW_TOL);
-                                    (b, face)
+                                    (t, b, face)
                                 })
                         })
                 };
-                self.face_hover = found;
+                // The origin planes count too; whichever is nearer wins.
+                let plane = origin::pick(&ray, origin::size_for(self.camera.distance));
+                match (plane, found) {
+                    (Some((op, tp)), f) if f.is_none_or(|(tf, ..)| tp < tf) => self.origin_hover = Some(op),
+                    (_, f) => self.face_hover = f.map(|(_, b, face)| (b, face)),
+                }
             }
             if response.clicked() {
-                if let Some((_, face)) = self.face_hover {
+                if let Some(op) = self.origin_hover {
+                    self.start_sketch(op);
+                } else if let Some((_, face)) = self.face_hover {
                     self.start_sketch_on_face(face);
                 }
             }
@@ -3529,23 +3530,38 @@ impl OpenCad {
         // Grid and axes as coloured world segments. With the GPU they're drawn
         // with depth, so a part hides the grid under it from above but not from
         // below; the CPU fallback just paints them first.
-        let mut grid_segments: Vec<(Vec3, Vec3, [f32; 4])> = sketch::grid_lines(&dplane, centre, grid, GRID_HALF_LINES)
-            .into_iter()
-            .map(|(a, b, major)| {
-                let g = if major { 85.0 / 255.0 } else { 60.0 / 255.0 };
-                (a, b, [g, g, g, 1.0])
-            })
-            .collect();
-        let mut axes = vec![(dplane.u * -extent, dplane.u * extent, dplane.u), (dplane.v * -extent, dplane.v * extent, dplane.v)];
-        if self.active.is_none() {
-            axes.push((Vec3::ZERO, Vec3::Z * extent * 0.5, Vec3::Z));
-        }
+        // The grid belongs to sketches (as in Fusion); the 3D view shows the
+        // origin instead: short axes and three small planes.
+        let sketching = self.active.is_some();
+        let origin_size = origin::size_for(self.camera.distance);
+        let show_origin = !sketching && (self.origin_visible || self.face_pick);
+        let mut grid_segments: Vec<(Vec3, Vec3, [f32; 4])> = if sketching {
+            sketch::grid_lines(&dplane, centre, grid, GRID_HALF_LINES)
+                .into_iter()
+                .map(|(a, b, major)| {
+                    let g = if major { 85.0 / 255.0 } else { 60.0 / 255.0 };
+                    (a, b, [g, g, g, 1.0])
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let axes: Vec<(Vec3, Vec3, Vec3)> = if sketching {
+            vec![(dplane.u * -extent, dplane.u * extent, dplane.u), (dplane.v * -extent, dplane.v * extent, dplane.v)]
+        } else if show_origin {
+            let reach = origin_size * 1.35;
+            vec![(Vec3::ZERO, Vec3::X * reach, Vec3::X), (Vec3::ZERO, Vec3::Y * reach, Vec3::Y), (Vec3::ZERO, Vec3::Z * reach, Vec3::Z)]
+        } else {
+            Vec::new()
+        };
         for &(a, b, axis) in &axes {
             let c = rgb(axis_color(axis));
             grid_segments.push((a, b, [c[0], c[1], c[2], 1.0]));
         }
         if !self.gpu {
-            view.grid(&dplane, centre, grid);
+            if sketching {
+                view.grid(&dplane, centre, grid);
+            }
             for &(a, b, axis) in &axes {
                 view.line(a, b, Stroke::new(2.0, axis_color(axis)));
             }
@@ -3623,10 +3639,35 @@ impl OpenCad {
             painter.text(
                 rect.center_top() + egui::vec2(0.0, 14.0),
                 egui::Align2::CENTER_TOP,
-                "Click a flat face to sketch on it   (Esc to cancel)",
+                "Click an origin plane or a flat face to sketch on   (Esc to cancel)",
                 egui::FontId::proportional(15.0),
                 Color32::from_gray(220),
             );
+        }
+
+        // --- draw: the origin planes (3D view) ---
+        if show_origin {
+            for op in OriginPlane::ALL {
+                let q = origin::quad(op, origin_size);
+                let hot = self.origin_hover == Some(op);
+                let fill = Color32::from_rgba_unmultiplied(255, 170, 60, if hot { 150 } else if self.face_pick { 80 } else { 55 });
+                let corners: Vec<Option<Vec2>> = q.iter().map(|&p| view.project(p)).collect();
+                if let [Some(a), Some(b), Some(c), Some(d)] = corners[..] {
+                    let mut mesh = egui::Mesh::default();
+                    for p in [a, b, c, d] {
+                        mesh.colored_vertex(to_pos(p), fill);
+                    }
+                    mesh.add_triangle(0, 1, 2);
+                    mesh.add_triangle(0, 2, 3);
+                    painter.add(egui::Shape::mesh(mesh));
+                    let edge = Stroke::new(if hot { 2.0 } else { 1.0 }, Color32::from_rgba_unmultiplied(255, 190, 90, if hot { 255 } else { 140 }));
+                    painter.add(egui::Shape::closed_line(vec![to_pos(a), to_pos(b), to_pos(c), to_pos(d)], edge));
+                }
+            }
+            if let Some(o) = view.project(Vec3::ZERO) {
+                painter.circle_filled(to_pos(o), 4.0, Color32::from_gray(235));
+                painter.circle_stroke(to_pos(o), 4.0, Stroke::new(1.0, Color32::from_gray(60)));
+            }
         }
 
         // --- draw: picked and hovered edges (fillet / chamfer) ---
@@ -4257,6 +4298,7 @@ fn main() -> eframe::Result {
                 let s = settings::load(&path);
                 app.touchpad = s.touchpad;
                 app.cube_axes = s.cube_axes;
+                app.camera.projection = s.projection;
                 app.settings_saved = s;
             }
             // Set up the GPU renderer once and keep it with egui's renderer.

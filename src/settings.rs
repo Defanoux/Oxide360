@@ -3,6 +3,7 @@
 //! defaults, and a failed save is silent — losing a preference is never worth
 //! interrupting work.
 
+use crate::camera::Projection;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -13,11 +14,13 @@ pub struct Settings {
     pub touchpad: bool,
     /// Show the XYZ triad on the view cube.
     pub cube_axes: bool,
+    /// Perspective, orthographic, or perspective with ortho faces.
+    pub projection: Projection,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { touchpad: false, cube_axes: true }
+        Self { touchpad: false, cube_axes: true, projection: Projection::default() }
     }
 }
 
@@ -61,7 +64,7 @@ mod tests {
         let d = dir("roundtrip");
         let path = d.join("nested").join("settings.json");
         assert_eq!(load(&path), Settings::default(), "nothing saved yet");
-        let s = Settings { touchpad: true, cube_axes: false };
+        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);
         let _ = std::fs::remove_dir_all(&d);
@@ -76,7 +79,7 @@ mod tests {
         assert_eq!(load(&path), Settings::default());
         // A file from an older version with only some settings keeps the rest at default.
         std::fs::write(&path, r#"{"touchpad": true}"#).unwrap();
-        assert_eq!(load(&path), Settings { touchpad: true, cube_axes: true });
+        assert_eq!(load(&path), Settings { touchpad: true, ..Settings::default() });
         let _ = std::fs::remove_dir_all(&d);
     }
 }
