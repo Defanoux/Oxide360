@@ -1188,6 +1188,34 @@ impl OpenCad {
         }
     }
 
+    /// Trim tool: cut line `e` back at the click `p`.
+    fn trim_at(&mut self, e: usize, p: DVec2) {
+        let Some(i) = self.active else { return };
+        let mut why = None;
+        self.dim_selection.clear();
+        self.editor.selection.clear();
+        let r = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
+            let mut trial = sk.clone();
+            match trial.trim_line(e, p) {
+                Ok(cs) => {
+                    // One at a time: a tie that turns out redundant is just skipped.
+                    for c in cs {
+                        let mut t = trial.clone();
+                        if solver::add_constraints(&mut t, &[c]).is_ok() {
+                            trial = t;
+                        }
+                    }
+                    *sk = trial;
+                }
+                Err(e) => why = Some(e),
+            }
+        });
+        match why {
+            Some(e) => self.notify(format!("Can't trim: {e}")),
+            None => self.report(r),
+        }
+    }
+
     /// Switch dimension `ci` between driving and driven (reference).
     fn toggle_driven(&mut self, ci: usize) {
         let Some(i) = self.active else { return };
@@ -1753,6 +1781,9 @@ impl OpenCad {
                         if icons::button(ui, icon, tip, true, self.editor.tool == tool).clicked() {
                             self.editor.set_tool(tool);
                         }
+                    }
+                    if icons::button(ui, Icon::Trim, "Trim: click the part of a line to remove, back to the nearest crossing", true, self.editor.tool == Tool::Trim).clicked() {
+                        self.editor.set_tool(Tool::Trim);
                     }
                     let tip = "Construction (X): toggle the selected geometry, or what you draw next";
                     if icons::button(ui, Icon::Construction, tip, true, self.editor.construction).clicked() {
@@ -2717,10 +2748,14 @@ impl OpenCad {
                         | Tool::Circle3Tangent
                         | Tool::SketchFillet
                         | Tool::SketchChamfer
+                        | Tool::Trim
                 ) && over_label.is_none()
                 {
                     hovered = raw_hover.and_then(|p| sk.hit(p, SNAP_PX as f64 * mm_per_px));
                     if tool.tangent_lines() > 0 {
+                        hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e)));
+                    }
+                    if tool == Tool::Trim {
                         hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e)));
                     }
                     if matches!(tool, Tool::SketchFillet | Tool::SketchChamfer) {
@@ -2733,7 +2768,7 @@ impl OpenCad {
                     }
                 }
                 // …drawing tools a snapped cursor.
-                if matches!(tool, Tool::Select | Tool::Constrain(_) | Tool::SketchFillet | Tool::SketchChamfer) {
+                if matches!(tool, Tool::Select | Tool::Constrain(_) | Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim) {
                 } else if let Some(px) = hover_px {
                     let nearest = sk
                         .points
@@ -3028,6 +3063,15 @@ impl OpenCad {
                             self.constraint_pick(label, sel);
                         } else {
                             self.editor.selection.clear();
+                        }
+                    }
+                }
+                Tool::Trim => {
+                    // Click the stretch of a line to remove.
+                    if response.clicked() {
+                        match (hovered, raw_hover) {
+                            (Some(Sel::Entity(e)), Some(p)) => self.trim_at(e, p),
+                            _ => self.notify("Click a line to trim it back to the nearest crossing geometry".into()),
                         }
                     }
                 }

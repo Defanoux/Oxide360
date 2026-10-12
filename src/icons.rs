@@ -18,6 +18,7 @@ pub enum Icon {
     Fillet,
     Chamfer,
     Construction,
+    Trim,
     Select,
     Line,
     Rectangle,
@@ -157,6 +158,14 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             poly(&[(0.15, 0.85), (0.15, 0.15), (0.5, 0.15), (0.85, 0.5), (0.85, 0.85)], blue);
             line((0.5, 0.15), (0.85, 0.5), Stroke::new(thin.width * 1.4, orange));
             line((0.15, 0.85), (0.85, 0.85), thin);
+        }
+        Icon::Trim => {
+            // A line crossing another, the overhang struck out.
+            line((0.1, 0.5), (0.62, 0.5), Stroke::new(thin.width * 1.2, orange));
+            line((0.62, 0.5), (0.9, 0.5), Stroke::new(thin.width, Color32::from_gray(120)));
+            line((0.62, 0.15), (0.62, 0.85), thin);
+            line((0.74, 0.3), (0.86, 0.7), Stroke::new(thin.width * 1.2, ink));
+            line((0.86, 0.3), (0.74, 0.7), Stroke::new(thin.width * 1.2, ink));
         }
         Icon::Construction => {
             // A dashed line with its end dots.

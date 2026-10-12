@@ -426,6 +426,21 @@ pub enum Arc3Snap {
     GridCenter(DVec2),
 }
 
+/// Parameters t where `p + t·d` crosses the circle (centre `c`, radius `r`).
+fn line_circle(p: DVec2, d: DVec2, c: DVec2, r: f64) -> Vec<f64> {
+    let f = p - c;
+    let (qa, qb, qc) = (d.length_squared(), 2.0 * f.dot(d), f.length_squared() - r * r);
+    let disc = qb * qb - 4.0 * qa * qc;
+    if qa < 1e-18 || disc < 0.0 {
+        return Vec::new();
+    }
+    let s = disc.sqrt();
+    if s < 1e-9 * qb.abs().max(1e-12) {
+        return Vec::new(); // grazing: not a crossing
+    }
+    vec![(-qb - s) / (2.0 * qa), (-qb + s) / (2.0 * qa)]
+}
+
 /// Circle through three points (None if they're in a line).
 pub fn circumcircle(a: DVec2, b: DVec2, c: DVec2) -> Option<(DVec2, f64)> {
     let d = 2.0 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
@@ -1112,6 +1127,148 @@ impl Sketch {
         Ok(out)
     }
 
+    /// Where line `e` is cut by other geometry: (parameter t along the line,
+    /// the spot, the cutting entity, an existing point of it to join to).
+    /// Touching at the line's own ends doesn't count.
+    fn line_cuts(&self, e: EntityId) -> Vec<(f64, DVec2, EntityId, Option<PointId>)> {
+        let Some(&Entity::Line { a, b }) = self.entities.get(e) else { return Vec::new() };
+        let (pa, pb) = (self.points[a], self.points[b]);
+        let d = pb - pa;
+        let len = d.length();
+        if len < 1e-9 {
+            return Vec::new();
+        }
+        let tol = 1e-7;
+        let (t_lo, t_hi) = (tol / len, 1.0 - tol / len);
+        let mut cuts = Vec::new();
+        let near = |p: PointId, x: DVec2| (self.points[p].distance(x) < 1e-6).then_some(p);
+        for (i, ent) in self.entities.iter().enumerate() {
+            if i == e {
+                continue;
+            }
+            match *ent {
+                Entity::Line { a: c, b: d2 } => {
+                    let (pc, pd) = (self.points[c], self.points[d2]);
+                    let f = pd - pc;
+                    let denom = d.perp_dot(f);
+                    if denom.abs() < 1e-12 * len * f.length().max(1e-12) {
+                        continue; // parallel
+                    }
+                    let t = (pc - pa).perp_dot(f) / denom;
+                    let u = (pc - pa).perp_dot(d) / denom;
+                    let su = tol / f.length().max(1e-12);
+                    if t > t_lo && t < t_hi && u >= -su && u <= 1.0 + su {
+                        let x = pa + d * t;
+                        cuts.push((t, x, i, near(c, x).or(near(d2, x))));
+                    }
+                }
+                Entity::Circle { center, radius } => {
+                    for t in line_circle(pa, d, self.points[center], radius) {
+                        if t > t_lo && t < t_hi {
+                            cuts.push((t, pa + d * t, i, None));
+                        }
+                    }
+                }
+                Entity::Arc { a: ea, b: eb, .. } => {
+                    let Some((c, r, a0, sweep)) = self.arc_geometry(i) else { continue };
+                    for t in line_circle(pa, d, c, r) {
+                        let x = pa + d * t;
+                        let ang = (x - c).y.atan2((x - c).x);
+                        let on = (ang - a0).rem_euclid(std::f64::consts::TAU) <= sweep + 1e-9;
+                        if t > t_lo && t < t_hi && on {
+                            cuts.push((t, x, i, near(ea, x).or(near(eb, x))));
+                        }
+                    }
+                }
+                Entity::Point { .. } => {}
+            }
+        }
+        cuts.sort_by(|x, y| x.0.total_cmp(&y.0));
+        cuts.dedup_by(|x, y| (x.0 - y.0).abs() * len < 1e-7);
+        cuts
+    }
+
+    /// Trim line `e` at the click `at`: the stretch of the line under the
+    /// click, between the nearest cuts by other geometry, is removed. An end
+    /// piece just shortens the line (it ends exactly at the cut, joined to the
+    /// other line when it ends there, else tied onto it); a middle piece
+    /// splits the line in two; a line nothing crosses is deleted.
+    /// Returns constraints for the caller to add through the solver.
+    pub fn trim_line(&mut self, e: EntityId, at: DVec2) -> Result<Vec<Constraint>, String> {
+        let Some(&Entity::Line { a, b }) = self.entities.get(e) else {
+            return Err("Trim works on lines".into());
+        };
+        let (pa, pb) = (self.points[a], self.points[b]);
+        let d = pb - pa;
+        let tc = ((at - pa).dot(d) / d.length_squared().max(1e-30)).clamp(0.0, 1.0);
+        let cuts = self.line_cuts(e);
+        let lo = cuts.iter().rev().find(|c| c.0 <= tc).copied();
+        let hi = cuts.iter().find(|c| c.0 > tc).copied();
+        if lo.is_none() && hi.is_none() {
+            self.delete(&[Sel::Entity(e)]);
+            return Ok(Vec::new());
+        }
+        let mut trial = self.clone();
+        // New points (to be tied to what cuts there) are found again by
+        // position after unused points are cleaned up.
+        let mut ties: Vec<(DVec2, EntityId)> = Vec::new();
+        let mut cut_point = |sk: &mut Sketch, c: (f64, DVec2, EntityId, Option<PointId>)| match c.3 {
+            Some(p) => p,
+            None => {
+                sk.points.push(c.1);
+                ties.push((c.1, c.2));
+                sk.points.len() - 1
+            }
+        };
+        // Its length is about to change: drop what pins the old one.
+        trial.retain_constraints(|k| match *k {
+            Constraint::Length(l, _) => l != e,
+            Constraint::Equal(x, y) => x != e && y != e,
+            _ => true,
+        });
+        let mut copy_to_new: Vec<Constraint> = Vec::new();
+        match (lo, hi) {
+            (Some(l), None) => {
+                let p = cut_point(&mut trial, l);
+                trial.entities[e] = Entity::Line { a, b: p };
+            }
+            (None, Some(h)) => {
+                let p = cut_point(&mut trial, h);
+                trial.entities[e] = Entity::Line { a: p, b };
+            }
+            (Some(l), Some(h)) => {
+                let (pl, ph) = (cut_point(&mut trial, l), cut_point(&mut trial, h));
+                trial.entities[e] = Entity::Line { a, b: pl };
+                trial.entities.push(Entity::Line { a: ph, b });
+                let n = trial.entities.len() - 1;
+                trial.set_construction(n, trial.is_construction(e));
+                for k in &trial.constraints {
+                    match *k {
+                        Constraint::Horizontal(x) if x == e => copy_to_new.push(Constraint::Horizontal(n)),
+                        Constraint::Vertical(x) if x == e => copy_to_new.push(Constraint::Vertical(n)),
+                        Constraint::Parallel(x, y) if x == e => copy_to_new.push(Constraint::Parallel(n, y)),
+                        Constraint::Parallel(x, y) if y == e => copy_to_new.push(Constraint::Parallel(x, n)),
+                        Constraint::Perpendicular(x, y) if x == e => copy_to_new.push(Constraint::Perpendicular(n, y)),
+                        Constraint::Perpendicular(x, y) if y == e => copy_to_new.push(Constraint::Perpendicular(x, n)),
+                        _ => {}
+                    }
+                }
+            }
+            (None, None) => unreachable!("handled above"),
+        }
+        trial.delete(&[]); // the old end point, if nothing else uses it
+        let mut out = copy_to_new;
+        for (x, other) in ties {
+            let Some(p) = trial.points.iter().position(|q| *q == x) else { continue };
+            out.push(match trial.entities.get(other) {
+                Some(Entity::Line { .. }) => Constraint::OnLine(p, other),
+                _ => Constraint::OnCircle(p, other),
+            });
+        }
+        *self = trial;
+        Ok(out)
+    }
+
     /// Where the perpendicular from `p` meets line `e` (extended).
     pub fn line_foot(&self, e: EntityId, p: DVec2) -> Option<DVec2> {
         match self.entities.get(e)? {
@@ -1267,6 +1424,7 @@ pub enum Tool {
     SketchFillet,
     /// Bevel a corner where two lines meet.
     SketchChamfer,
+    Trim,
     /// Three lines it touches.
     Circle3Tangent,
     /// Pick geometry for a constraint ("Dimension", "Parallel", …): the
@@ -1302,6 +1460,7 @@ impl Tool {
             Tool::ArcCenter => "Center Point Arc",
             Tool::SketchFillet => "Fillet",
             Tool::SketchChamfer => "Chamfer",
+            Tool::Trim => "Trim",
             Tool::Constrain(label) => label,
         }
     }
@@ -1533,6 +1692,7 @@ impl Editor {
                 | Tool::Circle3Tangent
                 | Tool::SketchFillet
                 | Tool::SketchChamfer
+                | Tool::Trim
         ) {
             return Vec::new();
         }
@@ -1754,7 +1914,7 @@ impl Editor {
                 ties
             }
             Tool::Circle2Tangent | Tool::Circle3Tangent | Tool::Constrain(_) | Tool::Point => Vec::new(),
-            Tool::SketchFillet | Tool::SketchChamfer => Vec::new(),
+            Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim => Vec::new(),
             Tool::Select => Vec::new(),
         }
     }
@@ -2549,5 +2709,99 @@ mod construction_tests {
         let regions = crate::profile::find_regions(&sk);
         assert_eq!(regions.len(), 1);
         assert!((regions[0].area() - 200.0).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod trim_tests {
+    use super::*;
+
+    fn seg(sk: &mut Sketch, a: (f64, f64), b: (f64, f64)) -> EntityId {
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Line);
+        ed.click(sk, Anchor::Free(DVec2::new(a.0, a.1)));
+        ed.click(sk, Anchor::Free(DVec2::new(b.0, b.1)));
+        sk.entities.len() - 1
+    }
+
+    fn ends(sk: &Sketch, e: EntityId) -> (DVec2, DVec2) {
+        let Entity::Line { a, b } = sk.entities[e] else { panic!("not a line") };
+        (sk.points[a], sk.points[b])
+    }
+
+    #[test]
+    fn trimming_an_overhang_ends_the_line_at_the_crossing_line() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let l = seg(&mut sk, (0.0, 0.0), (30.0, 0.0));
+        let m = seg(&mut sk, (10.0, -5.0), (10.0, 5.0));
+        let cs = sk.trim_line(l, DVec2::new(20.0, 0.0)).unwrap();
+        let (a, b) = ends(&sk, l);
+        assert_eq!((a, b), (DVec2::new(0.0, 0.0), DVec2::new(10.0, 0.0)));
+        // The new end is tied onto the crossing line.
+        let Entity::Line { b: end, .. } = sk.entities[l] else { unreachable!() };
+        assert_eq!(cs, vec![Constraint::OnLine(end, m)]);
+        assert!(crate::solver::add_constraints(&mut sk, &cs).is_ok());
+        assert_eq!(sk.points.len(), 5, "the far end point went away: origin + 4 left");
+    }
+
+    #[test]
+    fn trimming_where_another_line_ends_joins_the_two_lines() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let l = seg(&mut sk, (0.0, 0.0), (30.0, 0.0));
+        let m = seg(&mut sk, (10.0, 0.0), (10.0, 10.0));
+        let cs = sk.trim_line(l, DVec2::new(25.0, 0.0)).unwrap();
+        assert!(cs.is_empty(), "no tie needed, they share the point");
+        let (Entity::Line { b: lb, .. }, Entity::Line { a: ma, .. }) = (sk.entities[l], sk.entities[m]) else { panic!() };
+        assert_eq!(lb, ma, "both lines end at the same point");
+        assert_eq!(ends(&sk, l).1, DVec2::new(10.0, 0.0));
+    }
+
+    #[test]
+    fn trimming_between_two_cuts_splits_the_line_and_keeps_horizontal() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let l = seg(&mut sk, (0.0, 0.0), (30.0, 0.0));
+        seg(&mut sk, (10.0, -5.0), (10.0, 5.0));
+        seg(&mut sk, (20.0, -5.0), (20.0, 5.0));
+        sk.constraints.push(Constraint::Horizontal(l));
+        sk.constraints.push(Constraint::Length(l, 30.0));
+        let cs = sk.trim_line(l, DVec2::new(15.0, 0.0)).unwrap();
+        assert_eq!(ends(&sk, l), (DVec2::ZERO, DVec2::new(10.0, 0.0)));
+        let n = sk.entities.len() - 1;
+        assert_eq!(ends(&sk, n), (DVec2::new(20.0, 0.0), DVec2::new(30.0, 0.0)));
+        assert!(cs.contains(&Constraint::Horizontal(n)), "{cs:?}");
+        assert!(!sk.constraints.iter().any(|c| matches!(c, Constraint::Length(..))), "old length dropped");
+    }
+
+    #[test]
+    fn trimming_a_line_nothing_crosses_deletes_it() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let l = seg(&mut sk, (0.0, 0.0), (30.0, 0.0));
+        seg(&mut sk, (0.0, 5.0), (30.0, 5.0));
+        sk.trim_line(l, DVec2::new(5.0, 0.0)).unwrap();
+        assert_eq!(sk.entities.len(), 1);
+    }
+
+    #[test]
+    fn a_circle_cuts_a_line_too_and_the_end_goes_on_the_circle() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let l = seg(&mut sk, (-30.0, 0.0), (30.0, 0.0));
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Circle);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(0.0, 0.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(10.0, 0.0)));
+        let circle = sk.entities.len() - 1;
+        let cs = sk.trim_line(l, DVec2::new(20.0, 0.0)).unwrap();
+        assert!((ends(&sk, l).1 - DVec2::new(10.0, 0.0)).length() < 1e-9);
+        assert!(cs.iter().any(|c| matches!(c, Constraint::OnCircle(_, e) if *e == circle)), "{cs:?}");
+    }
+
+    #[test]
+    fn trim_only_works_on_lines() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Circle);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(0.0, 0.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(10.0, 0.0)));
+        assert!(sk.trim_line(0, DVec2::ZERO).is_err());
     }
 }
