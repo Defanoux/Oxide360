@@ -4,22 +4,6 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Next
 
-2. **3-Point Arc snapping** (Gavin's request, match Fusion):
-   - The third click (the point the arc passes through) must **not** be grid
-     snapped — use the raw cursor. (Same rule the 2-tangent circle already
-     follows.)
-   - **Half-circle snap**: when the arc is close to a semicircle (centre near
-     the midpoint of the chord between the first two clicks), snap so the
-     centre is exactly the chord midpoint. Show a small marker / "½" hint.
-   - **Grid-centre snap** (only while grid snap is on): the centre always lies
-     on the perpendicular bisector of the chord; if the centre comes within a
-     few pixels of a grid intersection along that bisector, snap it there.
-   - Optional, Fusion does it: if the arc starts at the end of a line, snap
-     to "tangent to that line" when close, and add a Tangent constraint.
-   - Tests: semicircle snap gives centre = chord midpoint exactly; grid snap
-     gives a centre on a grid point and on the bisector; raw third point is
-     unchanged when no snap applies.
-
 3. **Driven (reference) dimensions**: a dimension that would over-constrain
    the sketch should be offered as *driven* (shown, greyed, read-only, not
    solved) instead of being refused as Redundant. Add a `driven` flag (keep
@@ -70,6 +54,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- 3-Point Arc snapping: raw third point (no grid), half-circle centre snap with ½ marker, grid-centre snap on the chord bisector. (Tangent-to-line start snap not done — it was optional.)
 - Verified build: `cargo build` clean (no warnings), 151 tests pass.
 - Orbit viewport, grid, view cube (with home, flip-to-opposite, axis triad toggle).
 - Sketching: line, 2-point / 3-point / center rectangle, center / 2-point /

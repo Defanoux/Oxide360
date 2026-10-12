@@ -2686,11 +2686,15 @@ impl OpenCad {
                             .map(|f| Anchor::OnLine(e, f)),
                         _ => None,
                     };
+                    let arc3_third = tool == Tool::Arc3Point && self.editor.second.is_some();
                     cursor = match (nearest, on_line) {
                         (Some((id, _)), _) => Some(Anchor::Point(id)),
                         _ if tangent_spot.is_some() => tangent_spot,
                         // Tangent circles sit where the cursor really is, never on the grid.
                         _ if tool.tangent_lines() > 0 => raw_hover.map(Anchor::Free),
+                        // 3-point arc, third click: the raw cursor (never the grid),
+                        // with the centre snaps below.
+                        _ if arc3_third => raw_hover.map(Anchor::Free),
                         (None, Some((e, q, _))) => Some(Anchor::OnLine(e, q)),
                         (None, None) => raw_hover.map(|p| {
                             // Near an origin axis: locked onto it (nearer axis wins).
@@ -2704,6 +2708,10 @@ impl OpenCad {
                             }
                         }),
                     };
+                    if let (true, Some(Anchor::Free(p))) = (arc3_third, cursor) {
+                        let g = self.grid_snap.then_some(grid);
+                        cursor = Some(Anchor::Free(self.editor.arc3_snap(sk, p, g, tol_px(mm_per_px)).0));
+                    }
                 }
             }
 
@@ -3470,6 +3478,25 @@ impl OpenCad {
                         Tool::Arc3Point | Tool::ArcCenter => match self.editor.arc_preview(sk, here) {
                             Some(a) => {
                                 view.arc(&plane, a.center, a.radius, a.start, a.sweep, preview);
+                                // Centre snapped? Mark it (idempotent on the snapped point).
+                                let g = self.grid_snap.then_some(grid);
+                                let hint = match self.editor.arc3_snap(sk, here, g, tol_px(mm_per_px)).1 {
+                                    sketch::Arc3Snap::HalfCircle => Some(("½", a.center)),
+                                    sketch::Arc3Snap::GridCenter(c) => Some(("grid", c)),
+                                    sketch::Arc3Snap::None => None,
+                                };
+                                if let Some((label, c)) = hint {
+                                    if let Some(px) = view.project(plane.to_world(c)) {
+                                        painter.circle_stroke(to_pos(px), 5.0, Stroke::new(2.0, COL_SNAP));
+                                        painter.text(
+                                            to_pos(px) + egui::vec2(9.0, -9.0),
+                                            egui::Align2::LEFT_BOTTOM,
+                                            label,
+                                            egui::FontId::proportional(13.0),
+                                            COL_SNAP,
+                                        );
+                                    }
+                                }
                                 format!("R {:.2} mm   {:.1}°", a.radius, a.sweep.to_degrees())
                             }
                             None => {
@@ -3687,6 +3714,11 @@ impl eframe::App for OpenCad {
             self.title = title;
         }
     }
+}
+
+/// Snap distance for arc centres, in mm at the current zoom.
+fn tol_px(mm_per_px: f64) -> f64 {
+    SNAP_PX as f64 * mm_per_px
 }
 
 fn main() -> eframe::Result {

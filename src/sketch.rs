@@ -409,6 +409,14 @@ pub struct ArcShape {
     pub flipped: bool,
 }
 
+/// What the 3-Point Arc's third click snapped to (see `Editor::arc3_snap`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Arc3Snap {
+    None,
+    HalfCircle,
+    GridCenter(DVec2),
+}
+
 /// Circle through three points (None if they're in a line).
 pub fn circumcircle(a: DVec2, b: DVec2, c: DVec2) -> Option<(DVec2, f64)> {
     let d = 2.0 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
@@ -1304,6 +1312,39 @@ impl Editor {
         }
     }
 
+    /// 3-Point Arc, third click: the point to use for the raw cursor `raw`.
+    /// The point is never grid-snapped, but the arc's *centre* can snap:
+    /// to the chord midpoint (a half circle) when within `tol`, else — with
+    /// `grid` on — to a grid point on the chord's perpendicular bisector.
+    pub fn arc3_snap(&self, sk: &Sketch, raw: DVec2, grid: Option<GridSpec>, tol: f64) -> (DVec2, Arc3Snap) {
+        let pos = |a: Option<Anchor>| a.filter(|&a| sk.is_valid_anchor(a)).map(|a| sk.pos(a));
+        let (Tool::Arc3Point, Some(p), Some(q)) = (self.tool, pos(self.start), pos(self.second)) else {
+            return (raw, Arc3Snap::None);
+        };
+        let chord = q - p;
+        if chord.length() < MIN_SIZE {
+            return (raw, Arc3Snap::None);
+        }
+        let mid = (p + q) * 0.5;
+        let n = chord.perp() / chord.length();
+        let side = if n.dot(raw - mid) < 0.0 { -1.0 } else { 1.0 };
+        let Some((c, _)) = circumcircle(p, raw, q) else { return (raw, Arc3Snap::None) };
+        if c.distance(mid) <= tol {
+            return (mid + n * side * chord.length() * 0.5, Arc3Snap::HalfCircle);
+        }
+        if let Some(g) = grid {
+            let gp = g.snap(c);
+            // Only grid points that really lie on the bisector count.
+            let on_bisector = (gp - mid).dot(chord.normalize()).abs() < 1e-6 * g.step;
+            if on_bisector && gp.distance(c) <= tol {
+                let r = gp.distance(p);
+                let dir = (raw - gp).try_normalize().unwrap_or(n * side);
+                return (gp + dir * r, Arc3Snap::GridCenter(gp));
+            }
+        }
+        (raw, Arc3Snap::None)
+    }
+
     /// The four corners a rectangle tool would make with the cursor at `at`
     /// (in order around it), for the preview and the click that makes it.
     pub fn rectangle_preview(&self, sk: &Sketch, at: DVec2) -> Option<[DVec2; 4]> {
@@ -2035,6 +2076,56 @@ mod tests {
         let c = tangent_circle_2(&sk, [l[0], l[1]], DVec2::new(12.0, 3.0)).unwrap();
         assert!((c.0 - DVec2::new(12.0, 5.0)).length() < 1e-9 && (c.1 - 5.0).abs() < 1e-9, "{c:?}");
         assert!(tangent_circle_2(&sk, [l[0], l[1]], DVec2::new(12.0, 30.0)).is_err());
+    }
+
+    fn arc3_editor(sk: &mut Sketch, a: (f64, f64), b: (f64, f64)) -> Editor {
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Arc3Point);
+        ed.click(sk, free(a.0, a.1));
+        ed.click(sk, free(b.0, b.1));
+        ed
+    }
+
+    #[test]
+    fn arc3_near_a_semicircle_snaps_its_centre_to_the_chord_midpoint() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let ed = arc3_editor(&mut sk, (0.0, 0.0), (20.0, 0.0));
+        // Third point a bit off the true half circle (which would be (10, 10)).
+        let (pt, kind) = ed.arc3_snap(&sk, DVec2::new(10.0, 9.0), None, 2.0);
+        assert_eq!(kind, Arc3Snap::HalfCircle);
+        let (c, r) = circumcircle(DVec2::new(0.0, 0.0), pt, DVec2::new(20.0, 0.0)).unwrap();
+        assert!(c.distance(DVec2::new(10.0, 0.0)) < 1e-9 && (r - 10.0).abs() < 1e-9, "{c:?} {r}");
+        // The other side of the chord stays on that side.
+        let (pt, _) = ed.arc3_snap(&sk, DVec2::new(10.0, -9.0), None, 2.0);
+        assert!((pt - DVec2::new(10.0, -10.0)).length() < 1e-9, "{pt:?}");
+    }
+
+    #[test]
+    fn arc3_centre_snaps_to_a_grid_point_on_the_bisector() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let ed = arc3_editor(&mut sk, (0.0, 0.0), (20.0, 0.0));
+        let grid = GridSpec { step: 5.0, major_every: 5 };
+        // Centre on the bisector x = 10 at y = -15 (grid point (10, -15)); aim near it.
+        let want = DVec2::new(10.0, -15.0);
+        let r = want.distance(DVec2::ZERO);
+        let raw = want + DVec2::new(0.3, 1.0).normalize() * (r + 0.2);
+        let (pt, kind) = ed.arc3_snap(&sk, raw, Some(grid), 1.5);
+        assert_eq!(kind, Arc3Snap::GridCenter(want));
+        let (c, _) = circumcircle(DVec2::ZERO, pt, DVec2::new(20.0, 0.0)).unwrap();
+        assert!(c.distance(want) < 1e-9, "{c:?}");
+        // Idempotent: snapping the snapped point changes nothing.
+        let (again, k2) = ed.arc3_snap(&sk, pt, Some(grid), 1.5);
+        assert!(again.distance(pt) < 1e-9 && k2 == kind);
+        // Grid snap off: no centre snap.
+        assert_eq!(ed.arc3_snap(&sk, raw, None, 1.5), (raw, Arc3Snap::None));
+    }
+
+    #[test]
+    fn arc3_third_point_is_untouched_when_nothing_snaps() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let ed = arc3_editor(&mut sk, (0.0, 0.0), (20.0, 0.0));
+        let raw = DVec2::new(7.3, 4.1);
+        assert_eq!(ed.arc3_snap(&sk, raw, Some(GridSpec { step: 5.0, major_every: 5 }), 0.5), (raw, Arc3Snap::None));
     }
 
     #[test]
