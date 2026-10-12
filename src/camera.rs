@@ -172,6 +172,7 @@ impl OrbitCamera {
     }
 
     /// Point the camera along a direction given as yaw/pitch in degrees.
+    #[cfg(test)]
     pub fn look_from(&mut self, yaw_deg: f32, pitch_deg: f32) {
         self.yaw = yaw_deg.to_radians();
         self.pitch = pitch_deg.to_radians().clamp(-MAX_PITCH, MAX_PITCH);

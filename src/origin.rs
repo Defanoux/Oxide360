@@ -26,10 +26,10 @@ pub fn size_for(distance: f32) -> f32 {
     (nice * mag) as f32
 }
 
-/// The four corners of an origin plane's square (positive quadrant), in order.
-pub fn quad(plane: OriginPlane, size: f32) -> [Vec3; 4] {
-    let p = plane.plane();
-    [Vec3::ZERO, p.u * size, p.u * size + p.v * size, p.v * size]
+/// How close two hits along a ray at distance `t` must be to count as the
+/// same spot — a body's face lying in an origin plane, say.
+pub fn tie_tolerance(t: f32) -> f32 {
+    (t.abs() * 1e-4).max(1e-3)
 }
 
 /// The origin plane under the cursor ray, nearest first: (plane, distance).
@@ -42,6 +42,32 @@ pub fn pick(ray: &Ray, size: f32) -> Option<(OriginPlane, f32)> {
             ((0.0..=s).contains(&x) && (0.0..=s).contains(&y)).then_some((op, t))
         })
         .min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+/// One cell of an origin plane's square, split `n`×`n`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cell {
+    pub i: usize,
+    pub j: usize,
+    pub quad: [Vec3; 4],
+}
+
+/// The cells of a plane that nothing covers: `covered(point)` says whether a
+/// body hides that point of the plane (tested at each cell's middle).
+pub fn visible_cells(plane: OriginPlane, size: f32, n: usize, mut covered: impl FnMut(Vec3) -> bool) -> Vec<Cell> {
+    let p = plane.plane();
+    let step = size / n as f32;
+    let at = |i: usize, j: usize| p.u * (step * i as f32) + p.v * (step * j as f32);
+    let mut out = Vec::new();
+    for i in 0..n {
+        for j in 0..n {
+            let mid = at(i, j) + (p.u + p.v) * (step * 0.5);
+            if !covered(mid) {
+                out.push(Cell { i, j, quad: [at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)] });
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -57,14 +83,6 @@ mod tests {
         assert_eq!(size_for(0.0), 0.0002); // never zero or NaN
         let a = size_for(180.0);
         assert!(a == size_for(190.0), "stable across a small zoom: {a}");
-    }
-
-    #[test]
-    fn quads_are_the_positive_quadrants() {
-        let q = quad(OriginPlane::XZ, 10.0);
-        assert_eq!(q, [Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0), Vec3::new(10.0, 0.0, 10.0), Vec3::new(0.0, 0.0, 10.0)]);
-        let q = quad(OriginPlane::YZ, 4.0);
-        assert_eq!(q[2], Vec3::new(0.0, 4.0, 4.0));
     }
 
     #[test]
@@ -91,5 +109,32 @@ mod tests {
         // A slanted ray crossing XY (z = 0) near x=2 and then... nearest by distance.
         let ray = Ray { origin: Vec3::new(2.0, 2.0, 30.0), dir: Vec3::new(0.0, 0.0, -1.0) };
         assert_eq!(pick(&ray, 10.0).map(|p| p.0), Some(OriginPlane::XY));
+    }
+
+    #[test]
+    fn covered_parts_of_a_plane_are_left_out() {
+        // A box standing on the XY plane from x = 0 to 5 covers that part of the square.
+        let all = visible_cells(OriginPlane::XY, 10.0, 10, |_| false);
+        assert_eq!(all.len(), 100);
+        let some = visible_cells(OriginPlane::XY, 10.0, 10, |p| p.x < 5.0);
+        assert_eq!(some.len(), 50);
+        assert!(some.iter().all(|c| c.quad.iter().all(|v| v.x >= 5.0 - 1e-6)));
+        assert!(visible_cells(OriginPlane::XY, 10.0, 10, |_| true).is_empty());
+        // The cells tile the square exactly.
+        let q = all.iter().find(|c| (c.i, c.j) == (9, 9)).unwrap().quad;
+        assert_eq!(q[2], Vec3::new(10.0, 10.0, 0.0));
+    }
+
+    #[test]
+    fn hits_within_the_tolerance_count_as_the_same_spot() {
+        assert!(tie_tolerance(100.0) >= 0.01 - 1e-6);
+        assert!(tie_tolerance(0.0) > 0.0);
+        // A body face lying in the plane (same distance) is not "in front".
+        let (t_plane, t_body) = (250.0f32, 250.0 + 1e-3);
+        assert!(!(t_plane < t_body - tie_tolerance(t_body)));
+        // A body clearly in front of the plane covers it.
+        assert!(!(250.0f32 < 200.0 - tie_tolerance(200.0)));
+        // A plane clearly in front of the body wins.
+        assert!(200.0f32 < 250.0 - tie_tolerance(250.0));
     }
 }

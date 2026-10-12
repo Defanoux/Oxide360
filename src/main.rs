@@ -24,6 +24,7 @@ mod export;
 mod gpu;
 mod handles;
 mod icons;
+mod inertia;
 mod kernel;
 mod model;
 mod origin;
@@ -34,6 +35,7 @@ mod solver;
 mod view;
 
 use camera::{
+    Ray,
     FOV_Y, OrbitCamera, Pose, Projection, angles_for_dir, closest_param_on_line, cube_cells, cube_click_target,
     ndc_from_pixel,
 };
@@ -78,6 +80,7 @@ const CUBE_SCALE: f32 = 34.0; // view cube half-size in pixels
 const CUBE_MARGIN: f32 = 80.0; // view cube centre from the viewport's right edge
 const CUBE_TOP: f32 = 100.0; // ...and from its top (room for the Z label)
 const TURN_SECONDS: f64 = 0.35; // camera animation to a view-cube view
+const SKETCH_TURN_SECONDS: f64 = 1.0; // slower, gentler glide when a sketch starts
 const FOLLOW_TOL: f64 = 1e-5; // mm: is a picked face/edge on a feature's far end?
 
 fn profile_fill(alpha: u8) -> Color32 {
@@ -277,6 +280,8 @@ struct FloatEdit {
 }
 
 struct ExtrudeDialog {
+    /// The user picked an operation themselves (else it follows what the new body touches).
+    op_chosen: bool,
     /// The sketch a Cut was last pointed into the body for (so it's done once).
     cut_aimed_for: Option<usize>,
     editing: Option<usize>,
@@ -291,6 +296,7 @@ struct CameraTurn {
     from: Pose,
     to: Pose,
     start: f64,
+    seconds: f64,
 }
 
 struct RevolveDialog {
@@ -376,6 +382,7 @@ struct OpenCad {
     corner_first: Option<usize>, // chamfer: the line the first distance is for (when picked as two lines)
     feature_errors: Vec<Option<String>>, // per extrude, from the last committed build
     body_count: usize,
+    prev_body_count: usize, // (to notice the first body being made)
     dialog_error: Option<String>,
     caches: [Option<KernelCache>; 3], // indexed by Slot
     edge_features: Vec<EdgeFeature>,
@@ -407,9 +414,14 @@ struct OpenCad {
     origin_hover: Option<OriginPlane>,       // the origin plane under the mouse
     selected_plane: Option<OriginPlane>,     // the origin plane clicked in the 3D view
     ctx_plane: Option<OriginPlane>,          // the origin plane a right-click landed on
+    ctx_face: Option<(usize, FacePlane)>,    // the body face a right-click landed on
     marquee: Option<(DVec2, DVec2)>,         // sketch drag-select: where it started and the cursor now
     face_hover: Option<(usize, FacePlane)>, // body index + the face plane under the mouse
     turn: Option<CameraTurn>,
+    pending_turn: Option<Pose>, // a camera move to start next frame (when the time is known)
+    toolbar_x: f32,             // the ribbon's scroll position
+    toolbar_user_delta: f32,    // how far the user scrolled it last frame
+    toolbar_inertia: inertia::Inertia,
     home: Pose,      // where Home goes (set it from the view cube menu)
     cube_axes: bool, // show the XYZ triad on the view cube
     settings_saved: settings::Settings, // what's on disk, to notice a change
@@ -454,6 +466,7 @@ impl Default for OpenCad {
             corner_first: None,
             feature_errors: Vec::new(),
             body_count: 0,
+            prev_body_count: 0,
             dialog_error: None,
             caches: [None, None, None],
             edge_features: Vec::new(),
@@ -485,9 +498,14 @@ impl Default for OpenCad {
             origin_hover: None,
             selected_plane: None,
             ctx_plane: None,
+            ctx_face: None,
             marquee: None,
             face_hover: None,
             turn: None,
+            pending_turn: None,
+            toolbar_x: 0.0,
+            toolbar_user_delta: 0.0,
+            toolbar_inertia: inertia::Inertia::default(),
             home: OrbitCamera::default().pose(),
             cube_axes: true,
             settings_saved: settings::Settings::default(),
@@ -818,7 +836,7 @@ impl OpenCad {
 
     /// Glide the camera to `to` (used by the view cube and Home).
     fn move_camera(&mut self, to: Pose, now: f64) {
-        self.turn = Some(CameraTurn { from: self.camera.pose(), to, start: now });
+        self.turn = Some(CameraTurn { from: self.camera.pose(), to, start: now, seconds: TURN_SECONDS });
     }
 
     /// The feature lists a slot is built from.
@@ -1106,7 +1124,9 @@ impl OpenCad {
         self.timeline_insert(Feature::Sketch(i));
         self.enter_sketch(i);
         // Centre the view on the face, like the origin-plane sketches.
-        self.camera.target = face.origin.as_vec3();
+        if let Some(p) = self.pending_turn.as_mut() {
+            p.target = face.origin.as_vec3();
+        }
     }
 
     fn enter_sketch(&mut self, i: usize) {
@@ -1123,8 +1143,10 @@ impl OpenCad {
         self.message = None;
         self.drag = None;
         self.dof = solver::solve(&mut self.sketches[i].clone(), &[]).ok().map(|s| s.dof);
+        // Turn to face the plane slowly (kinder than snapping): the viewport animates it.
         let (yaw, pitch) = self.sketches[i].view_angles();
-        self.camera.look_from(yaw, pitch);
+        self.pending_turn = Some(Pose { yaw: yaw.to_radians(), pitch: pitch.to_radians(), ..self.camera.pose() });
+        self.turn = None;
     }
 
     /// Leave sketch mode. An empty sketch nothing depends on is discarded.
@@ -1529,6 +1551,7 @@ impl OpenCad {
         self.message = None;
         let d = match editing.and_then(|k| self.extrudes.get(k)) {
             Some(e) => ExtrudeDialog {
+                op_chosen: true,
                 cut_aimed_for: e.sketch.into(),
                 editing,
                 sketch: Some(e.sketch),
@@ -1537,13 +1560,13 @@ impl OpenCad {
                 op: e.op,
             },
             None => ExtrudeDialog {
+                op_chosen: false,
                 cut_aimed_for: None,
                 editing: None,
                 sketch: None,
                 profiles: Vec::new(),
                 distance: 10.0,
-                // Like Fusion: the first extrude makes a body, later ones join by default.
-                op: if self.body_count > 0 { Operation::Join } else { Operation::NewBody },
+                op: Operation::NewBody, // follows what the profile touches until chosen
             },
         };
         self.float = Some(FloatEdit {
@@ -2403,6 +2426,34 @@ impl OpenCad {
     }
 
     /// Right panel while extruding.
+    /// The flat face of a visible body under a ray: (distance, body index, its plane).
+    fn pick_face(&mut self, ray: &Ray) -> Option<(f32, usize, FacePlane)> {
+        self.ensure_model(Slot::Committed);
+        let tol = self.camera.distance as f64 * 1e-3;
+        let m = self.model(Slot::Committed);
+        m.bodies
+            .iter()
+            .enumerate()
+            .filter(|(_, body)| !self.hidden_bodies.contains(&body.id))
+            .filter_map(|(b, body)| model::ray_hit_tri(&body.mesh, ray.origin, ray.dir).map(|(t, tri)| (t, tri, b)))
+            .min_by(|x, y| x.0.total_cmp(&y.0))
+            .and_then(|(t, tri, b)| {
+                let body = &m.bodies[b];
+                let n = body.mesh.normal(tri).as_dvec3();
+                let p = ray.at(t).as_dvec3();
+                // Only flat faces: the triangle must lie on one of the body's planar faces.
+                body.flat_faces.iter().find(|(fnormal, q)| fnormal.dot(n) > 0.9999 && fnormal.dot(p - *q).abs() < tol).map(
+                    |&(fnormal, q)| {
+                        // Remember if this face is the far end of an extrude/revolve,
+                        // so the sketch moves with it.
+                        let mut face = FacePlane::from_face(fnormal, q);
+                        face.follow = kernel::follow_for_plane(&m.caps, fnormal, q, FOLLOW_TOL);
+                        (t, b, face)
+                    },
+                )
+            })
+    }
+
     /// Which way (+1 / -1 along the sketch's normal) an extrude goes into the
     /// existing bodies: toward where they are. -1 when there's nothing to go into.
     fn cut_direction(&self, sketch: usize) -> f64 {
@@ -2421,7 +2472,30 @@ impl OpenCad {
         if ((sum / n as f32) - plane.origin).dot(plane.normal()) > 1e-4 { 1.0 } else { -1.0 }
     }
 
+    /// Does the extrude being set up reach into any existing body? None until
+    /// there is a profile to judge.
+    fn extrude_touches_bodies(&self) -> Option<bool> {
+        let d = self.dialog.as_ref()?;
+        let s = d.sketch?;
+        let sk = self.sketches.get(s)?;
+        let regions = find_regions(sk);
+        let plane = self.plane_of(s);
+        let points: Vec<Vec3> = d.profiles.iter().filter_map(|&p| regions.get(p)).flat_map(|r| r.outer.iter().map(|&q| plane.to_world(q))).collect();
+        if points.is_empty() {
+            return None;
+        }
+        let cache = self.caches[Slot::Committed as usize].as_ref()?;
+        let bounds: Vec<(Vec3, Vec3)> = cache.model.bodies.iter().filter_map(|b| model::mesh_bounds(&b.mesh)).collect();
+        Some(model::prism_touches(&points, plane.normal(), d.distance as f32, &bounds, 1e-3))
+    }
+
     fn extrude_panel(&mut self, ui: &mut egui::Ui) {
+        // Until the user picks an operation: Join what it touches, else a new body.
+        if let (Some(touches), true) = (self.extrude_touches_bodies(), self.dialog.as_ref().is_some_and(|d| !d.op_chosen)) {
+            if let Some(d) = self.dialog.as_mut() {
+                d.op = if touches { Operation::Join } else { Operation::NewBody };
+            }
+        }
         let dialog_error = self.dialog_error.clone();
         let toward = self.dialog.as_ref().and_then(|d| d.sketch).map(|s| self.cut_direction(s));
         let Some(d) = self.dialog.as_mut() else { return };
@@ -2451,6 +2525,7 @@ impl OpenCad {
             ui.label("Operation");
             for op in Operation::ALL {
                 if ui.selectable_label(d.op == op, op.name()).clicked() && d.op != op {
+                    d.op_chosen = true;
                     // A cut goes into the body by itself; leaving Cut goes back out.
                     if op == Operation::Cut {
                         d.distance = d.distance.abs() * toward.unwrap_or(-1.0);
@@ -2965,8 +3040,12 @@ impl OpenCad {
                 self.move_camera(to, now);
             }
         }
+        // A sketch was just started: glide round to face its plane.
+        if let Some(to) = self.pending_turn.take() {
+            self.turn = Some(CameraTurn { from: self.camera.pose(), to, start: now, seconds: SKETCH_TURN_SECONDS });
+        }
         if let Some(t) = &self.turn {
-            let k = ((now - t.start) / TURN_SECONDS).clamp(0.0, 1.0) as f32;
+            let k = ((now - t.start) / t.seconds).clamp(0.0, 1.0) as f32;
             let e = k * k * (3.0 - 2.0 * k); // ease in and out
             self.camera.set_pose(Pose::lerp(t.from, t.to, e));
             if k >= 1.0 {
@@ -3119,45 +3198,20 @@ impl OpenCad {
             )
         });
 
-        // --- create sketch on a face: hover and click a flat face ---
+        // --- create sketch: pick an origin plane or a flat face ---
         self.face_hover = None;
         self.origin_hover = None;
         if self.face_pick {
-            self.ensure_model(Slot::Committed);
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
-                let tol = self.camera.distance as f64 * 1e-3;
-                let found: Option<(f32, usize, FacePlane)> = {
-                    let m = self.model(Slot::Committed);
-                    m.bodies
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, body)| !self.hidden_bodies.contains(&body.id))
-                        .filter_map(|(b, body)| {
-                            model::ray_hit_tri(&body.mesh, ray.origin, ray.dir).map(|(t, tri)| (t, tri, b))
-                        })
-                        .min_by(|x, y| x.0.total_cmp(&y.0))
-                        .and_then(|(t, tri, b)| {
-                            let body = &m.bodies[b];
-                            let n = body.mesh.normal(tri).as_dvec3();
-                            let p = ray.at(t).as_dvec3();
-                            // Only flat faces: the triangle must lie on one of the body's planar faces.
-                            body.flat_faces
-                                .iter()
-                                .find(|(fnormal, q)| fnormal.dot(n) > 0.9999 && fnormal.dot(p - *q).abs() < tol)
-                                .map(|&(fnormal, q)| {
-                                    // Remember if this face is the far end of an
-                                    // extrude/revolve, so the sketch moves with it.
-                                    let mut face = FacePlane::from_face(fnormal, q);
-                                    face.follow = kernel::follow_for_plane(&m.caps, fnormal, q, FOLLOW_TOL);
-                                    (t, b, face)
-                                })
-                        })
-                };
-                // The origin planes count too; whichever is nearer wins.
+                let found = self.pick_face(&ray);
+                // The origin planes count too; whichever is nearer wins, and a
+                // body's face wins a tie (a plane lying in a face is covered by it).
                 let plane = origin::pick(&ray, origin::size_for(self.camera.distance));
                 match (plane, found) {
-                    (Some((op, tp)), f) if f.is_none_or(|(tf, ..)| tp < tf) => self.origin_hover = Some(op),
+                    (Some((op, tp)), f) if f.is_none_or(|(tf, ..)| tp < tf - origin::tie_tolerance(tf)) => {
+                        self.origin_hover = Some(op)
+                    }
                     (_, f) => self.face_hover = f.map(|(_, b, face)| (b, face)),
                 }
             }
@@ -3173,31 +3227,39 @@ impl OpenCad {
             }
         }
 
-        // --- origin planes in the 3D view: hover, click to select, right-click for a menu ---
-        if !self.face_pick && self.active.is_none() && self.origin_visible {
+        // --- the 3D view: hover origin planes and faces; click selects a plane, right-click offers a sketch ---
+        if !self.face_pick && self.active.is_none() {
             self.marquee = None;
             let free_view = self.dialog.is_none() && self.edge_dialog.is_none() && self.revolve_dialog.is_none();
             if let (Some(px), true) = (hover_px, free_view) {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
-                if let Some((op, t_plane)) = origin::pick(&ray, origin::size_for(self.camera.distance)) {
-                    // A body in front of the plane hides it.
-                    self.ensure_model(Slot::Committed);
-                    let t_body = self
-                        .model(Slot::Committed)
-                        .bodies
-                        .iter()
-                        .filter(|b| !self.hidden_bodies.contains(&b.id))
-                        .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir))
-                        .fold(f32::MAX, f32::min);
-                    if t_plane < t_body {
-                        self.origin_hover = Some(op);
-                    }
+                let face = self.pick_face(&ray);
+                // A plane counts only where nothing of a body is in front of it
+                // (or in it: a face lying in the plane covers it).
+                let plane = if self.origin_visible {
+                    origin::pick(&ray, origin::size_for(self.camera.distance)).filter(|&(_, t_plane)| {
+                        let t_body = self
+                            .model(Slot::Committed)
+                            .bodies
+                            .iter()
+                            .filter(|b| !self.hidden_bodies.contains(&b.id))
+                            .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir))
+                            .fold(f32::MAX, f32::min);
+                        t_plane < t_body - origin::tie_tolerance(t_body.min(t_plane))
+                    })
+                } else {
+                    None
+                };
+                match plane {
+                    Some((op, _)) => self.origin_hover = Some(op),
+                    None => self.face_hover = face.map(|(_, b, f)| (b, f)),
                 }
                 if response.clicked() {
                     self.selected_plane = self.origin_hover;
                 }
                 if response.secondary_clicked() {
                     self.ctx_plane = self.origin_hover;
+                    self.ctx_face = self.face_hover;
                     if self.ctx_plane.is_some() {
                         self.selected_plane = self.ctx_plane;
                     }
@@ -3934,6 +3996,12 @@ impl OpenCad {
         self.sketch_errors = self.model(Slot::Committed).sketch_errors.clone();
         self.revolve_errors = self.model(Slot::Committed).revolve_errors.clone();
         self.body_count = self.model(Slot::Committed).bodies.len();
+        // With a body in the scene the origin gets out of the way (Create Sketch
+        // and the browser's Origin box bring it back).
+        if self.body_count > 0 && self.prev_body_count == 0 {
+            self.origin_visible = false;
+        }
+        self.prev_body_count = self.body_count;
         self.body_ids = self.model(Slot::Committed).bodies.iter().map(|b| b.id).collect();
         let slot = if previewing { Slot::Preview } else { Slot::Committed };
         self.ensure_model(slot);
@@ -4010,8 +4078,30 @@ impl OpenCad {
 
         // --- draw: the origin planes (3D view) ---
         if show_origin {
+            // Bodies hide the parts of a plane behind (or in) them.
+            self.ensure_model(Slot::Committed);
+            let bodies: Vec<&Mesh> =
+                self.model(Slot::Committed).bodies.iter().filter(|b| !self.hidden_bodies.contains(&b.id)).map(|b| &b.mesh).collect();
+            let cam = &self.camera;
+            let covered = |p: Vec3| {
+                if bodies.is_empty() {
+                    return false;
+                }
+                let ray = if cam.is_ortho() {
+                    let f = cam.basis().0;
+                    Ray { origin: p - f * cam.distance * 4.0, dir: f }
+                } else {
+                    let e = cam.eye();
+                    Ray { origin: e, dir: (p - e).normalize() }
+                };
+                let t_cell = (p - ray.origin).length();
+                bodies
+                    .iter()
+                    .filter_map(|m| model::ray_hit(m, ray.origin, ray.dir))
+                    .any(|t| t < t_cell + origin::tie_tolerance(t_cell))
+            };
+            const CELLS: usize = 12;
             for op in OriginPlane::ALL {
-                let q = origin::quad(op, origin_size);
                 let hot = self.origin_hover == Some(op);
                 let chosen = self.selected_plane == Some(op);
                 let fill = Color32::from_rgba_unmultiplied(
@@ -4020,21 +4110,34 @@ impl OpenCad {
                     60,
                     if hot { 150 } else if chosen { 120 } else if self.face_pick { 80 } else { 55 },
                 );
-                let corners: Vec<Option<Vec2>> = q.iter().map(|&p| view.project(p)).collect();
-                if let [Some(a), Some(b), Some(c), Some(d)] = corners[..] {
-                    let mut mesh = egui::Mesh::default();
+                let edge = Stroke::new(
+                    if hot || chosen { 2.0 } else { 1.0 },
+                    Color32::from_rgba_unmultiplied(255, 190, 90, if hot || chosen { 255 } else { 140 }),
+                );
+                let mut mesh = egui::Mesh::default();
+                for cell in origin::visible_cells(op, origin_size, CELLS, &covered) {
+                    let pts: Vec<Option<Vec2>> = cell.quad.iter().map(|&p| view.project(p)).collect();
+                    let [Some(a), Some(b), Some(c), Some(d)] = pts[..] else { continue };
+                    let base = mesh.vertices.len() as u32;
                     for p in [a, b, c, d] {
                         mesh.colored_vertex(to_pos(p), fill);
                     }
-                    mesh.add_triangle(0, 1, 2);
-                    mesh.add_triangle(0, 2, 3);
-                    painter.add(egui::Shape::mesh(mesh));
-                    let edge = Stroke::new(
-                        if hot || chosen { 2.0 } else { 1.0 },
-                        Color32::from_rgba_unmultiplied(255, 190, 90, if hot || chosen { 255 } else { 140 }),
-                    );
-                    painter.add(egui::Shape::closed_line(vec![to_pos(a), to_pos(b), to_pos(c), to_pos(d)], edge));
+                    mesh.add_triangle(base, base + 1, base + 2);
+                    mesh.add_triangle(base, base + 2, base + 3);
+                    // The square's outline, along the cells that touch its border.
+                    let pts = [a, b, c, d];
+                    for (k, on_border) in [
+                        (0, cell.j == 0),
+                        (1, cell.i == CELLS - 1),
+                        (2, cell.j == CELLS - 1),
+                        (3, cell.i == 0),
+                    ] {
+                        if on_border {
+                            painter.line_segment([to_pos(pts[k]), to_pos(pts[(k + 1) % 4])], edge);
+                        }
+                    }
                 }
+                painter.add(egui::Shape::mesh(mesh));
             }
             if let Some(o) = view.project(Vec3::ZERO) {
                 painter.circle_filled(to_pos(o), 4.0, Color32::from_gray(235));
@@ -4342,6 +4445,11 @@ impl OpenCad {
             } else if let Some(op) = self.ctx_plane {
                 if ui.button(format!("Create Sketch on the {} plane", op.name())).clicked() {
                     self.start_sketch(op);
+                    ui.close();
+                }
+            } else if let Some((_, face)) = self.ctx_face {
+                if ui.button("Create Sketch on this face").clicked() {
+                    self.start_sketch_on_face(face);
                     ui.close();
                 }
             } else {
@@ -4665,7 +4773,24 @@ impl eframe::App for OpenCad {
 
         // Side-scrollable, so a narrow window doesn't cut the ribbon off.
         egui::Panel::top("toolbar").show(ui, |ui| {
-            egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| self.toolbar(ui));
+            // Carry-on scrolling: a flick keeps gliding a little (see `inertia`).
+            let dt = ui.input(|i| i.stable_dt);
+            let glide = self.toolbar_inertia.step(self.toolbar_user_delta, dt);
+            let offset_in = (self.toolbar_x + glide.unwrap_or(0.0)).max(0.0);
+            let out = egui::ScrollArea::horizontal()
+                .auto_shrink([false, true])
+                .horizontal_scroll_offset(offset_in)
+                .show(ui, |ui| self.toolbar(ui));
+            let offset_out = out.state.offset.x;
+            self.toolbar_user_delta = offset_out - offset_in;
+            if glide.is_some() && self.toolbar_user_delta != 0.0 && (offset_out <= 0.0 || offset_out >= out.content_size.x - out.inner_rect.width() - 0.5) {
+                self.toolbar_inertia.stop(); // hit an end of the bar
+                self.toolbar_user_delta = 0.0;
+            }
+            self.toolbar_x = offset_out;
+            if self.toolbar_inertia.is_gliding() || self.toolbar_user_delta != 0.0 {
+                ui.ctx().request_repaint();
+            }
         });
         egui::Panel::left("browser").resizable(true).default_size(200.0).show(ui, |ui| self.browser(ui));
         if self.active.is_some() {

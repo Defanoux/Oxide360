@@ -3151,7 +3151,7 @@ mod polygon_tests {
     #[test]
     fn edge_polygon_uses_the_clicked_edge_and_builds_on_the_cursor_side() {
         for (side_y, expect_above) in [(5.0, true), (-5.0, false)] {
-            let mut sk = make(Tool::PolygonEdge, 6, &[free(0.0, 0.0), free(10.0, 0.0), free(5.0, side_y)]);
+            let sk = make(Tool::PolygonEdge, 6, &[free(0.0, 0.0), free(10.0, 0.0), free(5.0, side_y)]);
             regular(&sk, 6);
             assert!(side_lengths(&sk).iter().all(|x| (x - 10.0).abs() < 1e-6));
             let ys: Vec<f64> = sk.points.iter().map(|p| p.y).collect();

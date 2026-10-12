@@ -258,6 +258,29 @@ pub struct EdgeFeature {
     pub edges: Vec<EdgeRef>,
 }
 
+/// Smallest box around a mesh: (min, max).
+pub fn mesh_bounds(m: &Mesh) -> Option<(Vec3, Vec3)> {
+    let first = *m.positions.first()?;
+    Some(m.positions.iter().fold((first, first), |(lo, hi), p| (lo.min(*p), hi.max(*p))))
+}
+
+/// Might an extruded profile (its outline `points`, pushed `distance` along
+/// `normal`) touch any of the bodies, given as bounding boxes? A cheap test:
+/// boxes that overlap or touch (within `eps`). New bodies that can't touch an
+/// existing one should start as separate bodies, not joins.
+pub fn prism_touches(points: &[Vec3], normal: Vec3, distance: f32, bodies: &[(Vec3, Vec3)], eps: f32) -> bool {
+    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for &p in points {
+        for q in [p, p + normal * distance] {
+            lo = lo.min(q);
+            hi = hi.max(q);
+        }
+    }
+    bodies.iter().any(|&(blo, bhi)| {
+        lo.x <= bhi.x + eps && hi.x >= blo.x - eps && lo.y <= bhi.y + eps && hi.y >= blo.y - eps && lo.z <= bhi.z + eps && hi.z >= blo.z - eps
+    })
+}
+
 /// Distance along a ray to the first triangle it hits (Möller–Trumbore).
 pub fn ray_hit(mesh: &Mesh, origin: Vec3, dir: Vec3) -> Option<f32> {
     ray_hit_tri(mesh, origin, dir).map(|(t, _)| t)
@@ -467,5 +490,28 @@ mod tests {
         assert!(build_extrude(&[sk.clone()], &bad).is_err());
         let zero = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 0.0 };
         assert!(build_extrude(&[sk], &zero).is_err());
+    }
+
+    #[test]
+    fn a_prism_far_from_every_body_does_not_touch_it() {
+        let body = (Vec3::new(0.0, 0.0, 0.0), Vec3::new(50.0, 30.0, 10.0));
+        let square = |x: f32, y: f32| [Vec3::new(x, y, 0.0), Vec3::new(x + 5.0, y, 0.0), Vec3::new(x + 5.0, y + 5.0, 0.0), Vec3::new(x, y + 5.0, 0.0)];
+        // Overlapping, and sitting on top (extruded up from the top face).
+        assert!(prism_touches(&square(10.0, 10.0), Vec3::Z, 10.0, &[body], 1e-3));
+        let on_top: Vec<Vec3> = square(10.0, 10.0).iter().map(|p| *p + Vec3::Z * 10.0).collect();
+        assert!(prism_touches(&on_top, Vec3::Z, 10.0, &[body], 1e-3), "starts on the top face");
+        // Off to the side, clear of it.
+        assert!(!prism_touches(&square(100.0, 0.0), Vec3::Z, 10.0, &[body], 1e-3));
+        // Extruding down from the face goes the other way: still touches.
+        assert!(prism_touches(&on_top, Vec3::Z, -10.0, &[body], 1e-3));
+        // No bodies: nothing to touch.
+        assert!(!prism_touches(&square(0.0, 0.0), Vec3::Z, 10.0, &[], 1e-3));
+    }
+
+    #[test]
+    fn mesh_bounds_cover_every_vertex() {
+        let m = Mesh { positions: vec![Vec3::new(1.0, 2.0, 3.0), Vec3::new(-1.0, 5.0, 0.0)], tris: vec![] };
+        assert_eq!(mesh_bounds(&m), Some((Vec3::new(-1.0, 2.0, 0.0), Vec3::new(1.0, 5.0, 3.0))));
+        assert_eq!(mesh_bounds(&Mesh::default()), None);
     }
 }
