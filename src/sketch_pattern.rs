@@ -27,6 +27,8 @@ pub struct SketchPattern {
     pub picking_center: bool,
     pub count_round: u32,
     pub angle: f64,
+    /// Extra distance of the copies from the centre, mm.
+    pub radial: f64,
 }
 
 impl SketchPattern {
@@ -44,13 +46,14 @@ impl SketchPattern {
             picking_center: false,
             count_round: 4,
             angle: 360.0,
+            radial: 0.0,
         }
     }
 
     pub fn layout(&self) -> Layout {
         match self.mode {
             Mode::Rectangular => Layout::Rectangular { count: self.count, spacing: self.spacing, count2: self.count2, spacing2: self.spacing2 },
-            Mode::Circular => Layout::Circular { center: self.center, count: self.count_round, angle: self.angle },
+            Mode::Circular => Layout::Circular { center: self.center, count: self.count_round, angle: self.angle, shift: self.out_dir().unwrap_or(DVec2::ZERO) * self.radial },
         }
     }
 
@@ -78,6 +81,17 @@ impl SketchPattern {
     /// The middle of the selected geometry (where the arrows start).
     pub fn centroid(&self) -> DVec2 {
         selection_centre(&self.base, &self.objects)
+    }
+
+    /// Which way the selection lies from the centre.
+    pub fn out_dir(&self) -> Option<DVec2> {
+        (self.centroid() - self.center).try_normalize()
+    }
+
+    /// How far the selection reaches outward past its middle.
+    pub fn reach(&self) -> f64 {
+        let (Some(out), c) = (self.out_dir(), self.centroid()) else { return 0.0 };
+        selection_points(&self.base, &self.objects).iter().map(|p| (*p - c).dot(out)).fold(0.0, f64::max)
     }
 
     pub fn panel(&mut self, ui: &mut egui::Ui, error: Option<&str>) -> Action {
@@ -123,6 +137,10 @@ impl SketchPattern {
                     }
                 });
                 count_box(ui, &mut self.count_round);
+                ui.horizontal(|ui| {
+                    ui.label("Distance");
+                    ui.add(egui::DragValue::new(&mut self.radial).speed(0.5).suffix(" mm"));
+                });
                 ui.horizontal(|ui| {
                     ui.label("Angle");
                     ui.add(egui::DragValue::new(&mut self.angle).speed(1.0).range(-360.0..=360.0).suffix("°"));

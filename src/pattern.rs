@@ -169,8 +169,9 @@ pub enum Layout {
     /// 1 (sketch X) and `count2` along direction 2 (sketch Y).
     Rectangular { count: u32, spacing: f64, count2: u32, spacing2: f64 },
     /// `count` copies (the original included) round `center`, over `angle` degrees
-    /// (360 spaces them evenly all the way round).
-    Circular { center: DVec2, count: u32, angle: f64 },
+    /// (360 spaces them evenly all the way round). `shift` moves the copies (not the
+    /// original) outward before they turn: the distance from the centre.
+    Circular { center: DVec2, count: u32, angle: f64, shift: DVec2 },
 }
 
 /// Most copies in one direction.
@@ -202,14 +203,14 @@ pub fn pattern(sk: &mut Sketch, objects: &[Sel], layout: Layout) -> Result<(Vec<
                 }
             }
         }
-        Layout::Circular { center, count, angle } => {
+        Layout::Circular { center, count, angle, shift } => {
             let count = count.clamp(1, MAX_COPIES);
             let full = angle.abs() >= 360.0 - 1e-9;
             let step = if count < 2 { 0.0 } else if full { angle / count as f64 } else { angle / (count - 1) as f64 };
             for i in 1..count {
                 let deg = step * i as f64;
                 let rot = DVec2::from_angle(deg.to_radians());
-                add(sk, &|p| center + rot.rotate(p - center), &|d| copy_is_horizontal(d + deg));
+                add(sk, &|p| center + rot.rotate(p + shift - center), &|d| copy_is_horizontal(d + deg));
             }
         }
     }
@@ -416,7 +417,7 @@ mod tests {
     fn a_circular_pattern_turns_copies_round_a_centre() {
         let mut sk = lines(&[((2.0, 0.0), (6.0, 0.0))]);
         sk.constraints.push(Constraint::Horizontal(0));
-        let (cs, made) = pattern(&mut sk, &[Sel::Entity(0)], Layout::Circular { center: DVec2::ZERO, count: 4, angle: 360.0 }).unwrap();
+        let (cs, made) = pattern(&mut sk, &[Sel::Entity(0)], Layout::Circular { center: DVec2::ZERO, count: 4, angle: 360.0, shift: DVec2::ZERO }).unwrap();
         assert_eq!(made.len(), 3);
         let ends = |e: usize| match sk.entities[e] {
             Entity::Line { a, b } => (sk.points[a], sk.points[b]),
@@ -430,13 +431,13 @@ mod tests {
         assert!(cs.contains(&Constraint::Vertical(made[0])) && cs.contains(&Constraint::Horizontal(made[1])) && cs.contains(&Constraint::Vertical(made[2])));
         // Over 180° the last copy sits at the end of the angle: 0°, 90°, 180° for three.
         let mut sk = lines(&[((2.0, 0.0), (6.0, 0.0))]);
-        let (_, made) = pattern(&mut sk, &[Sel::Entity(0)], Layout::Circular { center: DVec2::ZERO, count: 3, angle: 180.0 }).unwrap();
+        let (_, made) = pattern(&mut sk, &[Sel::Entity(0)], Layout::Circular { center: DVec2::ZERO, count: 3, angle: 180.0, shift: DVec2::ZERO }).unwrap();
         let Entity::Line { b, .. } = sk.entities[made[1]] else { panic!() };
         assert!(sk.points[b].distance(DVec2::new(-6.0, 0.0)) < 1e-9);
         // 30° steps: a horizontal line is no longer horizontal or vertical.
         let mut sk = lines(&[((2.0, 0.0), (6.0, 0.0))]);
         sk.constraints.push(Constraint::Horizontal(0));
-        let (cs, made) = pattern(&mut sk, &[Sel::Entity(0)], Layout::Circular { center: DVec2::ZERO, count: 3, angle: 60.0 }).unwrap();
+        let (cs, made) = pattern(&mut sk, &[Sel::Entity(0)], Layout::Circular { center: DVec2::ZERO, count: 3, angle: 60.0, shift: DVec2::ZERO }).unwrap();
         assert!(!cs.contains(&Constraint::Horizontal(made[0])) && !cs.contains(&Constraint::Vertical(made[0])));
     }
 
@@ -447,5 +448,16 @@ mod tests {
         assert!(mirror(&mut sk, &[Sel::Entity(0)], MirrorLine::Entity(0)).is_err(), "the line alone is nothing to mirror");
         sk.entities.push(Entity::Circle { center: 0, radius: 1.0 });
         assert!(mirror(&mut sk, &[Sel::Entity(1)], MirrorLine::Entity(2)).is_err(), "a circle is not a mirror line");
+    }
+
+    #[test]
+    fn circular_shift_moves_only_the_copies_outward() {
+        let mut sk = lines(&[((10.0, 0.0), (10.0, 5.0))]);
+        let (_, made) = pattern(&mut sk, &[Sel::Entity(0)], Layout::Circular { center: DVec2::ZERO, count: 2, angle: 360.0, shift: DVec2::new(5.0, 0.0) }).unwrap();
+        let Entity::Line { a, .. } = sk.entities[made[0]] else { panic!() };
+        // (15, 0) turned half way round.
+        assert!(sk.points[a].distance(DVec2::new(-15.0, 0.0)) < 1e-9);
+        let Entity::Line { a: a0, .. } = sk.entities[0] else { panic!() };
+        assert!(sk.points[a0].distance(DVec2::new(10.0, 0.0)) < 1e-9);
     }
 }

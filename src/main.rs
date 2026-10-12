@@ -377,6 +377,7 @@ enum HandleTarget {
     SketchSpacing1,
     SketchSpacing2,
     SketchAngle,
+    SketchRadial,
 }
 
 struct EdgeDialog {
@@ -1920,10 +1921,22 @@ impl OpenCad {
                 ],
                 SpMode::Circular => {
                     let pivot = plane.to_world(d.center).as_dvec3();
-                    TurnHandle::new(pivot, plane.normal().as_dvec3(), at)
+                    let mut v: Vec<Handle> = TurnHandle::new(pivot, plane.normal().as_dvec3(), at)
                         .map(|turn| Handle::Turn { turn, value: d.angle, target: HandleTarget::SketchAngle })
                         .into_iter()
-                        .collect()
+                        .collect();
+                    // The distance arrow stands just outside the selection, along the way out from the centre.
+                    if let Some(out) = d.out_dir() {
+                        let reach = d.reach();
+                        let from = plane.to_world(d.centroid() + out * reach).as_dvec3();
+                        let dir = (plane.u * out.x as f32 + plane.v * out.y as f32).as_dvec3();
+                        v.push(Handle::Line {
+                            line: LineHandle { origin: from, dir },
+                            value: (d.centroid() - d.center).length() - reach + d.radial,
+                            target: HandleTarget::SketchRadial,
+                        });
+                    }
+                    v
                 }
             };
         }
@@ -2066,11 +2079,12 @@ impl OpenCad {
                     }
                 }
             }
-            HandleTarget::SketchSpacing1 | HandleTarget::SketchSpacing2 | HandleTarget::SketchAngle => {
+            HandleTarget::SketchSpacing1 | HandleTarget::SketchSpacing2 | HandleTarget::SketchAngle | HandleTarget::SketchRadial => {
                 if let Some(d) = self.sketch_pattern.as_mut() {
                     match target {
                         HandleTarget::SketchSpacing1 => d.spacing = v,
                         HandleTarget::SketchSpacing2 => d.spacing2 = v,
+                        HandleTarget::SketchRadial => d.radial = v - (d.centroid() - d.center).length() + d.reach(),
                         _ => d.angle = v.clamp(-360.0, 360.0),
                     }
                 }
