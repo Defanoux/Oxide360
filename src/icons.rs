@@ -20,6 +20,7 @@ pub enum Icon {
     Construction,
     Trim,
     Mirror,
+    Midpoint,
     RectPattern,
     CircPattern,
     Polygon,
@@ -195,6 +196,14 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             line((0.88, 0.7), (0.6, 0.7), Stroke::new(thin.width * 1.2, ink));
             line((0.6, 0.7), (0.6, 0.3), Stroke::new(thin.width * 1.2, ink));
             line((0.6, 0.3), (0.88, 0.7), Stroke::new(thin.width * 1.2, ink));
+        }
+        Icon::Midpoint => {
+            // A line with a dot at its middle and two small ticks.
+            line((0.1, 0.65), (0.9, 0.65), Stroke::new(thin.width * 1.2, ink));
+            dot(0.5, 0.65, orange);
+            line((0.3, 0.45), (0.3, 0.85), thin);
+            line((0.7, 0.45), (0.7, 0.85), thin);
+            line((0.4, 0.25), (0.6, 0.25), Stroke::new(thin.width, orange));
         }
         Icon::RectPattern => {
             // A grid of small squares, the first one the original.

@@ -585,6 +585,19 @@ pub enum Sel {
     Entity(EntityId),
 }
 
+/// `at` turned onto the nearest quarter turn (0°, 90°, 180°, 270°) around
+/// `center` when it's within `tol_deg` of one, at the same distance.
+pub fn snap_quarter_turn(center: DVec2, at: DVec2, tol_deg: f64) -> DVec2 {
+    let v = at - center;
+    let r = v.length();
+    if r < 1e-12 {
+        return at;
+    }
+    let deg = v.y.atan2(v.x).to_degrees();
+    let nearest = (deg / 90.0).round() * 90.0;
+    if (deg - nearest).abs() <= tol_deg { center + DVec2::from_angle(nearest.to_radians()) * r } else { at }
+}
+
 /// Distance from p to segment ab.
 pub fn dist_to_segment(p: DVec2, a: DVec2, b: DVec2) -> f64 {
     let ab = b - a;
@@ -823,6 +836,61 @@ impl Sketch {
         out
     }
 
+    /// Everything joined to `start` through shared points: the lines, arcs and
+    /// circles of its chain and their points (the origin excepted). Double-click
+    /// selects this, like Fusion.
+    pub fn connected(&self, start: Sel) -> Vec<Sel> {
+        let ends = |e: &Entity| -> Vec<PointId> {
+            match *e {
+                Entity::Line { a, b } => vec![a, b],
+                Entity::Circle { center, .. } => vec![center],
+                Entity::Point { p } => vec![p],
+                Entity::Arc { center, a, b } => vec![center, a, b],
+            }
+        };
+        let mut ents: Vec<EntityId> = Vec::new();
+        let mut pts: Vec<PointId> = Vec::new();
+        match start {
+            Sel::Entity(e) if e < self.entities.len() => ents.push(e),
+            Sel::Point(p) if p < self.points.len() => pts.push(p),
+            _ => return Vec::new(),
+        }
+        // Grow until nothing new is reached. (The origin joins nothing: lots of
+        // unrelated geometry is tied to it.)
+        loop {
+            let before = (ents.len(), pts.len());
+            for &e in &ents.clone() {
+                for p in ends(&self.entities[e]) {
+                    if !pts.contains(&p) {
+                        pts.push(p);
+                    }
+                }
+            }
+            for (e, ent) in self.entities.iter().enumerate() {
+                if !ents.contains(&e) && ends(ent).iter().any(|p| *p != Self::ORIGIN && pts.contains(p)) {
+                    ents.push(e);
+                }
+            }
+            if (ents.len(), pts.len()) == before {
+                break;
+            }
+        }
+        ents.sort_unstable();
+        pts.sort_unstable();
+        ents.into_iter().map(Sel::Entity).chain(pts.into_iter().filter(|&p| p != Self::ORIGIN).map(Sel::Point)).collect()
+    }
+
+    /// Every point lying inside the box, line ends included (the origin
+    /// excepted: it can't be moved or deleted, so selecting it is no use).
+    pub fn points_in_rect(&self, a: DVec2, b: DVec2) -> Vec<Sel> {
+        let (lo, hi) = (a.min(b), a.max(b));
+        (0..self.points.len())
+            .filter(|&p| p != Self::ORIGIN)
+            .filter(|&p| (lo.x..=hi.x).contains(&self.points[p].x) && (lo.y..=hi.y).contains(&self.points[p].y))
+            .map(Sel::Point)
+            .collect()
+    }
+
     /// Delete entities and points (a deleted point takes its entities with it).
     /// Constraints that referenced anything deleted are removed, unused points
     /// are dropped (except the origin), and all indices are renumbered.
@@ -946,8 +1014,8 @@ impl Sketch {
 // ---------- Constraint actions ----------
 
 /// Constraint buttons, in toolbar order.
-pub const CONSTRAINT_ACTIONS: [&str; 8] =
-    ["Dimension", "Horizontal", "Vertical", "Parallel", "Perpendicular", "Equal", "Tangent", "Fix"];
+pub const CONSTRAINT_ACTIONS: [&str; 9] =
+    ["Dimension", "Horizontal", "Vertical", "Parallel", "Perpendicular", "Equal", "Tangent", "Midpoint", "Fix"];
 
 impl Sketch {
     /// Keep the constraints `keep` says yes to (and their label positions
@@ -1497,6 +1565,14 @@ impl Sketch {
             }
             ([], [a, b], []) => out.push(("Equal", vec![Equal(*a, *b)])),
             ([l], [c], []) => out.push(("Tangent", vec![Tangent(*l, *c)])),
+            // A point and a line: the point sits at the line's middle.
+            ([l], [], [p]) => {
+                if let Some(&Entity::Line { a, b }) = self.entities.get(*l) {
+                    if *p != a && *p != b {
+                        out.push(("Midpoint", vec![Midpoint(*p, a, b)]));
+                    }
+                }
+            }
             // Two points: the distance between them.
             ([], [], [p, q]) if p != q => {
                 out.push(("Dimension", vec![Distance(*p, *q, self.points[*p].distance(self.points[*q]))]));
@@ -2932,6 +3008,54 @@ mod construction_tests {
     }
 
     #[test]
+    fn a_point_and_a_line_offer_a_midpoint_constraint() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        sk.points.extend([DVec2::new(0.0, 0.0), DVec2::new(10.0, 0.0), DVec2::new(3.0, 4.0)]);
+        sk.entities.push(Entity::Line { a: 1, b: 2 });
+        let opts = sk.constraint_options(&[Sel::Entity(0), Sel::Point(3)]);
+        assert!(opts.contains(&("Midpoint", vec![Constraint::Midpoint(3, 1, 2)])), "{opts:?}");
+        // Its own end point is no midpoint candidate.
+        assert!(sk.constraint_options(&[Sel::Entity(0), Sel::Point(1)]).iter().all(|(n, _)| *n != "Midpoint"));
+        // Solved, the point sits halfway between the line's ends (which are free to move too).
+        let mut t = sk.clone();
+        crate::solver::add_constraints(&mut t, &[Constraint::Midpoint(3, 1, 2)]).unwrap();
+        assert!(t.points[3].distance((t.points[1] + t.points[2]) / 2.0) < 1e-6, "{:?}", t.points);
+    }
+
+    #[test]
+    fn quarter_turns_lock_only_when_close() {
+        let c = DVec2::new(10.0, 5.0);
+        let near = |deg: f64, r: f64| c + DVec2::from_angle(deg.to_radians()) * r;
+        for (deg, want) in [(1.5, 0.0), (88.0, 90.0), (-2.0, 0.0), (181.0, 180.0), (272.5, 270.0), (359.0, 360.0)] {
+            let got = snap_quarter_turn(c, near(deg, 7.0), 3.0);
+            assert!(got.distance(near(want, 7.0)) < 1e-9, "{deg}: {got:?}");
+        }
+        // Far from a quarter turn: untouched.
+        let free = near(40.0, 7.0);
+        assert_eq!(snap_quarter_turn(c, free, 3.0), free);
+        assert_eq!(snap_quarter_turn(c, c, 3.0), c);
+    }
+
+    #[test]
+    fn connected_follows_shared_points_only() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        // A path 1-2-3 (two lines sharing point 2) and a separate line 4-5.
+        sk.points.extend([DVec2::new(0.0, 5.0), DVec2::new(5.0, 5.0), DVec2::new(5.0, 9.0), DVec2::new(20.0, 20.0), DVec2::new(30.0, 20.0)]);
+        sk.entities.push(Entity::Line { a: 1, b: 2 });
+        sk.entities.push(Entity::Line { a: 2, b: 3 });
+        sk.entities.push(Entity::Line { a: 4, b: 5 });
+        let chain = sk.connected(Sel::Entity(0));
+        assert_eq!(chain, vec![Sel::Entity(0), Sel::Entity(1), Sel::Point(1), Sel::Point(2), Sel::Point(3)]);
+        assert_eq!(sk.connected(Sel::Point(3)), chain, "from a point too");
+        assert_eq!(sk.connected(Sel::Entity(2)), vec![Sel::Entity(2), Sel::Point(4), Sel::Point(5)]);
+        // Things tied to the origin don't all become one chain.
+        sk.entities.push(Entity::Line { a: 0, b: 1 });
+        sk.entities.push(Entity::Line { a: 0, b: 4 });
+        let c = sk.connected(Sel::Entity(0));
+        assert!(!c.contains(&Sel::Entity(2)) && !c.contains(&Sel::Entity(4)), "{c:?}");
+    }
+
+    #[test]
     fn construction_lines_are_dashed_data_that_follow_deletes() {
         let mut sk = Sketch::new("S".into(), OriginPlane::XY);
         let mut ed = Editor::default();
@@ -3338,5 +3462,11 @@ mod marquee_tests {
         let b = sk.select_in_rect(DVec2::new(0.0, 0.0), DVec2::new(5.0, 5.0), false);
         assert_eq!(a, b);
         assert!(sk.select_in_rect(DVec2::new(100.0, 100.0), DVec2::new(110.0, 110.0), true).is_empty());
+        // Points in the box come along too, line ends included.
+        let pts = sk.points_in_rect(DVec2::new(-1.0, -1.0), DVec2::new(5.0, 5.0));
+        assert!(pts.contains(&Sel::Point(1)) && pts.contains(&Sel::Point(2)), "both ends of the line inside");
+        assert!(pts.contains(&Sel::Point(3)) && !pts.contains(&Sel::Point(4)), "the sticking-out line's near end, not its far end");
+        assert!(!pts.contains(&Sel::Point(Sketch::ORIGIN)));
+        assert!(sk.points_in_rect(DVec2::new(100.0, 100.0), DVec2::new(110.0, 110.0)).is_empty());
     }
 }

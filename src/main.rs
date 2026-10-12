@@ -614,20 +614,14 @@ impl OpenCad {
         Color32::from_rgb(c[0], c[1], c[2])
     }
 
-    /// A body's name: the one the user gave it, else its feature's name
-    /// (with the piece number when a feature made several).
+    /// A body's name: the one the user gave it, else "Body1", "Body2"… by how
+    /// new it is (the order the features that made the bodies come in the
+    /// timeline, then piece number).
     fn body_name(&self, id: BodyId) -> String {
         if let Some(n) = self.body_names.get(&id) {
             return n.clone();
         }
-        let base = match id.feature {
-            Feature::Extrude(k) => self.extrudes.get(k).map(|e| e.name.clone()),
-            Feature::Revolve(k) => self.revolves.get(k).map(|r| r.name.clone()),
-            Feature::Copy(k) => self.copies.get(k).map(|c| c.name.clone()),
-            _ => None,
-        }
-        .unwrap_or_else(|| "Body".into());
-        if id.piece == 0 { base } else { format!("{base} ({})", id.piece + 1) }
+        doc::default_body_name(&self.timeline, &self.body_ids, id)
     }
 
     /// Features were deleted: bodies they made are gone, later ones renumber.
@@ -1492,10 +1486,10 @@ impl OpenCad {
         }
         self.mirror_objects = sel;
         self.editor.set_tool(Tool::Mirror);
-        self.notify("Click the line to mirror across".into());
+        self.notify("Click the mirror line (or an origin axis)".into());
     }
 
-    fn mirror_across(&mut self, line: usize) {
+    fn mirror_across(&mut self, line: pattern::MirrorLine) {
         let Some(i) = self.active else { return };
         let objects = std::mem::take(&mut self.mirror_objects);
         let mut why = None;
@@ -2347,6 +2341,7 @@ impl OpenCad {
                             "Perpendicular" => (Icon::Perpendicular, "Perpendicular: two lines"),
                             "Equal" => (Icon::Equal, "Equal: two lines or two circles"),
                             "Tangent" => (Icon::Tangent, "Tangent: a line and a circle"),
+                            "Midpoint" => (Icon::Midpoint, "Midpoint: a point and a line — the point goes to the line's middle"),
                             _ => (Icon::Fix, "Fix: lock points where they are"),
                         };
                         // Always clickable: with the right things selected it's added
@@ -3723,6 +3718,17 @@ impl OpenCad {
                             }
                         }),
                     };
+                    // Polygons: the direction from the centre locks to 0°/90°/180°/270°
+                    // when close, unless Ctrl is held.
+                    if let (true, Some(start), Some(Anchor::Free(p))) = (
+                        matches!(tool, Tool::PolygonCircumscribed | Tool::PolygonInscribed | Tool::PolygonEdge)
+                            && self.editor.second.is_none()
+                            && !ui.input(|inp| inp.modifiers.ctrl),
+                        self.editor.start.filter(|a| sk.is_valid_anchor(*a)),
+                        cursor,
+                    ) {
+                        cursor = Some(Anchor::Free(sketch::snap_quarter_turn(sk.pos(start), p, 3.0)));
+                    }
                     if let (true, Some(Anchor::Free(p))) = (arc3_third, cursor) {
                         let g = self.grid_snap.then_some(grid);
                         cursor = Some(Anchor::Free(self.editor.arc3_snap(sk, p, g, tol_px(mm_per_px)).0));
@@ -3844,9 +3850,9 @@ impl OpenCad {
                     }
                     if response.drag_stopped() {
                         if let Some((start, end)) = self.marquee.take() {
-                            // Left to right takes what's completely inside, right
-                            // to left whatever it touches; Shift adds.
-                            let picked = self.sketches[i].select_in_rect(start, end, end.x < start.x);
+                            // Whatever the box touches, and every point in it; Shift adds.
+                            let mut picked = self.sketches[i].select_in_rect(start, end, true);
+                            picked.extend(self.sketches[i].points_in_rect(start, end));
                             if !ui.input(|inp| inp.modifiers.shift) {
                                 self.editor.selection.clear();
                                 self.dim_selection.clear();
@@ -3914,6 +3920,12 @@ impl OpenCad {
                         self.label_drag = None;
                         if let Some(ci) = over_label {
                             edit_value(self, ci);
+                        }
+                    } else if response.double_clicked() && hovered.is_some() && !self.label_carry {
+                        // Double-click: the whole chain joined to what's under the cursor.
+                        if let Some(h) = hovered {
+                            self.editor.selection = self.sketches[i].connected(h);
+                            self.dim_selection.clear();
                         }
                     } else if self.label_carry {
                         if let (Some((ci, start, before)), Some(now)) = (self.label_drag, raw_hover) {
@@ -4015,9 +4027,14 @@ impl OpenCad {
                 }
                 Tool::Mirror => {
                     if response.clicked() {
-                        match hovered {
-                            Some(Sel::Entity(e)) => self.mirror_across(e),
-                            _ => self.notify("Click the line to mirror across".into()),
+                        let tol = SNAP_PX as f64 * mm_per_px;
+                        match (hovered, raw_hover) {
+                            (Some(Sel::Entity(e)), _) => self.mirror_across(pattern::MirrorLine::Entity(e)),
+                            // The origin axes work as mirror lines too.
+                            (_, Some(p)) if p.y.abs() <= tol || p.x.abs() <= tol => {
+                                self.mirror_across(pattern::MirrorLine::Axis(if p.y.abs() <= p.x.abs() { 0 } else { 1 }))
+                            }
+                            _ => self.notify("Click a line or an origin axis to mirror across".into()),
                         }
                     }
                 }
@@ -4189,7 +4206,7 @@ impl OpenCad {
         let axes: Vec<(Vec3, Vec3, Vec3)> = if sketching {
             vec![(dplane.u * -extent, dplane.u * extent, dplane.u), (dplane.v * -extent, dplane.v * extent, dplane.v)]
         } else if show_origin {
-            let reach = origin_size * 1.35;
+            let reach = origin_size * 1.0;
             [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate().filter(|&(k, _)| shown.axis(k)).map(|(_, a)| (Vec3::ZERO, a * reach, a)).collect()
         } else {
             Vec::new()
@@ -4220,7 +4237,8 @@ impl OpenCad {
                 let alpha = if hot { 150 } else if chosen { 120 } else if self.face_pick { 80 } else { 55 };
                 let p = op.plane();
                 let s = origin_size;
-                let q = [Vec3::ZERO, p.u * s, p.u * s + p.v * s, p.v * s];
+                let (lo, hi) = origin::span(s);
+                let q = [p.u * lo + p.v * lo, p.u * hi + p.v * lo, p.u * hi + p.v * hi, p.u * lo + p.v * hi];
                 if self.gpu {
                     let c = [GLASS[0], GLASS[1], GLASS[2], alpha as f32 / 255.0];
                     glass.push(([q[0], q[1], q[2]], c));
@@ -4396,15 +4414,9 @@ impl OpenCad {
         if let (Some((a, b)), Some(i)) = (self.marquee, self.active) {
             let plane = self.plane_of(i);
             let corners = [a, DVec2::new(b.x, a.y), b, DVec2::new(a.x, b.y)];
-            let crossing = b.x < a.x;
-            let stroke = Stroke::new(1.5, if crossing { Color32::from_rgb(120, 220, 140) } else { COL_SELECT });
+            let stroke = Stroke::new(1.5, Color32::from_rgb(120, 220, 140));
             for k in 0..4 {
-                let (p, q) = (plane.to_world(corners[k]), plane.to_world(corners[(k + 1) % 4]));
-                if crossing {
-                    view.dashed(p, q, stroke);
-                } else {
-                    view.line(p, q, stroke);
-                }
+                view.dashed(plane.to_world(corners[k]), plane.to_world(corners[(k + 1) % 4]), stroke);
             }
         }
 
@@ -4643,8 +4655,8 @@ impl OpenCad {
                 } else {
                     if ui.button("Finish Sketch").clicked() {
                         self.finish_sketch();
+                        ui.close();
                     }
-                    ui.close();
                     return;
                 }
                 if self.editor.selection.iter().any(|s| matches!(s, Sel::Entity(_))) && ui.button("Construction (X)").clicked() {

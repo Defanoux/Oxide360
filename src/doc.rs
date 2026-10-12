@@ -76,6 +76,14 @@ impl BodyId {
     }
 }
 
+/// "Body1", "Body2"… by how new a body is: the order of the features that made
+/// the bodies in the timeline, then piece number.
+pub fn default_body_name(timeline: &[Feature], bodies: &[BodyId], id: BodyId) -> String {
+    let at = |b: &BodyId| (timeline.iter().position(|f| *f == b.feature).unwrap_or(usize::MAX), b.piece);
+    let rank = bodies.iter().filter(|b| at(b) < at(&id)).count();
+    format!("Body{}", rank + 1)
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Document {
     pub sketches: Vec<Sketch>,
@@ -467,6 +475,16 @@ mod tests {
         let text = to_json(&doc);
         assert!(text.contains("\"format\": \"opencad\"") && text.contains("\"units\": \"mm\""));
         assert_eq!(from_json(&text).unwrap(), doc, "every f64 survives exactly");
+    }
+
+    #[test]
+    fn bodies_are_named_by_how_new_they_are() {
+        let id = |f: Feature, piece| BodyId { feature: f, piece };
+        let t = [Feature::Sketch(0), Feature::Extrude(0), Feature::Sketch(1), Feature::Extrude(1), Feature::Copy(0)];
+        // Listed out of order on purpose: the order comes from the timeline.
+        let bodies = [id(Feature::Copy(0), 0), id(Feature::Extrude(1), 0), id(Feature::Extrude(0), 1), id(Feature::Extrude(0), 0)];
+        let names: Vec<String> = bodies.iter().map(|b| default_body_name(&t, &bodies, *b)).collect();
+        assert_eq!(names, vec!["Body4", "Body3", "Body2", "Body1"]);
     }
 
     #[test]

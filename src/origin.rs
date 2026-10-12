@@ -32,15 +32,22 @@ pub fn tie_tolerance(t: f32) -> f32 {
     (t.abs() * 1e-4).max(1e-3)
 }
 
+/// Where along each of its two axes a plane's square lies: set back from the
+/// origin (so the axes and the origin stay clear to pick) and short of `size`.
+pub fn span(size: f32) -> (f32, f32) {
+    (size * 0.15, size * 0.75)
+}
+
 /// The origin plane under the cursor ray, nearest first: (plane, distance).
 pub fn pick(ray: &Ray, size: f32, shown: impl Fn(OriginPlane) -> bool) -> Option<(OriginPlane, f32)> {
-    let s = size as f64;
+    let (lo, hi) = span(size);
+    let (lo, hi) = (lo as f64, hi as f64);
     OriginPlane::ALL
         .into_iter()
         .filter(|&op| shown(op))
         .filter_map(|op| {
             let (t, DVec2 { x, y }) = op.plane().intersect_t(ray)?;
-            ((0.0..=s).contains(&x) && (0.0..=s).contains(&y)).then_some((op, t))
+            ((lo..=hi).contains(&x) && (lo..=hi).contains(&y)).then_some((op, t))
         })
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
