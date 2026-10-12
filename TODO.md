@@ -4,11 +4,6 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Next
 
-6. **Body identity**: hidden-body checkboxes are by index and shift when
-   features change. Name bodies after the feature that created them and
-   track them through Join/Cut; browser shows real names; rename via
-   right-click.
-
 7. **Sketch Mirror**, then **solid Mirror** and **Rectangular / Circular
    Pattern** (bodies and features).
 
@@ -36,6 +31,8 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Body identity: every body has a `BodyId` (feature that made it + piece number) that survives Join/Cut/Intersect/fillets and feature deletes. Browser shows feature names ("Extrude1", "Extrude1 (2)" for split pieces), right-click → Rename (saved in the .ocad as `body_names`), hiding is by id, exports use the names.
+- Fixed: editing a chamfer distance slid the rectangle corner (virtual sharp now pinned when a distance dimension is edited).
 - Origin like Fusion: no grid in the 3D view (grid only in sketches); short axes + three small translucent origin planes (`origin.rs`), browser Origin checkbox. Create Sketch now = click the button, then click an origin plane or a flat face. Camera type (perspective / orthographic / ortho faces) is persisted in the settings file.
 - Persisted settings: touchpad/mouse + view-cube axes in `~/.config/opencad/settings.json` (own small file — eframe storage needs a new crate); hidden bodies, sketch visibility and the Home pose saved in the `.ocad` (`Document.view`, `#[serde(default)]`, always compares equal so it's never an undo step or unsaved change).
 - Solid chamfer with two distances: type `2, 5` in the size box (`EdgeFeature.size2`, serde default). First distance is on `EdgeRef.faces[0]`'s face. New patched OCCT wrapper `BRepFilletAPI_MakeChamfer_try_add_two` / `Shape::try_chamfer_edges_two`; exact volume d1·d2/2·L tested.

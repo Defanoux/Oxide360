@@ -9,7 +9,7 @@
 //! The whole model is rebuilt from the timeline whenever the design changes,
 //! so editing a sketch or a distance updates everything after it.
 
-use crate::doc::Feature;
+use crate::doc::{BodyId, Feature};
 use crate::model::{EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
@@ -32,6 +32,8 @@ pub struct BodyEdge {
 }
 
 pub struct Body {
+    /// Which body this is, however the list shifts (see `BodyId`).
+    pub id: BodyId,
     pub shape: Shape,
     pub mesh: Mesh,
     /// Real corners only (not seams or smooth tangent joins).
@@ -355,46 +357,70 @@ fn revolve_tool(sketches: &[Sketch], frames: &[Option<FacePlane>], rv: &Revolve)
     out.filter(|s| s.volume().abs() > MIN_VOLUME).map(|s| (s, end)).ok_or_else(|| "nothing to revolve".into())
 }
 
-/// Combine a tool solid with the existing bodies.
-fn apply(bodies: Vec<Shape>, tool: Shape, op: Operation) -> Result<Vec<Shape>, String> {
+/// Bodies as they pass through the timeline, each with its identity.
+type Tagged = Vec<(Shape, BodyId)>;
+
+/// Give pieces that ended up with the same id (a cut that split a body, a
+/// feature that made two solids) their own piece numbers.
+fn uniquify(bodies: Tagged) -> Tagged {
+    let mut used: HashSet<BodyId> = HashSet::new();
+    let mut out = Vec::new();
+    for (s, id) in bodies {
+        let mut id = id;
+        while !used.insert(id) {
+            id.piece += 1;
+        }
+        out.push((s, id));
+    }
+    out
+}
+
+/// Combine a tool solid with the existing bodies. `made_by` names what new
+/// bodies are called after.
+fn apply(bodies: Tagged, tool: Shape, op: Operation, made_by: Feature) -> Result<Tagged, String> {
     let failed = || format!("the kernel couldn't {} these shapes", op.name().to_lowercase());
-    Ok(match op {
-        Operation::NewBody => bodies.into_iter().chain(tool.solids()).collect(),
+    let fresh = BodyId { feature: made_by, piece: 0 };
+    let tag = |solids: Vec<Shape>, id: BodyId| -> Tagged { solids.into_iter().map(|s| (s, id)).collect() };
+    Ok(uniquify(match op {
+        Operation::NewBody => bodies.into_iter().chain(tag(tool.solids(), fresh)).collect(),
         Operation::Join => {
             // Merge with every body it overlaps or touches (fusing two touching
-            // solids leaves fewer solids than they had separately).
+            // solids leaves fewer solids than they had separately). The merged
+            // body keeps the oldest one's identity.
             let mut acc = tool;
+            let mut acc_id: Option<BodyId> = None;
             let mut rest = Vec::new();
-            for b in bodies {
+            for (b, id) in bodies {
                 let before = b.solids().len() + acc.solids().len();
                 let fused = b.try_union(&acc).ok_or_else(failed)?;
                 if fused.solids().len() < before {
                     acc = fused;
+                    acc_id = acc_id.or(Some(id));
                 } else {
-                    rest.push(b);
+                    rest.push((b, id));
                 }
             }
-            rest.extend(acc.solids());
+            rest.extend(tag(acc.solids(), acc_id.unwrap_or(fresh)));
             rest
         }
         Operation::Cut => {
             let mut out = Vec::new();
-            for b in bodies {
+            for (b, id) in bodies {
                 // A cut can split a body in two, or remove it entirely.
                 let cut = b.try_subtract(&tool).ok_or_else(failed)?;
-                out.extend(cut.solids().into_iter().filter(|s| s.volume() > MIN_VOLUME));
+                out.extend(tag(cut.solids().into_iter().filter(|s| s.volume() > MIN_VOLUME).collect(), id));
             }
             out
         }
         Operation::Intersect => {
             let mut out = Vec::new();
-            for b in bodies {
+            for (b, id) in bodies {
                 let common = b.try_intersect(&tool).ok_or_else(failed)?;
-                if common.volume() > MIN_VOLUME { out.extend(common.solids()) } else { out.push(b) }
+                if common.volume() > MIN_VOLUME { out.extend(tag(common.solids(), id)) } else { out.push((b, id)) }
             }
             out
         }
-    })
+    }))
 }
 
 /// The point halfway along a polyline (by length) and its direction there.
@@ -506,7 +532,8 @@ fn find_edge<'a>(edges: &'a [(usize, Edge, EdgeRef)], r: &EdgeRef, reach: f64) -
 }
 
 /// Fillet or chamfer the referenced edges.
-fn apply_edges(bodies: Vec<Shape>, f: &EdgeFeature, ext: &[Option<End>], rev: &[Option<End>]) -> Result<Vec<Shape>, String> {
+fn apply_edges(tagged: Tagged, f: &EdgeFeature, ext: &[Option<End>], rev: &[Option<End>]) -> Result<Tagged, String> {
+    let (bodies, ids): (Vec<Shape>, Vec<BodyId>) = tagged.into_iter().unzip();
     if !f.size.is_finite() || f.size <= 0.0 {
         return Err(format!("{} must be greater than zero", f.kind.size_label().to_lowercase()));
     }
@@ -539,7 +566,7 @@ fn apply_edges(bodies: Vec<Shape>, f: &EdgeFeature, ext: &[Option<End>], rev: &[
     let mut out = Vec::new();
     for (i, b) in bodies.into_iter().enumerate() {
         if picked[i].is_empty() {
-            out.push(b);
+            out.push((b, ids[i]));
             continue;
         }
         let edges = picked[i].iter().map(|&(j, _)| &all[j].1);
@@ -559,9 +586,9 @@ fn apply_edges(bodies: Vec<Shape>, f: &EdgeFeature, ext: &[Option<End>], rev: &[
         }
         .filter(|s| s.volume() > MIN_VOLUME)
         .ok_or_else(|| format!("{} {} is too large for these edges", f.kind.size_label().to_lowercase(), f.size))?;
-        out.extend(done.solids());
+        out.extend(done.solids().into_iter().map(|s| (s, ids[i])));
     }
-    Ok(out)
+    Ok(uniquify(out))
 }
 
 /// The face of `shape` that has `edge` as one of its edges and whose outward
@@ -680,7 +707,7 @@ fn sketch_anchor(sk: &Sketch) -> DVec2 {
 /// over any of them, fall back to the nearest plane within a quarter of the
 /// model's size. Only the plane's offset can change, so the sketch keeps its
 /// axes and just slides along the normal with its face.
-fn resolve_face(shapes: &[Shape], f: &FacePlane, anchor: DVec2) -> Option<FacePlane> {
+fn resolve_face(shapes: &[&Shape], f: &FacePlane, anchor: DVec2) -> Option<FacePlane> {
     let n = f.normal();
     let offset = n.dot(f.origin);
     let mut lo = DVec3::splat(f64::MAX);
@@ -727,7 +754,7 @@ pub fn build(
     edge_features: &[EdgeFeature],
     timeline: &[Feature],
 ) -> Model {
-    let mut shapes: Vec<Shape> = Vec::new();
+    let mut shapes: Tagged = Vec::new();
     let mut errors: Vec<Option<String>> = vec![None; extrudes.len()];
     let mut edge_errors: Vec<Option<String>> = vec![None; edge_features.len()];
     let mut revolve_errors: Vec<Option<String>> = vec![None; revolves.len()];
@@ -738,7 +765,7 @@ pub fn build(
     for f in timeline {
         let current = std::mem::take(&mut shapes);
         // Keep a copy so a failed operation leaves the previous bodies intact.
-        let backup: Vec<Shape> = current.iter().flat_map(|s| s.solids()).collect();
+        let backup: Tagged = current.iter().flat_map(|(s, id)| s.solids().into_iter().map(move |x| (x, *id))).collect();
         let (result, slot) = match *f {
             Feature::Sketch(k) => {
                 // A sketch on a face follows that face as the part changes.
@@ -749,7 +776,7 @@ pub fn build(
                         face = move_face(&face, m);
                     }
                     let anchor = sketch_anchor(sk);
-                    match catch_unwind(AssertUnwindSafe(|| resolve_face(&current, &face, anchor))) {
+                    match catch_unwind(AssertUnwindSafe(|| resolve_face(&current.iter().map(|(s, _)| s).collect::<Vec<_>>(), &face, anchor))) {
                         Ok(Some(now)) => frames[k] = Some(now),
                         _ => {
                             // Lost: features built from it fail rather than
@@ -771,7 +798,7 @@ pub fn build(
                 let r = catch_unwind(AssertUnwindSafe(|| {
                     let (shape, end) = tool(sketches, &frames, ex)?;
                     ends[k] = Some(end);
-                    apply(current, shape, ex.op)
+                    apply(current, shape, ex.op, Feature::Extrude(k))
                 }));
                 (r, &mut errors[k])
             }
@@ -784,7 +811,7 @@ pub fn build(
                 let r = catch_unwind(AssertUnwindSafe(|| {
                     let (shape, end) = revolve_tool(sketches, &frames, rv)?;
                     ends[k] = Some(end);
-                    apply(current, shape, rv.op)
+                    apply(current, shape, rv.op, Feature::Revolve(k))
                 }));
                 (r, &mut revolve_errors[k])
             }
@@ -812,11 +839,11 @@ pub fn build(
     }
     let bodies = shapes
         .into_iter()
-        .filter_map(|shape| {
+        .filter_map(|(shape, id)| {
             let mesh = catch_unwind(AssertUnwindSafe(|| mesh(&shape))).ok()?.ok()?;
             let edges = catch_unwind(AssertUnwindSafe(|| pickable_edges(&shape, &mesh))).unwrap_or_default();
             let flat_faces = catch_unwind(AssertUnwindSafe(|| flat_faces(&shape))).unwrap_or_default();
-            Some(Body { shape, mesh, edges, flat_faces })
+            Some(Body { id, shape, mesh, edges, flat_faces })
         })
         .collect();
     let caps = caps_of(&extrude_ends, &revolve_ends);
@@ -984,6 +1011,41 @@ mod tests {
         let m = two_step((-5.0, -5.0, 25.0, 35.0), 10.0, Operation::Intersect);
         assert_eq!(m.bodies.len(), 1);
         assert!(close(total(&m), 25.0 * 30.0 * 10.0));
+    }
+
+    fn ids(m: &Model) -> Vec<BodyId> {
+        m.bodies.iter().map(|b| b.id).collect()
+    }
+
+    fn id(feature: Feature, piece: usize) -> BodyId {
+        BodyId { feature, piece }
+    }
+
+    #[test]
+    fn bodies_are_identified_by_the_feature_that_made_them() {
+        // A plate, then a separate block far away: two new bodies.
+        let m = two_step((100.0, 0.0, 120.0, 10.0), 5.0, Operation::NewBody);
+        assert_eq!(ids(&m), vec![id(Feature::Extrude(0), 0), id(Feature::Extrude(1), 0)]);
+    }
+
+    #[test]
+    fn join_keeps_the_older_bodys_identity_and_cut_keeps_ids_through_a_split() {
+        let m = two_step((20.0, 10.0, 30.0, 20.0), 20.0, Operation::Join);
+        assert_eq!(ids(&m), vec![id(Feature::Extrude(0), 0)], "the post joined the plate, which keeps its id");
+        // A join that touches nothing is a new body named after its own feature.
+        let m = two_step((100.0, 0.0, 120.0, 10.0), 5.0, Operation::Join);
+        assert_eq!(ids(&m), vec![id(Feature::Extrude(0), 0), id(Feature::Extrude(1), 0)]);
+        // A slot across the plate splits it: both pieces descend from the plate, numbered.
+        let m = two_step((20.0, -5.0, 30.0, 35.0), 10.0, Operation::Cut);
+        assert_eq!(ids(&m), vec![id(Feature::Extrude(0), 0), id(Feature::Extrude(0), 1)]);
+    }
+
+    #[test]
+    fn fillets_and_intersects_keep_body_ids() {
+        let m = plate_with(10.0, Some((EdgeKind::Fillet, 2.0, picked_top_front(10.0))));
+        assert_eq!(ids(&m), vec![id(Feature::Extrude(0), 0)]);
+        let m = two_step((-5.0, -5.0, 25.0, 35.0), 10.0, Operation::Intersect);
+        assert_eq!(ids(&m), vec![id(Feature::Extrude(0), 0)]);
     }
 
     #[test]

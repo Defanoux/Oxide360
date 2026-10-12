@@ -36,7 +36,7 @@ use camera::{
     FOV_Y, OrbitCamera, Pose, Projection, angles_for_dir, closest_param_on_line, cube_cells, cube_click_target,
     ndc_from_pixel,
 };
-use doc::{Document, Feature, History, HomeView, ViewState};
+use doc::{BodyId, Document, Feature, History, HomeView, ViewState};
 use handles::{LineHandle, TurnHandle};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -385,7 +385,10 @@ struct OpenCad {
     edge_feature_errors: Vec<Option<String>>,
     sketch_errors: Vec<Option<String>>,
     history: History, // undo / redo for the whole design
-    hidden_bodies: HashSet<usize>,          // bodies switched off in the browser
+    hidden_bodies: HashSet<BodyId>,         // bodies switched off in the browser
+    body_names: HashMap<BodyId, String>,    // names the user gave bodies
+    body_ids: Vec<BodyId>,                  // the bodies of the last build, in order
+    renaming: Option<(BodyId, String)>,     // a body being renamed in the browser, and the text so far
     sketch_shown: HashMap<usize, bool>,     // per-sketch visibility the user chose
     label_drag: Option<(usize, DVec2, DVec2)>, // dimension being moved: constraint, press point, its shift then
     circle_tool: Tool,                         // which circle tool the toolbar's circle button is
@@ -455,6 +458,9 @@ impl Default for OpenCad {
             sketch_errors: Vec::new(),
             history: History::default(),
             hidden_bodies: HashSet::new(),
+            body_names: HashMap::new(),
+            body_ids: Vec::new(),
+            renaming: None,
             sketch_shown: HashMap::new(),
             label_drag: None,
             circle_tool: Tool::Circle,
@@ -496,18 +502,48 @@ impl OpenCad {
             revolves: self.revolves.clone(),
             timeline: self.timeline.clone(),
             view: self.view_state(),
+            body_names: self.sorted_body_names(),
         }
+    }
+
+    fn sorted_body_names(&self) -> Vec<(BodyId, String)> {
+        let mut v: Vec<(BodyId, String)> = self.body_names.iter().map(|(&k, n)| (k, n.clone())).collect();
+        v.sort();
+        v
+    }
+
+    /// A body's name: the one the user gave it, else its feature's name
+    /// (with the piece number when a feature made several).
+    fn body_name(&self, id: BodyId) -> String {
+        if let Some(n) = self.body_names.get(&id) {
+            return n.clone();
+        }
+        let base = match id.feature {
+            Feature::Extrude(k) => self.extrudes.get(k).map(|e| e.name.clone()),
+            Feature::Revolve(k) => self.revolves.get(k).map(|r| r.name.clone()),
+            _ => None,
+        }
+        .unwrap_or_else(|| "Body".into());
+        if id.piece == 0 { base } else { format!("{base} ({})", id.piece + 1) }
+    }
+
+    /// Features were deleted: bodies they made are gone, later ones renumber.
+    fn shift_body_keys(&mut self, revolve: bool, k: usize) {
+        self.hidden_bodies = self.hidden_bodies.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
+        self.body_names = self.body_names.drain().filter_map(|(id, n)| Some((id.after_delete(revolve, k)?, n))).collect();
+        self.renaming = None;
     }
 
     /// What's hidden and where Home is, for saving with the design.
     fn view_state(&self) -> ViewState {
-        let mut hidden_bodies: Vec<usize> = self.hidden_bodies.iter().copied().collect();
-        hidden_bodies.sort_unstable();
+        let mut hidden_ids: Vec<BodyId> = self.hidden_bodies.iter().copied().collect();
+        hidden_ids.sort_unstable();
         let mut sketch_shown: Vec<(usize, bool)> = self.sketch_shown.iter().map(|(&i, &v)| (i, v)).collect();
         sketch_shown.sort_unstable();
         let h = self.home;
         ViewState {
-            hidden_bodies,
+            hidden_bodies: Vec::new(),
+            hidden_ids,
             sketch_shown,
             home: Some(HomeView { yaw: h.yaw, pitch: h.pitch, target: h.target.to_array(), distance: h.distance }),
         }
@@ -515,7 +551,7 @@ impl OpenCad {
 
     /// Show the design the way it was saved (indices past the end are ignored).
     fn apply_view(&mut self, v: &ViewState) {
-        self.hidden_bodies = v.hidden_bodies.iter().copied().collect();
+        self.hidden_bodies = v.hidden_ids.iter().copied().collect();
         self.sketch_shown = v.sketch_shown.iter().filter(|(i, _)| *i < self.sketches.len()).copied().collect();
         self.home = match v.home {
             Some(h) => Pose { yaw: h.yaw, pitch: h.pitch, target: Vec3::from_array(h.target), distance: h.distance },
@@ -569,6 +605,8 @@ impl OpenCad {
         self.revolve_dialog = None;
         self.timeline = doc.timeline.clone();
         self.apply_view(&doc.view);
+        self.body_names = doc.body_names.iter().cloned().collect();
+        self.renaming = None;
         self.history.reset(doc.clone());
         self.saved = doc;
         self.path = path;
@@ -618,6 +656,8 @@ impl OpenCad {
         self.edge_features = doc.edge_features;
         self.revolves = doc.revolves;
         self.timeline = doc.timeline;
+        self.body_names = doc.body_names.into_iter().collect();
+        self.renaming = None;
         self.dialog = None;
         self.revolve_dialog = None;
         self.edge_dialog = None;
@@ -796,11 +836,12 @@ impl OpenCad {
         let result = match format {
             export::Format::Step => kernel::write_step(&p, &model.bodies),
             _ => {
+                let names: Vec<String> = model.bodies.iter().map(|b| self.body_name(b.id)).collect();
                 let bodies: Vec<export::Body> = model
                     .bodies
                     .iter()
-                    .enumerate()
-                    .map(|(k, b)| export::Body { name: format!("Body{}", k + 1), mesh: &b.mesh })
+                    .zip(&names)
+                    .map(|(b, name)| export::Body { name: name.clone(), mesh: &b.mesh })
                     .collect();
                 export::write(&p, format, &bodies)
             }
@@ -1597,6 +1638,7 @@ impl OpenCad {
 
     fn delete_extrude(&mut self, k: usize) {
         self.fix_follows(false, k);
+        self.shift_body_keys(false, k);
         self.extrudes.remove(k);
         self.timeline.retain(|f| *f != Feature::Extrude(k));
         for f in &mut self.timeline {
@@ -1678,6 +1720,7 @@ impl OpenCad {
 
     fn delete_revolve(&mut self, k: usize) {
         self.fix_follows(true, k);
+        self.shift_body_keys(true, k);
         self.revolves.remove(k);
         self.timeline.retain(|f| *f != Feature::Revolve(k));
         for f in &mut self.timeline {
@@ -2102,17 +2145,53 @@ impl OpenCad {
         ui.heading("Browser");
         ui.checkbox(&mut self.origin_visible, "Origin").on_hover_text("Show the origin axes and planes");
         ui.label("Bodies");
-        for k in 0..self.body_count {
+        let mut rename_done: Option<(BodyId, Option<String>)> = None;
+        for id in self.body_ids.clone() {
             ui.horizontal(|ui| {
-                let mut shown = !self.hidden_bodies.contains(&k);
-                if ui.checkbox(&mut shown, format!("Body{}", k + 1)).on_hover_text("Show or hide this body").changed() {
+                let mut shown = !self.hidden_bodies.contains(&id);
+                if ui.checkbox(&mut shown, "").on_hover_text("Show or hide this body").changed() {
                     if shown {
-                        self.hidden_bodies.remove(&k);
+                        self.hidden_bodies.remove(&id);
                     } else {
-                        self.hidden_bodies.insert(k);
+                        self.hidden_bodies.insert(id);
                     }
                 }
+                if let Some((rid, text)) = self.renaming.as_mut().filter(|(rid, _)| *rid == id) {
+                    let edit = ui.add(egui::TextEdit::singleline(text).desired_width(120.0));
+                    edit.request_focus();
+                    let (enter, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+                    if enter {
+                        rename_done = Some((*rid, Some(text.trim().to_string())));
+                    } else if esc || edit.lost_focus() {
+                        rename_done = Some((*rid, None));
+                    }
+                } else {
+                    let name = self.body_name(id);
+                    let r = ui.label(name.clone()).on_hover_text("Right-click to rename");
+                    r.context_menu(|ui| {
+                        if ui.button("Rename").clicked() {
+                            self.renaming = Some((id, name));
+                            ui.close();
+                        }
+                        if self.body_names.contains_key(&id) && ui.button("Use the feature's name").clicked() {
+                            self.body_names.remove(&id);
+                            ui.close();
+                        }
+                    });
+                }
             });
+        }
+        if let Some((id, name)) = rename_done {
+            self.renaming = None;
+            match name {
+                Some(n) if !n.is_empty() => {
+                    self.body_names.insert(id, n);
+                }
+                Some(_) => {
+                    self.body_names.remove(&id); // emptied: back to the feature's name
+                }
+                None => {}
+            }
         }
         ui.label("Sketches");
         let (mut edit, mut delete, mut toggle) = (None, None, None);
@@ -2856,7 +2935,7 @@ impl OpenCad {
                     m.bodies
                         .iter()
                         .enumerate()
-                        .filter(|(b, _)| !self.hidden_bodies.contains(b))
+                        .filter(|(_, body)| !self.hidden_bodies.contains(&body.id))
                         .filter_map(|(b, body)| {
                             model::ray_hit_tri(&body.mesh, ray.origin, ray.dir).map(|(t, tri)| (t, tri, b))
                         })
@@ -3580,6 +3659,7 @@ impl OpenCad {
         self.sketch_errors = self.model(Slot::Committed).sketch_errors.clone();
         self.revolve_errors = self.model(Slot::Committed).revolve_errors.clone();
         self.body_count = self.model(Slot::Committed).bodies.len();
+        self.body_ids = self.model(Slot::Committed).bodies.iter().map(|b| b.id).collect();
         let slot = if previewing { Slot::Preview } else { Slot::Committed };
         self.ensure_model(slot);
         let model = &self.caches[slot as usize].as_ref().expect("built above").model;
@@ -3597,7 +3677,11 @@ impl OpenCad {
         };
         let body_color = if previewing { COL_BODY_PREVIEW } else { COL_BODY };
 
-        let hidden = if previewing { HashSet::new() } else { self.hidden_bodies.clone() };
+        let hidden: HashSet<usize> = if previewing {
+            HashSet::new()
+        } else {
+            model.bodies.iter().enumerate().filter(|(_, b)| self.hidden_bodies.contains(&b.id)).map(|(k, _)| k).collect()
+        };
         let meshes: Vec<(&Mesh, Color32)> = model
             .bodies
             .iter()

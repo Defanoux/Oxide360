@@ -14,13 +14,37 @@ pub const VERSION: u32 = 1;
 pub const EXTENSION: &str = "ocad";
 
 /// One entry in the timeline, in the order features were created.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Feature {
     Sketch(usize),
     Extrude(usize),
     /// A fillet or chamfer (index into `edge_features`).
     Edge(usize),
     Revolve(usize),
+}
+
+/// Which body, however the list of bodies shifts: the feature that created
+/// it (a NewBody extrude or revolve) and which piece of that it is (a cut can
+/// split a body, and the pieces are numbered). Join, Cut and fillets keep a
+/// body's id; a Join into an existing body keeps the older body's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct BodyId {
+    pub feature: Feature,
+    pub piece: usize,
+}
+
+impl BodyId {
+    /// After extrude (`revolve` false) or revolve number `k` was deleted:
+    /// bodies it made are gone (None), later ones renumber.
+    pub fn after_delete(self, revolve: bool, k: usize) -> Option<BodyId> {
+        let feature = match (self.feature, revolve) {
+            (Feature::Extrude(j), false) | (Feature::Revolve(j), true) if j == k => return None,
+            (Feature::Extrude(j), false) if j > k => Feature::Extrude(j - 1),
+            (Feature::Revolve(j), true) if j > k => Feature::Revolve(j - 1),
+            (f, _) => f,
+        };
+        Some(BodyId { feature, piece: self.piece })
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -37,6 +61,9 @@ pub struct Document {
     /// of undo or the "unsaved changes" test (see `ViewState`'s equality).
     #[serde(default)]
     pub view: ViewState,
+    /// Names the user gave bodies (others are named after their feature).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body_names: Vec<(BodyId, String)>,
 }
 
 /// Viewing choices saved with a design: hidden bodies, sketch visibility
@@ -47,7 +74,12 @@ pub struct Document {
 /// rebuild the model.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ViewState {
+    /// By position in the body list — how older files stored it. Ignored now.
+    #[serde(default)]
     pub hidden_bodies: Vec<usize>,
+    /// Bodies switched off in the browser.
+    #[serde(default)]
+    pub hidden_ids: Vec<BodyId>,
     /// Sketches the user switched on or off in the browser, by index.
     pub sketch_shown: Vec<(usize, bool)>,
     pub home: Option<HomeView>,
@@ -316,6 +348,7 @@ mod tests {
             revolves: Vec::new(),
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],
             view: ViewState::default(),
+            body_names: Vec::new(),
         }
     }
 
@@ -472,13 +505,14 @@ mod tests {
         let mut doc = sample();
         let plain = doc.clone();
         doc.view = ViewState {
-            hidden_bodies: vec![1, 3],
+            hidden_bodies: Vec::new(),
+            hidden_ids: vec![BodyId { feature: Feature::Extrude(0), piece: 1 }],
             sketch_shown: vec![(0, true)],
             home: Some(HomeView { yaw: 0.5, pitch: 0.25, target: [1.0, 2.0, 3.0], distance: 150.0 }),
         };
         assert_eq!(doc, plain, "view choices don't count as a change");
         let back = from_json(&to_json(&doc)).unwrap();
-        assert_eq!(back.view.hidden_bodies, vec![1, 3]);
+        assert_eq!(back.view.hidden_ids, vec![BodyId { feature: Feature::Extrude(0), piece: 1 }]);
         assert_eq!(back.view.sketch_shown, vec![(0, true)]);
         assert_eq!(back.view.home, doc.view.home);
         // Not an undo step.
@@ -501,5 +535,28 @@ mod tests {
         assert!(validate(&bad).is_err());
         bad.view.home = Some(HomeView { yaw: f32::NAN, pitch: 0.0, target: [0.0; 3], distance: 10.0 });
         assert!(validate(&bad).is_err());
+    }
+
+    #[test]
+    fn body_ids_follow_deleted_features() {
+        let id = |f, piece| BodyId { feature: f, piece };
+        let e = Feature::Extrude;
+        assert_eq!(id(e(2), 1).after_delete(false, 0), Some(id(e(1), 1)), "later extrudes renumber");
+        assert_eq!(id(e(0), 0).after_delete(false, 2), Some(id(e(0), 0)), "earlier ones don't");
+        assert_eq!(id(e(1), 0).after_delete(false, 1), None, "its body is gone");
+        assert_eq!(id(Feature::Revolve(1), 0).after_delete(false, 0), Some(id(Feature::Revolve(1), 0)), "other kind untouched");
+        assert_eq!(id(Feature::Revolve(1), 0).after_delete(true, 0), Some(id(Feature::Revolve(0), 0)));
+    }
+
+    #[test]
+    fn body_names_save_and_old_files_have_none() {
+        let mut doc = sample();
+        doc.body_names = vec![(BodyId { feature: Feature::Extrude(0), piece: 0 }, "Bracket".into())];
+        let back = from_json(&to_json(&doc)).unwrap();
+        assert_eq!(back.body_names[0].1, "Bracket");
+        let mut v: serde_json::Value = serde_json::from_str(&to_json(&sample())).unwrap();
+        assert!(v["document"].get("body_names").is_none(), "nothing stored when unnamed");
+        v["document"]["view"].as_object_mut().unwrap().remove("hidden_ids");
+        assert!(from_json(&v.to_string()).unwrap().view.hidden_ids.is_empty());
     }
 }
