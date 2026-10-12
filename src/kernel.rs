@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{AxisFeature, CopyFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{PlaneFeature, AxisFeature, CopyFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
 use glam::{DQuat, DVec2, DVec3, Vec3};
@@ -63,6 +63,10 @@ pub struct Model {
     pub axes: Vec<Option<(DVec3, DVec3)>>,
     /// One entry per construction axis.
     pub axis_errors: Vec<Option<String>>,
+    /// Each construction plane as built, offset included.
+    pub planes: Vec<Option<FacePlane>>,
+    /// One entry per construction plane.
+    pub plane_errors: Vec<Option<String>>,
     /// Far-end faces of the extrudes/revolves, to tag what's picked there.
     pub caps: Vec<Cap>,
     /// For each extrude / revolve / fillet that was built: the body it made or
@@ -818,7 +822,7 @@ pub fn build(
     edge_features: &[EdgeFeature],
     timeline: &[Feature],
 ) -> Model {
-    build_with(sketches, extrudes, revolves, edge_features, &[], &[], timeline)
+    build_with(sketches, extrudes, revolves, edge_features, &[], &[], &[], timeline)
 }
 
 /// Copy the picked bodies once per placement (mirror or pattern). The copies
@@ -865,8 +869,11 @@ pub fn build_with(
     edge_features: &[EdgeFeature],
     copies: &[CopyFeature],
     axis_features: &[AxisFeature],
+    plane_features: &[PlaneFeature],
     timeline: &[Feature],
 ) -> Model {
+    let mut planes: Vec<Option<FacePlane>> = vec![None; plane_features.len()];
+    let mut plane_errors: Vec<Option<String>> = vec![None; plane_features.len()];
     let mut axes: Vec<Option<(DVec3, DVec3)>> = vec![None; axis_features.len()];
     let mut axis_errors: Vec<Option<String>> = vec![None; axis_features.len()];
     let mut copy_errors: Vec<Option<String>> = vec![None; copies.len()];
@@ -884,6 +891,35 @@ pub fn build_with(
         // Keep a copy so a failed operation leaves the previous bodies intact.
         let backup: Tagged = current.iter().flat_map(|(s, id)| s.solids().into_iter().map(move |x| (x, *id))).collect();
         let (result, slot) = match *f {
+            Feature::Plane(k) => {
+                if let Some(pf) = plane_features.get(k) {
+                    let now = if pf.on_origin {
+                        Some(pf.base)
+                    } else {
+                        let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
+                        catch_unwind(AssertUnwindSafe(|| resolve_face(&bodies, &pf.base, DVec2::from(pf.anchor)))).ok().flatten()
+                    };
+                    match now {
+                        Some(f) => planes[k] = Some(FacePlane { origin: f.origin + f.normal() * pf.offset, follow: None, ..f }),
+                        None => plane_errors[k] = Some("the face it was measured from is gone".into()),
+                    }
+                }
+                shapes = current;
+                continue;
+            }
+            Feature::Sketch(k) if sketches.get(k).is_some_and(|s| s.plane_ref.is_some()) => {
+                // A sketch on a construction plane goes wherever the plane is now.
+                let c = sketches[k].plane_ref.unwrap_or(0);
+                match planes.get(c).copied().flatten() {
+                    Some(f) => frames[k] = Some(f),
+                    None => {
+                        frames[k] = None;
+                        sketch_errors[k] = Some("the plane it is on couldn't be built".into());
+                    }
+                }
+                shapes = current;
+                continue;
+            }
             Feature::Sketch(k) => {
                 // A sketch on a face follows that face as the part changes.
                 if let Some(sk) = sketches.get(k).filter(|s| s.face.is_some()) {
@@ -990,7 +1026,7 @@ pub fn build_with(
         })
         .collect();
     let caps = caps_of(&extrude_ends, &revolve_ends);
-    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, axes, axis_errors, caps, touched: touched_by }
+    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, axes, axis_errors, planes, plane_errors, caps, touched: touched_by }
 }
 
 /// Exact STEP export of all bodies (true planes, cylinders, arcs).
@@ -1065,7 +1101,7 @@ mod tests {
         let c = CopyFeature { name: "C".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind };
         let mut t = timeline(1, 1);
         t.push(Feature::Copy(0));
-        build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[], &t)
+        build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[], &[], &t)
     }
 
     /// (OCCT pads bounding boxes by 1e-7.)
@@ -1139,7 +1175,7 @@ mod tests {
         let one = CopyFeature { name: "C".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 1, angle: 360.0, radial: 0.0 } };
         let mut t = timeline(1, 1);
         t.extend([Feature::Copy(0), Feature::Copy(1)]);
-        let m = build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c, one], &[], &t);
+        let m = build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c, one], &[], &[], &t);
         assert!(m.copy_errors[0].as_deref().is_some_and(|e| e.contains("gone")));
         assert!(m.copy_errors[1].as_deref().is_some_and(|e| e.contains("no copies")));
         assert_eq!(m.bodies.len(), 1, "the original is untouched");
@@ -1159,7 +1195,7 @@ mod tests {
         };
         let mut t = timeline(1, 1);
         t.extend([Feature::Axis(0), Feature::Copy(0)]);
-        let m = build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[axis], &t);
+        let m = build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[axis], &[], &t);
         assert_eq!(m.axis_errors, vec![None]);
         let (o, d) = m.axes[0].unwrap();
         assert!((o.x - 6.0).abs() < 1e-9 && (o.y - 3.0).abs() < 1e-9 && d.dot(DVec3::Z).abs() > 0.999999);
@@ -1176,13 +1212,13 @@ mod tests {
         let nowhere = EdgeRef { mid: DVec3::new(60.0, 3.0, 2.5), dir: DVec3::X, faces: [DVec3::ZERO; 2], follow: None };
         let mut t = timeline(1, 1);
         t.push(Feature::Axis(0));
-        let m = build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[], &[AxisFeature { name: "A".into(), edge: nowhere }], &t);
+        let m = build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[], &[AxisFeature { name: "A".into(), edge: nowhere }], &[], &t);
         // (No box edge runs along X near there… the nearest X edge is taken, so it resolves; a wrong direction can't.)
         let wrong = EdgeRef { mid: DVec3::new(6.0, 3.0, 2.5), dir: DVec3::new(0.0, 0.6, 0.8), faces: [DVec3::ZERO; 2], follow: None };
         assert!(m.axes.len() == 1);
         let mut sk2 = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk2, 2.0, 0.0, 6.0, 3.0);
-        let m2 = build_with(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[], &[AxisFeature { name: "A".into(), edge: wrong }], &t);
+        let m2 = build_with(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[], &[AxisFeature { name: "A".into(), edge: wrong }], &[], &t);
         assert!(m2.axis_errors[0].as_deref().is_some_and(|e| e.contains("no longer exists")));
         assert_eq!(m2.axes, vec![None]);
     }
@@ -1206,14 +1242,58 @@ mod tests {
         let axis = AxisFeature { name: "Axis1".into(), edge };
         let rv = |axis: RevolveAxis| Revolve { op: Operation::NewBody, name: "R".into(), sketch: 1, profiles: vec![0], axis, angle: 360.0 };
         let t = vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Axis(0), Feature::Sketch(1), Feature::Revolve(0)];
-        let m = build_with(&[sk.clone(), sk2.clone()], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[rv(RevolveAxis::Construction(0))], &[], &[], &[axis.clone()], &t);
+        let m = build_with(&[sk.clone(), sk2.clone()], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[rv(RevolveAxis::Construction(0))], &[], &[], &[axis.clone()], &[], &t);
         assert_eq!(m.revolve_errors, vec![None], "{:?}", m.revolve_errors);
         // A ring, outer radius 4, inner 2, 2 mm long.
         assert!(close(total(&m), 60.0 + PI * (16.0 - 4.0) * 2.0), "{}", total(&m));
         // An axis standing up through the sketch plane can't be revolved about.
         let up = AxisFeature { name: "Up".into(), edge: EdgeRef { mid: DVec3::new(6.0, 3.0, 2.5), dir: DVec3::Z, faces: [DVec3::ZERO; 2], follow: None } };
-        let m = build_with(&[sk, sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[rv(RevolveAxis::Construction(0))], &[], &[], &[up], &t);
+        let m = build_with(&[sk, sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[rv(RevolveAxis::Construction(0))], &[], &[], &[up], &[], &t);
         assert!(m.revolve_errors[0].as_deref().is_some_and(|e| e.contains("parallel")), "{:?}", m.revolve_errors);
+    }
+
+    #[test]
+    fn construction_planes_offset_from_origin_planes_and_faces_carry_sketches() {
+        use crate::model::PlaneFeature;
+        // A 4×3×5 box at x 2..6. Plane 0: 2 mm above the XY plane. Plane 1: 3 mm above the box's top face.
+        let mut base = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut base, 2.0, 0.0, 6.0, 3.0);
+        let xy = FacePlane::from_face(DVec3::Z, DVec3::ZERO);
+        let top = FacePlane::from_face(DVec3::Z, DVec3::new(4.0, 1.5, 5.0));
+        let planes = [
+            PlaneFeature { name: "P0".into(), base: xy, on_origin: true, offset: 2.0, anchor: [0.0, 0.0] },
+            PlaneFeature { name: "P1".into(), base: top, on_origin: false, offset: 3.0, anchor: [4.0, 1.5] },
+        ];
+        let mut on0 = Sketch::on_plane("A".into(), xy, 0);
+        rect(&mut on0, 0.0, 0.0, 1.0, 1.0);
+        let mut on1 = Sketch::on_plane("B".into(), top, 1);
+        rect(&mut on1, 0.0, 0.0, 2.0, 2.0);
+        let t = vec![
+            Feature::Sketch(0),
+            Feature::Extrude(0),
+            Feature::Plane(0),
+            Feature::Plane(1),
+            Feature::Sketch(1),
+            Feature::Extrude(1),
+            Feature::Sketch(2),
+            Feature::Extrude(2),
+        ];
+        let extrudes = [ex(0, vec![0], 5.0, Operation::NewBody), ex(1, vec![0], 1.0, Operation::NewBody), ex(2, vec![0], 1.0, Operation::NewBody)];
+        let m = build_with(&[base, on0, on1], &extrudes, &[], &[], &[], &[], &planes, &t);
+        assert_eq!(m.plane_errors, vec![None, None]);
+        assert!((m.planes[0].unwrap().origin.z - 2.0).abs() < 1e-9);
+        assert!((m.planes[1].unwrap().origin.z - 8.0).abs() < 1e-9, "{:?}", m.planes[1]);
+        assert_eq!(m.sketch_errors, vec![None, None, None]);
+        let lows: Vec<f64> = m.bodies.iter().map(|b| box_of(b).0.z).collect();
+        assert!((lows[1] - 2.0).abs() < 1e-6 && (lows[2] - 8.0).abs() < 1e-6, "{lows:?}");
+        assert!(close(total(&m), 60.0 + 1.0 + 4.0));
+        // Grow the box: the face-based plane (and its sketch) rides up with it.
+        let mut base2 = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut base2, 2.0, 0.0, 6.0, 3.0);
+        let mut on1b = Sketch::on_plane("B".into(), top, 1);
+        rect(&mut on1b, 0.0, 0.0, 2.0, 2.0);
+        let m = build_with(&[base2, Sketch::on_plane("A".into(), xy, 0), on1b], &[ex(0, vec![0], 9.0, Operation::NewBody), ex(2, vec![0], 1.0, Operation::NewBody)], &[], &[], &[], &[], &planes, &[Feature::Sketch(0), Feature::Extrude(0), Feature::Plane(1), Feature::Sketch(2), Feature::Extrude(1)]);
+        assert!((m.planes[1].unwrap().origin.z - 12.0).abs() < 1e-9, "{:?}", m.planes[1]);
     }
 
     #[test]

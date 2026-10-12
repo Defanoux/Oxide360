@@ -4,7 +4,7 @@
 //! index and number so a damaged or hand-edited file gives a clear error
 //! instead of crashing the app.
 
-use crate::model::{AxisFeature, CopyFeature, EdgeFeature, Extrude, MAX_COPIES, Revolve};
+use crate::model::{PlaneFeature, AxisFeature, CopyFeature, EdgeFeature, Extrude, MAX_COPIES, Revolve};
 use crate::sketch::{Constraint, Entity, Sketch};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -25,6 +25,8 @@ pub enum Feature {
     Copy(usize),
     /// A construction axis (index into `axes`).
     Axis(usize),
+    /// A construction plane (index into `planes`).
+    Plane(usize),
 }
 
 /// Put `f` into the timeline at the rollback marker (the end when there is
@@ -101,6 +103,9 @@ pub struct Document {
     /// Construction axes. Older files have none.
     #[serde(default)]
     pub axes: Vec<AxisFeature>,
+    /// Construction planes. Older files have none.
+    #[serde(default)]
+    pub planes: Vec<PlaneFeature>,
     pub timeline: Vec<Feature>,
     /// What's shown and where Home goes. Saved with the file, but never part
     /// of undo or the "unsaved changes" test (see `ViewState`'s equality).
@@ -274,6 +279,17 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             return Err(format!("{}: invalid count, spacing or angle", c.name));
         }
     }
+    for p in &doc.planes {
+        let f = p.base;
+        if !(p.offset.is_finite() && f.origin.is_finite() && f.u.is_finite() && f.v.is_finite() && f.normal().length() > 0.5) {
+            return Err(format!("{}: invalid plane", p.name));
+        }
+    }
+    for (i, sk) in doc.sketches.iter().enumerate() {
+        if sk.plane_ref.is_some_and(|k| k >= doc.planes.len()) {
+            return Err(format!("sketch {i} is on a plane that doesn't exist"));
+        }
+    }
     for a in &doc.axes {
         if !(a.edge.mid.is_finite() && a.edge.dir.is_finite() && a.edge.dir.length() > 0.5) {
             return Err(format!("{}: invalid edge", a.name));
@@ -294,6 +310,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     let mut seen_r = vec![false; doc.revolves.len()];
     let mut seen_c = vec![false; doc.copies.len()];
     let mut seen_a = vec![false; doc.axes.len()];
+    let mut seen_p = vec![false; doc.planes.len()];
     for f in &doc.timeline {
         let slot = match *f {
             Feature::Sketch(i) => seen_s.get_mut(i),
@@ -302,13 +319,14 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Feature::Revolve(i) => seen_r.get_mut(i),
             Feature::Copy(i) => seen_c.get_mut(i),
             Feature::Axis(i) => seen_a.get_mut(i),
+            Feature::Plane(i) => seen_p.get_mut(i),
         };
         match slot {
             Some(s) if !*s => *s = true,
             _ => return Err(format!("timeline entry {f:?} is invalid or repeated")),
         }
     }
-    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).any(|s| !s) {
+    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).any(|s| !s) {
         return Err("timeline is missing a feature".into());
     }
     Ok(())
@@ -423,6 +441,7 @@ mod tests {
             revolves: Vec::new(),
             copies: Vec::new(),
             axes: Vec::new(),
+            planes: Vec::new(),
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],
             view: ViewState::default(),
             body_names: Vec::new(),
@@ -500,6 +519,28 @@ mod tests {
         let bodies = [id(Feature::Copy(0), 0), id(Feature::Extrude(1), 0), id(Feature::Extrude(0), 1), id(Feature::Extrude(0), 0)];
         let names: Vec<String> = bodies.iter().map(|b| default_body_name(&t, &bodies, *b)).collect();
         assert_eq!(names, vec!["Body4", "Body3", "Body2", "Body1"]);
+    }
+
+    #[test]
+    fn construction_planes_round_trip_and_sketches_on_them_are_checked() {
+        use crate::model::PlaneFeature;
+        use crate::sketch::FacePlane;
+        let mut doc = sample();
+        let top = FacePlane::from_face(glam::DVec3::Z, glam::DVec3::new(1.0, 2.0, 5.0));
+        doc.planes.push(PlaneFeature { name: "Plane1".into(), base: top, on_origin: false, offset: -3.5, anchor: [1.0, 2.0] });
+        doc.timeline.push(Feature::Plane(0));
+        let mut on = Sketch::on_plane("S9".into(), top, 0);
+        on.points.push(glam::DVec2::new(1.0, 1.0));
+        doc.sketches.push(on);
+        doc.timeline.push(Feature::Sketch(doc.sketches.len() - 1));
+        assert_eq!(from_json(&to_json(&doc)).unwrap(), doc);
+        assert!(validate(&doc).is_ok());
+        let mut bad = doc.clone();
+        bad.sketches.last_mut().unwrap().plane_ref = Some(4);
+        assert!(validate(&bad).is_err(), "a sketch on a plane that isn't there");
+        let mut nan = doc.clone();
+        nan.planes[0].offset = f64::NAN;
+        assert!(validate(&nan).is_err());
     }
 
     #[test]

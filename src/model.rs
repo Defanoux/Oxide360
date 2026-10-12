@@ -7,7 +7,7 @@ use crate::profile::{Region, find_regions, union};
 #[cfg(test)]
 use crate::sketch::{Plane, Sketch};
 use crate::doc::BodyId;
-use crate::sketch::OriginPlane;
+use crate::sketch::{FacePlane, OriginPlane};
 use glam::{DVec3, Vec3};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -250,6 +250,22 @@ pub struct CopyFeature {
 pub struct AxisFeature {
     pub name: String,
     pub edge: EdgeRef,
+}
+
+/// A construction plane: a plane parallel to an origin plane or a body face,
+/// `offset` mm along its normal.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlaneFeature {
+    pub name: String,
+    /// The plane it is measured from, as picked.
+    pub base: FacePlane,
+    /// An origin plane stays put; a face's plane follows the face as the part changes.
+    pub on_origin: bool,
+    pub offset: f64,
+    /// Where on the face it was picked, in the base plane's (u, v) — how the
+    /// right face is found again after the part changes.
+    #[serde(default)]
+    pub anchor: [f64; 2],
 }
 
 /// Most copies one feature may make (keeps a typo from hanging the app).

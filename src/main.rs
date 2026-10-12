@@ -29,6 +29,7 @@ mod inertia;
 mod kernel;
 mod model;
 mod origin;
+mod plane_dialog;
 mod pattern;
 mod profile;
 mod project;
@@ -50,7 +51,8 @@ use eframe::egui;
 use egui::{Color32, Stroke};
 use glam::{DVec2, DVec3, Vec2, Vec3};
 use copy_dialog::{CopyDialog, Mode as CopyMode};
-use model::{AxisFeature, CopyFeature, EdgeFeature, EdgeKind, EdgeRef, Extrude, Mesh, Operation, Revolve, RevolveAxis};
+use plane_dialog::PlaneDialog;
+use model::{PlaneFeature, AxisFeature, CopyFeature, EdgeFeature, EdgeKind, EdgeRef, Extrude, Mesh, Operation, Revolve, RevolveAxis};
 use icons::Icon;
 use profile::{Region, find_regions};
 use sketch::{
@@ -365,6 +367,7 @@ enum HandleTarget {
     /// Circular pattern angle, and distance out from the axis.
     PatternAngle,
     PatternRadial,
+    PlaneOffset,
 }
 
 struct EdgeDialog {
@@ -396,6 +399,7 @@ struct KernelCache {
     edge_features: Vec<EdgeFeature>,
     copies: Vec<CopyFeature>,
     axes: Vec<AxisFeature>,
+    planes: Vec<PlaneFeature>,
     timeline: Vec<Feature>,
     model: kernel::Model,
 }
@@ -439,6 +443,13 @@ struct OpenCad {
     axes: Vec<AxisFeature>,                  // construction axes
     axis_errors: Vec<Option<String>>,
     axis_hidden: HashSet<usize>,             // construction axes switched off in the browser
+    planes: Vec<PlaneFeature>,               // construction planes
+    plane_errors: Vec<Option<String>>,
+    plane_hidden: HashSet<usize>,            // construction planes switched off in the browser
+    plane_dialog: Option<PlaneDialog>,
+    plane_pick: bool,                        // Offset Plane: waiting for a click on the plane or face to measure from
+    cplane_hover: Option<usize>,             // the construction plane under the mouse
+    ctx_cplane: Option<usize>,               // the one a right-click was on
     axis_pick: bool,                         // waiting for a click on a straight edge to put an axis on
     revolve_errors: Vec<Option<String>>,
     project_hover: Option<EdgeRef>,          // the body edge under the mouse (Project tool)
@@ -462,6 +473,7 @@ struct OpenCad {
     touchpad: bool,                            // touchpad controls instead of mouse
     label_carry: bool,                         // touchpad: a dimension label picked up, following the cursor
     dim_preview: Option<(Constraint, DVec2)>,  // Dimension tool: what a click would place, and its label shift
+    face_pick_point: Option<DVec3>,          // where the cursor ray met the face being hovered while picking
     face_pick: bool,                         // waiting for a click on an origin plane or a flat face to sketch on
     mirror_objects: Vec<Sel>,                // what the Mirror tool will copy
     origin_shown: origin::Shown,             // the browser's Origin folder: what the 3D view shows
@@ -533,6 +545,13 @@ impl Default for OpenCad {
             axes: Vec::new(),
             axis_errors: Vec::new(),
             axis_hidden: HashSet::new(),
+            planes: Vec::new(),
+            plane_errors: Vec::new(),
+            plane_hidden: HashSet::new(),
+            plane_dialog: None,
+            plane_pick: false,
+            cplane_hover: None,
+            ctx_cplane: None,
             axis_pick: false,
             revolve_errors: Vec::new(),
             project_hover: None,
@@ -556,6 +575,7 @@ impl Default for OpenCad {
             touchpad: false,
             label_carry: false,
             dim_preview: None,
+            face_pick_point: None,
             face_pick: false,
             mirror_objects: Vec::new(),
             origin_shown: origin::Shown::default(),
@@ -599,6 +619,7 @@ impl OpenCad {
             revolves: self.revolves.clone(),
             copies: self.copies.clone(),
             axes: self.axes.clone(),
+            planes: self.planes.clone(),
             timeline: self.timeline.clone(),
             view: self.view_state(),
             body_names: self.sorted_body_names(),
@@ -744,6 +765,7 @@ impl OpenCad {
             || self.revolves != self.saved.revolves
             || self.copies != self.saved.copies
             || self.axes != self.saved.axes
+            || self.planes != self.saved.planes
             || self.timeline != self.saved.timeline
     }
 
@@ -773,6 +795,10 @@ impl OpenCad {
         self.revolves = doc.revolves.clone();
         self.copies = doc.copies.clone();
         self.axes = doc.axes.clone();
+        self.planes = doc.planes.clone();
+        self.plane_hidden.clear();
+        self.plane_dialog = None;
+        self.plane_pick = false;
         self.axis_hidden.clear();
         self.axis_pick = false;
         self.copy_dialog = None;
@@ -832,6 +858,10 @@ impl OpenCad {
         self.revolves = doc.revolves;
         self.copies = doc.copies;
         self.axes = doc.axes;
+        self.planes = doc.planes;
+        self.plane_hidden.retain(|&k| k < self.planes.len());
+        self.plane_dialog = None;
+        self.plane_pick = false;
         self.axis_hidden.retain(|&k| k < self.axes.len());
         self.axis_pick = false;
         self.copy_dialog = None;
@@ -927,10 +957,11 @@ impl OpenCad {
     }
 
     /// The feature lists a slot is built from.
-    fn inputs(&self, slot: Slot) -> (Vec<Extrude>, Vec<Revolve>, Vec<EdgeFeature>, Vec<CopyFeature>, Vec<AxisFeature>, Vec<Feature>) {
+    fn inputs(&self, slot: Slot) -> (Vec<Extrude>, Vec<Revolve>, Vec<EdgeFeature>, Vec<CopyFeature>, Vec<AxisFeature>, Vec<PlaneFeature>, Vec<Feature>) {
         let (mut extrudes, mut revolves, mut edge_features, mut copies, mut timeline) =
             (self.extrudes.clone(), self.revolves.clone(), self.edge_features.clone(), self.copies.clone(), self.timeline.clone());
         let axes = self.axes.clone();
+        let mut planes = self.planes.clone();
         timeline.truncate(self.applied()); // features after the marker aren't built
         match slot {
             Slot::Committed => {}
@@ -950,6 +981,19 @@ impl OpenCad {
                         None => {
                             revolves.push(rv);
                             timeline.push(Feature::Revolve(revolves.len() - 1));
+                        }
+                    }
+                }
+                if let Some(d) = self.plane_dialog.as_ref() {
+                    let p = d.feature(match d.editing {
+                        Some(k) => self.planes[k].name.clone(),
+                        None => format!("Plane{}", self.planes.len() + 1),
+                    });
+                    match d.editing {
+                        Some(k) => planes[k] = p,
+                        None => {
+                            planes.push(p);
+                            timeline.push(Feature::Plane(planes.len() - 1));
                         }
                     }
                 }
@@ -981,13 +1025,13 @@ impl OpenCad {
                 }
             }
         }
-        (extrudes, revolves, edge_features, copies, axes, timeline)
+        (extrudes, revolves, edge_features, copies, axes, planes, timeline)
     }
 
     /// Make sure the kernel model for `slot` matches the current design.
     /// Rebuilds only when its inputs changed.
     fn ensure_model(&mut self, slot: Slot) {
-        let (extrudes, revolves, edge_features, copies, axes, timeline) = self.inputs(slot);
+        let (extrudes, revolves, edge_features, copies, axes, planes, timeline) = self.inputs(slot);
         let fresh = self.caches[slot as usize].as_ref().is_some_and(|c| {
             c.sketches.len() == self.sketches.len()
                 && c.sketches.iter().zip(&self.sketches).all(|(a, b)| a.same_shape(b))
@@ -996,12 +1040,13 @@ impl OpenCad {
                 && c.edge_features == edge_features
                 && c.copies == copies
                 && c.axes == axes
+                && c.planes == planes
                 && c.timeline == timeline
         });
         if !fresh {
-            let model = kernel::build_with(&self.sketches, &extrudes, &revolves, &edge_features, &copies, &axes, &timeline);
+            let model = kernel::build_with(&self.sketches, &extrudes, &revolves, &edge_features, &copies, &axes, &planes, &timeline);
             self.caches[slot as usize] =
-                Some(KernelCache { sketches: self.sketches.clone(), extrudes, revolves, edge_features, copies, axes, timeline, model });
+                Some(KernelCache { sketches: self.sketches.clone(), extrudes, revolves, edge_features, copies, axes, planes, timeline, model });
         }
     }
 
@@ -1809,6 +1854,12 @@ impl OpenCad {
     /// The drag arrow for whichever box is open (extrude distance, fillet /
     /// chamfer size, revolve angle), with the value it shows now.
     fn current_handles(&self, regions: &[Vec<Region>]) -> Vec<Handle> {
+        if let Some(d) = &self.plane_dialog {
+            let size = origin::size_for(self.camera.distance);
+            let c = self.plane_centre(&d.base, d.on_origin, size);
+            let from = d.base.origin + d.base.u * c.x + d.base.v * c.y;
+            return vec![Handle::Line { line: LineHandle { origin: from, dir: d.base.normal() }, value: d.distance, target: HandleTarget::PlaneOffset }];
+        }
         if let Some(d) = &self.copy_dialog {
             return self.copy_handles(d);
         }
@@ -1935,6 +1986,11 @@ impl OpenCad {
                         HandleTarget::PatternAngle => d.angle = v.clamp(-360.0, 360.0),
                         _ => d.radial = v - base_radius,
                     }
+                }
+            }
+            HandleTarget::PlaneOffset => {
+                if let Some(d) = self.plane_dialog.as_mut() {
+                    d.distance = v;
                 }
             }
             HandleTarget::Corner => {
@@ -2162,6 +2218,124 @@ impl OpenCad {
             }
         }
         self.cancel_copy();
+    }
+
+    /// Close whichever tool dialog or pick mode is open.
+    fn cancel_all_dialogs(&mut self) {
+        self.cancel_extrude();
+        self.cancel_revolve();
+        self.cancel_edge_dialog();
+        self.cancel_copy();
+        self.plane_dialog = None;
+        self.plane_pick = false;
+        self.axis_pick = false;
+        self.face_pick = false;
+    }
+
+    fn commit_plane(&mut self) {
+        let Some(d) = self.plane_dialog.as_ref() else { return };
+        let name = match d.editing {
+            Some(k) => self.planes[k].name.clone(),
+            None => format!("Plane{}", self.planes.len() + 1),
+        };
+        let p = d.feature(name);
+        match d.editing {
+            Some(k) => self.planes[k] = p,
+            None => {
+                self.planes.push(p);
+                self.timeline_insert(Feature::Plane(self.planes.len() - 1));
+            }
+        }
+        self.plane_dialog = None;
+    }
+
+    fn delete_plane(&mut self, k: usize) {
+        if self.sketches.iter().any(|s| s.plane_ref == Some(k)) {
+            self.notify("A sketch is on that plane — delete the sketch first".into());
+            return;
+        }
+        self.planes.remove(k);
+        self.plane_hidden = self.plane_hidden.iter().filter(|&&j| j != k).map(|&j| if j > k { j - 1 } else { j }).collect();
+        self.timeline_remove(Feature::Plane(k));
+        for f in &mut self.timeline {
+            if let Feature::Plane(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+        for s in &mut self.sketches {
+            if let Some(j) = s.plane_ref.as_mut() {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+        self.plane_dialog = None;
+    }
+
+    fn start_sketch_on_plane(&mut self, k: usize) {
+        let Some(frame) = self.caches[Slot::Committed as usize].as_ref().and_then(|c| c.model.planes.get(k).copied().flatten()) else {
+            self.notify("That plane couldn't be built".into());
+            return;
+        };
+        self.dialog = None;
+        self.finish_sketch();
+        let name = format!("Sketch{}", self.sketches.len() + 1);
+        self.sketches.push(Sketch::on_plane(name, frame, k));
+        let i = self.sketches.len() - 1;
+        self.timeline_insert(Feature::Sketch(i));
+        self.enter_sketch(i);
+        if let Some(p) = self.pending_turn.as_mut() {
+            p.target = frame.origin.as_vec3();
+        }
+    }
+
+    /// The point a plane's square is centred on: for an origin plane its usual
+    /// place, for a face's plane the middle of the bodies seen along its normal.
+    fn plane_centre(&self, frame: &sketch::FacePlane, on_origin: bool, size: f32) -> DVec2 {
+        let (u, v, n) = (frame.u, frame.v, frame.normal());
+        if on_origin {
+            let (lo, hi) = origin::span(size);
+            let mid = (lo + hi) as f64 * 0.5;
+            return DVec2::new(mid, mid);
+        }
+        let mut bounds: Option<(Vec3, Vec3)> = None;
+        if let Some(c) = self.caches[Slot::Committed as usize].as_ref() {
+            for b in &c.model.bodies {
+                if let Some((lo, hi)) = model::mesh_bounds(&b.mesh) {
+                    bounds = Some(bounds.map_or((lo, hi), |(l, h)| (l.min(lo), h.max(hi))));
+                }
+            }
+        }
+        let c = bounds.map_or(frame.origin, |(lo, hi)| ((lo + hi) * 0.5).as_dvec3());
+        let foot = c - n * n.dot(c - frame.origin);
+        DVec2::new((foot - frame.origin).dot(u), (foot - frame.origin).dot(v))
+    }
+
+    /// A plane's square in its own coordinates: (low corner, high corner).
+    fn plane_rect(&self, frame: &sketch::FacePlane, on_origin: bool, size: f32) -> (DVec2, DVec2) {
+        if on_origin {
+            let (lo, hi) = origin::span(size);
+            return (DVec2::splat(lo as f64), DVec2::splat(hi as f64));
+        }
+        let c = self.plane_centre(frame, on_origin, size);
+        let half = DVec2::splat(size as f64 * 0.35);
+        (c - half, c + half)
+    }
+
+    /// The construction plane a ray meets first (not hidden): (index, distance).
+    fn pick_cplane(&self, ray: &Ray, size: f32) -> Option<(usize, f32)> {
+        let model = &self.caches[Slot::Committed as usize].as_ref()?.model;
+        (0..self.planes.len())
+            .filter(|k| !self.plane_hidden.contains(k))
+            .filter_map(|k| {
+                let frame = model.planes.get(k).copied().flatten()?;
+                let (lo, hi) = self.plane_rect(&frame, self.planes[k].on_origin, size);
+                let (t, p) = frame.plane().intersect_t(ray)?;
+                (p.cmpge(lo).all() && p.cmple(hi).all()).then_some((k, t))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
     }
 
     fn delete_axis(&mut self, k: usize) {
@@ -2667,14 +2841,18 @@ impl OpenCad {
                     }
                 });
                 group(ui, "CONSTRUCT", |ui| {
+                    let tip = "Offset Plane: click an origin plane or a face, then set the distance";
+                    if icons::button(ui, Icon::Plane, tip, true, self.plane_pick || self.plane_dialog.is_some()).clicked() {
+                        let was = self.plane_pick;
+                        self.cancel_all_dialogs();
+                        self.plane_pick = !was;
+                        self.face_pick = !was;
+                    }
                     let tip = "Axis Along Edge: click a straight edge of a body";
                     if icons::button(ui, Icon::Axis, tip, has_bodies, self.axis_pick).clicked() {
-                        self.cancel_extrude();
-                        self.cancel_revolve();
-                        self.cancel_edge_dialog();
-                        self.cancel_copy();
-                        self.face_pick = false;
-                        self.axis_pick = !self.axis_pick;
+                        let was = self.axis_pick;
+                        self.cancel_all_dialogs();
+                        self.axis_pick = !was;
                     }
                 });
                 let copy_mode = self.copy_dialog.as_ref().map(|d| d.mode);
@@ -2737,6 +2915,22 @@ impl OpenCad {
                     ui.label(self.axes[k].name.as_str());
                 });
             }
+        }
+        for k in 0..self.planes.len() {
+            if k == 0 && self.axes.is_empty() {
+                ui.label("Construction");
+            }
+            ui.horizontal(|ui| {
+                let mut shown = !self.plane_hidden.contains(&k);
+                if ui.checkbox(&mut shown, "").on_hover_text("Show or hide this plane").changed() {
+                    if shown {
+                        self.plane_hidden.remove(&k);
+                    } else {
+                        self.plane_hidden.insert(k);
+                    }
+                }
+                ui.label(self.planes[k].name.as_str());
+            });
         }
         ui.label("Bodies");
         let mut rename_done: Option<(BodyId, Option<String>)> = None;
@@ -3241,6 +3435,10 @@ impl OpenCad {
                         self.revolve_dialog.as_ref().is_some_and(|d| d.editing == Some(k)),
                     ),
                     Feature::Axis(k) => (self.axes[k].name.clone(), false),
+                    Feature::Plane(k) => (
+                        self.planes[k].name.clone(),
+                        self.plane_dialog.as_ref().is_some_and(|d| d.editing == Some(k)),
+                    ),
                     Feature::Copy(k) => (
                         self.copies[k].name.clone(),
                         self.copy_dialog.as_ref().is_some_and(|d| d.editing == Some(k)),
@@ -3252,6 +3450,7 @@ impl OpenCad {
                     Feature::Revolve(k) => self.revolve_errors.get(k).cloned().flatten(),
                     Feature::Copy(k) => self.copy_errors.get(k).cloned().flatten(),
                     Feature::Axis(k) => self.axis_errors.get(k).cloned().flatten(),
+                    Feature::Plane(k) => self.plane_errors.get(k).cloned().flatten(),
                     Feature::Sketch(k) => self.sketch_errors.get(k).cloned().flatten(),
                 };
                 let icon = match *f {
@@ -3259,6 +3458,7 @@ impl OpenCad {
                     Feature::Extrude(_) => Icon::Extrude,
                     Feature::Revolve(_) => Icon::Revolve,
                     Feature::Axis(_) => Icon::Axis,
+                    Feature::Plane(_) => Icon::Plane,
                     Feature::Copy(k) => match self.copies[k].kind {
                         model::CopyKind::Mirror(_) => Icon::Mirror,
                         model::CopyKind::Rectangular { .. } => Icon::RectPattern,
@@ -3328,6 +3528,7 @@ impl OpenCad {
             Some(Feature::Revolve(k)) => self.delete_revolve(k),
             Some(Feature::Copy(k)) => self.delete_copy(k),
             Some(Feature::Axis(k)) => self.delete_axis(k),
+            Some(Feature::Plane(k)) => self.delete_plane(k),
             None => {}
         }
         if delete.is_some() {
@@ -3338,6 +3539,10 @@ impl OpenCad {
             Some(Feature::Extrude(k)) => self.open_extrude(Some(k)),
             Some(Feature::Revolve(k)) => self.open_revolve(Some(k)),
             Some(Feature::Axis(_)) => {}
+            Some(Feature::Plane(k)) => {
+                self.cancel_all_dialogs();
+                self.plane_dialog = Some(PlaneDialog::from_feature(k, &self.planes[k]));
+            }
             Some(Feature::Copy(k)) => {
                 let mode = match self.copies[k].kind {
                     model::CopyKind::Mirror(_) => CopyMode::Mirror,
@@ -3745,39 +3950,75 @@ impl OpenCad {
             }
         }
 
-        // --- create sketch: pick an origin plane or a flat face ---
+        // --- create sketch / offset plane: pick an origin plane, a construction plane or a flat face ---
         self.face_hover = None;
         self.origin_hover = None;
+        self.cplane_hover = None;
         if self.face_pick {
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 let found = self.pick_face(&ray);
-                // The origin planes count too; whichever is nearer wins, and a
-                // body's face wins a tie (a plane lying in a face is covered by it).
-                let plane = origin::pick(&ray, origin::size_for(self.camera.distance), |_| true);
+                self.face_pick_point = found.map(|(t, ..)| (ray.origin + ray.dir * t).as_dvec3());
+                // The planes count too; whichever is nearer wins, and a body's
+                // face wins a tie (a plane lying in a face is covered by it).
+                // (An offset plane is measured from origin planes and faces only.)
+                let psize = origin::size_for(self.camera.distance);
+                let origin_hit = origin::pick(&ray, psize, |_| true);
+                let custom_hit = if self.plane_pick { None } else { self.pick_cplane(&ray, psize) };
+                let plane = match (origin_hit, custom_hit) {
+                    (Some((op, to)), Some((_, tc))) if to <= tc => Some((Some(op), None, to)),
+                    (_, Some((k, tc))) => Some((None, Some(k), tc)),
+                    (Some((op, to)), None) => Some((Some(op), None, to)),
+                    (None, None) => None,
+                };
                 match (plane, found) {
-                    (Some((op, tp)), f) if f.is_none_or(|(tf, ..)| tp < tf - origin::tie_tolerance(tf)) => {
-                        self.origin_hover = Some(op)
+                    (Some((op, k, tp)), f) if f.is_none_or(|(tf, ..)| tp < tf - origin::tie_tolerance(tf)) => {
+                        self.origin_hover = op;
+                        self.cplane_hover = k;
                     }
                     (_, f) => self.face_hover = f.map(|(_, b, face)| (b, face)),
                 }
             }
             if response.clicked() {
-                if let Some(op) = self.origin_hover {
+                if self.plane_pick {
+                    // Offset Plane: measure from what was clicked.
+                    let base = match (self.origin_hover, self.face_hover) {
+                        (Some(op), _) => {
+                            let p = op.plane();
+                            Some((sketch::FacePlane { origin: DVec3::ZERO, u: p.u.as_dvec3(), v: p.v.as_dvec3(), follow: None }, true, [0.0; 2]))
+                        }
+                        (None, Some((_, face))) => {
+                            let q = self.face_pick_point.unwrap_or(face.origin);
+                            Some((sketch::FacePlane { follow: None, ..face }, false, [q.dot(face.u), q.dot(face.v)]))
+                        }
+                        _ => None,
+                    };
+                    if let Some((base, on_origin, anchor)) = base {
+                        self.cancel_all_dialogs();
+                        self.plane_dialog = Some(PlaneDialog::new(base, on_origin, anchor));
+                    }
+                } else if let Some(op) = self.origin_hover {
                     self.start_sketch(op);
+                } else if let Some(k) = self.cplane_hover {
+                    self.start_sketch_on_plane(k);
                 } else if let Some((_, face)) = self.face_hover {
                     self.start_sketch_on_face(face);
                 }
             }
             if esc && !typing {
                 self.face_pick = false;
+                self.plane_pick = false;
             }
         }
 
         // --- the 3D view: hover origin planes and faces; click selects a plane, right-click offers a sketch ---
         if !self.face_pick && self.active.is_none() {
             self.marquee = None;
-            let free_view = self.dialog.is_none() && self.edge_dialog.is_none() && self.revolve_dialog.is_none() && self.copy_dialog.is_none();
+            let free_view = self.dialog.is_none()
+                && self.edge_dialog.is_none()
+                && self.revolve_dialog.is_none()
+                && self.copy_dialog.is_none()
+                && self.plane_dialog.is_none();
             if let (Some(px), true) = (hover_px, free_view) {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 let face = self.pick_face(&ray);
@@ -3793,15 +4034,30 @@ impl OpenCad {
                         .fold(f32::MAX, f32::min);
                     t_plane < t_body - origin::tie_tolerance(t_body.min(t_plane))
                 });
-                match plane {
-                    Some((op, _)) => self.origin_hover = Some(op),
-                    None => self.face_hover = face.map(|(_, b, f)| (b, f)),
+                // A construction plane, the same way (nothing of a body in front of it).
+                let psize = origin::size_for(self.camera.distance);
+                let custom = self.pick_cplane(&ray, psize).filter(|&(_, t_plane)| {
+                    let t_body = self
+                        .model(Slot::Committed)
+                        .bodies
+                        .iter()
+                        .filter(|b| !self.hidden_bodies.contains(&b.id))
+                        .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir))
+                        .fold(f32::MAX, f32::min);
+                    t_plane < t_body - origin::tie_tolerance(t_body.min(t_plane))
+                });
+                match (plane, custom) {
+                    (Some((op, to)), Some((_, tc))) if to <= tc => self.origin_hover = Some(op),
+                    (_, Some((k, _))) => self.cplane_hover = Some(k),
+                    (Some((op, _)), None) => self.origin_hover = Some(op),
+                    (None, None) => self.face_hover = face.map(|(_, b, f)| (b, f)),
                 }
                 if response.clicked() {
                     self.selected_plane = self.origin_hover;
                 }
                 if response.secondary_clicked() {
                     self.ctx_plane = self.origin_hover;
+                    self.ctx_cplane = self.cplane_hover;
                     self.ctx_face = self.face_hover;
                     if self.ctx_plane.is_some() {
                         self.selected_plane = self.ctx_plane;
@@ -4635,8 +4891,49 @@ impl OpenCad {
             origin_outlines = outlines;
         }
 
+        // --- draw: construction planes (and the one being set up) ---
+        if !sketching {
+            self.ensure_model(Slot::Committed);
+            let editing = self.plane_dialog.as_ref().and_then(|d| d.editing);
+            let mut items: Vec<(sketch::FacePlane, bool, f32)> = Vec::new();
+            for k in 0..self.planes.len() {
+                if self.plane_hidden.contains(&k) || editing == Some(k) {
+                    continue;
+                }
+                if let Some(f) = self.model(Slot::Committed).planes.get(k).copied().flatten() {
+                    let alpha = if self.cplane_hover == Some(k) { 150.0 } else if self.face_pick { 80.0 } else { 55.0 };
+                    items.push((f, self.planes[k].on_origin, alpha / 255.0));
+                }
+            }
+            if let Some(d) = &self.plane_dialog {
+                items.push((d.frame(), d.on_origin, 120.0 / 255.0));
+            }
+            for (f, on_origin, alpha) in items {
+                let (lo, hi) = self.plane_rect(&f, on_origin, origin_size);
+                let at = |x: f64, y: f64| (f.origin + f.u * x + f.v * y).as_vec3();
+                let q = [at(lo.x, lo.y), at(hi.x, lo.y), at(hi.x, hi.y), at(lo.x, hi.y)];
+                if self.gpu {
+                    let c = [0.55, 0.78, 1.0, alpha];
+                    origin_glass.push(([q[0], q[1], q[2]], c));
+                    origin_glass.push(([q[0], q[2], q[3]], c));
+                    for k in 0..4 {
+                        origin_outlines.push((q[k], q[(k + 1) % 4], [0.65, 0.85, 1.0, 0.8]));
+                    }
+                } else {
+                    let pts: Vec<Option<Vec2>> = q.iter().map(|&v| view.project(v)).collect();
+                    if let [Some(a), Some(b), Some(c), Some(d)] = pts[..] {
+                        painter.add(egui::Shape::convex_polygon(
+                            vec![to_pos(a), to_pos(b), to_pos(c), to_pos(d)],
+                            Color32::from_rgba_unmultiplied(140, 200, 255, (alpha * 255.0) as u8),
+                            Stroke::new(1.0, Color32::from_rgb(165, 215, 255)),
+                        ));
+                    }
+                }
+            }
+        }
+
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
-        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some();
+        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
         self.ensure_model(Slot::Committed);
         self.feature_errors = self.model(Slot::Committed).errors.clone();
@@ -4645,6 +4942,7 @@ impl OpenCad {
         self.revolve_errors = self.model(Slot::Committed).revolve_errors.clone();
         self.copy_errors = self.model(Slot::Committed).copy_errors.clone();
         self.axis_errors = self.model(Slot::Committed).axis_errors.clone();
+        self.plane_errors = self.model(Slot::Committed).plane_errors.clone();
         self.body_count = self.model(Slot::Committed).bodies.len();
         // With a body in the scene the origin gets out of the way (Create Sketch
         // and the browser's Origin box bring it back).
@@ -4668,6 +4966,9 @@ impl OpenCad {
         } else if let Some(d) = &self.copy_dialog {
             let k = d.editing.unwrap_or(self.copies.len());
             model.copy_errors.get(k).cloned().flatten()
+        } else if let Some(d) = &self.plane_dialog {
+            let k = d.editing.unwrap_or(self.planes.len());
+            model.plane_errors.get(k).cloned().flatten()
         } else {
             None
         };
@@ -4725,7 +5026,7 @@ impl OpenCad {
             painter.text(
                 rect.center_top() + egui::vec2(0.0, 14.0),
                 egui::Align2::CENTER_TOP,
-                "Click an origin plane or a flat face to sketch on   (Esc to cancel)",
+                if self.plane_pick { "Click an origin plane or a flat face to measure the offset from   (Esc to cancel)" } else { "Click a plane or a flat face to sketch on   (Esc to cancel)" },
                 egui::FontId::proportional(15.0),
                 Color32::from_gray(220),
             );
@@ -5095,6 +5396,11 @@ impl OpenCad {
             } else if let Some(op) = self.ctx_plane {
                 if ui.button(format!("Create Sketch on the {} plane", op.name())).clicked() {
                     self.start_sketch(op);
+                    ui.close();
+                }
+            } else if let Some(k) = self.ctx_cplane.filter(|&k| k < self.planes.len()) {
+                if ui.button(format!("Create Sketch on {}", self.planes[k].name)).clicked() {
+                    self.start_sketch_on_plane(k);
                     ui.close();
                 }
             } else if let Some((_, face)) = self.ctx_face {
@@ -5468,6 +5774,17 @@ impl eframe::App for OpenCad {
             float("edges").show(&ctx, |ui| self.edge_panel(ui));
         } else if self.copy_dialog.is_some() && self.active.is_none() {
             float("copy").show(&ctx, |ui| self.copy_panel(ui));
+        } else if self.plane_dialog.is_some() && self.active.is_none() {
+            float("plane").show(&ctx, |ui| {
+                let error = self.dialog_error.clone();
+                if let Some(d) = self.plane_dialog.as_mut() {
+                    match d.panel(ui, error.as_deref()) {
+                        copy_dialog::Action::Ok => self.commit_plane(),
+                        copy_dialog::Action::Cancel => self.plane_dialog = None,
+                        copy_dialog::Action::None => {}
+                    }
+                }
+            });
         } else if self.revolve_dialog.is_some() && self.active.is_none() {
             float("revolve").show(&ctx, |ui| self.revolve_panel(ui));
         }

@@ -296,6 +296,11 @@ pub struct Sketch {
     /// Set when the sketch was started on a face of a body. Older files have none.
     #[serde(default)]
     pub face: Option<FacePlane>,
+    /// Set when the sketch is on a construction plane (index into the design's
+    /// planes): the kernel puts it wherever that plane is now. `face` keeps
+    /// the plane as it was when the sketch was made.
+    #[serde(default)]
+    pub plane_ref: Option<usize>,
     pub points: Vec<DVec2>,
     pub entities: Vec<Entity>,
     pub constraints: Vec<Constraint>,
@@ -615,6 +620,7 @@ impl Sketch {
             name,
             plane,
             face: None,
+            plane_ref: None,
             points: vec![DVec2::ZERO],
             entities: Vec::new(),
             constraints: Vec::new(),
@@ -627,6 +633,11 @@ impl Sketch {
     /// A sketch on a body face.
     pub fn on_face(name: String, face: FacePlane) -> Self {
         Self { face: Some(face), ..Self::new(name, OriginPlane::XY) }
+    }
+
+    /// A sketch on construction plane `k`, which is now at `frame`.
+    pub fn on_plane(name: String, frame: FacePlane, k: usize) -> Self {
+        Self { face: Some(FacePlane { follow: None, ..frame }), plane_ref: Some(k), ..Self::new(name, OriginPlane::XY) }
     }
 
     /// The plane this sketch lies on (for drawing and picking).
@@ -1144,6 +1155,7 @@ impl Sketch {
     pub fn same_shape(&self, other: &Sketch) -> bool {
         self.plane == other.plane
             && self.face == other.face
+            && self.plane_ref == other.plane_ref
             && self.points == other.points
             && self.entities == other.entities
             && self.constraints == other.constraints

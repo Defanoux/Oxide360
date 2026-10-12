@@ -95,7 +95,7 @@ Suggested crates: `wgpu`, `winit`, `egui`/`eframe` (UI), `glam` or `nalgebra` (m
 **Done when:** you can model a bracket with holes, fillets, a shell, and a pattern, and each step appears in the timeline.
 
 ## Phase 4 — Construction geometry
-- [ ] Offset plane, plane at angle, tangent plane, midplane, plane through 3 points, plane along path
+- [ ] Offset plane (done: from origin planes and faces), plane at angle, tangent plane, midplane, plane through 3 points, plane along path
 - [ ] Axis through two points, along edge, perpendicular to face, through cylinder/cone/torus — along a straight edge done
 - [ ] Point at vertex, at edge/plane intersection, centre of circle/sphere, along path
 - [ ] Visibility toggles in the browser
@@ -204,5 +204,6 @@ That gets you a working parametric part modeler. Everything else is additive.
 - Coplanar ambiguity: a body face lying in an origin (or future construction) plane wins over the plane for picking; the part of a plane covered by a body is hidden.
 - Origin hides itself when the first body appears; show it again via the browser Origin box or Create Sketch.
 - Origin planes sit set back from the axes so axes/origin stay pickable; polygons lock to quarter turns unless Ctrl is held; construction axes are stored as an edge reference and re-found on every rebuild.
+- Tool dialogs are floating windows over the view's right side; the constraints list stays a side panel.
 - Extrude operation defaults to Join only if the profile's prism touches an existing body, else New Body, until the user picks one.
 
