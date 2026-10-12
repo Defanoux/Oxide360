@@ -63,6 +63,7 @@ const COL_SELECT: Color32 = Color32::from_rgb(255, 170, 40);
 const COL_HOVER: Color32 = Color32::from_rgb(255, 220, 140);
 const COL_GLYPH: Color32 = Color32::from_rgb(170, 200, 170);
 const COL_DIM: Color32 = Color32::from_rgb(230, 230, 120);
+const COL_DRIVEN: Color32 = Color32::from_rgb(140, 140, 130);
 const COL_BODY: Color32 = Color32::from_rgb(170, 180, 195);
 const COL_BODY_PREVIEW: Color32 = Color32::from_rgb(120, 170, 240);
 const COL_ARROW: Color32 = Color32::from_rgb(60, 140, 255);
@@ -150,6 +151,7 @@ fn draw_dimension(
     sk: &Sketch,
     plane: &sketch::Plane,
     c: &Constraint,
+    driven: bool,
     shift: DVec2,
     away_from: Vec2,
     color: Color32,
@@ -158,24 +160,35 @@ fn draw_dimension(
         Entity::Line { a, b } => Some((sk.points[*a], sk.points[*b])),
         _ => None,
     };
+    // A driven dimension shows what the geometry measures now, in brackets.
+    let d_of = |stored: f64| if driven { sk.measure(c).unwrap_or(stored) } else { stored };
+    let text = |s: String| if driven { format!("({s})") } else { s };
     match *c {
         Constraint::Length(e, d) => {
             let (a, b) = line(e)?;
-            view.linear_dimension(plane, a, b, away_from, shift, format!("{d:.2}"), color)
+            view.linear_dimension(plane, a, b, away_from, shift, text(format!("{:.2}", d_of(d))), color)
         }
-        Constraint::Distance(p, q, d) => {
-            view.linear_dimension(plane, *sk.points.get(p)?, *sk.points.get(q)?, away_from, shift, format!("{d:.2}"), color)
-        }
+        Constraint::Distance(p, q, d) => view.linear_dimension(
+            plane,
+            *sk.points.get(p)?,
+            *sk.points.get(q)?,
+            away_from,
+            shift,
+            text(format!("{:.2}", d_of(d))),
+            color,
+        ),
         Constraint::Diameter(e, d) => match sk.entities.get(e)? {
             Entity::Circle { center, radius } => {
-                view.diameter_dimension(plane, sk.points[*center], *radius, shift, format!("Ø{d:.2}"), color)
+                view.diameter_dimension(plane, sk.points[*center], *radius, shift, text(format!("Ø{:.2}", d_of(d))), color)
             }
             _ => None,
         },
-        Constraint::Angle(e1, e2, d) => view.angle_dimension(plane, line(e1)?, line(e2)?, shift, format!("{d:.1}°"), color),
+        Constraint::Angle(e1, e2, d) => {
+            view.angle_dimension(plane, line(e1)?, line(e2)?, shift, text(format!("{:.1}°", d_of(d))), color)
+        }
         Constraint::Radius(e, d) => {
             let (c, r, a0, sweep) = sk.arc_geometry(e)?;
-            view.radius_dimension(plane, c, r, a0 + sweep * 0.5, shift, format!("R{d:.2}"), color)
+            view.radius_dimension(plane, c, r, a0 + sweep * 0.5, shift, text(format!("R{:.2}", d_of(d))), color)
         }
         _ => None,
     }
@@ -988,14 +1001,28 @@ impl OpenCad {
         let Some((_, cs)) = opts.into_iter().find(|(l, _)| *l == label) else { return };
         let first_new = self.sketches[i].constraints.len();
         let mut trial = self.sketches[i].clone();
-        let r = solver::add_constraints(&mut trial, &cs).map(Some);
+        let mut driven = false;
+        let r = match (label, cs.as_slice()) {
+            // A dimension that would over-constrain becomes a reference one.
+            ("Dimension", &[c]) => solver::add_dimension(&mut trial, c).map(|(s, d)| {
+                driven = d;
+                Some(s)
+            }),
+            _ => solver::add_constraints(&mut trial, &cs).map(Some),
+        };
         let ok = r.is_ok();
         if ok {
             self.undo.push(std::mem::replace(&mut self.sketches[i], trial));
         }
         self.report(r);
+        if ok && driven {
+            self.notify("Already fixed by other constraints — added as a reference (driven) dimension".into());
+        }
         if ok {
             self.editor.selection.clear();
+            if driven {
+                return;
+            }
             if let Some(Constraint::Length(_, d) | Constraint::Diameter(_, d) | Constraint::Angle(_, _, d) | Constraint::Distance(_, _, d) | Constraint::Radius(_, d)) = cs.first() {
                 // Open the number box on the new dimension, ready to type.
                 self.float =
@@ -1066,13 +1093,18 @@ impl OpenCad {
     fn place_dimension(&mut self, c: Constraint, shift: DVec2, typed: Option<String>) {
         let Some(i) = self.active else { return };
         let mut trial = self.sketches[i].clone();
-        match solver::add_constraints(&mut trial, &[c]) {
-            Ok(s) => {
+        match solver::add_dimension(&mut trial, c) {
+            Ok((s, driven)) => {
                 let ci = trial.constraints.len() - 1;
                 trial.set_label_shift(ci, shift);
                 self.undo.push(std::mem::replace(&mut self.sketches[i], trial));
                 self.dof = Some(s.dof);
                 self.message = None;
+                if driven {
+                    self.notify("Already fixed by other constraints — added as a reference (driven) dimension".into());
+                    self.editor.selection.clear();
+                    return;
+                }
                 let value = match c {
                     Constraint::Length(_, d)
                     | Constraint::Diameter(_, d)
@@ -1141,8 +1173,36 @@ impl OpenCad {
         self.report(r);
     }
 
+    /// Switch dimension `ci` between driving and driven (reference).
+    fn toggle_driven(&mut self, ci: usize) {
+        let Some(i) = self.active else { return };
+        self.float = None;
+        let was_driven = self.sketches[i].is_driven(ci);
+        let mut why = None;
+        let r = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
+            if was_driven {
+                if let Err(e) = solver::make_driving(sk, ci) {
+                    why = Some(format!("{e}"));
+                }
+            } else {
+                solver::make_driven(sk, ci);
+            }
+        });
+        match why {
+            Some(e) => self.notify(format!("Can't make it drive: {e}")),
+            None => {
+                self.notify(if was_driven { "Dimension now drives" } else { "Dimension is now reference only" }.into());
+                self.report(r);
+            }
+        }
+    }
+
     fn set_dimension(&mut self, ci: usize, v: f64) {
         let Some(i) = self.active else { return };
+        if self.sketches[i].is_driven(ci) {
+            self.message = Some("That's a reference dimension — right-click it to make it drive".into());
+            return;
+        }
         let is_angle = matches!(self.sketches[i].constraints.get(ci), Some(Constraint::Angle(..)));
         if is_angle && !(0.0..180.0).contains(&v) {
             self.message = Some("Angles go from 0° up to (not including) 180°".into());
@@ -2754,7 +2814,11 @@ impl OpenCad {
                 }
             }
             if response.secondary_clicked() {
-                self.editor.cancel();
+                match self.dim_hover.filter(|&ci| ci < self.sketches[i].constraints.len()) {
+                    // Right-click a dimension: driving ⇄ driven.
+                    Some(ci) => self.toggle_driven(ci),
+                    None => self.editor.cancel(),
+                }
             }
 
             // Undo or delete above may have removed points that the cursor, the
@@ -2816,6 +2880,10 @@ impl OpenCad {
                     // dragging) a click on an already-selected dimension picks
                     // its label up; it follows the cursor until the next click.
                     let edit_value = |app: &mut Self, ci: usize| {
+                        if app.sketches[i].is_driven(ci) {
+                            app.notify("Reference dimension: right-click it to make it drive".into());
+                            return;
+                        }
                         if let Some(
                             Constraint::Length(_, d)
                             | Constraint::Diameter(_, d)
@@ -2889,7 +2957,7 @@ impl OpenCad {
                             let hidden_painter = painter.with_clip_rect(egui::Rect::NOTHING);
                             let hidden = View { painter: &hidden_painter, ..view };
                             let centroid = sketch_centroid(&view, sk, &plane, to_vec(rect.center()));
-                            let at_default = draw_dimension(&hidden, sk, &plane, &c, DVec2::ZERO, centroid, COL_DIM)
+                            let at_default = draw_dimension(&hidden, sk, &plane, &c, false, DVec2::ZERO, centroid, COL_DIM)
                                 .and_then(|r| {
                                     let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(to_vec(r.center()), min, size));
                                     plane.intersect(&ray)
@@ -3349,12 +3417,14 @@ impl OpenCad {
                             COL_SELECT
                         } else if self.dim_hover == Some(ci) {
                             COL_HOVER
+                        } else if sk.is_driven(ci) {
+                            COL_DRIVEN
                         } else {
                             COL_DIM
                         };
                         let trace = std::cell::RefCell::new(Vec::new());
                         let traced = View { trace: Some(&trace), ..view };
-                        let r = draw_dimension(&traced, sk, &plane, c, sk.label_shift(ci), centroid, colour);
+                        let r = draw_dimension(&traced, sk, &plane, c, sk.is_driven(ci), sk.label_shift(ci), centroid, colour);
                         r.map(|r| (r, trace.into_inner()))
                     }
                     Constraint::Fix(p) => {
@@ -3377,7 +3447,7 @@ impl OpenCad {
             // The dimension being placed (Dimension tool), following the cursor.
             if let (Tool::Constrain("Dimension"), Some((c, shift))) = (self.editor.tool, self.dim_preview) {
                 if !self.editor.selection.is_empty() {
-                    draw_dimension(&view, sk, &plane, &c, shift, centroid, COL_DIM.gamma_multiply(0.7));
+                    draw_dimension(&view, sk, &plane, &c, false, shift, centroid, COL_DIM.gamma_multiply(0.7));
                 }
             }
             for (e, g) in glyphs.iter().enumerate() {

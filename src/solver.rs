@@ -261,7 +261,10 @@ fn equations(sk: &Sketch) -> Vec<(Constraint, u8)> {
         .map(|(i, _)| (Constraint::ArcEnds(i), 0));
     sk.constraints
         .iter()
-        .flat_map(|&c| match c {
+        .enumerate()
+        // Driven (reference) dimensions only report; they're never solved.
+        .filter(|&(ci, _)| !sk.is_driven(ci))
+        .flat_map(|(_, &c)| match c {
             Constraint::Fix(_) | Constraint::ArcEnds(_) => vec![],
             Constraint::Midpoint(..) => vec![(c, 0), (c, 1)],
             _ => vec![(c, 0)],
@@ -405,7 +408,10 @@ fn stiffness(sk: &Sketch, p: PointId) -> Vec<f64> {
             join(a, b);
         }
     }
-    for c in &sk.constraints {
+    for (ci, c) in sk.constraints.iter().enumerate() {
+        if sk.is_driven(ci) {
+            continue;
+        }
         match *c {
             Constraint::Distance(a, b, _) => join(a, b),
             // A centre is joined to each corner (not the corners to each other).
@@ -557,6 +563,64 @@ pub fn add_constraints(sk: &mut Sketch, cs: &[Constraint]) -> Result<Solved, Sol
     }
     *sk = trial;
     Ok(solved)
+}
+
+/// Add a dimension. If it would over-constrain the sketch it is added as a
+/// *driven* (reference) dimension instead, holding the measured value.
+/// Returns whether it ended up driven.
+pub fn add_dimension(sk: &mut Sketch, c: Constraint) -> Result<(Solved, bool), SolveError> {
+    match add_constraints(sk, &[c]) {
+        Ok(s) => Ok((s, false)),
+        Err(SolveError::Redundant) => {
+            let mut trial = sk.clone();
+            let mut c = c;
+            let v = trial.measure(&c).ok_or(SolveError::Redundant)?;
+            set_value(&mut c, v);
+            trial.constraints.push(c);
+            let ci = trial.constraints.len() - 1;
+            trial.set_driven(ci, true);
+            let solved = solve(&mut trial.clone(), &[])?;
+            *sk = trial;
+            Ok((solved, true))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Make driven dimension `ci` a driving one again, holding what it measures
+/// now. Refused (sketch untouched) if the sketch is over-constrained by it.
+pub fn make_driving(sk: &mut Sketch, ci: usize) -> Result<Solved, SolveError> {
+    let before = solve(&mut sk.clone(), &[])?.dof;
+    let mut trial = sk.clone();
+    let mut c = *trial.constraints.get(ci).ok_or(SolveError::Redundant)?;
+    let v = trial.measure(&c).ok_or(SolveError::Redundant)?;
+    set_value(&mut c, v);
+    trial.constraints[ci] = c;
+    trial.set_driven(ci, false);
+    let solved = solve(&mut trial, &[])?;
+    if before.saturating_sub(solved.dof) < 1 {
+        return Err(SolveError::Redundant);
+    }
+    *sk = trial;
+    Ok(solved)
+}
+
+/// Make dimension `ci` a driven one, showing the geometry's value from now on.
+pub fn make_driven(sk: &mut Sketch, ci: usize) {
+    if let Some(mut c) = sk.constraints.get(ci).copied() {
+        if let Some(v) = sk.measure(&c) {
+            set_value(&mut c, v);
+        }
+        sk.constraints[ci] = c;
+        sk.set_driven(ci, true);
+    }
+}
+
+fn set_value(c: &mut Constraint, v: f64) {
+    use Constraint::*;
+    if let Length(_, d) | Diameter(_, d) | Angle(_, _, d) | Distance(_, _, d) | Radius(_, d) = c {
+        *d = v;
+    }
 }
 
 #[cfg(test)]
@@ -1063,6 +1127,46 @@ mod tests {
         assert!(close(y[0], 0.8) && close(y[1], 1.4));
         assert_eq!(rank(vec![1.0, 2.0, 2.0, 4.0], 2, 2), 1);
         assert_eq!(rank(vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0], 3, 2), 2);
+    }
+
+    #[test]
+    fn over_constraining_dimension_becomes_driven_and_follows_the_geometry() {
+        let mut sk = rough_rect();
+        add_constraints(&mut sk, &[Horizontal(0), Vertical(1), Horizontal(2), Vertical(3), Length(0, 50.0), Length(1, 30.0)]).unwrap();
+        // (As in the app, the new dimension holds what the geometry measures.)
+        let len = sk.line_length(2).unwrap();
+        let (_, driven) = add_dimension(&mut sk, Length(2, len)).unwrap();
+        assert!(driven);
+        // Length(2) is already fixed by the rectangle (opposite side of Length(0)).
+        let ci = sk.constraints.len() - 1;
+        assert!(sk.is_driven(ci), "{:?}", sk.constraints);
+        assert!(close(sk.measure(&sk.constraints[ci]).unwrap(), 50.0));
+        // It doesn't constrain: dimensions still solve and the driven one is stale-proof.
+        sk.constraints[4] = Length(0, 60.0);
+        let s = solve(&mut sk, &[]).unwrap();
+        assert!(close(sk.measure(&sk.constraints[ci]).unwrap(), 60.0), "{s:?}");
+        // A driven dimension can't be made driving while something else holds it...
+        assert_eq!(make_driving(&mut sk, ci), Err(SolveError::Redundant));
+        assert!(sk.is_driven(ci));
+        // ...but is fine once the other one goes.
+        sk.remove_constraint(4);
+        let ci = ci - 1;
+        assert!(sk.is_driven(ci), "flag follows its constraint when one before it is removed");
+        make_driving(&mut sk, ci).unwrap();
+        assert!(!sk.is_driven(ci));
+        make_driven(&mut sk, ci);
+        assert!(sk.is_driven(ci));
+    }
+
+    #[test]
+    fn driven_flags_survive_serialisation_and_old_files() {
+        let mut sk = rough_rect();
+        sk.constraints.push(Length(0, 5.0));
+        let old: Sketch = serde_json::from_str(&serde_json::to_string(&sk).unwrap()).unwrap();
+        assert!(!old.is_driven(0));
+        sk.set_driven(0, true);
+        let back: Sketch = serde_json::from_str(&serde_json::to_string(&sk).unwrap()).unwrap();
+        assert!(back.is_driven(0));
     }
 }
 

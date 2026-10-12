@@ -4,14 +4,6 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Next
 
-3. **Driven (reference) dimensions**: a dimension that would over-constrain
-   the sketch should be offered as *driven* (shown, greyed, read-only, not
-   solved) instead of being refused as Redundant. Add a `driven` flag (keep
-   old files loading), skip driven ones in `solver::equations`, draw them in
-   a muted colour with the value in parentheses, and update their value from
-   the geometry each frame. Right-click (or a panel toggle) switches
-   driving ⇄ driven.
-
 4. **Construction geometry** (Fusion's X key): a per-entity `construction`
    flag. Construction lines/circles/arcs draw dashed, are ignored by
    `find_regions`, still take constraints. Toolbar toggle + X shortcut.
@@ -54,6 +46,8 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Sketch fillet/chamfer also take two lines that meet (click both), same as clicking their corner.
+- Driven (reference) dimensions: a dimension that would over-constrain is added greyed in (brackets), read-only, not solved, value follows the geometry; right-click a dimension toggles driving ⇄ driven. `Sketch.driven` is `#[serde(default)]`.
 - 3-Point Arc snapping: raw third point (no grid), half-circle centre snap with ½ marker, grid-centre snap on the chord bisector. (Tangent-to-line start snap not done — it was optional.)
 - Verified build: `cargo build` clean (no warnings), 151 tests pass.
 - Orbit viewport, grid, view cube (with home, flip-to-opposite, axis triad toggle).

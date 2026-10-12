@@ -303,6 +303,10 @@ pub struct Sketch {
     /// default spot), by constraint index; missing entries are zero.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub label_shift: Vec<DVec2>,
+    /// Dimensions shown for reference only (by constraint index): they report
+    /// the geometry and are never solved. Missing entries mean driving.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub driven: Vec<bool>,
 }
 
 /// A line as unit normal n and offset d: n·p + d is the signed distance of p.
@@ -518,6 +522,7 @@ impl Sketch {
             entities: Vec::new(),
             constraints: Vec::new(),
             label_shift: Vec::new(),
+            driven: Vec::new(),
         }
     }
 
@@ -804,15 +809,18 @@ pub const CONSTRAINT_ACTIONS: [&str; 8] =
     ["Dimension", "Horizontal", "Vertical", "Parallel", "Perpendicular", "Equal", "Tangent", "Fix"];
 
 impl Sketch {
-    /// Keep the constraints `keep` says yes to (and their label positions).
+    /// Keep the constraints `keep` says yes to (and their label positions
+    /// and driven flags).
     pub fn retain_constraints(&mut self, mut keep: impl FnMut(&Constraint) -> bool) {
         let shifts = std::mem::take(&mut self.label_shift);
-        let mut kept = Vec::new();
+        let driven = std::mem::take(&mut self.driven);
+        let (mut kept, mut kept_driven) = (Vec::new(), Vec::new());
         let mut i = 0;
         self.constraints.retain(|c| {
             let k = keep(c);
             if k {
                 kept.push(shifts.get(i).copied().unwrap_or(DVec2::ZERO));
+                kept_driven.push(driven.get(i).copied().unwrap_or(false));
             }
             i += 1;
             k
@@ -820,16 +828,59 @@ impl Sketch {
         while kept.last() == Some(&DVec2::ZERO) {
             kept.pop();
         }
+        while kept_driven.last() == Some(&false) {
+            kept_driven.pop();
+        }
         self.label_shift = kept;
+        self.driven = kept_driven;
     }
 
-    /// Remove one constraint (and its label position).
+    /// Remove one constraint (and its label position and driven flag).
     pub fn remove_constraint(&mut self, ci: usize) {
         if ci < self.constraints.len() {
             self.constraints.remove(ci);
             if ci < self.label_shift.len() {
                 self.label_shift.remove(ci);
             }
+            if ci < self.driven.len() {
+                self.driven.remove(ci);
+                while self.driven.last() == Some(&false) {
+                    self.driven.pop();
+                }
+            }
+        }
+    }
+
+    /// Is constraint `ci` a driven (reference) dimension?
+    pub fn is_driven(&self, ci: usize) -> bool {
+        self.driven.get(ci).copied().unwrap_or(false)
+    }
+
+    pub fn set_driven(&mut self, ci: usize, driven: bool) {
+        if self.driven.len() <= ci {
+            if !driven {
+                return;
+            }
+            self.driven.resize(ci + 1, false);
+        }
+        self.driven[ci] = driven;
+        while self.driven.last() == Some(&false) {
+            self.driven.pop();
+        }
+    }
+
+    /// What a dimension constraint measures on the geometry right now.
+    pub fn measure(&self, c: &Constraint) -> Option<f64> {
+        match *c {
+            Constraint::Length(e, _) => self.line_length(e),
+            Constraint::Distance(p, q, _) => Some(self.points.get(p)?.distance(*self.points.get(q)?)),
+            Constraint::Diameter(e, _) => match self.entities.get(e)? {
+                Entity::Circle { radius, .. } => Some(2.0 * radius),
+                _ => None,
+            },
+            Constraint::Radius(e, _) => self.arc_geometry(e).map(|(_, r, _, _)| r),
+            Constraint::Angle(a, b, _) => self.angle_between(a, b),
+            _ => None,
         }
     }
 
@@ -853,6 +904,7 @@ impl Sketch {
             && self.points == other.points
             && self.entities == other.entities
             && self.constraints == other.constraints
+            && self.driven == other.driven
     }
 
     /// How many lines/circles use each point: 2 or more means it's a joint
