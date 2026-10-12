@@ -266,8 +266,8 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Rectangular { count, spacing, count2, spacing2, .. } => {
                 (1..=MAX_COPIES).contains(&count) && (1..=MAX_COPIES).contains(&count2) && spacing.is_finite() && spacing2.is_finite()
             }
-            Circular { count, angle, custom, .. } => {
-                (1..=MAX_COPIES).contains(&count) && angle.is_finite() && custom.is_none_or(|k| k < doc.axes.len())
+            Circular { count, angle, custom, radial, .. } => {
+                (1..=MAX_COPIES).contains(&count) && angle.is_finite() && radial.is_finite() && custom.is_none_or(|k| k < doc.axes.len())
             }
         };
         if !ok {
@@ -508,12 +508,12 @@ mod tests {
         let mut doc = sample();
         let src = BodyId { feature: Feature::Extrude(0), piece: 0 };
         doc.copies.push(CopyFeature { name: "Mirror1".into(), bodies: vec![src], kind: CopyKind::Mirror(OriginPlane::YZ) });
-        doc.copies.push(CopyFeature { name: "Circular Pattern2".into(), bodies: vec![src], kind: CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 6, angle: 360.0 } });
+        doc.copies.push(CopyFeature { name: "Circular Pattern2".into(), bodies: vec![src], kind: CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 6, angle: 360.0, radial: 0.0 } });
         doc.timeline.extend([Feature::Copy(0), Feature::Copy(1)]);
         assert_eq!(from_json(&to_json(&doc)).unwrap(), doc);
         assert!(validate(&doc).is_ok());
         let mut bad = doc.clone();
-        bad.copies[1].kind = CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 0, angle: 360.0 };
+        bad.copies[1].kind = CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 0, angle: 360.0, radial: 0.0 };
         assert!(validate(&bad).is_err(), "zero copies");
         let mut missing = doc.clone();
         missing.timeline.pop();

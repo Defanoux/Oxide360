@@ -767,6 +767,16 @@ fn resolve_face(shapes: &[&Shape], f: &FacePlane, anchor: DVec2) -> Option<FaceP
     over.or(any.filter(|&(d, _)| d <= reach)).map(|(_, q)| FacePlane { origin: n * n.dot(q), ..*f })
 }
 
+/// `radial` mm away from an axis, in the direction the body's middle lies from it.
+fn radial_shift(body: &Shape, origin: DVec3, axis: DVec3, radial: f64) -> DVec3 {
+    let bb = opencascade::bounding_box::aabb(body);
+    let mid = (DVec3::new(bb.min().x, bb.min().y, bb.min().z) + DVec3::new(bb.max().x, bb.max().y, bb.max().z)) * 0.5;
+    let axis = axis.normalize_or_zero();
+    let from = mid - origin;
+    let r = from - axis * from.dot(axis);
+    r.try_normalize().map_or(DVec3::ZERO, |d| d * radial)
+}
+
 /// Where a construction axis is now: along the straight edge it was picked on.
 fn resolve_axis(bodies: &Tagged, af: &AxisFeature) -> Result<(DVec3, DVec3), String> {
     let mut all: Vec<(usize, Edge, EdgeRef)> = Vec::new();
@@ -815,7 +825,12 @@ fn apply_copy(bodies: Tagged, cf: &CopyFeature, k: usize, axes: &[Option<(DVec3,
             let src = &bodies[i].0;
             let copy = match p {
                 Placement::Translate(t) => src.translated(kv(t)),
-                Placement::Rotate { origin, axis, radians } => src.rotated_about(kv(origin), kv(axis), radians),
+                Placement::Rotate { origin, axis, radians, radial } => {
+                    // Pushed out from the axis first (along the way the body lies from it), then turned.
+                    let out = if radial != 0.0 { radial_shift(src, origin, axis, radial) } else { DVec3::ZERO };
+                    let moved = if out == DVec3::ZERO { None } else { Some(src.translated(kv(out))) };
+                    moved.as_ref().unwrap_or(src).rotated_about(kv(origin), kv(axis), radians)
+                }
                 Placement::Reflect { normal } => src.mirrored_in_plane(kv(DVec3::ZERO), kv(normal)),
             };
             let id = BodyId { feature: Feature::Copy(k), piece };
@@ -1075,15 +1090,29 @@ mod tests {
     fn circular_pattern_spaces_copies_round_the_axis() {
         use crate::model::{CopyKind, WorldAxis};
         // Four copies over 360°: 90° apart. The box (x 2..6, y 0..3) rotated 90° about Z lands at x −3..0, y 2..6.
-        let m = copies_of_a_box(CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 4, angle: 360.0 });
+        let m = copies_of_a_box(CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 4, angle: 360.0, radial: 0.0 });
         assert_eq!(m.bodies.len(), 4);
         assert!(close(total(&m), 240.0));
         let (lo, hi) = box_of(&m.bodies[1]);
         assert!((lo - DVec3::new(-3.0, 2.0, 0.0)).length() < 1e-6 && (hi - DVec3::new(0.0, 6.0, 5.0)).length() < 1e-6, "{lo:?} {hi:?}");
         // Over 180° the last copy sits at the end of the angle: three copies at 0°, 90°, 180°.
-        let m = copies_of_a_box(CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 3, angle: 180.0 });
+        let m = copies_of_a_box(CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 3, angle: 180.0, radial: 0.0 });
         let (lo, hi) = box_of(&m.bodies[2]);
         assert!((lo - DVec3::new(-6.0, -3.0, 0.0)).length() < 1e-6 && (hi - DVec3::new(-2.0, 0.0, 5.0)).length() < 1e-6, "{lo:?} {hi:?}");
+    }
+
+    #[test]
+    fn circular_pattern_can_push_the_copies_out_from_the_axis() {
+        use crate::model::{CopyKind, WorldAxis};
+        // The box is centred at (4, 1.5); a half turn about Z with 10 mm more radius puts the copy's
+        // middle at distance 4.27 + 10 on the other side of the axis.
+        let m = copies_of_a_box(CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 2, angle: 360.0, radial: 10.0 });
+        assert_eq!(m.copy_errors, vec![None]);
+        let (lo, hi) = box_of(&m.bodies[1]);
+        let mid = (lo + hi) * 0.5;
+        let want = -(DVec3::new(4.0, 1.5, 0.0).normalize() * (DVec3::new(4.0, 1.5, 0.0).length() + 10.0));
+        assert!((mid.x - want.x).abs() < 1e-6 && (mid.y - want.y).abs() < 1e-6, "{mid:?} vs {want:?}");
+        assert!(close(total(&m), 120.0));
     }
 
     #[test]
@@ -1093,7 +1122,7 @@ mod tests {
         rect(&mut sk, 2.0, 0.0, 6.0, 3.0);
         let gone = BodyId { feature: Feature::Extrude(7), piece: 0 };
         let c = CopyFeature { name: "C".into(), bodies: vec![gone], kind: CopyKind::Mirror(OriginPlane::XY) };
-        let one = CopyFeature { name: "C".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 1, angle: 360.0 } };
+        let one = CopyFeature { name: "C".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 1, angle: 360.0, radial: 0.0 } };
         let mut t = timeline(1, 1);
         t.extend([Feature::Copy(0), Feature::Copy(1)]);
         let m = build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c, one], &[], &t);
@@ -1112,7 +1141,7 @@ mod tests {
         let c = CopyFeature {
             name: "C".into(),
             bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }],
-            kind: CopyKind::Circular { axis: WorldAxis::X, custom: Some(0), count: 2, angle: 360.0 },
+            kind: CopyKind::Circular { axis: WorldAxis::X, custom: Some(0), count: 2, angle: 360.0, radial: 0.0 },
         };
         let mut t = timeline(1, 1);
         t.extend([Feature::Axis(0), Feature::Copy(0)]);

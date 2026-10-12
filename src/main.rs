@@ -47,7 +47,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use eframe::egui;
 use egui::{Color32, Stroke};
-use glam::{DVec2, Vec2, Vec3};
+use glam::{DVec2, DVec3, Vec2, Vec3};
 use copy_dialog::{CopyDialog, Mode as CopyMode};
 use model::{AxisFeature, CopyFeature, EdgeFeature, EdgeKind, EdgeRef, Extrude, Mesh, Operation, Revolve, RevolveAxis};
 use icons::Icon;
@@ -313,11 +313,43 @@ struct RevolveDialog {
     picking_axis: bool,
 }
 
+/// An axis a pattern can turn about.
+#[derive(Clone, Copy, PartialEq)]
+enum AxisChoice {
+    World(model::WorldAxis),
+    Custom(usize),
+}
+
+/// Where the bodies of a pattern are, for placing its arrows.
+struct CopyGeo {
+    centroid: DVec3,
+    axis_point: DVec3,
+    axis_dir: DVec3,
+    /// The point of the axis nearest the bodies, and how far they are from it.
+    pivot: DVec3,
+    base_radius: f64,
+    out_dir: Option<DVec3>,
+}
+
 /// A drag arrow on the canvas and the value it controls (see `handles`).
 #[derive(Clone, Copy)]
 enum Handle {
     Line { line: LineHandle, value: f64, target: HandleTarget },
-    Turn { turn: TurnHandle, value: f64 },
+    Turn { turn: TurnHandle, value: f64, target: HandleTarget },
+}
+
+impl Handle {
+    fn value(&self) -> f64 {
+        match *self {
+            Handle::Line { value, .. } | Handle::Turn { value, .. } => value,
+        }
+    }
+
+    fn target(&self) -> HandleTarget {
+        match *self {
+            Handle::Line { target, .. } | Handle::Turn { target, .. } => target,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -326,6 +358,12 @@ enum HandleTarget {
     EdgeSize,
     RevolveAngle,
     Corner,
+    /// Rectangular pattern spacing along direction 1 / 2.
+    PatternSpacing1,
+    PatternSpacing2,
+    /// Circular pattern angle, and distance out from the axis.
+    PatternAngle,
+    PatternRadial,
 }
 
 struct EdgeDialog {
@@ -402,6 +440,7 @@ struct OpenCad {
     axis_hidden: HashSet<usize>,             // construction axes switched off in the browser
     axis_pick: bool,                         // waiting for a click on a straight edge to put an axis on
     revolve_errors: Vec<Option<String>>,
+    copy_axis_hover: Option<AxisChoice>, // the axis under the mouse while a pattern's axis is being picked
     axis_hover: Option<(usize, usize)>, // sketch, line entity under the mouse (revolve axis picking)
     edge_hover: Option<EdgeRef>,
     edge_feature_errors: Vec<Option<String>>,
@@ -438,8 +477,8 @@ struct OpenCad {
     home: Pose,      // where Home goes (set it from the view cube menu)
     cube_axes: bool, // show the XYZ triad on the view cube
     settings_saved: settings::Settings, // what's on disk, to notice a change
-    arrow_screen: Option<(Vec2, Vec2)>, // extrude arrow on screen, last frame
-    arrow_drag: Option<f64>,            // grab offset while dragging the arrow
+    arrows: Vec<Option<(Vec2, Vec2)>>,  // the drag arrows on screen, last frame (one per handle)
+    arrow_drag: Option<(usize, f64)>,   // which arrow is being dragged, and its grab offset
     arrow_turn: Option<(f64, f64)>,     // revolve arrow: cursor angle so far (unwrapped, last raw)
     path: Option<PathBuf>,              // where this design is saved
     saved: Document,                    // what's on disk, to detect unsaved changes
@@ -494,6 +533,7 @@ impl Default for OpenCad {
             axis_hidden: HashSet::new(),
             axis_pick: false,
             revolve_errors: Vec::new(),
+            copy_axis_hover: None,
             axis_hover: None,
             edge_hover: None,
             edge_feature_errors: Vec::new(),
@@ -530,7 +570,7 @@ impl Default for OpenCad {
             home: OrbitCamera::default().pose(),
             cube_axes: true,
             settings_saved: settings::Settings::default(),
-            arrow_screen: None,
+            arrows: Vec::new(),
             arrow_drag: None,
             arrow_turn: None,
             path: None,
@@ -721,7 +761,7 @@ impl OpenCad {
         self.drag = None;
         self.dialog = None;
         self.float = None;
-        self.arrow_screen = None;
+        self.arrows.clear();
         self.arrow_drag = None;
         self.edge_dialog = None;
         self.sketches = doc.sketches.clone();
@@ -804,7 +844,7 @@ impl OpenCad {
         self.float = None;
         self.drag = None;
         self.arrow_drag = None;
-        self.arrow_screen = None;
+        self.arrows.clear();
         self.face_pick = false;
         self.message = None;
         self.editor.selection.clear();
@@ -1406,7 +1446,7 @@ impl OpenCad {
     /// arrow's start, on the side away from where it points. `fallback` when
     /// there is no arrow.
     fn off_arrow(&self, fallback: egui::Pos2) -> egui::Pos2 {
-        match self.arrow_screen {
+        match self.arrows.iter().flatten().next().copied() {
             Some((base, tip)) => {
                 let dir = (tip - base).normalize_or_zero();
                 to_pos(base - dir * 80.0) - egui::vec2(55.0, 14.0)
@@ -1703,7 +1743,7 @@ impl OpenCad {
         self.dialog = None;
         self.float = None;
         self.message = None;
-        self.arrow_screen = None;
+        self.arrows.clear();
     }
 
     fn cancel_extrude(&mut self) {
@@ -1711,7 +1751,7 @@ impl OpenCad {
         self.float = None;
         self.message = None;
         self.arrow_drag = None;
-        self.arrow_screen = None;
+        self.arrows.clear();
     }
 
     /// Put the cursor back in the number box with its text selected.
@@ -1725,6 +1765,70 @@ impl OpenCad {
 
     /// The drag arrow for whichever box is open (extrude distance, fillet /
     /// chamfer size, revolve angle), with the value it shows now.
+    fn current_handles(&self, regions: &[Vec<Region>]) -> Vec<Handle> {
+        if let Some(d) = &self.copy_dialog {
+            return self.copy_handles(d);
+        }
+        self.current_handle(regions).into_iter().collect()
+    }
+
+    /// What the cursor at `px` means for an arrow: a distance along it, or
+    /// the angle it has been swung to.
+    fn sample_handle(&self, h: &Handle, px: Vec2, aspect: f32, min: Vec2, size: Vec2) -> Option<f64> {
+        let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+        match h {
+            Handle::Line { line, .. } => closest_param_on_line(&ray, line.origin.as_vec3(), line.dir.as_vec3()).map(|s| s as f64),
+            Handle::Turn { turn, .. } => turn.angle_at(ray.origin.as_dvec3(), ray.dir.as_dvec3()),
+        }
+    }
+
+    /// Where the bodies a pattern copies are, and the axis a circular one turns about.
+    fn copy_geometry(&self, d: &CopyDialog) -> Option<CopyGeo> {
+        let cache = self.caches[Slot::Committed as usize].as_ref()?;
+        let mut bounds: Option<(Vec3, Vec3)> = None;
+        for b in cache.model.bodies.iter().filter(|b| d.bodies.contains(&b.id)) {
+            if let Some((lo, hi)) = model::mesh_bounds(&b.mesh) {
+                bounds = Some(bounds.map_or((lo, hi), |(l, h)| (l.min(lo), h.max(hi))));
+            }
+        }
+        let (lo, hi) = bounds?;
+        let centroid = ((lo + hi) * 0.5).as_dvec3();
+        let (axis_point, axis_dir) = match d.custom {
+            Some(k) => cache.model.axes.get(k).copied().flatten()?,
+            None => (DVec3::ZERO, d.axis.dir()),
+        };
+        let pivot = axis_point + axis_dir * (centroid - axis_point).dot(axis_dir);
+        let out = centroid - pivot;
+        Some(CopyGeo { centroid, axis_point, axis_dir, pivot, base_radius: out.length(), out_dir: out.try_normalize() })
+    }
+
+    /// The blue arrows of the open mirror / pattern dialog.
+    fn copy_handles(&self, d: &CopyDialog) -> Vec<Handle> {
+        let Some(g) = self.copy_geometry(d) else { return Vec::new() };
+        match d.mode {
+            CopyMode::Mirror => Vec::new(),
+            CopyMode::Rectangular => vec![
+                Handle::Line { line: LineHandle { origin: g.centroid, dir: d.dir.dir() }, value: d.spacing, target: HandleTarget::PatternSpacing1 },
+                Handle::Line { line: LineHandle { origin: g.centroid, dir: d.dir2.dir() }, value: d.spacing2, target: HandleTarget::PatternSpacing2 },
+            ],
+            CopyMode::Circular => {
+                let Some(out) = g.out_dir else { return Vec::new() };
+                // The angle arrow swings a little inside the bodies' ring so the two don't sit on each other.
+                let inner = g.pivot + out * (g.base_radius * 0.6);
+                let mut v = Vec::new();
+                if let Some(turn) = TurnHandle::new(g.axis_point, g.axis_dir, inner) {
+                    v.push(Handle::Turn { turn, value: d.angle, target: HandleTarget::PatternAngle });
+                }
+                v.push(Handle::Line {
+                    line: LineHandle { origin: g.pivot, dir: out },
+                    value: g.base_radius + d.radial,
+                    target: HandleTarget::PatternRadial,
+                });
+                v
+            }
+        }
+    }
+
     fn current_handle(&self, regions: &[Vec<Region>]) -> Option<Handle> {
         if let (Some(FloatEdit { target: EditTarget::Corner(p), text, .. }), Some(i)) = (&self.float, self.active) {
             let sk = &self.sketches[i];
@@ -1753,7 +1857,7 @@ impl OpenCad {
             let spot = self.plane_of(s).to_world(r.centroid());
             let (a, b) = self.revolve_axis_line(s, d.axis, 1.0)?;
             let turn = TurnHandle::new(a.as_dvec3(), (b - a).as_dvec3(), spot.as_dvec3())?;
-            return Some(Handle::Turn { turn, value: d.angle });
+            return Some(Handle::Turn { turn, value: d.angle, target: HandleTarget::RevolveAngle });
         }
         None
     }
@@ -1777,6 +1881,17 @@ impl OpenCad {
             HandleTarget::RevolveAngle => {
                 if let Some(d) = self.revolve_dialog.as_mut() {
                     d.angle = v.clamp(-360.0, 360.0);
+                }
+            }
+            HandleTarget::PatternSpacing1 | HandleTarget::PatternSpacing2 | HandleTarget::PatternAngle | HandleTarget::PatternRadial => {
+                let base_radius = self.copy_dialog.as_ref().and_then(|d| self.copy_geometry(d)).map_or(0.0, |g| g.base_radius);
+                if let Some(d) = self.copy_dialog.as_mut() {
+                    match target {
+                        HandleTarget::PatternSpacing1 => d.spacing = v,
+                        HandleTarget::PatternSpacing2 => d.spacing2 = v,
+                        HandleTarget::PatternAngle => d.angle = v.clamp(-360.0, 360.0),
+                        _ => d.radial = v - base_radius,
+                    }
                 }
             }
             HandleTarget::Corner => {
@@ -2069,6 +2184,25 @@ impl OpenCad {
             }
         }
         best.map(|(_, r)| r)
+    }
+
+    /// The quantity boxes that sit beside a pattern's arrows.
+    fn copy_quantity_boxes(&mut self, ctx: &egui::Context) {
+        let Some(d) = self.copy_dialog.as_mut() else { return };
+        let tips: Vec<Option<egui::Pos2>> = self.arrows.iter().map(|a| a.map(|(_, tip)| to_pos(tip))).collect();
+        let slots: Vec<(&'static str, &mut u32)> = match d.mode {
+            CopyMode::Mirror => Vec::new(),
+            CopyMode::Rectangular => vec![("copy_qty1", &mut d.count), ("copy_qty2", &mut d.count2)],
+            CopyMode::Circular => vec![("copy_qty1", &mut d.count_round)],
+        };
+        for ((id, n), tip) in slots.into_iter().zip(tips) {
+            let Some(tip) = tip else { continue };
+            egui::Area::new(egui::Id::new(id)).order(egui::Order::Foreground).fixed_pos(tip + egui::vec2(8.0, -30.0)).show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.add(egui::DragValue::new(n).range(1..=model::MAX_COPIES).speed(0.2).prefix("× "));
+                });
+            });
+        }
     }
 
     /// Right panel while mirroring / patterning.
@@ -3391,15 +3525,13 @@ impl OpenCad {
         let typing = ui.ctx().text_edit_focused();
         let press_px = ui.input(|i| i.pointer.press_origin()).map(to_vec);
         let hover_px = response.hover_pos().map(to_vec);
-        let near_arrow = |p: Option<Vec2>, arrow: Option<(Vec2, Vec2)>| match (p, arrow) {
-            (Some(p), Some((a, b))) => dist_to_segment_px(p, a, b) < 10.0,
-            _ => false,
+        let near_arrow = |p: Option<Vec2>, arrows: &[Option<(Vec2, Vec2)>]| -> Option<usize> {
+            let p = p?;
+            arrows.iter().position(|a| a.is_some_and(|(a, b)| dist_to_segment_px(p, a, b) < 10.0))
         };
-        // Grabbing the extrude arrow (decided before the camera, so it doesn't orbit).
-        let grab_arrow = self.arrow_screen.is_some()
-            && response.drag_started_by(egui::PointerButton::Primary)
-            && near_arrow(press_px, self.arrow_screen);
-        let arrow_active = grab_arrow || self.arrow_drag.is_some();
+        // Grabbing a drag arrow (decided before the camera, so it doesn't orbit).
+        let grabbed = if response.drag_started_by(egui::PointerButton::Primary) { near_arrow(press_px, &self.arrows) } else { None };
+        let arrow_active = grabbed.is_some() || self.arrow_drag.is_some();
 
         let min = to_vec(rect.min);
         let size = Vec2::new(rect.width().max(1.0), rect.height().max(1.0));
@@ -3467,46 +3599,30 @@ impl OpenCad {
         {
             self.float = None;
         }
-        // --- arrow drag (extrude distance, fillet / chamfer size, revolve angle) ---
-        if let Some(h) = self.current_handle(&regions) {
-            // What the cursor at `px` means for this arrow: a distance along
-            // it, or the angle it has been swung to.
-            let sample = |px: Vec2| {
-                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
-                match h {
-                    Handle::Line { line, .. } => {
-                        closest_param_on_line(&ray, line.origin.as_vec3(), line.dir.as_vec3()).map(|s| s as f64)
-                    }
-                    Handle::Turn { turn, .. } => turn.angle_at(ray.origin.as_dvec3(), ray.dir.as_dvec3()),
-                }
-            };
-            let (value, target) = match h {
-                Handle::Line { value, target, .. } => (value, target),
-                Handle::Turn { value, .. } => (value, HandleTarget::RevolveAngle),
-            };
-            if grab_arrow {
-                if let Some(c) = press_px.and_then(sample) {
-                    self.arrow_drag = Some(c - value); // keep the grab point under the cursor
-                    self.arrow_turn = Some((c, c));
-                }
+        // --- arrow drag (extrude distance, fillet / chamfer size, revolve angle, pattern arrows) ---
+        let handles = self.current_handles(&regions);
+        if let Some(k) = grabbed.filter(|&k| k < handles.len()) {
+            if let Some(c) = press_px.and_then(|px| self.sample_handle(&handles[k], px, aspect, min, size)) {
+                self.arrow_drag = Some((k, c - handles[k].value())); // keep the grab point under the cursor
+                self.arrow_turn = Some((c, c));
             }
-            if let (Some(offset), Some(px)) = (self.arrow_drag, hover_px) {
-                if response.dragged_by(egui::PointerButton::Primary) {
-                    if let Some(c) = sample(px) {
-                        let mut v = match (h, self.arrow_turn) {
-                            (Handle::Turn { .. }, Some((acc, raw))) => {
-                                let acc = acc + handles::angle_step(raw, c);
-                                self.arrow_turn = Some((acc, c));
-                                acc - offset
-                            }
-                            _ => c - offset,
-                        };
-                        if self.grid_snap {
-                            let step = if matches!(h, Handle::Turn { .. }) { 1.0 } else { grid.step / 10.0 };
-                            v = (v / step).round() * step;
+        }
+        if let (Some((k, offset)), Some(px)) = (self.arrow_drag, hover_px) {
+            if let (Some(h), true) = (handles.get(k).copied(), response.dragged_by(egui::PointerButton::Primary)) {
+                if let Some(c) = self.sample_handle(&h, px, aspect, min, size) {
+                    let mut v = match (h, self.arrow_turn) {
+                        (Handle::Turn { .. }, Some((acc, raw))) => {
+                            let acc = acc + handles::angle_step(raw, c);
+                            self.arrow_turn = Some((acc, c));
+                            acc - offset
                         }
-                        self.set_handle_value(target, v);
+                        _ => c - offset,
+                    };
+                    if self.grid_snap {
+                        let step = if matches!(h, Handle::Turn { .. }) { 1.0 } else { grid.step / 10.0 };
+                        v = (v / step).round() * step;
                     }
+                    self.set_handle_value(h.target(), v);
                 }
             }
         }
@@ -3531,6 +3647,44 @@ impl OpenCad {
                 i.key_pressed(egui::Key::Z) && i.modifiers.command,
             )
         });
+
+        // --- pattern axis: click one of the axes in the view ---
+        self.copy_axis_hover = None;
+        if self.copy_dialog.as_ref().is_some_and(|d| d.picking_axis) {
+            self.ensure_model(Slot::Committed);
+            let reach = origin::size_for(self.camera.distance);
+            let mut found: Vec<(AxisChoice, Vec3, Vec3)> = model::WorldAxis::ALL
+                .into_iter()
+                .map(|a| (AxisChoice::World(a), Vec3::ZERO, a.dir().as_vec3() * reach))
+                .collect();
+            for (k, a) in self.model(Slot::Committed).axes.iter().enumerate() {
+                if let Some((o, d)) = a {
+                    found.push((AxisChoice::Custom(k), (*o - *d * reach as f64 * 1.5).as_vec3(), (*o + *d * reach as f64 * 1.5).as_vec3()));
+                }
+            }
+            if let Some(px) = hover_px {
+                self.copy_axis_hover = found
+                    .iter()
+                    .filter_map(|&(c, a, b)| {
+                        let d = dist_to_segment_px(px, view.project(a)?, view.project(b)?);
+                        (d < 9.0).then_some((c, d))
+                    })
+                    .min_by(|x, y| x.1.total_cmp(&y.1))
+                    .map(|(c, _)| c);
+            }
+            if let (true, Some(c), Some(d)) = (response.clicked(), self.copy_axis_hover, self.copy_dialog.as_mut()) {
+                match c {
+                    AxisChoice::World(a) => (d.axis, d.custom) = (a, None),
+                    AxisChoice::Custom(k) => d.custom = Some(k),
+                }
+                d.picking_axis = false;
+            }
+            if esc && !typing {
+                if let Some(d) = self.copy_dialog.as_mut() {
+                    d.picking_axis = false;
+                }
+            }
+        }
 
         // --- create sketch: pick an origin plane or a flat face ---
         self.face_hover = None;
@@ -3662,7 +3816,7 @@ impl OpenCad {
                     }
                 }
             }
-            if response.clicked() && !near_arrow(hover_px, self.arrow_screen) {
+            if response.clicked() && near_arrow(hover_px, &self.arrows).is_none() {
                 self.focus_distance();
                 if let (Some((s, ri)), Some((sketch, profiles))) = (hover_profile, self.profile_pick_mut()) {
                     if *sketch != Some(s) {
@@ -4175,7 +4329,7 @@ impl OpenCad {
                 }
                 Tool::SketchFillet | Tool::SketchChamfer => {
                     // Click a corner, then type the size (Enter applies).
-                    if response.clicked() && !near_arrow(hover_px, self.arrow_screen) {
+                    if response.clicked() && near_arrow(hover_px, &self.arrows).is_none() {
                         match hovered {
                             Some(Sel::Point(p)) => {
                                 self.corner_first = None;
@@ -4316,8 +4470,9 @@ impl OpenCad {
         let sketching = self.active.is_some();
         let origin_size = origin::size_for(self.camera.distance);
         // Create Sketch shows the whole origin, whatever the browser says.
-        let shown = if self.face_pick { origin::Shown::default() } else { self.origin_shown };
-        let show_origin = !sketching && (shown.all || self.face_pick);
+        let picking_axis = self.copy_dialog.as_ref().is_some_and(|d| d.picking_axis);
+        let shown = if self.face_pick || picking_axis { origin::Shown::default() } else { self.origin_shown };
+        let show_origin = !sketching && (shown.all || self.face_pick || picking_axis);
         let mut grid_segments: Vec<(Vec3, Vec3, [f32; 4])> = if sketching {
             sketch::grid_lines(&dplane, centre, grid, GRID_HALF_LINES)
                 .into_iter()
@@ -4512,6 +4667,28 @@ impl OpenCad {
             }
         }
 
+        // --- draw: the axis a pattern would turn about ---
+        if let Some(d) = self.copy_dialog.as_ref().filter(|d| d.picking_axis) {
+            let reach = origin_size;
+            let ends = match (self.copy_axis_hover, d.custom) {
+                (Some(AxisChoice::World(a)), _) => Some((Vec3::ZERO, a.dir().as_vec3() * reach)),
+                (Some(AxisChoice::Custom(k)), _) => self.model(Slot::Committed).axes.get(k).copied().flatten().map(|(o, dir)| {
+                    ((o - dir * reach as f64 * 1.5).as_vec3(), (o + dir * reach as f64 * 1.5).as_vec3())
+                }),
+                _ => None,
+            };
+            if let Some((a, b)) = ends {
+                view.line(a, b, Stroke::new(4.0, COL_HOVER));
+            }
+            painter.text(
+                rect.center_top() + egui::vec2(0.0, 14.0),
+                egui::Align2::CENTER_TOP,
+                "Click an axis to turn the pattern about   (Esc to cancel)",
+                egui::FontId::proportional(15.0),
+                Color32::from_gray(220),
+            );
+        }
+
         // --- draw: the edge a construction axis would go along ---
         if self.axis_pick {
             if let Some(h) = self.edge_hover {
@@ -4554,17 +4731,17 @@ impl OpenCad {
 
 
         // --- draw: the drag arrow ---
-        let prev_arrow = self.arrow_screen.take();
-        if let Some(h) = self.current_handle(&regions) {
+        let prev_arrows = std::mem::take(&mut self.arrows);
+        for (k, h) in self.current_handles(&regions).into_iter().enumerate() {
             let len = ARROW_PX * mm_per_px as f32;
             let (base, dir, value) = match h {
                 Handle::Line { line, value, .. } => (line.origin + line.dir * value, line.dir, value),
-                Handle::Turn { turn, value } => (turn.position(value), turn.direction(value), value),
+                Handle::Turn { turn, value, .. } => (turn.position(value), turn.direction(value), value),
             };
             let sign = if value < 0.0 { -1.0 } else { 1.0 };
             let (base, tip) = (base.as_vec3(), base.as_vec3() + dir.as_vec3() * (sign * len));
-            let hot = self.arrow_drag.is_some() || near_arrow(hover_px, prev_arrow);
-            self.arrow_screen = view.arrow3d(base, tip, if hot { COL_ARROW_HOT } else { COL_ARROW });
+            let hot = self.arrow_drag.is_some_and(|(d, _)| d == k) || near_arrow(hover_px, &prev_arrows) == Some(k);
+            self.arrows.push(view.arrow3d(base, tip, if hot { COL_ARROW_HOT } else { COL_ARROW }));
         }
 
         // --- draw: the drag-select rectangle ---
@@ -5192,18 +5369,29 @@ impl eframe::App for OpenCad {
         egui::Panel::left("browser").resizable(true).default_size(200.0).show(ui, |ui| self.browser(ui));
         if self.active.is_some() {
             egui::Panel::right("constraints").resizable(true).default_size(260.0).show(ui, |ui| self.constraints_panel(ui));
-        } else if self.dialog.is_some() {
-            egui::Panel::right("extrude").resizable(true).default_size(260.0).show(ui, |ui| self.extrude_panel(ui));
-        } else if self.edge_dialog.is_some() {
-            egui::Panel::right("edges").resizable(true).default_size(260.0).show(ui, |ui| self.edge_panel(ui));
-        } else if self.copy_dialog.is_some() {
-            egui::Panel::right("copy").resizable(true).default_size(260.0).show(ui, |ui| self.copy_panel(ui));
-        } else if self.revolve_dialog.is_some() {
-            egui::Panel::right("revolve").resizable(true).default_size(260.0).show(ui, |ui| self.revolve_panel(ui));
+        }
+        // Tool dialogs float over the view's right side, like Fusion's.
+        let float = |id: &'static str| {
+            egui::Window::new(id)
+                .title_bar(false)
+                .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 12.0))
+                .resizable(false)
+                .collapsible(false)
+                .default_width(240.0)
+        };
+        if self.dialog.is_some() && self.active.is_none() {
+            float("extrude").show(&ctx, |ui| self.extrude_panel(ui));
+        } else if self.edge_dialog.is_some() && self.active.is_none() {
+            float("edges").show(&ctx, |ui| self.edge_panel(ui));
+        } else if self.copy_dialog.is_some() && self.active.is_none() {
+            float("copy").show(&ctx, |ui| self.copy_panel(ui));
+        } else if self.revolve_dialog.is_some() && self.active.is_none() {
+            float("revolve").show(&ctx, |ui| self.revolve_panel(ui));
         }
         egui::Panel::bottom("timeline").show(ui, |ui| self.timeline_bar(ui));
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui));
         self.float_editor(&ctx);
+        self.copy_quantity_boxes(&ctx);
 
         if let Some(cmd) = self.cmd.take() {
             self.run_cmd(cmd, &ctx);

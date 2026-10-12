@@ -218,6 +218,9 @@ pub enum CopyKind {
         custom: Option<usize>,
         count: u32,
         angle: f64,
+        /// How much farther from the axis the copies sit than the original (mm).
+        #[serde(default)]
+        radial: f64,
     },
 }
 
@@ -226,7 +229,7 @@ pub enum CopyKind {
 pub enum Placement {
     Translate(DVec3),
     /// About an axis through the origin, in radians.
-    Rotate { origin: DVec3, axis: DVec3, radians: f64 },
+    Rotate { origin: DVec3, axis: DVec3, radians: f64, radial: f64 },
     /// In the plane through the origin with this normal.
     Reflect { normal: DVec3 },
 }
@@ -271,7 +274,7 @@ impl CopyKind {
                 }
                 Ok(out)
             }
-            CopyKind::Circular { axis, custom, count, angle } => {
+            CopyKind::Circular { axis, custom, count, angle, radial } => {
                 let count = count.clamp(1, MAX_COPIES);
                 if count < 2 {
                     return Ok(Vec::new());
@@ -282,7 +285,7 @@ impl CopyKind {
                 };
                 let full = angle.abs() >= 360.0 - 1e-9;
                 let step = if full { angle / count as f64 } else { angle / (count - 1) as f64 };
-                Ok((1..count).map(|i| Placement::Rotate { origin, axis: dir, radians: (step * i as f64).to_radians() }).collect())
+                Ok((1..count).map(|i| Placement::Rotate { origin, axis: dir, radians: (step * i as f64).to_radians(), radial }).collect())
             }
         }
     }

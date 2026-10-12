@@ -46,6 +46,10 @@ pub struct CopyDialog {
     pub custom: Option<usize>,
     pub count_round: u32,
     pub angle: f64,
+    /// Extra distance from the axis for the copies (mm).
+    pub radial: f64,
+    /// Waiting for a click on an axis in the 3D view.
+    pub picking_axis: bool,
 }
 
 impl CopyDialog {
@@ -65,6 +69,8 @@ impl CopyDialog {
             custom: None,
             count_round: 4,
             angle: 360.0,
+            radial: 0.0,
+            picking_axis: false,
         }
     }
 
@@ -77,8 +83,8 @@ impl CopyDialog {
             CopyKind::Rectangular { dir, count, spacing, dir2, count2, spacing2 } => {
                 (d.mode, d.dir, d.count, d.spacing, d.dir2, d.count2, d.spacing2) = (Mode::Rectangular, dir, count, spacing, dir2, count2, spacing2);
             }
-            CopyKind::Circular { axis, custom, count, angle } => {
-                (d.mode, d.axis, d.custom, d.count_round, d.angle) = (Mode::Circular, axis, custom, count, angle)
+            CopyKind::Circular { axis, custom, count, angle, radial } => {
+                (d.mode, d.axis, d.custom, d.count_round, d.angle, d.radial) = (Mode::Circular, axis, custom, count, angle, radial)
             }
         }
         d
@@ -95,7 +101,7 @@ impl CopyDialog {
                 count2: self.count2,
                 spacing2: self.spacing2,
             },
-            Mode::Circular => CopyKind::Circular { axis: self.axis, custom: self.custom, count: self.count_round, angle: self.angle },
+            Mode::Circular => CopyKind::Circular { axis: self.axis, custom: self.custom, count: self.count_round, angle: self.angle, radial: self.radial },
         }
     }
 
@@ -170,19 +176,21 @@ impl CopyDialog {
                 ui.weak("Distance is the gap from one copy to the next. Quantity counts the original.");
             }
             Mode::Circular => {
-                ui.horizontal_wrapped(|ui| {
+                // Click to select: press the button, then click an axis in the view.
+                ui.horizontal(|ui| {
                     ui.label("Axis");
-                    for a in WorldAxis::ALL {
-                        if ui.selectable_label(self.custom.is_none() && self.axis == a, a.name()).clicked() {
-                            (self.axis, self.custom) = (a, None);
-                        }
-                    }
-                    for (k, name) in axes.iter().enumerate() {
-                        if ui.selectable_label(self.custom == Some(k), name.as_str()).clicked() {
-                            self.custom = Some(k);
-                        }
+                    let name = match self.custom.and_then(|k| axes.get(k)) {
+                        Some(n) => n.clone(),
+                        None => format!("{} axis", self.axis.name()),
+                    };
+                    let text = if self.picking_axis { "Click an axis…".to_string() } else { name };
+                    if ui.selectable_label(self.picking_axis, text).clicked() {
+                        self.picking_axis = !self.picking_axis;
                     }
                 });
+                if self.picking_axis {
+                    ui.weak("Click X, Y or Z, or a construction axis, in the view.");
+                }
                 count_box(ui, &mut self.count_round);
                 ui.horizontal(|ui| {
                     ui.label("Angle");
@@ -191,7 +199,11 @@ impl CopyDialog {
                         self.angle = 360.0;
                     }
                 });
-                ui.weak("X, Y and Z go through the origin; a construction axis goes where it is. 360° spaces the copies evenly all the way round.");
+                ui.horizontal(|ui| {
+                    ui.label("Distance");
+                    ui.add(egui::DragValue::new(&mut self.radial).speed(0.5).suffix(" mm"));
+                });
+                ui.weak("Distance moves the copies out from the axis. Drag the blue arrows, or type.");
             }
         }
         if let (Some(e), false) = (error, self.bodies.is_empty()) {
@@ -230,10 +242,11 @@ mod tests {
         d.bodies = vec![id(0), id(2)];
         d.count_round = 6;
         d.angle = 180.0;
+        d.radial = 3.5;
         d.axis = WorldAxis::X;
         d.custom = Some(2);
         let f = d.feature("Circular Pattern1".into()).unwrap();
-        assert_eq!(f.kind, CopyKind::Circular { axis: WorldAxis::X, custom: Some(2), count: 6, angle: 180.0 });
+        assert_eq!(f.kind, CopyKind::Circular { axis: WorldAxis::X, custom: Some(2), count: 6, angle: 180.0, radial: 3.5 });
         assert_eq!(CopyDialog::from_feature(3, &f).feature(f.name.clone()), Some(f.clone()));
         assert_eq!(CopyDialog::from_feature(3, &f).editing, Some(3));
 
