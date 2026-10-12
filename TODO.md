@@ -4,9 +4,6 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Next
 
-7. **Sketch Mirror**, then **solid Mirror** and **Rectangular / Circular
-   Pattern** (bodies and features).
-
 8. **Project geometry** into a face sketch (body edges → construction lines).
 
 9. **Sketch Extend / Offset**, then **Slot**, **Spline**. (Trim done for lines; trimming circles/arcs themselves not yet.)
@@ -31,6 +28,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Sketch Mirror (select geometry, press Mirror, click the line; copies keep joints and get Equal constraints; `pattern.rs`). Solid Mirror (origin planes), Rectangular Pattern (two directions) and Circular Pattern (axis through the origin) as timeline features (`CopyFeature`, `Feature::Copy`, new bodies, dialog in `copy_dialog.rs`, exact kernel tests). Not yet: sketch patterns, mirroring across a face, patterning features instead of bodies. Also: Origin folder in the browser, depth-tested origin planes, Finish Sketch in the right-click menu, extrude toward the body = Cut.
 - Camera glides (1 s) to face a new sketch's plane; ribbon scroll carries on after a flick (`inertia.rs`, slow drags don't glide); right-click a flat body face → Create Sketch; body face beats a coplanar origin plane; planes hidden where a body covers them; origin hides when the first body appears (Create Sketch / browser box show it); extrude defaults to New Body unless it touches an existing body (`model::prism_touches`). FEATURES.md ticked for what exists, decisions logged.
 - Origin planes are selectable (click) with a right-click menu → Create Sketch; ribbon scrolls sideways; body double-click rename, per-body default colours + colour picker (right-click → Color…, saved as `body_colors`); timeline shows feature icons underlined in the colour of the body they worked on (`Model.touched`); Cut aims into the body automatically; sketch drag-select (left→right = inside, right→left = touching, Shift adds) and a right-click menu (Delete, Construction, driven toggle).
 - Timeline rollback marker (Fusion's): drag the bar (or ⏮ ◀ ▶ ⏭) back along the timeline; later features stay but aren't built and are greyed (click one to roll forward to it). New features insert at the marker. Saved with the file (`ViewState.marker`).

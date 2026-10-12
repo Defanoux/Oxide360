@@ -20,6 +20,8 @@ pub enum Icon {
     Construction,
     Trim,
     Mirror,
+    RectPattern,
+    CircPattern,
     Polygon,
     Select,
     Line,
@@ -193,6 +195,29 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             line((0.88, 0.7), (0.6, 0.7), Stroke::new(thin.width * 1.2, ink));
             line((0.6, 0.7), (0.6, 0.3), Stroke::new(thin.width * 1.2, ink));
             line((0.6, 0.3), (0.88, 0.7), Stroke::new(thin.width * 1.2, ink));
+        }
+        Icon::RectPattern => {
+            // A grid of small squares, the first one the original.
+            for r in 0..2 {
+                for c in 0..3 {
+                    let (x, y) = (0.12 + 0.27 * c as f32, 0.2 + 0.36 * r as f32);
+                    let col = if r == 0 && c == 0 { orange } else { ink };
+                    for (a, b) in [((x, y), (x + 0.18, y)), ((x + 0.18, y), (x + 0.18, y + 0.24)), ((x + 0.18, y + 0.24), (x, y + 0.24)), ((x, y + 0.24), (x, y))] {
+                        line(a, b, Stroke::new(thin.width * 1.2, col));
+                    }
+                }
+            }
+        }
+        Icon::CircPattern => {
+            // Small squares round a ring.
+            for k in 0..5 {
+                let a = std::f32::consts::TAU * k as f32 / 5.0 - 1.2;
+                let (cx, cy) = (0.5 + 0.32 * a.cos(), 0.5 + 0.32 * a.sin());
+                let col = if k == 0 { orange } else { ink };
+                for (p, q) in [((-1.0, -1.0), (1.0, -1.0)), ((1.0, -1.0), (1.0, 1.0)), ((1.0, 1.0), (-1.0, 1.0)), ((-1.0, 1.0), (-1.0, -1.0))] {
+                    line((cx + p.0 * 0.07, cy + p.1 * 0.07), (cx + q.0 * 0.07, cy + q.1 * 0.07), Stroke::new(thin.width * 1.2, col));
+                }
+            }
         }
         Icon::Construction => {
             // A dashed line with its end dots.

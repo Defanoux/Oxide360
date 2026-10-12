@@ -954,6 +954,24 @@ impl Shape {
         })
     }
 
+    /// Create a rotated copy about an axis through `origin`.
+    #[must_use]
+    pub fn rotated_about(&self, origin: DVec3, axis: DVec3, angle: f64) -> Self {
+        self.with_transform(|trsf| {
+            let axis_1 = make_axis_1(origin, axis);
+            trsf.SetRotation(&axis_1, angle);
+        })
+    }
+
+    /// Create a copy reflected in the plane through `origin` with normal `normal`.
+    #[must_use]
+    pub fn mirrored_in_plane(&self, origin: DVec3, normal: DVec3) -> Self {
+        self.with_transform(|trsf| {
+            let plane = make_axis_2(origin, normal);
+            trsf.set_mirror_plane(&plane);
+        })
+    }
+
     /// Create a mirrored copy of this shape about an axis.
     #[must_use]
     pub fn mirrored(&self, origin: DVec3, dir: DVec3) -> Self {

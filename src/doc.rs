@@ -4,7 +4,7 @@
 //! index and number so a damaged or hand-edited file gives a clear error
 //! instead of crashing the app.
 
-use crate::model::{EdgeFeature, Extrude, Revolve};
+use crate::model::{CopyFeature, EdgeFeature, Extrude, MAX_COPIES, Revolve};
 use crate::sketch::{Constraint, Entity, Sketch};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -21,6 +21,8 @@ pub enum Feature {
     /// A fillet or chamfer (index into `edge_features`).
     Edge(usize),
     Revolve(usize),
+    /// A mirror or pattern (index into `copies`).
+    Copy(usize),
 }
 
 /// Put `f` into the timeline at the rollback marker (the end when there is
@@ -53,6 +55,16 @@ pub struct BodyId {
 impl BodyId {
     /// After extrude (`revolve` false) or revolve number `k` was deleted:
     /// bodies it made are gone (None), later ones renumber.
+    /// After mirror/pattern number `k` was deleted: the copies it made are
+    /// gone, later features renumber.
+    pub fn after_copy_delete(self, k: usize) -> Option<BodyId> {
+        match self.feature {
+            Feature::Copy(j) if j == k => None,
+            Feature::Copy(j) if j > k => Some(BodyId { feature: Feature::Copy(j - 1), piece: self.piece }),
+            _ => Some(self),
+        }
+    }
+
     pub fn after_delete(self, revolve: bool, k: usize) -> Option<BodyId> {
         let feature = match (self.feature, revolve) {
             (Feature::Extrude(j), false) | (Feature::Revolve(j), true) if j == k => return None,
@@ -73,6 +85,9 @@ pub struct Document {
     pub edge_features: Vec<EdgeFeature>,
     #[serde(default)]
     pub revolves: Vec<Revolve>,
+    /// Mirrors and patterns. Older files have none.
+    #[serde(default)]
+    pub copies: Vec<CopyFeature>,
     pub timeline: Vec<Feature>,
     /// What's shown and where Home goes. Saved with the file, but never part
     /// of undo or the "unsaved changes" test (see `ViewState`'s equality).
@@ -231,6 +246,19 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             return Err(format!("{} (#{k}): invalid sketch reference or angle", r.name));
         }
     }
+    for c in &doc.copies {
+        use crate::model::CopyKind::*;
+        let ok = match c.kind {
+            Mirror(_) => true,
+            Rectangular { count, spacing, count2, spacing2, .. } => {
+                (1..=MAX_COPIES).contains(&count) && (1..=MAX_COPIES).contains(&count2) && spacing.is_finite() && spacing2.is_finite()
+            }
+            Circular { count, angle, .. } => (1..=MAX_COPIES).contains(&count) && angle.is_finite(),
+        };
+        if !ok {
+            return Err(format!("{}: invalid count, spacing or angle", c.name));
+        }
+    }
     for f in &doc.edge_features {
         let ok = f.size.is_finite()
             && f.size > 0.0
@@ -244,19 +272,21 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     let mut seen_e = vec![false; doc.extrudes.len()];
     let mut seen_f = vec![false; doc.edge_features.len()];
     let mut seen_r = vec![false; doc.revolves.len()];
+    let mut seen_c = vec![false; doc.copies.len()];
     for f in &doc.timeline {
         let slot = match *f {
             Feature::Sketch(i) => seen_s.get_mut(i),
             Feature::Extrude(i) => seen_e.get_mut(i),
             Feature::Edge(i) => seen_f.get_mut(i),
             Feature::Revolve(i) => seen_r.get_mut(i),
+            Feature::Copy(i) => seen_c.get_mut(i),
         };
         match slot {
             Some(s) if !*s => *s = true,
             _ => return Err(format!("timeline entry {f:?} is invalid or repeated")),
         }
     }
-    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).any(|s| !s) {
+    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).any(|s| !s) {
         return Err("timeline is missing a feature".into());
     }
     Ok(())
@@ -369,6 +399,7 @@ mod tests {
                 }],
             }],
             revolves: Vec::new(),
+            copies: Vec::new(),
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],
             view: ViewState::default(),
             body_names: Vec::new(),
@@ -436,6 +467,37 @@ mod tests {
         let text = to_json(&doc);
         assert!(text.contains("\"format\": \"opencad\"") && text.contains("\"units\": \"mm\""));
         assert_eq!(from_json(&text).unwrap(), doc, "every f64 survives exactly");
+    }
+
+    #[test]
+    fn mirrors_and_patterns_round_trip_and_are_checked() {
+        use crate::model::{CopyKind, WorldAxis};
+        let mut doc = sample();
+        let src = BodyId { feature: Feature::Extrude(0), piece: 0 };
+        doc.copies.push(CopyFeature { name: "Mirror1".into(), bodies: vec![src], kind: CopyKind::Mirror(OriginPlane::YZ) });
+        doc.copies.push(CopyFeature { name: "Circular Pattern2".into(), bodies: vec![src], kind: CopyKind::Circular { axis: WorldAxis::Z, count: 6, angle: 360.0 } });
+        doc.timeline.extend([Feature::Copy(0), Feature::Copy(1)]);
+        assert_eq!(from_json(&to_json(&doc)).unwrap(), doc);
+        assert!(validate(&doc).is_ok());
+        let mut bad = doc.clone();
+        bad.copies[1].kind = CopyKind::Circular { axis: WorldAxis::Z, count: 0, angle: 360.0 };
+        assert!(validate(&bad).is_err(), "zero copies");
+        let mut missing = doc.clone();
+        missing.timeline.pop();
+        assert!(validate(&missing).is_err(), "timeline must list every copy");
+        // Older files have no copies at all.
+        let old = to_json(&sample()).replace("\"copies\": [],", "");
+        assert!(from_json(&old).unwrap().copies.is_empty());
+    }
+
+    #[test]
+    fn deleting_a_pattern_renumbers_and_drops_its_bodies() {
+        let id = |k: usize| BodyId { feature: Feature::Copy(k), piece: 2 };
+        assert_eq!(id(0).after_copy_delete(0), None);
+        assert_eq!(id(3).after_copy_delete(1), Some(id(2)));
+        assert_eq!(id(0).after_copy_delete(1), Some(id(0)));
+        let ex = BodyId { feature: Feature::Extrude(4), piece: 0 };
+        assert_eq!(ex.after_copy_delete(0), Some(ex), "other kinds untouched");
     }
 
     #[test]

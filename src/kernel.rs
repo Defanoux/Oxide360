@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{CopyFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
 use glam::{DQuat, DVec2, DVec3, Vec3};
@@ -57,6 +57,8 @@ pub struct Model {
     pub edge_errors: Vec<Option<String>>,
     /// One entry per revolve.
     pub revolve_errors: Vec<Option<String>>,
+    /// One entry per mirror / pattern.
+    pub copy_errors: Vec<Option<String>>,
     /// Far-end faces of the extrudes/revolves, to tag what's picked there.
     pub caps: Vec<Cap>,
     /// For each extrude / revolve / fillet that was built: the body it made or
@@ -763,6 +765,7 @@ fn resolve_face(shapes: &[&Shape], f: &FacePlane, anchor: DVec2) -> Option<FaceP
 
 /// Evaluate the timeline. A feature that fails is skipped (with its error
 /// recorded) and the rest still build — like a red feature in Fusion.
+#[cfg(test)]
 pub fn build(
     sketches: &[Sketch],
     extrudes: &[Extrude],
@@ -770,6 +773,50 @@ pub fn build(
     edge_features: &[EdgeFeature],
     timeline: &[Feature],
 ) -> Model {
+    build_with(sketches, extrudes, revolves, edge_features, &[], timeline)
+}
+
+/// Copy the picked bodies once per placement (mirror or pattern). The copies
+/// are new bodies; the originals stay.
+fn apply_copy(bodies: Tagged, cf: &CopyFeature, k: usize) -> Result<(Tagged, Option<BodyId>), String> {
+    let sources: Vec<usize> = (0..bodies.len()).filter(|&i| cf.bodies.contains(&bodies[i].1)).collect();
+    if sources.is_empty() {
+        return Err("the bodies it copies are gone — edit it and pick again".into());
+    }
+    let placements = cf.kind.placements();
+    if placements.is_empty() {
+        return Err("it makes no copies — raise the quantity".into());
+    }
+    let mut made: Tagged = Vec::new();
+    let mut piece = 0;
+    for p in placements {
+        for &i in &sources {
+            let src = &bodies[i].0;
+            let copy = match p {
+                Placement::Translate(t) => src.translated(kv(t)),
+                Placement::Rotate { axis, radians } => src.rotated_about(kv(DVec3::ZERO), kv(axis), radians),
+                Placement::Reflect { normal } => src.mirrored_in_plane(kv(DVec3::ZERO), kv(normal)),
+            };
+            let id = BodyId { feature: Feature::Copy(k), piece };
+            piece += 1;
+            // A reflection can leave a solid inside-out; the volume tells.
+            let copy = if copy.volume() < 0.0 { return Err("the kernel couldn't mirror this body".into()) } else { copy };
+            made.extend(copy.solids().into_iter().map(|s| (s, id)));
+        }
+    }
+    let first = made.first().map(|(_, id)| *id);
+    Ok((uniquify(bodies.into_iter().chain(made).collect()), first))
+}
+
+pub fn build_with(
+    sketches: &[Sketch],
+    extrudes: &[Extrude],
+    revolves: &[Revolve],
+    edge_features: &[EdgeFeature],
+    copies: &[CopyFeature],
+    timeline: &[Feature],
+) -> Model {
+    let mut copy_errors: Vec<Option<String>> = vec![None; copies.len()];
     let mut shapes: Tagged = Vec::new();
     let mut errors: Vec<Option<String>> = vec![None; extrudes.len()];
     let mut edge_errors: Vec<Option<String>> = vec![None; edge_features.len()];
@@ -832,6 +879,14 @@ pub fn build(
                 }));
                 (r, &mut revolve_errors[k])
             }
+            Feature::Copy(k) => {
+                let Some(cf) = copies.get(k) else {
+                    shapes = current;
+                    continue;
+                };
+                let r = catch_unwind(AssertUnwindSafe(|| apply_copy(current, cf, k)));
+                (r, &mut copy_errors[k])
+            }
             Feature::Edge(k) => {
                 let Some(ef) = edge_features.get(k) else {
                     shapes = current;
@@ -869,7 +924,7 @@ pub fn build(
         })
         .collect();
     let caps = caps_of(&extrude_ends, &revolve_ends);
-    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, caps, touched: touched_by }
+    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, caps, touched: touched_by }
 }
 
 /// Exact STEP export of all bodies (true planes, cylinders, arcs).
@@ -934,6 +989,80 @@ mod tests {
             }
         }
         count.iter().all(|(&(a, b), &c)| c == 1 && count.get(&(b, a)) == Some(&1))
+    }
+
+
+    /// A 4×3×5 box (volume 60) standing at x 2..6, y 0..3, plus a copy feature.
+    fn copies_of_a_box(kind: crate::model::CopyKind) -> Model {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk, 2.0, 0.0, 6.0, 3.0);
+        let c = CopyFeature { name: "C".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind };
+        let mut t = timeline(1, 1);
+        t.push(Feature::Copy(0));
+        build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &t)
+    }
+
+    /// (OCCT pads bounding boxes by 1e-7.)
+    fn box_of(b: &Body) -> (DVec3, DVec3) {
+        let bb = opencascade::bounding_box::aabb(&b.shape);
+        (DVec3::new(bb.min().x, bb.min().y, bb.min().z), DVec3::new(bb.max().x, bb.max().y, bb.max().z))
+    }
+
+    #[test]
+    fn mirror_reflects_across_an_origin_plane_with_the_same_volume() {
+        // YZ plane (x = 0): the box lands at x −6..−2.
+        let m = copies_of_a_box(crate::model::CopyKind::Mirror(OriginPlane::YZ));
+        assert_eq!(m.copy_errors, vec![None]);
+        assert_eq!(m.bodies.len(), 2);
+        assert!(close(total(&m), 120.0), "{}", total(&m));
+        let (lo, hi) = box_of(&m.bodies[1]);
+        assert!((lo - DVec3::new(-6.0, 0.0, 0.0)).length() < 1e-6 && (hi - DVec3::new(-2.0, 3.0, 5.0)).length() < 1e-6, "{lo:?} {hi:?}");
+        assert!(m.bodies.iter().all(|b| closed(&b.mesh)));
+        assert_eq!(m.bodies[1].id, BodyId { feature: Feature::Copy(0), piece: 0 });
+        assert_eq!(m.touched.get(&Feature::Copy(0)), Some(&m.bodies[1].id));
+    }
+
+    #[test]
+    fn rectangular_pattern_makes_a_grid_of_bodies() {
+        use crate::model::{CopyKind, WorldAxis};
+        let m = copies_of_a_box(CopyKind::Rectangular { dir: WorldAxis::X, count: 3, spacing: 10.0, dir2: WorldAxis::Y, count2: 2, spacing2: 7.0 });
+        assert_eq!(m.copy_errors, vec![None]);
+        assert_eq!(m.bodies.len(), 6);
+        assert!(close(total(&m), 360.0));
+        let mut spots: Vec<(i64, i64)> = m.bodies.iter().map(|b| { let (lo, _) = box_of(b); (lo.x.round() as i64, lo.y.round() as i64) }).collect();
+        spots.sort();
+        assert_eq!(spots, vec![(2, 0), (2, 7), (12, 0), (12, 7), (22, 0), (22, 7)]);
+    }
+
+    #[test]
+    fn circular_pattern_spaces_copies_round_the_axis() {
+        use crate::model::{CopyKind, WorldAxis};
+        // Four copies over 360°: 90° apart. The box (x 2..6, y 0..3) rotated 90° about Z lands at x −3..0, y 2..6.
+        let m = copies_of_a_box(CopyKind::Circular { axis: WorldAxis::Z, count: 4, angle: 360.0 });
+        assert_eq!(m.bodies.len(), 4);
+        assert!(close(total(&m), 240.0));
+        let (lo, hi) = box_of(&m.bodies[1]);
+        assert!((lo - DVec3::new(-3.0, 2.0, 0.0)).length() < 1e-6 && (hi - DVec3::new(0.0, 6.0, 5.0)).length() < 1e-6, "{lo:?} {hi:?}");
+        // Over 180° the last copy sits at the end of the angle: three copies at 0°, 90°, 180°.
+        let m = copies_of_a_box(CopyKind::Circular { axis: WorldAxis::Z, count: 3, angle: 180.0 });
+        let (lo, hi) = box_of(&m.bodies[2]);
+        assert!((lo - DVec3::new(-6.0, -3.0, 0.0)).length() < 1e-6 && (hi - DVec3::new(-2.0, 0.0, 5.0)).length() < 1e-6, "{lo:?} {hi:?}");
+    }
+
+    #[test]
+    fn copies_with_nothing_to_copy_are_errors_not_crashes() {
+        use crate::model::{CopyKind, WorldAxis};
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk, 2.0, 0.0, 6.0, 3.0);
+        let gone = BodyId { feature: Feature::Extrude(7), piece: 0 };
+        let c = CopyFeature { name: "C".into(), bodies: vec![gone], kind: CopyKind::Mirror(OriginPlane::XY) };
+        let one = CopyFeature { name: "C".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: CopyKind::Circular { axis: WorldAxis::Z, count: 1, angle: 360.0 } };
+        let mut t = timeline(1, 1);
+        t.extend([Feature::Copy(0), Feature::Copy(1)]);
+        let m = build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c, one], &t);
+        assert!(m.copy_errors[0].as_deref().is_some_and(|e| e.contains("gone")));
+        assert!(m.copy_errors[1].as_deref().is_some_and(|e| e.contains("no copies")));
+        assert_eq!(m.bodies.len(), 1, "the original is untouched");
     }
 
     #[test]

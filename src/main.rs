@@ -19,6 +19,7 @@
 
 mod camera;
 mod colors;
+mod copy_dialog;
 mod doc;
 mod export;
 mod gpu;
@@ -47,7 +48,8 @@ use std::path::PathBuf;
 use eframe::egui;
 use egui::{Color32, Stroke};
 use glam::{DVec2, Vec2, Vec3};
-use model::{EdgeFeature, EdgeKind, EdgeRef, Extrude, Mesh, Operation, Revolve, RevolveAxis};
+use copy_dialog::{CopyDialog, Mode as CopyMode};
+use model::{CopyFeature, EdgeFeature, EdgeKind, EdgeRef, Extrude, Mesh, Operation, Revolve, RevolveAxis};
 use icons::Icon;
 use profile::{Region, find_regions};
 use sketch::{
@@ -353,6 +355,7 @@ struct KernelCache {
     extrudes: Vec<Extrude>,
     revolves: Vec<Revolve>,
     edge_features: Vec<EdgeFeature>,
+    copies: Vec<CopyFeature>,
     timeline: Vec<Feature>,
     model: kernel::Model,
 }
@@ -390,6 +393,9 @@ struct OpenCad {
     edge_dialog: Option<EdgeDialog>,
     revolves: Vec<Revolve>,
     revolve_dialog: Option<RevolveDialog>,
+    copies: Vec<CopyFeature>,                // mirrors and patterns
+    copy_errors: Vec<Option<String>>,
+    copy_dialog: Option<CopyDialog>,
     revolve_errors: Vec<Option<String>>,
     axis_hover: Option<(usize, usize)>, // sketch, line entity under the mouse (revolve axis picking)
     edge_hover: Option<EdgeRef>,
@@ -475,6 +481,9 @@ impl Default for OpenCad {
             edge_dialog: None,
             revolves: Vec::new(),
             revolve_dialog: None,
+            copies: Vec::new(),
+            copy_errors: Vec::new(),
+            copy_dialog: None,
             revolve_errors: Vec::new(),
             axis_hover: None,
             edge_hover: None,
@@ -536,6 +545,7 @@ impl OpenCad {
             extrudes: self.extrudes.clone(),
             edge_features: self.edge_features.clone(),
             revolves: self.revolves.clone(),
+            copies: self.copies.clone(),
             timeline: self.timeline.clone(),
             view: self.view_state(),
             body_names: self.sorted_body_names(),
@@ -596,7 +606,7 @@ impl OpenCad {
         let rank = self
             .timeline
             .iter()
-            .filter(|f| matches!(f, Feature::Extrude(_) | Feature::Revolve(_)))
+            .filter(|f| matches!(f, Feature::Extrude(_) | Feature::Revolve(_) | Feature::Copy(_)))
             .position(|f| *f == id.feature)
             .unwrap_or(0)
             + id.piece;
@@ -613,6 +623,7 @@ impl OpenCad {
         let base = match id.feature {
             Feature::Extrude(k) => self.extrudes.get(k).map(|e| e.name.clone()),
             Feature::Revolve(k) => self.revolves.get(k).map(|r| r.name.clone()),
+            Feature::Copy(k) => self.copies.get(k).map(|c| c.name.clone()),
             _ => None,
         }
         .unwrap_or_else(|| "Body".into());
@@ -624,6 +635,20 @@ impl OpenCad {
         self.hidden_bodies = self.hidden_bodies.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
         self.body_names = self.body_names.drain().filter_map(|(id, n)| Some((id.after_delete(revolve, k)?, n))).collect();
         self.body_colors = self.body_colors.drain().filter_map(|(id, c)| Some((id.after_delete(revolve, k)?, c))).collect();
+        for c in &mut self.copies {
+            c.bodies = c.bodies.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
+        }
+        self.renaming = None;
+    }
+
+    /// A mirror / pattern was deleted: its copies are gone, later ones renumber.
+    fn shift_copy_keys(&mut self, k: usize) {
+        self.hidden_bodies = self.hidden_bodies.iter().filter_map(|id| id.after_copy_delete(k)).collect();
+        self.body_names = self.body_names.drain().filter_map(|(id, n)| Some((id.after_copy_delete(k)?, n))).collect();
+        self.body_colors = self.body_colors.drain().filter_map(|(id, c)| Some((id.after_copy_delete(k)?, c))).collect();
+        for c in &mut self.copies {
+            c.bodies = c.bodies.iter().filter_map(|id| id.after_copy_delete(k)).collect();
+        }
         self.renaming = None;
     }
 
@@ -670,6 +695,7 @@ impl OpenCad {
             || self.extrudes != self.saved.extrudes
             || self.edge_features != self.saved.edge_features
             || self.revolves != self.saved.revolves
+            || self.copies != self.saved.copies
             || self.timeline != self.saved.timeline
     }
 
@@ -697,6 +723,8 @@ impl OpenCad {
         self.extrudes = doc.extrudes.clone();
         self.edge_features = doc.edge_features.clone();
         self.revolves = doc.revolves.clone();
+        self.copies = doc.copies.clone();
+        self.copy_dialog = None;
         self.revolve_dialog = None;
         self.timeline = doc.timeline.clone();
         self.apply_view(&doc.view);
@@ -751,6 +779,8 @@ impl OpenCad {
         self.extrudes = doc.extrudes;
         self.edge_features = doc.edge_features;
         self.revolves = doc.revolves;
+        self.copies = doc.copies;
+        self.copy_dialog = None;
         self.timeline = doc.timeline;
         self.body_names = doc.body_names.into_iter().collect();
         self.body_colors = doc.body_colors.into_iter().collect();
@@ -843,9 +873,9 @@ impl OpenCad {
     }
 
     /// The feature lists a slot is built from.
-    fn inputs(&self, slot: Slot) -> (Vec<Extrude>, Vec<Revolve>, Vec<EdgeFeature>, Vec<Feature>) {
-        let (mut extrudes, mut revolves, mut edge_features, mut timeline) =
-            (self.extrudes.clone(), self.revolves.clone(), self.edge_features.clone(), self.timeline.clone());
+    fn inputs(&self, slot: Slot) -> (Vec<Extrude>, Vec<Revolve>, Vec<EdgeFeature>, Vec<CopyFeature>, Vec<Feature>) {
+        let (mut extrudes, mut revolves, mut edge_features, mut copies, mut timeline) =
+            (self.extrudes.clone(), self.revolves.clone(), self.edge_features.clone(), self.copies.clone(), self.timeline.clone());
         timeline.truncate(self.applied()); // features after the marker aren't built
         match slot {
             Slot::Committed => {}
@@ -868,6 +898,15 @@ impl OpenCad {
                         }
                     }
                 }
+                if let (Some(c), Some(d)) = (self.dialog_copy(), self.copy_dialog.as_ref()) {
+                    match d.editing {
+                        Some(k) => copies[k] = c,
+                        None => {
+                            copies.push(c);
+                            timeline.push(Feature::Copy(copies.len() - 1));
+                        }
+                    }
+                }
                 if let (Some(f), Some(d)) = (self.dialog_edge_feature(), self.edge_dialog.as_ref()) {
                     match d.editing {
                         Some(k) => edge_features[k] = f,
@@ -887,25 +926,26 @@ impl OpenCad {
                 }
             }
         }
-        (extrudes, revolves, edge_features, timeline)
+        (extrudes, revolves, edge_features, copies, timeline)
     }
 
     /// Make sure the kernel model for `slot` matches the current design.
     /// Rebuilds only when its inputs changed.
     fn ensure_model(&mut self, slot: Slot) {
-        let (extrudes, revolves, edge_features, timeline) = self.inputs(slot);
+        let (extrudes, revolves, edge_features, copies, timeline) = self.inputs(slot);
         let fresh = self.caches[slot as usize].as_ref().is_some_and(|c| {
             c.sketches.len() == self.sketches.len()
                 && c.sketches.iter().zip(&self.sketches).all(|(a, b)| a.same_shape(b))
                 && c.extrudes == extrudes
                 && c.revolves == revolves
                 && c.edge_features == edge_features
+                && c.copies == copies
                 && c.timeline == timeline
         });
         if !fresh {
-            let model = kernel::build(&self.sketches, &extrudes, &revolves, &edge_features, &timeline);
+            let model = kernel::build_with(&self.sketches, &extrudes, &revolves, &edge_features, &copies, &timeline);
             self.caches[slot as usize] =
-                Some(KernelCache { sketches: self.sketches.clone(), extrudes, revolves, edge_features, timeline, model });
+                Some(KernelCache { sketches: self.sketches.clone(), extrudes, revolves, edge_features, copies, timeline, model });
         }
     }
 
@@ -1134,6 +1174,7 @@ impl OpenCad {
 
     fn enter_sketch(&mut self, i: usize) {
         self.revolve_dialog = None;
+        self.copy_dialog = None;
         self.dim_selection.clear();
         self.face_pick = false;
         self.face_hover = None;
@@ -1880,6 +1921,82 @@ impl OpenCad {
         self.cancel_revolve();
     }
 
+    fn open_copy(&mut self, mode: CopyMode, editing: Option<usize>) {
+        self.cancel_extrude();
+        self.cancel_revolve();
+        self.cancel_edge_dialog();
+        self.message = None;
+        self.ensure_model(Slot::Committed);
+        let d = match editing.and_then(|k| self.copies.get(k)) {
+            Some(c) => CopyDialog::from_feature(editing.unwrap_or(0), c),
+            None => {
+                // With a single body there's nothing to choose.
+                let ids: Vec<BodyId> = self.model(Slot::Committed).bodies.iter().map(|b| b.id).collect();
+                CopyDialog::new(mode, if ids.len() == 1 { ids } else { Vec::new() })
+            }
+        };
+        self.copy_dialog = Some(d);
+    }
+
+    fn dialog_copy(&self) -> Option<CopyFeature> {
+        let d = self.copy_dialog.as_ref()?;
+        let name = match d.editing {
+            Some(k) => self.copies[k].name.clone(),
+            None => format!("{}{}", d.mode.title(), self.copies.len() + 1),
+        };
+        d.feature(name)
+    }
+
+    fn commit_copy(&mut self) {
+        let Some(c) = self.dialog_copy() else {
+            self.message = Some("Pick at least one body".into());
+            return;
+        };
+        if let Some(e) = self.dialog_error.clone() {
+            self.message = Some(format!("Can't do this: {e}"));
+            return;
+        }
+        match self.copy_dialog.as_ref().and_then(|d| d.editing) {
+            Some(k) => self.copies[k] = c,
+            None => {
+                self.copies.push(c);
+                self.timeline_insert(Feature::Copy(self.copies.len() - 1));
+            }
+        }
+        self.cancel_copy();
+    }
+
+    fn cancel_copy(&mut self) {
+        self.copy_dialog = None;
+        self.message = None;
+    }
+
+    fn delete_copy(&mut self, k: usize) {
+        self.shift_copy_keys(k);
+        self.copies.remove(k);
+        self.timeline_remove(Feature::Copy(k));
+        for f in &mut self.timeline {
+            if let Feature::Copy(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+        self.cancel_copy();
+    }
+
+    /// Right panel while mirroring / patterning.
+    fn copy_panel(&mut self, ui: &mut egui::Ui) {
+        let bodies: Vec<(BodyId, String)> = self.body_ids.iter().map(|&id| (id, self.body_name(id))).collect();
+        let (error, message) = (self.dialog_error.clone(), self.message.clone());
+        let Some(d) = self.copy_dialog.as_mut() else { return };
+        match d.panel(ui, &bodies, error.as_deref(), message.as_deref()) {
+            copy_dialog::Action::Ok => self.commit_copy(),
+            copy_dialog::Action::Cancel => self.cancel_copy(),
+            copy_dialog::Action::None => {}
+        }
+    }
+
     fn set_angle_text(&mut self) {
         if let (Some(fe), Some(d)) = (self.float.as_mut(), self.revolve_dialog.as_ref()) {
             if fe.target == EditTarget::RevolveAngle {
@@ -2272,6 +2389,18 @@ impl OpenCad {
                         .clicked()
                     {
                         self.open_revolve(None);
+                    }
+                });
+                let copy_mode = self.copy_dialog.as_ref().map(|d| d.mode);
+                group(ui, "PATTERN", |ui| {
+                    for (mode, icon, tip) in [
+                        (CopyMode::Mirror, Icon::Mirror, "Mirror: copy bodies across an origin plane"),
+                        (CopyMode::Rectangular, Icon::RectPattern, "Rectangular Pattern: copies in a grid"),
+                        (CopyMode::Circular, Icon::CircPattern, "Circular Pattern: copies round an axis"),
+                    ] {
+                        if icons::button(ui, icon, tip, has_bodies, copy_mode == Some(mode)).clicked() {
+                            self.open_copy(mode, None);
+                        }
                     }
                 });
                 let edge_kind = self.edge_dialog.as_ref().map(|d| d.kind);
@@ -2802,17 +2931,27 @@ impl OpenCad {
                         self.revolves[k].name.clone(),
                         self.revolve_dialog.as_ref().is_some_and(|d| d.editing == Some(k)),
                     ),
+                    Feature::Copy(k) => (
+                        self.copies[k].name.clone(),
+                        self.copy_dialog.as_ref().is_some_and(|d| d.editing == Some(k)),
+                    ),
                 };
                 let error = match *f {
                     Feature::Extrude(k) => self.feature_errors.get(k).cloned().flatten(),
                     Feature::Edge(k) => self.edge_feature_errors.get(k).cloned().flatten(),
                     Feature::Revolve(k) => self.revolve_errors.get(k).cloned().flatten(),
+                    Feature::Copy(k) => self.copy_errors.get(k).cloned().flatten(),
                     Feature::Sketch(k) => self.sketch_errors.get(k).cloned().flatten(),
                 };
                 let icon = match *f {
                     Feature::Sketch(_) => Icon::Sketch,
                     Feature::Extrude(_) => Icon::Extrude,
                     Feature::Revolve(_) => Icon::Revolve,
+                    Feature::Copy(k) => match self.copies[k].kind {
+                        model::CopyKind::Mirror(_) => Icon::Mirror,
+                        model::CopyKind::Rectangular { .. } => Icon::RectPattern,
+                        model::CopyKind::Circular { .. } => Icon::CircPattern,
+                    },
                     Feature::Edge(k) => match self.edge_features[k].kind {
                         EdgeKind::Fillet => Icon::Fillet,
                         EdgeKind::Chamfer => Icon::Chamfer,
@@ -2875,6 +3014,7 @@ impl OpenCad {
             Some(Feature::Extrude(k)) => self.delete_extrude(k),
             Some(Feature::Edge(k)) => self.delete_edge_feature(k),
             Some(Feature::Revolve(k)) => self.delete_revolve(k),
+            Some(Feature::Copy(k)) => self.delete_copy(k),
             None => {}
         }
         if delete.is_some() {
@@ -2884,6 +3024,14 @@ impl OpenCad {
             Some(Feature::Sketch(i)) => self.edit_sketch(i),
             Some(Feature::Extrude(k)) => self.open_extrude(Some(k)),
             Some(Feature::Revolve(k)) => self.open_revolve(Some(k)),
+            Some(Feature::Copy(k)) => {
+                let mode = match self.copies[k].kind {
+                    model::CopyKind::Mirror(_) => CopyMode::Mirror,
+                    model::CopyKind::Rectangular { .. } => CopyMode::Rectangular,
+                    model::CopyKind::Circular { .. } => CopyMode::Circular,
+                };
+                self.open_copy(mode, Some(k));
+            }
             Some(Feature::Edge(k)) => {
                 let kind = self.edge_features[k].kind;
                 self.open_edge_dialog(Some(k), kind);
@@ -3295,7 +3443,7 @@ impl OpenCad {
         // --- the 3D view: hover origin planes and faces; click selects a plane, right-click offers a sketch ---
         if !self.face_pick && self.active.is_none() {
             self.marquee = None;
-            let free_view = self.dialog.is_none() && self.edge_dialog.is_none() && self.revolve_dialog.is_none();
+            let free_view = self.dialog.is_none() && self.edge_dialog.is_none() && self.revolve_dialog.is_none() && self.copy_dialog.is_none();
             if let (Some(px), true) = (hover_px, free_view) {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 let face = self.pick_face(&ray);
@@ -4107,13 +4255,14 @@ impl OpenCad {
         }
 
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
-        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some();
+        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
         self.ensure_model(Slot::Committed);
         self.feature_errors = self.model(Slot::Committed).errors.clone();
         self.edge_feature_errors = self.model(Slot::Committed).edge_errors.clone();
         self.sketch_errors = self.model(Slot::Committed).sketch_errors.clone();
         self.revolve_errors = self.model(Slot::Committed).revolve_errors.clone();
+        self.copy_errors = self.model(Slot::Committed).copy_errors.clone();
         self.body_count = self.model(Slot::Committed).bodies.len();
         // With a body in the scene the origin gets out of the way (Create Sketch
         // and the browser's Origin box bring it back).
@@ -4134,6 +4283,9 @@ impl OpenCad {
         } else if let Some(d) = &self.revolve_dialog {
             let k = d.editing.unwrap_or(self.revolves.len());
             model.revolve_errors.get(k).cloned().flatten()
+        } else if let Some(d) = &self.copy_dialog {
+            let k = d.editing.unwrap_or(self.copies.len());
+            model.copy_errors.get(k).cloned().flatten()
         } else {
             None
         };
@@ -4868,6 +5020,8 @@ impl eframe::App for OpenCad {
             egui::Panel::right("extrude").resizable(true).default_size(260.0).show(ui, |ui| self.extrude_panel(ui));
         } else if self.edge_dialog.is_some() {
             egui::Panel::right("edges").resizable(true).default_size(260.0).show(ui, |ui| self.edge_panel(ui));
+        } else if self.copy_dialog.is_some() {
+            egui::Panel::right("copy").resizable(true).default_size(260.0).show(ui, |ui| self.copy_panel(ui));
         } else if self.revolve_dialog.is_some() {
             egui::Panel::right("revolve").resizable(true).default_size(260.0).show(ui, |ui| self.revolve_panel(ui));
         }

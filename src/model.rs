@@ -6,6 +6,8 @@
 use crate::profile::{Region, find_regions, union};
 #[cfg(test)]
 use crate::sketch::{Plane, Sketch};
+use crate::doc::BodyId;
+use crate::sketch::OriginPlane;
 use glam::{DVec3, Vec3};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -167,6 +169,104 @@ pub struct Revolve {
     pub axis: RevolveAxis,
     /// Degrees; 360 is a full turn, negative turns the other way.
     pub angle: f64,
+}
+
+/// A world axis, for patterns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WorldAxis {
+    #[default]
+    X,
+    Y,
+    Z,
+}
+
+impl WorldAxis {
+    pub const ALL: [WorldAxis; 3] = [WorldAxis::X, WorldAxis::Y, WorldAxis::Z];
+
+    pub fn dir(self) -> DVec3 {
+        match self {
+            WorldAxis::X => DVec3::X,
+            WorldAxis::Y => DVec3::Y,
+            WorldAxis::Z => DVec3::Z,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            WorldAxis::X => "X",
+            WorldAxis::Y => "Y",
+            WorldAxis::Z => "Z",
+        }
+    }
+}
+
+/// How a Mirror / Pattern feature copies its bodies.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum CopyKind {
+    /// Reflect in an origin plane.
+    Mirror(OriginPlane),
+    /// `count` copies (the original included) every `spacing` mm along `dir`,
+    /// and the same again along `dir2` (`count2` = 1 for a single row).
+    Rectangular { dir: WorldAxis, count: u32, spacing: f64, dir2: WorldAxis, count2: u32, spacing2: f64 },
+    /// `count` copies (the original included) around an axis through the
+    /// origin, spread over `angle` degrees: 360 spaces them evenly all the
+    /// way round, less puts the last copy at the end of the angle.
+    Circular { axis: WorldAxis, count: u32, angle: f64 },
+}
+
+/// Where one copy goes relative to the original.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Placement {
+    Translate(DVec3),
+    /// About an axis through the origin, in radians.
+    Rotate { axis: DVec3, radians: f64 },
+    /// In the plane through the origin with this normal.
+    Reflect { normal: DVec3 },
+}
+
+/// Copy bodies: mirrored in a plane, or repeated in a pattern. The copies
+/// are new bodies.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CopyFeature {
+    pub name: String,
+    pub bodies: Vec<BodyId>,
+    pub kind: CopyKind,
+}
+
+/// Most copies one feature may make (keeps a typo from hanging the app).
+pub const MAX_COPIES: u32 = 200;
+
+impl CopyKind {
+    /// One placement per new copy (the original isn't one).
+    pub fn placements(&self) -> Vec<Placement> {
+        match *self {
+            CopyKind::Mirror(p) => {
+                let n = p.plane().normal().as_dvec3();
+                vec![Placement::Reflect { normal: n }]
+            }
+            CopyKind::Rectangular { dir, count, spacing, dir2, count2, spacing2 } => {
+                let mut out = Vec::new();
+                for j in 0..count2.clamp(1, MAX_COPIES) {
+                    for i in 0..count.clamp(1, MAX_COPIES) {
+                        if i == 0 && j == 0 {
+                            continue;
+                        }
+                        out.push(Placement::Translate(dir.dir() * spacing * i as f64 + dir2.dir() * spacing2 * j as f64));
+                    }
+                }
+                out
+            }
+            CopyKind::Circular { axis, count, angle } => {
+                let count = count.clamp(1, MAX_COPIES);
+                if count < 2 {
+                    return Vec::new();
+                }
+                let full = angle.abs() >= 360.0 - 1e-9;
+                let step = if full { angle / count as f64 } else { angle / (count - 1) as f64 };
+                (1..count).map(|i| Placement::Rotate { axis: axis.dir(), radians: (step * i as f64).to_radians() }).collect()
+            }
+        }
+    }
 }
 
 /// Round (fillet) or bevel (chamfer) edges.
