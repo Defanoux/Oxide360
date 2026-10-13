@@ -250,7 +250,7 @@ mod tests {
         ed.set_tool(Tool::Circle);
         ed.click(&mut sk, Anchor::Point(0));
         ed.click(&mut sk, Anchor::Free(DVec2::new(20.0, 20.0)));
-        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 30.0, extent: Default::default(), distance2: 0.0 };
+        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 30.0, extent: Default::default(), distance2: 0.0, taper: 0.0 };
         build_extrude(&[sk], &ex).unwrap()
     }
 

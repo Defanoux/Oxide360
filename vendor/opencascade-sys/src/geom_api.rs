@@ -35,6 +35,8 @@ mod inner {
             origin: &gp_Pnt,
             surface: &Handle_Geom_Surface,
         ) -> UniquePtr<GeomAPI_ProjectPointOnSurf>;
+        // opencad patch: asking for the nearest point when there is none throws (and aborts the app).
+        pub fn NbPoints(self: &GeomAPI_ProjectPointOnSurf) -> i32;
         pub fn LowerDistanceParameters(self: &GeomAPI_ProjectPointOnSurf, u: &mut f64, v: &mut f64);
     }
 }

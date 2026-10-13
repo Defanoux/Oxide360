@@ -302,6 +302,7 @@ struct ExtrudeDialog {
     distance: f64,
     extent: model::Extent,
     distance2: f64,
+    taper: f64,
     op: Operation,
 }
 

@@ -316,7 +316,15 @@ fn tool(sketches: &[Sketch], frames: &[Option<FacePlane>], ex: &Extrude) -> Resu
     let dir = kv(plane.normal() * (to - from));
     let mut out: Option<Shape> = None;
     for r in union(&picked) {
-        let mut solid: Shape = region_face(&plane, &r)?.extrude(dir).into();
+        let face = region_face(&plane, &r)?;
+        if ex.taper != 0.0 && ex.extent != crate::model::Extent::OneSide {
+            return Err("a taper works with One Side only".into());
+        }
+        let mut solid: Shape = if ex.taper == 0.0 {
+            face.extrude(dir).into()
+        } else {
+            face.try_tapered_prism(dir, -(to - from).abs() * ex.taper.to_radians().tan()).ok_or("the kernel couldn't taper that far — try a smaller angle")?
+        };
         if from != 0.0 {
             solid = solid.translated(kv(plane.normal() * from));
         }
@@ -1082,7 +1090,7 @@ mod tests {
     }
 
     fn ex(sketch: usize, profiles: Vec<usize>, distance: f64, op: Operation) -> Extrude {
-        Extrude { op, name: "E".into(), sketch, profiles, distance, extent: Default::default(), distance2: 0.0 }
+        Extrude { op, name: "E".into(), sketch, profiles, distance, extent: Default::default(), distance2: 0.0, taper: 0.0 }
     }
 
     fn timeline(sketches: usize, extrudes: usize) -> Vec<Feature> {
@@ -1132,6 +1140,78 @@ mod tests {
         e.extent = extent;
         e.distance2 = distance2;
         build_with(&[sk], &[e], &[], &[], &[], &[], &[], &timeline(1, 1))
+    }
+
+    fn tapered(distance: f64, taper: f64, circle_not_square: bool) -> Model {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        if circle_not_square {
+            circle(&mut sk, 0.0, 0.0, 5.0);
+        } else {
+            rect(&mut sk, 0.0, 0.0, 10.0, 10.0);
+        }
+        let mut e = ex(0, vec![0], distance, Operation::NewBody);
+        e.taper = taper;
+        build_with(&[sk], &[e], &[], &[], &[], &[], &[], &timeline(1, 1))
+    }
+
+    #[test]
+    fn tapered_square_is_an_exact_frustum() {
+        let m = tapered(10.0, 10.0, false);
+        assert_eq!(m.errors, vec![None]);
+        let top = 10.0 - 2.0 * 10.0 * 10.0_f64.to_radians().tan();
+        let exact = 10.0 / 3.0 * (100.0 + top * top + 10.0 * top);
+        assert!(close(total(&m), exact), "{} vs {exact}", total(&m));
+        // (A lofted solid's OCCT box is loose; the mesh corners are exact.)
+        let (lo, hi) = crate::model::mesh_bounds(&m.bodies[0].mesh).unwrap();
+        assert!((hi.z - 10.0).abs() < 1e-5 && lo.z.abs() < 1e-5 && (hi.x - 10.0).abs() < 1e-5, "{lo:?} {hi:?}");
+    }
+
+    #[test]
+    fn tapered_circle_is_an_exact_cone_frustum_and_negative_widens() {
+        let m = tapered(10.0, 5.0, true);
+        assert_eq!(m.errors, vec![None]);
+        let r2 = 5.0 - 10.0 * 5.0_f64.to_radians().tan();
+        let exact = std::f64::consts::PI * 10.0 / 3.0 * (25.0 + r2 * r2 + 5.0 * r2);
+        assert!(close(total(&m), exact), "{} vs {exact}", total(&m));
+        let m = tapered(10.0, -5.0, true);
+        let r2 = 5.0 + 10.0 * 5.0_f64.to_radians().tan();
+        let exact = std::f64::consts::PI * 10.0 / 3.0 * (25.0 + r2 * r2 + 5.0 * r2);
+        assert!(close(total(&m), exact), "{} vs {exact}", total(&m));
+    }
+
+    #[test]
+    fn tapering_downward_mirrors_it() {
+        let m = tapered(-10.0, 10.0, false);
+        assert_eq!(m.errors, vec![None]);
+        let (lo, hi) = crate::model::mesh_bounds(&m.bodies[0].mesh).unwrap();
+        assert!((lo.z + 10.0).abs() < 1e-5 && hi.z.abs() < 1e-5, "{lo:?} {hi:?}");
+        let top = 10.0 - 2.0 * 10.0 * 10.0_f64.to_radians().tan();
+        assert!(close(total(&m), 10.0 / 3.0 * (100.0 + top * top + 10.0 * top)));
+    }
+
+    #[test]
+    fn a_taper_that_closes_the_profile_is_an_error_not_a_crash() {
+        let m = tapered(10.0, 70.0, false);
+        assert!(m.errors[0].is_some() || m.bodies.is_empty());
+        let m = tapered(10.0, 85.0, true);
+        assert!(m.errors[0].is_some() || m.bodies.is_empty());
+    }
+
+    #[test]
+    fn tapering_a_ring_narrows_the_outside_and_widens_the_hole() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk, -10.0, -10.0, 10.0, 10.0);
+        circle(&mut sk, 0.0, 0.0, 4.0);
+        let ring = crate::profile::find_regions(&sk).iter().position(|r| r.holes.len() == 1).expect("a region with a hole");
+        let mut e = ex(0, vec![ring], 10.0, Operation::NewBody);
+        e.taper = 5.0;
+        let m = build_with(&[sk], &[e], &[], &[], &[], &[], &[], &timeline(1, 1));
+        assert_eq!(m.errors, vec![None]);
+        let d = 10.0 * 5.0_f64.to_radians().tan();
+        let b = 4.0 + d; // the hole's radius at the top
+        let outer = 10.0 / 3.0 * (400.0 + (2.0 * (10.0 - d)) * (2.0 * (10.0 - d)) + 20.0 * 2.0 * (10.0 - d));
+        let hole = std::f64::consts::PI * 10.0 / 3.0 * (16.0 + b * b + 4.0 * b);
+        assert!(close(total(&m), outer - hole), "{} vs {}", total(&m), outer - hole);
     }
 
     #[test]

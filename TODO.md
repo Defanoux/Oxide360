@@ -8,7 +8,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 10. **Timeline**: drag to reorder (the Move earlier / later menu items exist); browser: select/delete bodies; Measure faces/edges/angles (point-to-point exists).
 
-11. **Extrude options**: taper angle, "to object". (Symmetric and Two Sides done.)
+11. **Extrude options**: "to object". (Symmetric, Two Sides, Taper done; taper is One Side only.)
 
 ## Polish (do when nearby code is touched)
 
@@ -22,6 +22,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Extrude Taper (degrees, + narrows, − widens; One Side only): lofted between the profile and its offset, holes widen, exact frustum/cone volume tests; new exception-safe `tapered_prism_try` wrapper; `Face::normal_at` no longer aborts when a point has no projection.
 - `main.rs` split into `app/{document,sketching,features,panels,timeline,viewport}.rs` (mechanical, no behaviour change; 804 lines left in main.rs).
 - Timeline right-click: Rename…, Suppress / Unsuppress (greyed, not built, saved as `Document.suppressed`, follows deletes), Move earlier / later (refused when it would make something fail: `Model::error_count`). Measure tool (Inspect group): two clicks on the model, corners and edge middles snap, shows distance and Δx/Δy/Δz.
 - Extrude Extent: One Side / Symmetric (whole length, half each way) / Two Sides (distance each way); `Extent` + `distance2` on `Extrude` (serde default), kernel `Extrude::span`, exact bbox/volume tests; the drag arrow follows the far end.

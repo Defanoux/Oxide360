@@ -124,6 +124,18 @@ impl Face {
     }
 
     #[must_use]
+    /// opencad patch: a prism of this face along `dir` whose far end is the face
+    /// offset by `offset` (negative = smaller; the sides lean to meet it); None
+    /// when the kernel can't (instead of aborting).
+    pub fn try_tapered_prism(&self, dir: DVec3, offset: f64) -> Option<Shape> {
+        let made = ffi::b_rep_feat::tapered_prism_try(&self.inner, dir.x, dir.y, dir.z, offset);
+        if made.is_null() {
+            return None;
+        }
+        Some(Shape::from_shape(&made))
+    }
+
+    #[must_use]
     /// opencad patch: revolve `angle_radians` about the axis through `origin`
     /// along `axis`; None when the kernel can't (instead of aborting).
     pub fn try_revolve(&self, origin: DVec3, axis: DVec3, angle_radians: f64) -> Option<Shape> {
@@ -311,6 +323,10 @@ impl Face {
         let mut u: f64 = 0.0;
         let mut v: f64 = 0.0;
 
+        // opencad patch: no projection (e.g. beside a cone's apex) means no normal, not an abort.
+        if projector.NbPoints() < 1 {
+            return DVec3::NAN;
+        }
         projector.LowerDistanceParameters(&mut u, &mut v);
 
         let mut p = ffi::gp::new_point(0.0, 0.0, 0.0);

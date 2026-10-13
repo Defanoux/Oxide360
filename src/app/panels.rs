@@ -626,7 +626,7 @@ impl OpenCad {
         }
         let cache = self.caches[Slot::Committed as usize].as_ref()?;
         let bounds: Vec<(Vec3, Vec3)> = cache.model.bodies.iter().filter_map(|b| model::mesh_bounds(&b.mesh)).collect();
-        let ex = Extrude { op: d.op, name: String::new(), sketch: s, profiles: Vec::new(), distance: d.distance, extent: d.extent, distance2: d.distance2 };
+        let ex = Extrude { op: d.op, name: String::new(), sketch: s, profiles: Vec::new(), distance: d.distance, extent: d.extent, distance2: d.distance2, taper: d.taper };
         let (from, to) = ex.span();
         let touches = |len: f64| model::prism_touches(&points, plane.normal(), len as f32, &bounds, 1e-3);
         Some(touches(to) || (from != 0.0 && touches(from)))
@@ -684,6 +684,12 @@ impl OpenCad {
                 changed = true;
             }
         });
+        if d.extent == model::Extent::OneSide {
+            ui.horizontal(|ui| {
+                ui.label("Taper");
+                changed |= ui.add(egui::DragValue::new(&mut d.taper).speed(0.2).range(-89.0..=89.0).suffix("°")).changed();
+            });
+        }
         if d.extent == model::Extent::TwoSides {
             ui.horizontal(|ui| {
                 ui.label("Side 2");

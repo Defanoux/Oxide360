@@ -461,7 +461,7 @@ mod tests {
         solver::add_constraints(&mut sk, &[Length(0, 50.0), Length(1, 30.0), Diameter(4, 8.0)]).unwrap();
         Document {
             sketches: vec![sk],
-            extrudes: vec![Extrude { op: Default::default(), name: "Extrude1".into(), sketch: 0, profiles: vec![0], distance: 12.5, extent: Default::default(), distance2: 0.0 }],
+            extrudes: vec![Extrude { op: Default::default(), name: "Extrude1".into(), sketch: 0, profiles: vec![0], distance: 12.5, extent: Default::default(), distance2: 0.0, taper: 0.0 }],
             edge_features: vec![crate::model::EdgeFeature {
                 name: "Fillet1".into(),
                 kind: crate::model::EdgeKind::Fillet,

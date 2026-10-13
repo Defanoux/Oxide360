@@ -26,6 +26,9 @@ mod inner {
         pub fn perform_with_height(self: Pin<&mut BRepFeat_MakeDPrism>, height: f64);
         pub fn Shape(self: Pin<&mut BRepFeat_MakeDPrism>) -> &TopoDS_Shape;
 
+        // opencad patch: exception-safe tapered prism (see include/b_rep_feat.hxx).
+        pub fn tapered_prism_try(face: &TopoDS_Face, dx: f64, dy: f64, dz: f64, offset: f64) -> UniquePtr<TopoDS_Shape>;
+
         type BRepFeat_MakeCylindricalHole;
         #[cxx_name = "construct_unique"]
         pub fn BRepFeat_MakeCylindricalHole_new() -> UniquePtr<BRepFeat_MakeCylindricalHole>;

@@ -19,6 +19,7 @@ impl OpenCad {
                 distance: e.distance,
                 extent: e.extent,
                 distance2: e.distance2,
+                taper: e.taper,
                 op: e.op,
             },
             None => ExtrudeDialog {
@@ -30,6 +31,7 @@ impl OpenCad {
                 distance: 10.0,
                 extent: model::Extent::OneSide,
                 distance2: 10.0,
+                taper: 0.0,
                 op: Operation::NewBody, // follows what the profile touches until chosen
             },
         };
@@ -48,7 +50,7 @@ impl OpenCad {
             Some(k) => self.extrudes[k].name.clone(),
             None => format!("Extrude{}", self.extrudes.len() + 1),
         };
-        Some(Extrude { op: d.op, name, sketch: d.sketch?, profiles: d.profiles.clone(), distance: d.distance, extent: d.extent, distance2: d.distance2 })
+        Some(Extrude { op: d.op, name, sketch: d.sketch?, profiles: d.profiles.clone(), distance: d.distance, extent: d.extent, distance2: d.distance2, taper: d.taper })
     }
 
     pub(crate) fn commit_extrude(&mut self) {
