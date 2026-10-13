@@ -3,35 +3,164 @@
 use crate::*;
 
 impl OpenCad {
-    /// Measure tool: the point under the cursor (snapped), clicks, Esc to leave.
-    pub(crate) fn measure_input(&mut self, hover_px: Option<Vec2>, response: &egui::Response, aspect: f32, min: Vec2, size: Vec2) {
-        let Some((m, hover)) = self.measure.as_mut() else { return };
-        *hover = None;
-        let model = &self.caches[Slot::Committed as usize].as_ref().expect("model built").model;
-        if let Some(px) = hover_px {
-            let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
-            let hit = model
-                .bodies
-                .iter()
-                .filter(|b| !self.hidden_bodies.contains(&b.id))
-                .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir))
-                .reduce(f32::min);
-            if let Some(t) = hit {
-                let p = (ray.origin + ray.dir * t).as_dvec3();
-                let corners = model.bodies.iter().filter(|b| !self.hidden_bodies.contains(&b.id)).flat_map(|b| {
-                    b.edges.iter().flat_map(|e| [e.points.first().copied(), e.points.last().copied(), Some(e.at.mid.as_vec3())].into_iter().flatten().map(|v| v.as_dvec3()))
-                });
-                let tol = f64::from(self.camera.distance) * 0.03;
-                *hover = Some(measure::snap(p, corners, tol));
-            }
+    /// Measure tool: what's under the cursor (corner, then edge, then face),
+    /// clicks pick it, Esc leaves.
+    pub(crate) fn measure_input(&mut self, view: &View, hover_px: Option<Vec2>, response: &egui::Response, aspect: f32, min: Vec2, size: Vec2) {
+        if self.measure.is_none() {
+            return;
         }
+        let hover = hover_px.and_then(|px| {
+            let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+            self.measure_pick_at(view, px, &ray)
+        });
+        let Some(m) = self.measure.as_mut() else { return };
+        m.hover = hover;
         if response.clicked() {
-            if let Some(p) = *hover {
+            if let Some(p) = m.hover.clone() {
                 m.click(p);
             }
         }
         if response.ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.measure = None;
+        }
+    }
+
+    /// The corner, edge or face of a visible body under the cursor, in that
+    /// order of preference (like Fusion: corners and edges win near them).
+    fn measure_pick_at(&self, view: &View, px: Vec2, ray: &Ray) -> Option<measure::Picked> {
+        use measure::{Geom, Pick, Picked, Samples};
+        let model = &self.caches[Slot::Committed as usize].as_ref()?.model;
+        let visible = |b: &&kernel::Body| !self.hidden_bodies.contains(&b.id);
+        let hit = model
+            .bodies
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| visible(b))
+            .filter_map(|(i, b)| model::ray_hit_tri(&b.mesh, ray.origin, ray.dir).map(|(t, tri)| (t, tri, i)))
+            .min_by(|x, y| x.0.total_cmp(&y.0));
+        // Things behind a body can't be picked.
+        let slack = self.camera.distance * 0.01;
+        let in_front = |p: Vec3| hit.is_none_or(|(h, ..)| (p - ray.origin).dot(ray.dir) <= h + slack);
+        let mut corner: Option<(f32, Vec3)> = None;
+        let mut edge: Option<(f32, usize, usize)> = None;
+        for (bi, body) in model.bodies.iter().enumerate().filter(|(_, b)| visible(b)) {
+            for (ei, e) in body.edges.iter().enumerate() {
+                let (Some(&first), Some(&last)) = (e.points.first(), e.points.last()) else { continue };
+                // A closed edge (a whole circle) has no real corner.
+                if first.distance(last) > 1e-6 {
+                    for p in [first, last] {
+                        let Some(q) = view.project(p) else { continue };
+                        let d = px.distance(q);
+                        if d <= SNAP_PX && corner.is_none_or(|(bd, _)| d < bd) && in_front(p) {
+                            corner = Some((d, p));
+                        }
+                    }
+                }
+                for w in e.points.windows(2) {
+                    let (Some(a), Some(b)) = (view.project(w[0]), view.project(w[1])) else { continue };
+                    let ab = b - a;
+                    let t = if ab.length_squared() > 0.0 { ((px - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+                    let d = px.distance(a + ab * t);
+                    if d <= SNAP_PX && edge.is_none_or(|(bd, ..)| d < bd) && in_front(w[0].lerp(w[1], t)) {
+                        edge = Some((d, bi, ei));
+                    }
+                }
+            }
+        }
+        if let Some((_, p)) = corner {
+            let p = p.as_dvec3();
+            return Some(Picked { pick: Pick::Point(p), geom: Geom::Point(p), samples: Samples { points: vec![p], ..Default::default() } });
+        }
+        if let Some((_, bi, ei)) = edge {
+            let e = &model.bodies[bi].edges[ei];
+            let pts: Vec<DVec3> = e.points.iter().map(|p| p.as_dvec3()).collect();
+            let segments = pts.windows(2).map(|w| [w[0], w[1]]).collect();
+            return Some(Picked { pick: Pick::Edge { body: bi, edge: ei }, geom: e.geom.clone(), samples: Samples { segments, ..Default::default() } });
+        }
+        let (_, tri, bi) = hit?;
+        let body = &model.bodies[bi];
+        let face = *body.tri_face.get(tri)? as usize;
+        let geom = body.faces.get(face)?.clone();
+        Some(Picked { pick: Pick::Face { body: bi, face }, geom, samples: Samples { triangles: body.face_tris(face).collect(), ..Default::default() } })
+    }
+
+    /// The floating Measure window: what's picked, the readings (click one to
+    /// copy it), and the units.
+    pub(crate) fn measure_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(m) = self.measure.as_ref() else { return };
+        let (unit, unit2) = (self.measure_unit, self.measure_unit2);
+        ui.strong("Measure");
+        let name = |p: &measure::Picked| match &p.geom {
+            measure::Geom::Point(_) => "Corner",
+            measure::Geom::Line { .. } => "Edge (straight)",
+            measure::Geom::Circle { sweep, .. } if *sweep >= std::f64::consts::TAU - 1e-9 => "Edge (circle)",
+            measure::Geom::Circle { .. } => "Edge (arc)",
+            measure::Geom::Curve { .. } => "Edge (curve)",
+            measure::Geom::Plane { .. } => "Face (flat)",
+            measure::Geom::Cylinder { .. } => "Face (cylinder)",
+            measure::Geom::Surface { .. } => "Face",
+        };
+        for (i, label) in ["Selection 1", "Selection 2"].into_iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("{label}:"));
+                match m.picks.get(i) {
+                    Some(p) => ui.label(egui::RichText::new(name(p)).color(COL_SELECT)),
+                    None => ui.weak("click a corner, edge or face"),
+                };
+            });
+        }
+        let mut copy: Option<String> = None;
+        if !m.rows.is_empty() {
+            ui.separator();
+            egui::Grid::new("measure_rows").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
+                for r in &m.rows {
+                    ui.label(r.label);
+                    ui.vertical(|ui| {
+                        let main = unit.format(r.value, r.kind, false);
+                        if ui.add(egui::Button::new(egui::RichText::new(&main).monospace()).frame(false)).on_hover_text("Click to copy").clicked() {
+                            copy = Some(main);
+                        }
+                        if let Some(u2) = unit2 {
+                            let other = u2.format(r.value, r.kind, true);
+                            if ui.add(egui::Button::new(egui::RichText::new(&other).monospace().small().weak()).frame(false)).on_hover_text("Click to copy").clicked() {
+                                copy = Some(other);
+                            }
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+            ui.weak("Click a value to copy it");
+        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Units");
+            egui::ComboBox::from_id_salt("measure_unit").width(56.0).selected_text(self.measure_unit.name()).show_ui(ui, |ui| {
+                for u in measure::Unit::ALL {
+                    ui.selectable_value(&mut self.measure_unit, u, u.name());
+                }
+            });
+            ui.label("2nd");
+            egui::ComboBox::from_id_salt("measure_unit2").width(56.0).selected_text(self.measure_unit2.map_or("none", |u| u.name())).show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.measure_unit2, None, "none");
+                for u in measure::Unit::ALL {
+                    ui.selectable_value(&mut self.measure_unit2, Some(u), u.name());
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Clear").clicked() {
+                if let Some(m) = self.measure.as_mut() {
+                    m.clear();
+                }
+            }
+            if ui.button("Close").clicked() {
+                self.measure = None;
+            }
+        });
+        if let Some(text) = copy {
+            ui.ctx().copy_text(text.clone());
+            self.notify(format!("Copied {text}"));
         }
     }
 
@@ -305,6 +434,4 @@ impl OpenCad {
             }
             None => {}
         }
-    }
-
-}
+    }}

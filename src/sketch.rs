@@ -445,6 +445,10 @@ pub struct CornerCut {
 /// "5" → (5, None); "2, 5" or "2 5" → (2, Some(5)). For the size box of
 /// chamfers, which can take a different distance along each side.
 pub fn parse_sizes(text: &str) -> Option<(f64, Option<f64>)> {
+    // One value, maybe with a unit ("0.5 in", pasted from Measure).
+    if let Some(v) = crate::measure::parse_value(text) {
+        return Some((v, None));
+    }
     let num = |t: &str| t.parse::<f64>().ok().filter(|v| v.is_finite());
     let text = text.replace("mm", " ");
     let mut parts = text.split(|c: char| c == ',' || c == ';' || c.is_whitespace()).filter(|t| !t.is_empty());

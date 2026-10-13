@@ -12,6 +12,9 @@ pub struct Mesh {
     pub uvs: Vec<DVec2>,
     pub normals: Vec<DVec3>,
     pub indices: Vec<usize>,
+    /// opencad patch: where each face's triangles end in `indices / 3`, in
+    /// `shape.faces()` order (face i owns triangles face_ends[i-1]..face_ends[i]).
+    pub face_ends: Vec<usize>,
 }
 
 pub struct Mesher {
@@ -34,6 +37,7 @@ impl Mesher {
         let mut uvs = vec![];
         let mut normals = vec![];
         let mut indices = vec![];
+        let mut face_ends = vec![];
 
         let triangulated_shape = Shape::from_shape(self.inner.pin_mut().Shape());
 
@@ -112,8 +116,9 @@ impl Mesher {
                     indices.push(index_offset + triangle.Value(1) as usize - 1);
                 }
             }
+            face_ends.push(indices.len() / 3);
         }
 
-        Ok(Mesh { vertices, uvs, normals, indices })
+        Ok(Mesh { vertices, uvs, normals, indices, face_ends })
     }
 }

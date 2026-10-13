@@ -19,6 +19,14 @@ pub fn default_color(rank: usize) -> [u8; 3] {
     PALETTE[rank % PALETTE.len()]
 }
 
+/// Which default colour a body gets: its place, oldest first, among the bodies
+/// there are now (`order` sorts them: when its feature is in the timeline, then
+/// which piece). No two bodies that exist together share a default (up to the
+/// palette's size), however the timeline is reordered.
+pub fn rank<K: PartialOrd>(all: impl IntoIterator<Item = K>, me: &K) -> usize {
+    all.into_iter().filter(|k| k < me).count()
+}
+
 /// Perceived brightness 0..=255, to keep the palette in one band.
 #[cfg(test)]
 fn luma(c: [u8; 3]) -> f32 {
@@ -40,6 +48,19 @@ mod tests {
             // outshine the sketch colours.
             assert!((150.0..=200.0).contains(&luma(*a)), "{a:?}: {}", luma(*a));
         }
+    }
+
+    #[test]
+    fn bodies_that_exist_together_never_share_a_default() {
+        // (timeline position, piece): an extrude made two bodies, a later one a third.
+        let bodies = [(0usize, 0usize), (0, 1), (1, 0)];
+        let ranks: Vec<usize> = bodies.iter().map(|b| rank(bodies, b)).collect();
+        assert_eq!(ranks, [0, 1, 2]);
+        // The two-body extrude dragged after the other one: still three different colours.
+        let moved = [(1usize, 0usize), (1, 1), (0, 0)];
+        let mut ranks: Vec<usize> = moved.iter().map(|b| rank(moved, b)).collect();
+        ranks.sort();
+        assert_eq!(ranks, [0, 1, 2]);
     }
 
     #[test]

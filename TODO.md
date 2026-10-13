@@ -6,7 +6,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 9. **Spline** (fit-point), and trimming circles/arcs themselves. (Extend, Offset, Slot done.)
 
-10. **Timeline**: browser: select/delete bodies; Measure faces/edges/angles (point-to-point exists).
+10. **Browser**: select/delete bodies. (Timeline drag and Measure done.)
 
 11. **Extrude options**: "to object". (Symmetric, Two Sides, Taper done; taper is One Side only.)
 
@@ -22,6 +22,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Measure like Fusion: hover/click corners, edges, faces (hover highlight, faces filled). One pick: corner XYZ; line length; circle circumference/diameter/radius; arc length/angle; flat face area + perimeter; cylinder/fillet face area + diameter/radius. Two picks: minimum distance + ΔX/Y/Z (dashed line between the closest points), angle, circle centre distance. Floating window (bottom right) with a unit and an optional second unit under each value (saved in settings); clicking a value copies it, and every number box accepts pasted units ("0.5 in", "90°"). Exact via the kernel (face areas, true circles); triangles tagged by face (`face_ends` patch in the vendored mesher). Body default colours rank among existing bodies (`colors::rank`).
 - Timeline drag to reorder (blue bar shows the drop gap, refused if it breaks a feature; replaces Move earlier / later). Slot: construction centre line, type the width after the second centre. Offset: type the distance. Tool windows sit bottom-right above the timeline. Default body colours never repeat among existing bodies.
 - Extrude Taper (degrees, + narrows, − widens; One Side only): lofted between the profile and its offset, holes widen, exact frustum/cone volume tests; new exception-safe `tapered_prism_try` wrapper; `Face::normal_at` no longer aborts when a point has no projection.
 - `main.rs` split into `app/{document,sketching,features,panels,timeline,viewport}.rs` (mechanical, no behaviour change; 804 lines left in main.rs).

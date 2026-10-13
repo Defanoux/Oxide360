@@ -73,7 +73,7 @@ impl OpenCad {
     pub(crate) fn body_color(&self, id: BodyId) -> Color32 {
         // By how old the body is among the bodies there are now, so no two share a default.
         let at = |b: &BodyId| (self.timeline.iter().position(|f| *f == b.feature).unwrap_or(usize::MAX), b.piece);
-        let rank = self.body_ids.iter().filter(|b| at(b) < at(&id)).count();
+        let rank = colors::rank(self.body_ids.iter().map(at), &at(&id));
         let c = self.body_colors.get(&id).copied().unwrap_or_else(|| colors::default_color(rank));
         Color32::from_rgb(c[0], c[1], c[2])
     }
@@ -139,7 +139,13 @@ impl OpenCad {
 
     /// Write the preferences when one changed (checked every frame; cheap).
     pub(crate) fn save_settings_if_changed(&mut self) {
-        let now = settings::Settings { touchpad: self.touchpad, cube_axes: self.cube_axes, projection: self.camera.projection };
+        let now = settings::Settings {
+            touchpad: self.touchpad,
+            cube_axes: self.cube_axes,
+            projection: self.camera.projection,
+            measure_unit: self.measure_unit,
+            measure_unit2: self.measure_unit2,
+        };
         if now != self.settings_saved {
             if let Some(path) = settings::default_path() {
                 let _ = settings::save(&path, &now); // a lost preference isn't worth an error box

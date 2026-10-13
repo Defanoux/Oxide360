@@ -11,11 +11,12 @@
 
 use crate::doc::{BodyId, Feature};
 use crate::model::{PlaneFeature, AxisFeature, CopyFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::measure::{self, Geom};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
 use glam::{DQuat, DVec2, DVec3, Vec3};
 use glam24::DVec3 as KVec;
-use opencascade::primitives::{Edge, Face, Shape, Wire};
+use opencascade::primitives::{Edge, EdgeType, Face, Shape, Wire};
 use std::collections::HashSet;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -29,6 +30,8 @@ const MIN_VOLUME: f64 = 1e-6;
 pub struct BodyEdge {
     pub points: Vec<Vec3>,
     pub at: EdgeRef,
+    /// What the edge is, exactly (for Measure).
+    pub geom: Geom,
 }
 
 pub struct Body {
@@ -41,6 +44,21 @@ pub struct Body {
     /// Flat faces as (outward normal, a point on the face) — where a sketch
     /// can be started.
     pub flat_faces: Vec<(DVec3, DVec3)>,
+    /// Every face, in the kernel's order, as what it is (for Measure).
+    pub faces: Vec<Geom>,
+    /// Which of `faces` each mesh triangle belongs to.
+    pub tri_face: Vec<u32>,
+}
+
+impl Body {
+    /// The triangles of one of its faces (`faces[face]`).
+    pub fn face_tris(&self, face: usize) -> impl Iterator<Item = [DVec3; 3]> + '_ {
+        self.tri_face
+            .iter()
+            .zip(&self.mesh.tris)
+            .filter(move |(f, _)| **f as usize == face)
+            .map(|(_, t)| t.map(|i| self.mesh.positions[i as usize].as_dvec3()))
+    }
 }
 
 impl Model {
@@ -572,7 +590,7 @@ fn pickable_edges(shape: &Shape, mesh: &Mesh) -> Vec<BodyEdge> {
             let q = pts.len() / 4;
             near_sharp(r.mid) && near_sharp(pts[q]) && near_sharp(pts[pts.len() - 1 - q])
         })
-        .map(|(_, at, pts)| BodyEdge { points: pts.iter().map(|p| p.as_vec3()).collect(), at })
+        .map(|(e, at, pts)| BodyEdge { points: pts.iter().map(|p| p.as_vec3()).collect(), at, geom: edge_geom(&e, &pts) })
         .collect()
 }
 
@@ -678,7 +696,8 @@ fn edge_face(shape: &Shape, edge: &EdgeRef, want: DVec3) -> Option<Face> {
 /// Triangulate a body for drawing and mesh export. Faces are meshed
 /// separately by the kernel; shared vertices are welded back together so
 /// edges between faces can be found and drawn.
-pub fn mesh(shape: &Shape) -> Result<Mesh, String> {
+/// Also gives the face (in `shape.faces()` order) each triangle came from.
+pub fn mesh_tagged(shape: &Shape) -> Result<(Mesh, Vec<u32>), String> {
     let bb = opencascade::bounding_box::aabb(shape);
     let diag = (bb.max() - bb.min()).length();
     let deflection = (diag * 0.0005).clamp(0.001, 0.5);
@@ -697,13 +716,90 @@ pub fn mesh(shape: &Shape) -> Result<Mesh, String> {
             })
         })
         .collect();
-    for t in m.indices.chunks_exact(3) {
+    let mut tri_face = Vec::new();
+    for (i, t) in m.indices.chunks_exact(3).enumerate() {
         let tri = [remap[t[0]], remap[t[1]], remap[t[2]]];
         if tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2] {
             out.tris.push(tri);
+            tri_face.push(m.face_ends.partition_point(|&end| end <= i) as u32);
         }
     }
-    Ok(out)
+    Ok((out, tri_face))
+}
+
+/// What an edge is, from its curve type and points along it.
+fn edge_geom(e: &Edge, pts: &[DVec3]) -> Geom {
+    let length = pts.windows(2).map(|w| w[0].distance(w[1])).sum();
+    match (e.edge_type(), pts) {
+        (EdgeType::Line, [a, .., b]) => Geom::Line { a: *a, b: *b },
+        (EdgeType::Circle, _) => measure::circle_of(pts).unwrap_or(Geom::Curve { length }),
+        _ => Geom::Curve { length },
+    }
+}
+
+/// How long an edge is (exact for lines and circles).
+fn geom_length(g: &Geom) -> f64 {
+    match *g {
+        Geom::Line { a, b } => a.distance(b),
+        Geom::Circle { radius, sweep, .. } => radius * sweep,
+        Geom::Curve { length } => length,
+        _ => 0.0,
+    }
+}
+
+/// Every face of a shape (in `shape.faces()` order) as what it is: a plane
+/// with its area and perimeter, a cylinder (or part of one: a fillet) with
+/// its radius, or just a surface with its area.
+fn face_geoms(shape: &Shape) -> Vec<Geom> {
+    let tol = shape_tol(shape);
+    shape
+        .faces()
+        .map(|face| {
+            let area = face.surface_area();
+            let edges: Vec<(Vec<DVec3>, Geom)> = face
+                .edges()
+                .map(|e| {
+                    let pts: Vec<DVec3> = e.approximation_segments().map(|p| DVec3::new(p.x, p.y, p.z)).collect();
+                    let g = edge_geom(&e, &pts);
+                    (pts, g)
+                })
+                .collect();
+            // A seam (where a cylinder's surface closes) is in the face twice; it isn't boundary.
+            let mid = |pts: &[DVec3]| polyline_mid(pts).map(|r| r.mid);
+            let boundary: Vec<&(Vec<DVec3>, Geom)> = edges
+                .iter()
+                .enumerate()
+                .filter(|(i, (p, _))| !edges.iter().enumerate().any(|(j, (q, _))| j != *i && matches!((mid(p), mid(q)), (Some(a), Some(b)) if a.distance(b) < tol)))
+                .map(|(_, e)| e)
+                .collect();
+            if let Some((normal, _, _)) = face_flat(&face, tol) {
+                let perimeter = boundary.iter().map(|(_, g)| geom_length(g)).sum();
+                return Geom::Plane { normal, area, perimeter };
+            }
+            // A cylinder: its circular edges share an axis and a radius, and the
+            // surface faces straight out from that axis along them.
+            let circles: Vec<(&Vec<DVec3>, DVec3, f64)> = boundary
+                .iter()
+                .filter_map(|(p, g)| match *g {
+                    Geom::Circle { normal, radius, .. } => Some((p, normal, radius)),
+                    _ => None,
+                })
+                .collect();
+            if let Some(&(_, axis, radius)) = circles.first() {
+                let same = circles.iter().all(|&(_, n, r)| n.dot(axis).abs() > 1.0 - 1e-9 && (r - radius).abs() <= 1e-7 * radius.max(1.0));
+                let square_on = circles.iter().all(|(pts, ..)| {
+                    pts.iter().step_by((pts.len() / 6).max(1)).all(|p| {
+                        let n = face.normal_at(kv(*p));
+                        DVec3::new(n.x, n.y, n.z).normalize_or_zero().dot(axis).abs() < 1e-6
+                    })
+                });
+                if same && square_on {
+                    return Geom::Cylinder { axis, radius, area };
+                }
+            }
+            Geom::Surface { area }
+        })
+        .collect()
 }
 
 /// The flat faces of a shape as (outward normal, point on it).
@@ -711,41 +807,45 @@ fn flat_faces(shape: &Shape) -> Vec<(DVec3, DVec3)> {
     flat_faces_with_outline(shape).into_iter().map(|(n, q, _)| (n, q)).collect()
 }
 
-/// The flat faces of a shape, with points around each face's boundary. A face
-/// is flat when the surface normal is the same everywhere along its edges and
-/// those edges all lie in one plane.
-fn flat_faces_with_outline(shape: &Shape) -> Vec<(DVec3, DVec3, Vec<DVec3>)> {
+/// How close two points must be to count as the same, for a shape this size.
+fn shape_tol(shape: &Shape) -> f64 {
     let bb = opencascade::bounding_box::aabb(shape);
-    let tol = ((bb.max() - bb.min()).length() * 1e-7).max(1e-9);
-    let mut out = Vec::new();
-    for face in shape.faces() {
-        let pts: Vec<DVec3> = face
-            .edges()
-            .flat_map(|e| e.approximation_segments().collect::<Vec<_>>())
-            .map(|p| DVec3::new(p.x, p.y, p.z))
-            .collect();
-        if pts.len() < 3 {
-            continue;
-        }
-        let step = (pts.len() / 12).max(1);
-        let sample: Vec<DVec3> = pts.iter().step_by(step).copied().collect();
-        // Points on the face's own boundary always project onto its surface.
-        let normals: Vec<DVec3> = sample
-            .iter()
-            .map(|p| {
-                let n = face.normal_at(kv(*p));
-                DVec3::new(n.x, n.y, n.z).normalize()
-            })
-            .collect();
-        let n0 = normals[0];
-        let flat = n0.is_finite()
-            && normals.iter().all(|n| n.dot(n0) > 1.0 - 1e-9)
-            && pts.iter().all(|p| (*p - sample[0]).dot(n0).abs() < tol);
-        if flat {
-            out.push((n0, sample[0], pts));
-        }
+    ((bb.max() - bb.min()).length() * 1e-7).max(1e-9)
+}
+
+/// The flat faces of a shape, with points around each face's boundary.
+fn flat_faces_with_outline(shape: &Shape) -> Vec<(DVec3, DVec3, Vec<DVec3>)> {
+    let tol = shape_tol(shape);
+    shape.faces().filter_map(|face| face_flat(&face, tol)).collect()
+}
+
+/// A flat face's (outward normal, a point on it, points round its boundary).
+/// A face is flat when the surface normal is the same everywhere along its
+/// edges and those edges all lie in one plane.
+fn face_flat(face: &Face, tol: f64) -> Option<(DVec3, DVec3, Vec<DVec3>)> {
+    let pts: Vec<DVec3> = face
+        .edges()
+        .flat_map(|e| e.approximation_segments().collect::<Vec<_>>())
+        .map(|p| DVec3::new(p.x, p.y, p.z))
+        .collect();
+    if pts.len() < 3 {
+        return None;
     }
-    out
+    let step = (pts.len() / 12).max(1);
+    let sample: Vec<DVec3> = pts.iter().step_by(step).copied().collect();
+    // Points on the face's own boundary always project onto its surface.
+    let normals: Vec<DVec3> = sample
+        .iter()
+        .map(|p| {
+            let n = face.normal_at(kv(*p));
+            DVec3::new(n.x, n.y, n.z).normalize()
+        })
+        .collect();
+    let n0 = normals[0];
+    let flat = n0.is_finite()
+        && normals.iter().all(|n| n.dot(n0) > 1.0 - 1e-9)
+        && pts.iter().all(|p| (*p - sample[0]).dot(n0).abs() < tol);
+    flat.then(|| (n0, sample[0], pts))
 }
 
 /// Where on its plane a sketch's geometry sits (average of its points), used
@@ -1042,10 +1142,11 @@ pub fn build_with(
     let bodies = shapes
         .into_iter()
         .filter_map(|(shape, id)| {
-            let mesh = catch_unwind(AssertUnwindSafe(|| mesh(&shape))).ok()?.ok()?;
+            let (mesh, tri_face) = catch_unwind(AssertUnwindSafe(|| mesh_tagged(&shape))).ok()?.ok()?;
             let edges = catch_unwind(AssertUnwindSafe(|| pickable_edges(&shape, &mesh))).unwrap_or_default();
             let flat_faces = catch_unwind(AssertUnwindSafe(|| flat_faces(&shape))).unwrap_or_default();
-            Some(Body { id, shape, mesh, edges, flat_faces })
+            let faces = catch_unwind(AssertUnwindSafe(|| face_geoms(&shape))).unwrap_or_default();
+            Some(Body { id, shape, mesh, edges, flat_faces, faces, tri_face })
         })
         .collect();
     let caps = caps_of(&extrude_ends, &revolve_ends);
@@ -1770,6 +1871,95 @@ mod tests {
         let far = EdgeRef { mid: DVec3::new(500.0, 500.0, 500.0), dir: DVec3::X, ..Default::default() };
         let m = plate_with(10.0, Some((EdgeKind::Fillet, 2.0, far)));
         assert!(m.edge_errors[0].is_some());
+    }
+
+    #[test]
+    fn measure_box_faces_are_tagged_and_exact() {
+        // 50 × 30 × 10 plate: faces 1500, 300 and 500 mm², two of each.
+        let m = plate_with(10.0, None);
+        let b = &m.bodies[0];
+        assert_eq!(b.faces.len(), 6);
+        assert_eq!(b.tri_face.len(), b.mesh.tris.len());
+        let mut areas: Vec<f64> = b.faces.iter().map(|g| match *g {
+            Geom::Plane { area, perimeter, normal } => {
+                // Every triangle tagged with this face lies flat in it, facing the same way.
+                let i = b.faces.iter().position(|h| h == g).unwrap();
+                assert!(b.face_tris(i).count() >= 2);
+                for (t, &f) in b.mesh.tris.iter().enumerate().map(|(t, _)| t).zip(&b.tri_face) {
+                    if f as usize == i {
+                        assert!(b.mesh.normal(t).as_dvec3().dot(normal) > 0.9999);
+                    }
+                }
+                let sides = if area == 1500.0 { 160.0 } else if area == 300.0 { 80.0 } else { 120.0 };
+                assert!((perimeter - sides).abs() < 1e-9, "area {area}: perimeter {perimeter}");
+                area
+            }
+            ref other => panic!("box face read as {other:?}"),
+        }).collect();
+        areas.sort_by(f64::total_cmp);
+        let want = [300.0, 300.0, 500.0, 500.0, 1500.0, 1500.0];
+        assert!(areas.iter().zip(want).all(|(a, w)| (a - w).abs() < 1e-9), "{areas:?}");
+        // Straight edges know their exact length.
+        let long = b.edges.iter().filter(|e| matches!(e.geom, Geom::Line { a, b } if (a.distance(b) - 50.0).abs() < 1e-9)).count();
+        assert_eq!(long, 4);
+    }
+
+    #[test]
+    fn measure_cylinder_reads_radius_circumference_and_side_area() {
+        // r = 10, h = 20: side 2πrh = 400π, rims 20π long.
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        circle(&mut sk, 0.0, 0.0, 10.0);
+        let m = build4(&[sk], &[ex(0, vec![0], 20.0, Operation::NewBody)], &[], &timeline(1, 1));
+        let b = &m.bodies[0];
+        let side = b.faces.iter().find_map(|g| match *g {
+            Geom::Cylinder { axis, radius, area } => Some((axis, radius, area)),
+            _ => None,
+        });
+        let (axis, radius, area) = side.expect("the side is a cylinder");
+        assert!(axis.z.abs() > 1.0 - 1e-9 && (radius - 10.0).abs() < 1e-9 && (area - 400.0 * PI).abs() < 1e-6, "{radius} {area}");
+        let caps: Vec<f64> = b.faces.iter().filter_map(|g| match *g {
+            Geom::Plane { area, perimeter, .. } => {
+                assert!((perimeter - 20.0 * PI).abs() < 1e-9);
+                Some(area)
+            }
+            _ => None,
+        }).collect();
+        assert!(caps.len() == 2 && caps.iter().all(|a| (a - 100.0 * PI).abs() < 1e-6), "{caps:?}");
+        let rims: Vec<&BodyEdge> = b.edges.iter().filter(|e| matches!(e.geom, Geom::Circle { .. })).collect();
+        assert_eq!(rims.len(), 2);
+        for e in rims {
+            let rows = measure::describe(&e.geom);
+            assert_eq!(rows[0].label, "Circumference");
+            assert!((rows[0].value - 20.0 * PI).abs() < 1e-9 && (rows[1].value - 20.0).abs() < 1e-9 && (rows[2].value - 10.0).abs() < 1e-9);
+        }
+        // Rim to rim: 20 apart, parallel.
+        let pick = |i: usize| {
+            let e = b.edges.iter().filter(|e| matches!(e.geom, Geom::Circle { .. })).nth(i).unwrap();
+            let pts: Vec<DVec3> = e.points.iter().map(|p| p.as_dvec3()).collect();
+            measure::Picked {
+                pick: measure::Pick::Edge { body: 0, edge: i },
+                geom: e.geom.clone(),
+                samples: measure::Samples { segments: pts.windows(2).map(|w| [w[0], w[1]]).collect(), ..Default::default() },
+            }
+        };
+        let (rows, _) = measure::compare(&pick(0), &pick(1));
+        assert!((rows[0].value - 20.0).abs() < 1e-6, "{rows:?}");
+        assert_eq!(rows.iter().find(|r| r.label == "Angle").unwrap().value, 0.0);
+        assert!(rows.iter().any(|r| r.label == "Centre distance" && (r.value - 20.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn measure_fillet_face_is_a_cylinder_of_the_fillet_radius() {
+        let m = plate_with(10.0, Some((EdgeKind::Fillet, 2.0, top_front(10.0))));
+        assert_eq!(m.edge_errors, vec![None]);
+        let b = &m.bodies[0];
+        let r = b.faces.iter().find_map(|g| match *g {
+            Geom::Cylinder { radius, area, .. } => Some((radius, area)),
+            _ => None,
+        });
+        // A quarter cylinder of r = 2 along 50 mm: area πr/2 · 50.
+        let (radius, area) = r.expect("fillet face");
+        assert!((radius - 2.0).abs() < 1e-9 && (area - PI * 50.0).abs() < 1e-6, "{radius} {area}");
     }
 
     #[test]

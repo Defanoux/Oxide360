@@ -383,6 +383,21 @@ impl View<'_> {
         self.painter.add(egui::Shape::mesh(mesh));
     }
 
+    /// Flat translucent fill of some world triangles (a highlighted face).
+    pub fn fill_tris(&self, tris: impl IntoIterator<Item = [Vec3; 3]>, color: Color32) {
+        let mut mesh = egui::Mesh::default();
+        for t in tris {
+            if let [Some(a), Some(b), Some(c)] = t.map(|p| self.project(p)) {
+                let base = mesh.vertices.len() as u32;
+                for p in [a, b, c] {
+                    mesh.colored_vertex(to_pos(p), color);
+                }
+                mesh.add_triangle(base, base + 1, base + 2);
+            }
+        }
+        self.painter.add(egui::Shape::mesh(mesh));
+    }
+
     /// A draggable arrow from `base` to `tip` (world). Returns its screen ends.
     pub fn arrow3d(&self, base: Vec3, tip: Vec3, color: Color32) -> Option<(Vec2, Vec2)> {
         let a = self.project(base)?;

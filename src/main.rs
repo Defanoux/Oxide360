@@ -127,8 +127,9 @@ fn sizes_text(a: f64, b: Option<f64>) -> String {
     }
 }
 
+/// A typed number, with or without a unit ("12.7", "0.5 in", "90°"), in mm or degrees.
 fn parse_mm(text: &str) -> Option<f64> {
-    text.trim().trim_end_matches("mm").trim().parse::<f64>().ok().filter(|v| v.is_finite())
+    measure::parse_value(text)
 }
 
 /// Hands one frame of solids to the GPU renderer inside egui's own frame.
@@ -498,7 +499,9 @@ struct OpenCad {
     body_names: HashMap<BodyId, String>,    // names the user gave bodies
     body_colors: HashMap<BodyId, [u8; 3]>,  // colours the user gave bodies
     body_ids: Vec<BodyId>,                  // the bodies of the last build, in order
-    measure: Option<(measure::Measure, Option<DVec3>)>, // the Measure tool while it's on, and the point under the cursor
+    measure: Option<measure::Measure>,      // the Measure tool while it's on
+    measure_unit: measure::Unit,            // the Measure window's unit
+    measure_unit2: Option<measure::Unit>,   // and the one shown under it, if any
     sketch_cursor: Option<DVec2>,           // where the cursor last was on the sketch plane
     timeline_drag: Option<usize>,           // the timeline feature being dragged to a new place
     timeline_height: f32,                   // last frame's, so floating windows sit above it
@@ -613,6 +616,8 @@ impl Default for OpenCad {
             body_colors: HashMap::new(),
             body_ids: Vec::new(),
             measure: None,
+            measure_unit: measure::Unit::Mm,
+            measure_unit2: None,
             sketch_cursor: None,
             timeline_drag: None,
             timeline_height: 40.0,
@@ -764,6 +769,8 @@ impl eframe::App for OpenCad {
             });
         } else if self.revolve_dialog.is_some() && self.active.is_none() {
             float("revolve").show(&ctx, |ui| self.revolve_panel(ui));
+        } else if self.measure.is_some() && self.active.is_none() {
+            float("measure").show(&ctx, |ui| self.measure_panel(ui));
         }
         self.timeline_height = egui::Panel::bottom("timeline").show(ui, |ui| self.timeline_bar(ui)).response.rect.height();
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui));
@@ -813,6 +820,8 @@ fn main() -> eframe::Result {
                 app.touchpad = s.touchpad;
                 app.cube_axes = s.cube_axes;
                 app.camera.projection = s.projection;
+                app.measure_unit = s.measure_unit;
+                app.measure_unit2 = s.measure_unit2;
                 app.settings_saved = s;
             }
             // Set up the GPU renderer once and keep it with egui's renderer.

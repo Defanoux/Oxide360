@@ -277,7 +277,7 @@ impl OpenCad {
         // --- the 3D view: hover origin planes and faces; click selects a plane, right-click offers a sketch ---
         if !self.face_pick && self.active.is_none() {
             self.marquee = None;
-            self.measure_input(hover_px, &response, aspect, min, size);
+            self.measure_input(&view, hover_px, &response, aspect, min, size);
             let free_view = self.measure.is_none()
                 && self.dialog.is_none()
                 && self.edge_dialog.is_none()
@@ -1566,27 +1566,48 @@ impl OpenCad {
         }
 
         // --- draw: measure ---
-        if let (Some((m, hover)), None) = (&self.measure, self.active) {
-            let mark = |p: DVec3, col: Color32| {
-                if let Some(px) = view.project(p.as_vec3()) {
-                    painter.circle_stroke(to_pos(px), 5.0, Stroke::new(2.0, col));
+        if let (Some(m), None) = (&self.measure, self.active) {
+            let model = &self.model(Slot::Committed);
+            let show = |p: &measure::Picked, col: Color32| match p.pick {
+                measure::Pick::Point(q) => {
+                    if let Some(px) = view.project(q.as_vec3()) {
+                        painter.circle_filled(to_pos(px), 5.0, col);
+                    }
+                }
+                measure::Pick::Edge { body, edge } => {
+                    if let Some(e) = model.bodies.get(body).and_then(|b| b.edges.get(edge)) {
+                        for w in e.points.windows(2) {
+                            view.line(w[0], w[1], Stroke::new(3.5, col));
+                        }
+                    }
+                }
+                measure::Pick::Face { body, face } => {
+                    if let Some(b) = model.bodies.get(body) {
+                        view.fill_tris(b.face_tris(face).map(|t| t.map(|q| q.as_vec3())), col.gamma_multiply(0.35));
+                    }
                 }
             };
-            for p in [m.first, m.second].into_iter().flatten() {
-                mark(p, COL_SELECT);
+            for p in &m.picks {
+                show(p, COL_SELECT);
             }
-            if let Some(h) = *hover {
-                mark(h, COL_SNAP);
+            if let Some(h) = m.hover.as_ref().filter(|h| !m.picks.iter().any(|p| p.pick == h.pick)) {
+                show(h, COL_HOVER);
             }
-            if let (Some(a), Some(r)) = (m.first, m.reading(*hover)) {
-                let b = a + r.delta;
-                view.line(a.as_vec3(), b.as_vec3(), Stroke::new(2.0, COL_PREVIEW));
-                if let Some(px) = view.project(((a + b) * 0.5).as_vec3()) {
-                    painter.text(to_pos(px) + egui::vec2(8.0, -8.0), egui::Align2::LEFT_BOTTOM, r.text(), egui::FontId::monospace(13.0), COL_PREVIEW);
+            if let Some((a, b)) = m.closest {
+                view.dashed(a.as_vec3(), b.as_vec3(), Stroke::new(2.0, COL_PREVIEW));
+                for q in [a, b] {
+                    if let Some(px) = view.project(q.as_vec3()) {
+                        painter.circle_filled(to_pos(px), 3.5, COL_PREVIEW);
+                    }
                 }
-            } else {
-                painter.text(rect.left_top() + egui::vec2(12.0, 12.0), egui::Align2::LEFT_TOP, "Measure: click two points (Esc to leave)", egui::FontId::proportional(13.0), COL_PREVIEW);
             }
+            painter.text(
+                rect.left_top() + egui::vec2(12.0, 12.0),
+                egui::Align2::LEFT_TOP,
+                "Measure: click a corner, edge or face; a second one for distance and angle   (Esc to leave)",
+                egui::FontId::proportional(13.0),
+                COL_PREVIEW,
+            );
         }
 
         // --- draw: sketches ---

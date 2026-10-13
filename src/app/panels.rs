@@ -333,8 +333,8 @@ impl OpenCad {
                     }
                 });
                 group(ui, "INSPECT", |ui| {
-                    if icons::button(ui, Icon::Measure, "Measure: click two points on the model (corners and edge middles snap)", has_bodies, self.measure.is_some()).clicked() {
-                        self.measure = if self.measure.is_some() { None } else { Some((measure::Measure::default(), None)) };
+                    if icons::button(ui, Icon::Measure, "Measure: click a corner, edge or face — one for its size, two for distance and angle", has_bodies, self.measure.is_some()).clicked() {
+                        self.measure = if self.measure.is_some() { None } else { Some(measure::Measure::default()) };
                     }
                 });
             }
