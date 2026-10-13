@@ -998,7 +998,11 @@ impl OpenCad {
             }
             EditTarget::NewCircle => {
                 match commit {
-                    Some(Some(v)) => self.finish_circle_typed(v),
+                    Some(Some(v)) => match self.editor.tool {
+                        Tool::Slot => self.finish_slot_typed(v),
+                        Tool::Offset => self.finish_offset_typed(v),
+                        _ => self.finish_circle_typed(v),
+                    },
                     Some(None) => self.message = Some("Type a number".into()),
                     None => {}
                 }

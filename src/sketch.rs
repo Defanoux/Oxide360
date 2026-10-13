@@ -740,6 +740,17 @@ impl Sketch {
         matches!(self.entities.get(e), Some(Entity::Circle { .. }))
     }
 
+    /// The points an entity is made of.
+    pub fn entity_points(&self, e: EntityId) -> Vec<PointId> {
+        match self.entities.get(e) {
+            Some(&Entity::Line { a, b }) => vec![a, b],
+            Some(&Entity::Circle { center, .. }) => vec![center],
+            Some(&Entity::Arc { center, a, b }) => vec![center, a, b],
+            Some(&Entity::Point { p }) => vec![p],
+            None => Vec::new(),
+        }
+    }
+
     /// Geometry brought in by Project: construction, and locked where it lies.
     pub fn is_projected(&self, e: EntityId) -> bool {
         let pts: Vec<PointId> = match self.entities.get(e) {
@@ -2194,6 +2205,10 @@ impl Editor {
                 // Counter-clockwise: round B from its lower to its upper side (through the far end), round A the other way.
                 sk.entities.push(Entity::Arc { center: cb, a: b_dn, b: b_up });
                 sk.entities.push(Entity::Arc { center: ca, a: a_up, b: a_dn });
+                // The line through the two centres, as construction.
+                let spine = sk.entities.len();
+                sk.entities.push(Entity::Line { a: ca, b: cb });
+                sk.set_construction(spine, true);
                 let mut out = vec![
                     Constraint::Tangent(first, first + 2),
                     Constraint::Tangent(first + 1, first + 2),
@@ -3621,7 +3636,9 @@ mod marquee_tests {
         ed.click(&mut sk, Anchor::Free(DVec2::new(0.0, 10.0)));
         ed.click(&mut sk, Anchor::Free(DVec2::new(20.0, 10.0)));
         let cs = ed.click(&mut sk, Anchor::Free(DVec2::new(5.0, 13.0)));
-        assert_eq!(sk.entities.len(), 4);
+        // Two lines, two half circles, and the construction line through the centres (Fusion draws it too).
+        assert_eq!(sk.entities.len(), 5);
+        assert!(sk.is_construction(4) && matches!(sk.entities[4], Entity::Line { .. }));
         for c in cs {
             let mut t = sk.clone();
             if crate::solver::add_constraints(&mut t, &[c]).is_ok() {

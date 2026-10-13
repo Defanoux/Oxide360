@@ -222,6 +222,20 @@ fn draw_dimension(
     }
 }
 
+/// The digits typed this frame, if it starts like a number.
+fn typed_number(ui: &egui::Ui) -> Option<String> {
+    let typed: String = ui.input(|inp| {
+        inp.events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::Text(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect()
+    });
+    typed.chars().next().filter(|ch| ch.is_ascii_digit() || *ch == '.').map(|_| typed)
+}
+
 /// The point dimensions are drawn away from: the middle of the sketch's
 /// geometry on screen (so they sit outside the shape).
 fn sketch_centroid(view: &View, sk: &Sketch, plane: &sketch::Plane, fallback: Vec2) -> Vec2 {
@@ -485,6 +499,9 @@ struct OpenCad {
     body_colors: HashMap<BodyId, [u8; 3]>,  // colours the user gave bodies
     body_ids: Vec<BodyId>,                  // the bodies of the last build, in order
     measure: Option<(measure::Measure, Option<DVec3>)>, // the Measure tool while it's on, and the point under the cursor
+    sketch_cursor: Option<DVec2>,           // where the cursor last was on the sketch plane
+    timeline_drag: Option<usize>,           // the timeline feature being dragged to a new place
+    timeline_height: f32,                   // last frame's, so floating windows sit above it
     suppressed: Vec<Feature>,               // timeline features switched off
     renaming_feature: Option<(Feature, String)>, // a timeline feature being renamed, and the text so far
     renaming: Option<(BodyId, String)>,     // a body being renamed in the browser, and the text so far
@@ -596,6 +613,9 @@ impl Default for OpenCad {
             body_colors: HashMap::new(),
             body_ids: Vec::new(),
             measure: None,
+            sketch_cursor: None,
+            timeline_drag: None,
+            timeline_height: 40.0,
             suppressed: Vec::new(),
             renaming_feature: None,
             renaming: None,
@@ -704,10 +724,12 @@ impl eframe::App for OpenCad {
             egui::Panel::right("constraints").resizable(true).default_size(260.0).show(ui, |ui| self.constraints_panel(ui));
         }
         // Tool dialogs float over the view's right side, like Fusion's.
+        // Bottom right, above the timeline, so they cover no controls.
+        let lift = self.timeline_height + 12.0;
         let float = |id: &'static str| {
             egui::Window::new(id)
                 .title_bar(false)
-                .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 12.0))
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -lift))
                 .resizable(false)
                 .collapsible(false)
                 .default_width(240.0)
@@ -743,7 +765,7 @@ impl eframe::App for OpenCad {
         } else if self.revolve_dialog.is_some() && self.active.is_none() {
             float("revolve").show(&ctx, |ui| self.revolve_panel(ui));
         }
-        egui::Panel::bottom("timeline").show(ui, |ui| self.timeline_bar(ui));
+        self.timeline_height = egui::Panel::bottom("timeline").show(ui, |ui| self.timeline_bar(ui)).response.rect.height();
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui));
         self.float_editor(&ctx);
         self.copy_quantity_boxes(&ctx);

@@ -473,6 +473,7 @@ impl OpenCad {
             let plane = self.plane_of(i);
             let raw = |px: Vec2| plane.intersect(&self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size)));
             let raw_hover = hover_px.and_then(raw);
+            self.sketch_cursor = raw_hover.or(self.sketch_cursor);
             let raw_press = ui.input(|i| i.pointer.press_origin()).map(to_vec).and_then(raw);
             // Over a dimension: its label, or near any of its lines.
             let over_label = hover_px.and_then(|px| {
@@ -1009,7 +1010,12 @@ impl OpenCad {
                     }
                 }
                 Tool::Offset => {
-                    // Click the geometry, then click where the copy should go (the cursor shows it).
+                    // Click the geometry, then click where the copy should go (the cursor shows it) — or type how far.
+                    if self.editor.selection.len() == 1 && !typing && self.float.is_none() {
+                        if let Some(typed) = typed_number(ui) {
+                            self.float = Some(FloatEdit { target: EditTarget::NewCircle, text: typed, focus: true, keep_text: true });
+                        }
+                    }
                     if response.clicked() {
                         match (self.editor.selection.first().copied(), hovered, raw_hover) {
                             (Some(Sel::Entity(e)), None, Some(p)) => self.offset_at(e, p),
@@ -1114,18 +1120,11 @@ impl OpenCad {
                 | Tool::PolygonCircumscribed
                 | Tool::PolygonInscribed
                 | Tool::PolygonEdge => {
-                    // Centre circle: after the centre, typing a number sets the diameter.
-                    if self.editor.tool == Tool::Circle && self.editor.start.is_some() && !typing && self.float.is_none() {
-                        let typed: String = ui.input(|inp| {
-                            inp.events
-                                .iter()
-                                .filter_map(|e| match e {
-                                    egui::Event::Text(t) => Some(t.clone()),
-                                    _ => None,
-                                })
-                                .collect()
-                        });
-                        if typed.chars().next().is_some_and(|ch| ch.is_ascii_digit() || ch == '.') {
+                    // After the centre (circle) or the two centres (slot), typing a number sets the diameter / width.
+                    let wants_number = (self.editor.tool == Tool::Circle && self.editor.start.is_some())
+                        || (self.editor.tool == Tool::Slot && self.editor.second.is_some());
+                    if wants_number && !typing && self.float.is_none() {
+                        if let Some(typed) = typed_number(ui) {
                             self.float = Some(FloatEdit { target: EditTarget::NewCircle, text: typed, focus: true, keep_text: true });
                         }
                     }
@@ -1854,8 +1853,12 @@ impl OpenCad {
             }),
             Some(EditTarget::NewCircle) => self.active.and_then(|i| {
                 let sk = &self.sketches[i];
-                let start = self.editor.start.filter(|s| sk.is_valid_anchor(*s))?;
-                view.project(self.plane_of(i).to_world(sk.pos(start))).map(|p| to_pos(p) + egui::vec2(16.0, 12.0))
+                let at = match (self.editor.tool, self.editor.selection.first()) {
+                    (Tool::Offset, Some(&Sel::Entity(e))) => sk.entity_points(e).first().map(|&p| sk.points[p])?,
+                    (Tool::Slot, _) => sk.pos(self.editor.second.filter(|s| sk.is_valid_anchor(*s))?),
+                    _ => sk.pos(self.editor.start.filter(|s| sk.is_valid_anchor(*s))?),
+                };
+                view.project(self.plane_of(i).to_world(at)).map(|p| to_pos(p) + egui::vec2(16.0, 12.0))
             }),
             Some(EditTarget::RevolveAngle) => self.revolve_dialog.as_ref().and_then(|d| {
                 let s = d.sketch?;
@@ -1982,8 +1985,22 @@ impl OpenCad {
                                 format!("{:.2} mm", from.distance(here))
                             }
                         },
+                        Tool::Slot if self.editor.second.is_none() => {
+                            // The line through the centres, from the first to the cursor (becomes construction).
+                            view.dashed(plane.to_world(from), plane.to_world(here), preview);
+                            if let Some(px) = view.project(plane.to_world(from)) {
+                                painter.circle_filled(to_pos(px), 4.5, COL_PREVIEW);
+                            }
+                            format!("{:.2} mm between centres", from.distance(here))
+                        }
                         Tool::Slot => match self.editor.slot_shape(sk, here) {
                             Some(sh) => {
+                                view.dashed(plane.to_world(sh.a), plane.to_world(sh.b), preview);
+                                for c in [sh.a, sh.b] {
+                                    if let Some(px) = view.project(plane.to_world(c)) {
+                                        painter.circle_filled(to_pos(px), 4.5, COL_PREVIEW);
+                                    }
+                                }
                                 let dir = (sh.b - sh.a).normalize();
                                 let n = dir.perp() * sh.half;
                                 view.line(plane.to_world(sh.a + n), plane.to_world(sh.b + n), preview);
@@ -1991,7 +2008,7 @@ impl OpenCad {
                                 let turn = dir.y.atan2(dir.x);
                                 view.arc(&plane, sh.b, sh.half, turn - std::f64::consts::FRAC_PI_2, std::f64::consts::PI, preview);
                                 view.arc(&plane, sh.a, sh.half, turn + std::f64::consts::FRAC_PI_2, std::f64::consts::PI, preview);
-                                format!("width {:.2} mm   length {:.2} mm", 2.0 * sh.half, sh.a.distance(sh.b))
+                                format!("width {:.2} mm   (or type it)   length {:.2} mm", 2.0 * sh.half, sh.a.distance(sh.b))
                             }
                             None => {
                                 if let Some(b) = self.editor.second {

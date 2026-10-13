@@ -6,7 +6,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 9. **Spline** (fit-point), and trimming circles/arcs themselves. (Extend, Offset, Slot done.)
 
-10. **Timeline**: drag to reorder (the Move earlier / later menu items exist); browser: select/delete bodies; Measure faces/edges/angles (point-to-point exists).
+10. **Timeline**: browser: select/delete bodies; Measure faces/edges/angles (point-to-point exists).
 
 11. **Extrude options**: "to object". (Symmetric, Two Sides, Taper done; taper is One Side only.)
 
@@ -22,6 +22,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Timeline drag to reorder (blue bar shows the drop gap, refused if it breaks a feature; replaces Move earlier / later). Slot: construction centre line, type the width after the second centre. Offset: type the distance. Tool windows sit bottom-right above the timeline. Default body colours never repeat among existing bodies.
 - Extrude Taper (degrees, + narrows, − widens; One Side only): lofted between the profile and its offset, holes widen, exact frustum/cone volume tests; new exception-safe `tapered_prism_try` wrapper; `Face::normal_at` no longer aborts when a point has no projection.
 - `main.rs` split into `app/{document,sketching,features,panels,timeline,viewport}.rs` (mechanical, no behaviour change; 804 lines left in main.rs).
 - Timeline right-click: Rename…, Suppress / Unsuppress (greyed, not built, saved as `Document.suppressed`, follows deletes), Move earlier / later (refused when it would make something fail: `Model::error_count`). Measure tool (Inspect group): two clicks on the model, corners and edge middles snap, shows distance and Δx/Δy/Δz.

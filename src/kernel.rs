@@ -1696,7 +1696,7 @@ mod tests {
         tl.push(Feature::Edge(0));
         let ok = build4(&[a.clone()], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[f.clone()], &tl);
         assert_eq!(ok.error_count(), 0);
-        let swapped = crate::doc::swapped(&tl, 2, false).unwrap();
+        let swapped = crate::doc::moved(&tl, 2, 0).unwrap();
         let bad = build4(&[a], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[f], &swapped);
         assert!(bad.error_count() > 0);
     }

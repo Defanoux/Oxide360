@@ -508,7 +508,7 @@ pub fn timeline_button(
     dim: bool,
     warn: bool,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(32.0, 36.0), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(32.0, 36.0), egui::Sense::click_and_drag());
     let body = Rect::from_min_size(rect.min, egui::vec2(32.0, 30.0));
     let bg = if selected {
         Some(Color32::from_rgb(40, 80, 130))

@@ -388,6 +388,39 @@ impl OpenCad {
         }
     }
 
+    /// Typed width for the slot being drawn (the third click, at that width).
+    pub(crate) fn finish_slot_typed(&mut self, width: f64) {
+        let (Some(i), Some(a), Some(b)) = (self.active, self.editor.start, self.editor.second) else { return };
+        let sk = &self.sketches[i];
+        if !(width > 0.0) || !sk.is_valid_anchor(a) || !sk.is_valid_anchor(b) {
+            self.notify("The width must be greater than zero".into());
+            return;
+        }
+        let (pa, pb) = (sk.pos(a), sk.pos(b));
+        let Some(dir) = (pb - pa).try_normalize() else { return };
+        let at = Anchor::Free(pa + dir.perp() * (width / 2.0));
+        let ed = &mut self.editor;
+        let r = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
+            for c in ed.click(sk, at) {
+                let mut t = sk.clone();
+                if solver::add_constraints(&mut t, &[c]).is_ok() {
+                    *sk = t;
+                }
+            }
+        });
+        self.report(r);
+    }
+
+    /// Typed distance for the offset being placed (on the side the cursor is).
+    pub(crate) fn finish_offset_typed(&mut self, distance: f64) {
+        let (Some(Sel::Entity(e)), Some(at)) = (self.editor.selection.first().copied(), self.sketch_cursor) else { return };
+        if !(distance > 0.0) {
+            self.notify("The distance must be greater than zero".into());
+            return;
+        }
+        self.sketch_op("offset", move |sk| sk.offset_chain(e, at, Some(distance)).map(|_| Vec::new()));
+    }
+
     /// Centre circle: a diameter was typed after placing the centre. Make the
     /// circle that size, with a diameter dimension holding it.
     pub(crate) fn finish_circle_typed(&mut self, d: f64) {

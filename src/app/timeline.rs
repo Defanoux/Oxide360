@@ -76,8 +76,8 @@ impl OpenCad {
 
     /// Move a timeline feature one place; refused (with the reason) if that
     /// makes something fail that built before.
-    pub(crate) fn move_feature(&mut self, at: usize, later: bool) {
-        let Some(new) = doc::swapped(&self.timeline, at, later) else { return };
+    pub(crate) fn move_feature(&mut self, from: usize, gap: usize) {
+        let Some(new) = doc::moved(&self.timeline, from, gap) else { return };
         self.ensure_model(Slot::Committed);
         let before = self.model(Slot::Committed).error_count();
         let (extrudes, revolves, edge_features, copies, axes, planes, _) = self.inputs(Slot::Committed);
@@ -97,27 +97,27 @@ impl OpenCad {
         let mut delete = None;
         let mut rename: Option<Feature> = None;
         let mut toggle_suppress: Option<Feature> = None;
-        let mut shift: Option<(usize, bool)> = None;
+        let mut shift: Option<(usize, usize)> = None;
         let mut goto: Option<usize> = None;
         let len = self.timeline.len();
         if self.marker.is_some_and(|m| m >= len) {
             self.marker = None;
         }
         let applied = self.applied();
-        ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 36.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.label("Timeline:");
             // Step the marker (Fusion's rollback bar): features after it stay
             // in the timeline but aren't built.
-            if ui.small_button("⏮").on_hover_text("Roll back to the start").clicked() {
+            if ui.add_sized([28.0, 36.0], egui::Button::new("⏮")).on_hover_text("Roll back to the start").clicked() {
                 goto = Some(0);
             }
-            if ui.small_button("◀").on_hover_text("Step back one feature").clicked() {
+            if ui.add_sized([28.0, 36.0], egui::Button::new("◀")).on_hover_text("Step back one feature").clicked() {
                 goto = Some(applied.saturating_sub(1));
             }
-            if ui.small_button("▶").on_hover_text("Step forward one feature").clicked() {
+            if ui.add_sized([28.0, 36.0], egui::Button::new("▶")).on_hover_text("Step forward one feature").clicked() {
                 goto = Some(applied + 1);
             }
-            if ui.small_button("⏭").on_hover_text("Roll forward to the end").clicked() {
+            if ui.add_sized([28.0, 36.0], egui::Button::new("⏭")).on_hover_text("Roll forward to the end").clicked() {
                 goto = Some(len);
             }
             if self.timeline.is_empty() {
@@ -189,6 +189,9 @@ impl OpenCad {
                 };
                 let r = icons::timeline_button(ui, icon, &tip, selected && !future, underline, future || off, error.is_some() && !future && !off);
                 rects.push(r.rect);
+                if r.drag_started() {
+                    self.timeline_drag = Some(idx);
+                }
                 if r.clicked() {
                     if future {
                         goto = Some(idx + 1);
@@ -205,19 +208,24 @@ impl OpenCad {
                         toggle_suppress = Some(*f);
                         ui.close();
                     }
-                    if ui.add_enabled(idx > 0, egui::Button::new("Move earlier")).clicked() {
-                        shift = Some((idx, false));
-                        ui.close();
-                    }
-                    if ui.add_enabled(idx + 1 < len, egui::Button::new("Move later")).clicked() {
-                        shift = Some((idx, true));
-                        ui.close();
-                    }
                     if ui.button("Delete").clicked() {
                         delete = Some(*f);
                         ui.close();
                     }
                 });
+            }
+            // Dragging a feature along the timeline: a bar shows where it will land.
+            if let (Some(from), Some(p)) = (self.timeline_drag, ui.input(|i| i.pointer.interact_pos())) {
+                let gap = rects.iter().filter(|r| r.center().x < p.x).count();
+                if let (Some(first), Some(last)) = (rects.first(), rects.last()) {
+                    let x = if gap == 0 { first.left() - 3.0 } else if gap >= rects.len() { last.right() + 3.0 } else { (rects[gap - 1].right() + rects[gap].left()) / 2.0 };
+                    ui.painter().line_segment([egui::pos2(x, first.top()), egui::pos2(x, first.bottom())], Stroke::new(3.0, COL_ARROW_HOT));
+                }
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                if ui.input(|i| i.pointer.any_released()) {
+                    self.timeline_drag = None;
+                    shift = Some((from, gap));
+                }
             }
             // The marker: a bar between built and rolled-back features, draggable.
             if let Some(first) = rects.first().copied() {
@@ -257,8 +265,8 @@ impl OpenCad {
                 None => self.suppressed.push(f),
             }
         }
-        if let Some((at, later)) = shift {
-            self.move_feature(at, later);
+        if let Some((from, gap)) = shift {
+            self.move_feature(from, gap);
         }
         self.rename_feature_window(ui.ctx());
         match delete {

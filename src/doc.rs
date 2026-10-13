@@ -64,15 +64,19 @@ pub fn forget_feature(list: &mut Vec<Feature>, gone: Feature) {
     }
 }
 
-/// The timeline with the feature at `at` swapped with its neighbour (`later`
-/// moves it one place on, else one back). None at either end.
-pub fn swapped(timeline: &[Feature], at: usize, later: bool) -> Option<Vec<Feature>> {
-    let to = if later { at.checked_add(1)? } else { at.checked_sub(1)? };
-    if at >= timeline.len() || to >= timeline.len() {
+/// The timeline with the feature at `from` dropped into gap `gap` (0 = before
+/// the first, `len` = after the last). None when that leaves it where it was.
+pub fn moved(timeline: &[Feature], from: usize, gap: usize) -> Option<Vec<Feature>> {
+    if from >= timeline.len() || gap > timeline.len() {
+        return None;
+    }
+    let to = if gap > from { gap - 1 } else { gap };
+    if to == from {
         return None;
     }
     let mut t = timeline.to_vec();
-    t.swap(at, to);
+    let f = t.remove(from);
+    t.insert(to, f);
     Some(t)
 }
 
@@ -798,12 +802,13 @@ mod tests {
     }
 
     #[test]
-    fn swapping_moves_one_place_and_stops_at_the_ends() {
+    fn moving_drops_a_feature_into_a_gap() {
         let t = [Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)];
-        assert_eq!(swapped(&t, 1, true), Some(vec![Feature::Sketch(0), Feature::Edge(0), Feature::Extrude(0)]));
-        assert_eq!(swapped(&t, 1, false), Some(vec![Feature::Extrude(0), Feature::Sketch(0), Feature::Edge(0)]));
-        assert_eq!(swapped(&t, 0, false), None);
-        assert_eq!(swapped(&t, 2, true), None);
+        assert_eq!(moved(&t, 2, 0), Some(vec![Feature::Edge(0), Feature::Sketch(0), Feature::Extrude(0)]));
+        assert_eq!(moved(&t, 0, 3), Some(vec![Feature::Extrude(0), Feature::Edge(0), Feature::Sketch(0)]));
+        assert_eq!(moved(&t, 1, 1), None);
+        assert_eq!(moved(&t, 1, 2), None);
+        assert_eq!(moved(&t, 1, 9), None);
     }
 
     #[test]

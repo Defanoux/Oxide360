@@ -71,13 +71,9 @@ impl OpenCad {
     /// A body's colour: the one the user picked, else a default by the order
     /// bodies were made in.
     pub(crate) fn body_color(&self, id: BodyId) -> Color32 {
-        let rank = self
-            .timeline
-            .iter()
-            .filter(|f| matches!(f, Feature::Extrude(_) | Feature::Revolve(_) | Feature::Copy(_)))
-            .position(|f| *f == id.feature)
-            .unwrap_or(0)
-            + id.piece;
+        // By how old the body is among the bodies there are now, so no two share a default.
+        let at = |b: &BodyId| (self.timeline.iter().position(|f| *f == b.feature).unwrap_or(usize::MAX), b.piece);
+        let rank = self.body_ids.iter().filter(|b| at(b) < at(&id)).count();
         let c = self.body_colors.get(&id).copied().unwrap_or_else(|| colors::default_color(rank));
         Color32::from_rgb(c[0], c[1], c[2])
     }
