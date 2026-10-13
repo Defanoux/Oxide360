@@ -120,10 +120,11 @@ impl OpenCad {
         let mut out = Vec::new();
         if let (Some(first), Some(last)) = (p.samples.segments.first(), p.samples.segments.last()) {
             let pts: Vec<DVec3> = std::iter::once(first[0]).chain(p.samples.segments.iter().map(|s| s[1])).collect();
+            // (A whole circle has no ends, and its "middle" would be anywhere.)
             if first[0].distance(last[1]) > 1e-9 {
                 out.extend([first[0], last[1]]);
+                out.extend(measure::middle(&pts));
             }
-            out.extend(measure::middle(&pts));
         }
         match p.geom {
             Geom::Circle { center, .. } => out.push(center),

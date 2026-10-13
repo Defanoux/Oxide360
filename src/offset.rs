@@ -640,6 +640,27 @@ mod tests {
     }
 
     #[test]
+    fn deleting_the_original_keeps_the_copys_shared_centre() {
+        use crate::sketch::Sel;
+        for round in [true, false] {
+            let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+            sk.points.extend([DVec2::new(0.0, 0.0), DVec2::new(4.0, 0.0), DVec2::new(0.0, 4.0)]);
+            sk.entities.push(if round { Entity::Circle { center: 1, radius: 4.0 } } else { Entity::Arc { center: 1, a: 2, b: 3 } });
+            let cs = sk.offset_constrained(0, DVec2::new(5.0, 5.0), Some(1.0)).unwrap();
+            add_each(&mut sk, cs);
+            sk.delete(&[Sel::Entity(0)]);
+            assert_eq!(sk.entities.len(), 1);
+            assert!(sk.constraints.iter().all(|c| !matches!(c, Constraint::Offset(..))), "the offset went with its original");
+            match sk.entities[0] {
+                Entity::Circle { center, radius } => assert!(center < sk.points.len() && (radius - 5.0).abs() < 1e-9),
+                Entity::Arc { .. } => assert!((sk.arc_geometry(0).unwrap().1 - 5.0).abs() < 1e-9),
+                _ => panic!(),
+            }
+            crate::solver::solve(&mut sk, &[]).unwrap();
+        }
+    }
+
+    #[test]
     fn a_branch_cannot_be_offset() {
         let mut sk = lines(&[((0.0, 0.0), (5.0, 0.0)), ((0.0, 0.0), (0.0, 5.0)), ((0.0, 0.0), (-5.0, -5.0))]);
         // They don't share the origin point here, so join three at one point by hand.

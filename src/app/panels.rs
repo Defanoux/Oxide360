@@ -333,7 +333,7 @@ impl OpenCad {
                     }
                 });
                 group(ui, "INSPECT", |ui| {
-                    if icons::button(ui, Icon::Measure, "Measure: click a corner, edge or face — one for its size, two for distance and angle", has_bodies, self.measure.is_some()).clicked() {
+                    if icons::button(ui, Icon::Measure, "Measure: click a corner, edge, face, body or sketch geometry — one for its size, two for distance and angle", has_bodies || !self.sketches.is_empty(), self.measure.is_some()).clicked() {
                         self.measure = if self.measure.is_some() { None } else { Some(measure::Measure::default()) };
                     }
                 });
