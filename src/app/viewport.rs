@@ -1186,8 +1186,9 @@ impl OpenCad {
                 | Tool::PolygonCircumscribed
                 | Tool::PolygonInscribed
                 | Tool::PolygonEdge => {
-                    // After the centre (circle) or the two centres (slot), typing a number sets the diameter / width.
-                    let wants_number = (self.editor.tool == Tool::Circle && self.editor.start.is_some())
+                    // After the centre (circle), the first point (line) or the two centres (slot),
+                    // typing a number sets the diameter / length / width.
+                    let wants_number = (matches!(self.editor.tool, Tool::Circle | Tool::Line) && self.editor.start.is_some())
                         || (self.editor.tool == Tool::Slot && self.editor.second.is_some());
                     if wants_number && !typing && self.float.is_none() {
                         if let Some(typed) = typed_number(ui) {
