@@ -507,22 +507,27 @@ impl OpenCad {
                 let tip = match (&error, future, off) {
                     (_, true, _) => format!("{name} — rolled back; click to roll forward to here"),
                     (_, _, true) => format!("{name} — suppressed (right-click to unsuppress)"),
-                    (Some(e), _, _) => format!("{name}: {e}"),
-                    (None, _, _) => name.clone(),
+                    (Some(e), _, _) => format!("{name}: {e}  (double-click to edit)"),
+                    (None, _, _) => format!("{name}  (double-click to edit)"),
                 };
                 let r = icons::timeline_button(ui, icon, &tip, selected && !future, underline, future || off, error.is_some() && !future && !off);
                 rects.push(r.rect);
                 if r.drag_started() {
                     self.timeline_drag = Some(idx);
                 }
-                if r.clicked() {
-                    if future {
-                        goto = Some(idx + 1);
-                    } else {
-                        action = Some(*f);
-                    }
+                // A click on a rolled-back feature rolls forward to it; a
+                // double-click on a built one edits it (as in Fusion).
+                if r.clicked() && future {
+                    goto = Some(idx + 1);
+                }
+                if r.double_clicked() && !future {
+                    action = Some(*f);
                 }
                 r.context_menu(|ui| {
+                    if !future && !matches!(f, Feature::Axis(_) | Feature::Remove(_)) && ui.button("Edit").clicked() {
+                        action = Some(*f);
+                        ui.close();
+                    }
                     if ui.button("Rename…").clicked() {
                         rename = Some(*f);
                         ui.close();

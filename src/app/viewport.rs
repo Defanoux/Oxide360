@@ -2002,7 +2002,7 @@ impl OpenCad {
             // Over a glyph: what it is and what clicking does.
             if let (Some(ci), Some(px)) = (self.dim_hover, hover_px) {
                 if let Some(c) = sk.constraints.get(ci).filter(|c| c.value().is_none()) {
-                    let tip = format!("{} constraint — click to select it (clicking more adds them), then Delete removes", c.name());
+                    let tip = format!("{} constraint. Click it to select it, then press Delete to remove it.", c.name());
                     view.label(px + Vec2::new(14.0, 18.0), egui::Align2::LEFT_TOP, tip, Color32::from_gray(225));
                 }
             }

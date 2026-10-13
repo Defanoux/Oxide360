@@ -528,6 +528,10 @@ impl OpenCad {
     }
 
     pub(crate) fn commit_plane(&mut self) {
+        if let Some(e) = self.dialog_error.clone().filter(|_| self.plane_dialog.is_some()) {
+            self.message = Some(format!("Can't make the plane: {e}"));
+            return;
+        }
         let Some(d) = self.plane_dialog.as_ref() else { return };
         let name = match d.editing {
             Some(k) => self.planes[k].name.clone(),

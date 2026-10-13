@@ -722,6 +722,21 @@ impl Default for OpenCad {
 impl eframe::App for OpenCad {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Enter finishes the open tool window (OK) when nothing else takes it:
+        // no text box focused and no number box open (that has its own Enter).
+        if self.active.is_none() && self.float.is_none() && !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if self.plane_dialog.is_some() {
+                self.commit_plane();
+            } else if self.copy_dialog.is_some() {
+                self.commit_copy();
+            } else if self.edge_dialog.is_some() {
+                self.commit_edge_feature();
+            } else if self.revolve_dialog.is_some() {
+                self.commit_revolve();
+            } else if self.dialog.is_some() {
+                self.commit_extrude();
+            }
+        }
         // Shortcuts are consumed first so the viewport never sees them as plain keys.
         let shortcut = ctx.input_mut(|i| {
             use egui::{Key, Modifiers};
