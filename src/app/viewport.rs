@@ -1228,6 +1228,10 @@ impl OpenCad {
                         || (self.editor.tool == Tool::Slot && self.editor.second.is_some());
                     if wants_number && !typing && self.float.is_none() {
                         if let Some(typed) = typed_number(ui) {
+                            if self.editor.tool == Tool::Line {
+                                // The line takes the length from the first digit typed.
+                                self.line_length = units::parse_length(&typed, self.units).filter(|v| *v > 0.0);
+                            }
                             self.float = Some(FloatEdit { target: EditTarget::NewCircle, text: typed, focus: true, keep_text: true });
                         }
                     }

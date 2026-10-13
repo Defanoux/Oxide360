@@ -1161,6 +1161,7 @@ impl OpenCad {
             _ => self.units,
         };
         let mut typed_unit = None; // the unit written in the box, when Enter was pressed
+        let mut esc_hit = false;
         let mut commit: Option<Option<f64>> = None; // Some(parsed) when Enter was pressed
         let mut close = false;
         let mut live: Option<f64> = None;
@@ -1225,7 +1226,11 @@ impl OpenCad {
                                 }
                             }
                             EditTarget::Dimension(_) | EditTarget::NewCircle => {
+                                if changed {
+                                    live = parsed;
+                                }
                                 if lost {
+                                    esc_hit = esc;
                                     if enter {
                                         commit = Some(parsed);
                                         typed_unit = units::typed_unit(&fe.text);
@@ -1274,6 +1279,16 @@ impl OpenCad {
                 }
             }
             EditTarget::NewCircle => {
+                // A line follows the length as it's typed (and keeps it when the
+                // box is left by clicking in the view: that click sets the angle).
+                if self.editor.tool == Tool::Line {
+                    if let Some(v) = live.filter(|v| *v > 0.0) {
+                        self.line_length = Some(v);
+                    }
+                    if esc_hit {
+                        self.line_length = None;
+                    }
+                }
                 match commit {
                     Some(Some(v)) => match self.editor.tool {
                         Tool::Slot => self.finish_slot_typed(v),
