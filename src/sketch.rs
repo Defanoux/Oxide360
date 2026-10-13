@@ -1135,6 +1135,103 @@ impl Sketch {
     }
 }
 
+// ---------- Selection details ----------
+
+/// What a figure in the selection details measures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Amount {
+    Length,
+    Area,
+}
+
+impl Sketch {
+    /// How far `p` is from entity `e` (its curve; a point entity by its point).
+    fn distance_to(&self, e: EntityId, p: DVec2) -> f64 {
+        match *self.entities.get(e).expect("valid entity") {
+            Entity::Line { a, b } => dist_to_segment(p, self.points[a], self.points[b]),
+            Entity::Circle { center, radius } => (p.distance(self.points[center]) - radius).abs(),
+            Entity::Point { p: q } => p.distance(self.points[q]),
+            Entity::Arc { .. } => {
+                let Some((c, r, a0, sweep)) = self.arc_geometry(e) else { return f64::INFINITY };
+                let ang = (p - c).y.atan2((p - c).x);
+                if (ang - a0).rem_euclid(std::f64::consts::TAU) <= sweep + 1e-9 {
+                    (p.distance(c) - r).abs()
+                } else {
+                    let ends = [c + DVec2::from_angle(a0) * r, c + DVec2::from_angle(a0 + sweep) * r];
+                    ends[0].distance(p).min(ends[1].distance(p))
+                }
+            }
+        }
+    }
+
+    /// Figures about a selection for the corner readout (mm, mm²): a line's
+    /// length; a circle's diameter, circumference and area; an arc's radius
+    /// and length; several curves' total length, and — when they close a
+    /// shape — its area and perimeter; a point's position or two points' distance.
+    pub fn selection_info(&self, sel: &[Sel]) -> Vec<(&'static str, f64, Amount)> {
+        use Amount::*;
+        let ents: Vec<EntityId> = sel.iter().filter_map(|s| if let Sel::Entity(e) = *s { Some(e) } else { None }).filter(|&e| e < self.entities.len()).collect();
+        let pts: Vec<PointId> = sel.iter().filter_map(|s| if let Sel::Point(p) = *s { Some(p) } else { None }).filter(|&p| p < self.points.len()).collect();
+        let length = |e: EntityId| match self.entities[e] {
+            Entity::Line { a, b } => self.points[a].distance(self.points[b]),
+            Entity::Circle { radius, .. } => std::f64::consts::TAU * radius,
+            Entity::Arc { .. } => self.arc_geometry(e).map_or(0.0, |(_, r, _, sweep)| r * sweep),
+            Entity::Point { .. } => 0.0,
+        };
+        let mut out = Vec::new();
+        match (ents.as_slice(), pts.as_slice()) {
+            ([], [p]) => {
+                let q = self.points[*p];
+                out.extend([("X", q.x, Length), ("Y", q.y, Length)]);
+            }
+            ([], [p, q]) => out.push(("Distance", self.points[*p].distance(self.points[*q]), Length)),
+            ([e], _) => match self.entities[*e] {
+                Entity::Line { .. } => out.push(("Length", length(*e), Length)),
+                Entity::Circle { radius, .. } => out.extend([
+                    ("Diameter", 2.0 * radius, Length),
+                    ("Circumference", length(*e), Length),
+                    ("Area", std::f64::consts::PI * radius * radius, Area),
+                ]),
+                Entity::Arc { .. } => {
+                    if let Some((_, r, _, _)) = self.arc_geometry(*e) {
+                        out.extend([("Radius", r, Length), ("Length", length(*e), Length)]);
+                    }
+                }
+                Entity::Point { p } => {
+                    let q = self.points[p];
+                    out.extend([("X", q.x, Length), ("Y", q.y, Length)]);
+                }
+            },
+            (many, _) if many.len() > 1 => {
+                out.push(("Total length", many.iter().map(|&e| length(e)).sum(), Length));
+                // A closed shape: a profile whose outline lies all on the selection.
+                let tol = 1e-6;
+                let closed = crate::profile::find_regions(self)
+                    .into_iter()
+                    .map(|r| crate::profile::Region { holes: Vec::new(), hole_curves: Vec::new(), ..r })
+                    .filter(|r| {
+                        // The middle of every edge of the outline (on the arc, for arcs).
+                        let n = r.outer.len();
+                        (0..n).all(|i| {
+                            let mid = (r.outer[i] + r.outer[(i + 1) % n]) * 0.5;
+                            let mid = match r.outer_curves.get(i) {
+                                Some(&crate::profile::Curve::Arc { center, radius }) => center + (mid - center).normalize_or_zero() * radius,
+                                _ => mid,
+                            };
+                            many.iter().any(|&e| self.distance_to(e, mid) < tol)
+                        })
+                    })
+                    .max_by(|a, b| a.exact_area().total_cmp(&b.exact_area()));
+                if let Some(r) = closed {
+                    out.extend([("Area", r.exact_area(), Area), ("Perimeter", r.loop_length(), Length)]);
+                }
+            }
+            _ => {}
+        }
+        out
+    }
+}
+
 // ---------- Constraint actions ----------
 
 /// Constraint buttons, in toolbar order.
@@ -3553,6 +3650,44 @@ mod trim_tests {
         assert_eq!((sk.dim_unit(0), sk.dim_unit(1)), (Some(Unit::In), None));
         sk.set_dim_unit(0, None);
         assert!(sk.dim_units.is_empty(), "nothing stored when every dimension follows the design");
+    }
+
+    #[test]
+    fn selection_details_for_lines_circles_and_closed_shapes() {
+        use std::f64::consts::PI;
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Rectangle);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(0.0, 0.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(40.0, 20.0)));
+        let rect: Vec<Sel> = (0..4).map(Sel::Entity).collect();
+        let info = sk.selection_info(&rect);
+        let get = |info: &[(&str, f64, Amount)], k: &str| info.iter().find(|r| r.0 == k).map(|r| r.1);
+        assert_eq!(get(&info, "Total length"), Some(120.0));
+        assert!((get(&info, "Area").unwrap() - 800.0).abs() < 1e-9 && (get(&info, "Perimeter").unwrap() - 120.0).abs() < 1e-9);
+        // Three sides: open, no area.
+        assert_eq!(get(&sk.selection_info(&rect[..3]), "Area"), None);
+        assert_eq!(get(&sk.selection_info(&rect[..1]), "Length"), Some(40.0));
+        ed.set_tool(Tool::Circle);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(100.0, 0.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(105.0, 0.0)));
+        let c = sk.selection_info(&[Sel::Entity(sk.entities.len() - 1)]);
+        assert_eq!(c.iter().map(|r| r.0).collect::<Vec<_>>(), ["Diameter", "Circumference", "Area"]);
+        assert!((c[2].1 - 25.0 * PI).abs() < 1e-9 && c[2].2 == Amount::Area);
+        // A slot (lines and half circles): 20 × 6 plus a circle of radius 3.
+        let mut slot = Sketch::new("S".into(), OriginPlane::XY);
+        let mut se = Editor::default();
+        se.set_tool(Tool::Slot);
+        se.click(&mut slot, Anchor::Free(DVec2::new(0.0, 10.0)));
+        se.click(&mut slot, Anchor::Free(DVec2::new(20.0, 10.0)));
+        se.click(&mut slot, Anchor::Free(DVec2::new(5.0, 13.0)));
+        let sides: Vec<Sel> = (0..4).map(Sel::Entity).collect();
+        let a = get(&slot.selection_info(&sides), "Area").unwrap();
+        assert!((a - (120.0 + 9.0 * PI)).abs() < 1e-9, "{a}");
+        let d = sk.selection_info(&[Sel::Point(1), Sel::Point(3)]);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].0, "Distance");
+        assert!((d[0].1 - sk.points[1].distance(sk.points[3])).abs() < 1e-12);
     }
 
     #[test]

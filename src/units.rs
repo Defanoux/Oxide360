@@ -69,6 +69,11 @@ impl Unit {
         format!("{} {}", self.plain(mm), self.name())
     }
 
+    /// An area (mm²) with the unit: "1.000 in²".
+    pub fn show_area(self, mm2: f64) -> String {
+        format!("{:.*} {}²", self.decimals(), mm2 / (self.mm() * self.mm()), self.name())
+    }
+
     /// The unit a word names, if any ("inches", "\"", "mm"…).
     fn from_word(w: &str) -> Option<Unit> {
         Some(match w.to_ascii_lowercase().as_str() {

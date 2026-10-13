@@ -2337,6 +2337,25 @@ impl OpenCad {
         }
 
         // --- notification (bottom-left, fades after a few seconds) ---
+        // What's selected in the sketch measures, bottom right.
+        if let Some(i) = self.active {
+            let info = self.sketches[i].selection_info(&self.editor.selection);
+            if !info.is_empty() {
+                let text = info
+                    .iter()
+                    .map(|&(label, v, amount)| match amount {
+                        sketch::Amount::Length => format!("{label}  {}", self.units.show(v)),
+                        sketch::Amount::Area => format!("{label}  {}", self.units.show_area(v)),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let galley = painter.layout_no_wrap(text, egui::FontId::monospace(13.0), Color32::from_gray(225));
+                let at = rect.right_bottom() - egui::vec2(16.0, 34.0) - galley.size();
+                painter.rect_filled(egui::Rect::from_min_size(at, galley.size()).expand(8.0), 6.0, Color32::from_rgba_unmultiplied(28, 28, 28, 225));
+                painter.galley(at, galley, Color32::WHITE);
+            }
+        }
+
         // Sketch status, top left (Fusion has no constraint list; constraints
         // are picked on the canvas by their glyphs).
         if let Some(i) = self.active {
