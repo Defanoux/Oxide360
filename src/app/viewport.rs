@@ -1816,6 +1816,10 @@ impl OpenCad {
                         return;
                     }
                 } else {
+                    if ui.button("Look At").on_hover_text("Look straight at the sketch plane").clicked() {
+                        self.look_at(self.sketches[i].view_angles(), None);
+                        ui.close();
+                    }
                     if ui.button("Finish Sketch").clicked() {
                         self.finish_sketch();
                         ui.close();
@@ -1834,6 +1838,10 @@ impl OpenCad {
                     }
                 }
                 ui.separator();
+                if ui.button("Look At").on_hover_text("Look straight at the sketch plane").clicked() {
+                    self.look_at(self.sketches[i].view_angles(), None);
+                    ui.close();
+                }
                 if ui.button("Finish Sketch").clicked() {
                     self.finish_sketch();
                     ui.close();
@@ -1843,14 +1851,35 @@ impl OpenCad {
                     self.start_sketch(op);
                     ui.close();
                 }
+                if ui.button("Look At").clicked() {
+                    self.look_at(op.view_angles(), None);
+                    ui.close();
+                }
             } else if let Some(k) = self.ctx_cplane.filter(|&k| k < self.planes.len()) {
                 if ui.button(format!("Create Sketch on {}", self.planes[k].name)).clicked() {
                     self.start_sketch_on_plane(k);
                     ui.close();
                 }
-            } else if let Some((_, face)) = self.ctx_face {
+                let built = self.model(Slot::Committed).planes.get(k).copied().flatten();
+                if let Some(p) = built {
+                    if ui.button("Look At").clicked() {
+                        self.look_at(camera::angles_for_dir(p.normal().as_vec3()), Some(p.origin.as_vec3()));
+                        ui.close();
+                    }
+                }
+            } else if let Some((b, face)) = self.ctx_face {
                 if ui.button("Create Sketch on this face").clicked() {
                     self.start_sketch_on_face(face);
+                    ui.close();
+                }
+                if ui.button("Look At").on_hover_text("Look straight at this face").clicked() {
+                    // Centred on the face (its extent is in plane coordinates: p·u, p·v).
+                    let centre = self.model(Slot::Committed).bodies.get(b).map(|body| {
+                        let [x0, y0, x1, y1] = model::face_extent(&body.mesh, &face);
+                        let n = face.normal();
+                        face.u * ((x0 + x1) / 2.0) + face.v * ((y0 + y1) / 2.0) + n * face.origin.dot(n)
+                    });
+                    self.look_at(camera::angles_for_dir(face.normal().as_vec3()), centre.or(Some(face.origin)).map(|c| c.as_vec3()));
                     ui.close();
                 }
             } else {
