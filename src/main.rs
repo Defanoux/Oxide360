@@ -760,9 +760,6 @@ impl eframe::App for OpenCad {
             }
         });
         egui::Panel::left("browser").resizable(true).default_size(200.0).show(ui, |ui| self.browser(ui));
-        if self.active.is_some() {
-            egui::Panel::right("constraints").resizable(true).default_size(260.0).show(ui, |ui| self.constraints_panel(ui));
-        }
         // Tool dialogs float over the view's right side, like Fusion's.
         // Bottom right, above the timeline, so they cover no controls.
         let lift = self.timeline_height + 12.0;

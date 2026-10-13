@@ -699,8 +699,9 @@ impl OpenCad {
                     }
                 } else {
                     match self.dim_hover.filter(|&ci| ci < self.sketches[i].constraints.len()) {
-                        // Right-click a dimension: driving ⇄ driven.
-                        Some(ci) => self.toggle_driven(ci),
+                        // Right-click a dimension: driving ⇄ driven (glyphs have no value).
+                        Some(ci) if self.sketches[i].constraints[ci].value().is_some() => self.toggle_driven(ci),
+                        Some(_) => {}
                         None => self.editor.cancel(),
                     }
                 }
@@ -766,7 +767,7 @@ impl OpenCad {
                 Tool::Select => {
                     if response.drag_started_by(egui::PointerButton::Primary) {
                         let sk = &self.sketches[i];
-                        if let (Some(ci), Some(q)) = (over_label, raw_press) {
+                        if let (Some(ci), Some(q)) = (over_label.filter(|&ci| sk.constraints.get(ci).is_some_and(|c| c.value().is_some())), raw_press) {
                             // Grab a dimension's label to move it out of the way.
                             self.label_drag = Some((ci, q, sk.label_shift(ci)));
                         } else if let Some(Sel::Point(p)) = raw_press.and_then(|q| sk.hit(q, SNAP_PX as f64 * mm_per_px)) {
@@ -899,7 +900,11 @@ impl OpenCad {
                         }
                     } else if response.clicked() {
                         match over_label {
-                            Some(ci) if self.touchpad && self.dim_selection.contains(&ci) => {
+                            Some(ci)
+                                if self.touchpad
+                                    && self.dim_selection.contains(&ci)
+                                    && self.sketches[i].constraints.get(ci).is_some_and(|c| c.value().is_some()) =>
+                            {
                                 if let Some(p) = raw_hover {
                                     self.label_drag = Some((ci, p, self.sketches[i].label_shift(ci)));
                                     self.label_carry = true;
@@ -1814,7 +1819,10 @@ impl OpenCad {
             } else {
                 visible.iter().copied().sum::<Vec2>() / visible.len() as f32
             };
-            let mut glyphs: Vec<Vec<&str>> = vec![Vec::new(); sk.entities.len()];
+            // Constraint glyphs, by what they sit beside: (constraint, text).
+            // Each is its own label, so it can be clicked (selected) and deleted.
+            let mut glyphs: Vec<Vec<(usize, &str)>> = vec![Vec::new(); sk.entities.len()];
+            let mut point_glyphs: Vec<Vec<(usize, &str)>> = vec![Vec::new(); sk.points.len()];
             for (ci, c) in sk.constraints.iter().enumerate() {
                 let label = match *c {
                     // An offset's pieces share one dimension, on the first.
@@ -1840,15 +1848,16 @@ impl OpenCad {
                         let r = draw_dimension(&traced, sk, &plane, c, sk.is_driven(ci), sk.label_shift(ci), centroid, colour);
                         r.map(|r| (r, trace.into_inner()))
                     }
-                    Constraint::Fix(p) => {
-                        if let Some(px) = projected[p] {
-                            view.text(px + Vec2::new(0.0, -12.0), "Fix".into(), COL_FIXED);
+                    // Glyphs about a point sit at the point.
+                    Constraint::Fix(p) | Constraint::Coincident(p, _) | Constraint::OnAxis(p, _) | Constraint::Midpoint(p, ..) => {
+                        if let Some(g) = point_glyphs.get_mut(p) {
+                            g.push((ci, c.glyph()));
                         }
                         None
                     }
                     _ => {
                         for e in c.entities() {
-                            glyphs[e].push(c.glyph());
+                            glyphs[e].push((ci, c.glyph()));
                         }
                         None
                     }
@@ -1863,11 +1872,33 @@ impl OpenCad {
                     draw_dimension(&view, sk, &plane, &c, false, shift, centroid, COL_DIM.gamma_multiply(0.7));
                 }
             }
+            let glyph_colour = |ci: usize| {
+                if self.dim_selection.contains(&ci) {
+                    COL_SELECT
+                } else if self.dim_hover == Some(ci) {
+                    COL_HOVER
+                } else if matches!(sk.constraints[ci], Constraint::Fix(_)) {
+                    COL_FIXED
+                } else {
+                    COL_GLYPH
+                }
+            };
+            let mut glyph_rects: Vec<(usize, egui::Rect)> = Vec::new();
+            let mut place = |items: &[(usize, &str)], at: Vec2, dir: Vec2, gap: f32| {
+                let texts: Vec<(String, Color32)> = items.iter().map(|&(ci, t)| (t.to_string(), glyph_colour(ci))).collect();
+                for (r, &(ci, _)) in view.texts_beside(at, dir, gap, &texts).into_iter().zip(items) {
+                    glyph_rects.push((ci, r));
+                }
+            };
+            for (p, g) in point_glyphs.iter().enumerate() {
+                if let (false, Some(px)) = (g.is_empty(), projected[p]) {
+                    place(g, px, Vec2::new(0.0, -1.0), 10.0);
+                }
+            }
             for (e, g) in glyphs.iter().enumerate() {
                 if g.is_empty() {
                     continue;
                 }
-                let text = g.join("  ");
                 match sk.entities[e] {
                     Entity::Line { a, b } => {
                         if let (Some(pa), Some(pb)) = (projected[a], projected[b]) {
@@ -1876,30 +1907,32 @@ impl OpenCad {
                             if (centroid - mid).dot(n) < 0.0 {
                                 n = -n;
                             }
-                            view.text_beside(mid, n, 8.0, text, COL_GLYPH);
+                            place(g, mid, n, 8.0);
                         }
                     }
                     Entity::Circle { center, radius } => {
                         let at = sk.points[center] + DVec2::new(-radius, radius) * std::f64::consts::FRAC_1_SQRT_2;
                         if let (Some(pc), Some(pa)) = (projected[center], view.project(plane.to_world(at))) {
-                            view.text_beside(pa, (pa - pc).normalize_or_zero(), 6.0, text, COL_GLYPH);
+                            place(g, pa, (pa - pc).normalize_or_zero(), 6.0);
                         }
                     }
                     Entity::Point { p } => {
                         if let Some(px) = projected[p] {
-                            view.text_beside(px, Vec2::new(0.7, -0.7), 8.0, text, COL_GLYPH);
+                            place(g, px, Vec2::new(0.7, -0.7), 8.0);
                         }
                     }
                     Entity::Arc { center, .. } => {
                         if let Some((c, r, a0, sweep)) = sk.arc_geometry(e) {
                             let mid = c + DVec2::from_angle(a0 + sweep * 0.5) * r;
                             if let (Some(pc), Some(pm)) = (projected[center], view.project(plane.to_world(mid))) {
-                                view.text_beside(pm, (pm - pc).normalize_or_zero(), 6.0, text, COL_GLYPH);
+                                place(g, pm, (pm - pc).normalize_or_zero(), 6.0);
                             }
                         }
                     }
                 }
             }
+            // Glyphs are picked like dimension labels (but not dragged or edited).
+            self.dim_labels.extend(glyph_rects.into_iter().map(|(ci, r)| (ci, r.expand(2.0), Vec::new())));
         }
 
         // --- right-click menu: a sketch's selection, or an origin plane ---
@@ -1927,7 +1960,7 @@ impl OpenCad {
                     self.toggle_construction();
                     ui.close();
                 }
-                if let [ci] = self.dim_selection[..] {
+                if let [ci] = self.dim_selection[..].iter().copied().filter(|&ci| self.sketches[i].constraints.get(ci).is_some_and(|c| c.value().is_some())).collect::<Vec<_>>()[..] {
                     let driven = self.sketches.get(i).is_some_and(|sk| sk.is_driven(ci));
                     if ui.button(if driven { "Make driving" } else { "Make reference (driven)" }).clicked() {
                         self.toggle_driven(ci);
@@ -2229,6 +2262,22 @@ impl OpenCad {
         }
 
         // --- notification (bottom-left, fades after a few seconds) ---
+        // Sketch status, top left (Fusion has no constraint list; constraints
+        // are picked on the canvas by their glyphs).
+        if let Some(i) = self.active {
+            let (text, col) = match self.dof {
+                Some(0) => ("Fully constrained".to_string(), Color32::from_rgb(120, 220, 120)),
+                Some(n) => (format!("{n} degree{} of freedom left", if n == 1 { "" } else { "s" }), COL_UNDER),
+                None => ("Not solvable".to_string(), COL_FIXED),
+            };
+            let at = rect.left_top() + egui::vec2(12.0, 10.0);
+            painter.text(at, egui::Align2::LEFT_TOP, self.sketches[i].name.as_str(), egui::FontId::proportional(15.0), Color32::from_gray(220));
+            painter.text(at + egui::vec2(0.0, 20.0), egui::Align2::LEFT_TOP, text, egui::FontId::proportional(13.0), col);
+            if let Some(msg) = &self.message {
+                painter.text(at + egui::vec2(0.0, 38.0), egui::Align2::LEFT_TOP, msg.as_str(), egui::FontId::proportional(13.0), COL_FIXED);
+            }
+        }
+
         let mut expired = false;
         if let Some((text, since)) = &mut self.toast {
             if since.is_nan() {

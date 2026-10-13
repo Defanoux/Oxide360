@@ -10,7 +10,6 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Polish (do when nearby code is touched)
 
-- On-canvas glyphs for OnAxis / Midpoint / Distance constraints.
 - New-circle diameter box closes silently on click-away — add a hint.
 - Dimension tool: clicking an existing dimension should select/edit it.
 - Tangent-tool error hints in red, not the preview colour.
@@ -20,6 +19,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Sketch: constraint glyphs are clickable labels (select, Shift adds, Delete / right-click Delete); point constraints (Fix, Coincident, On axis, Midpoint) show at their point; the right-hand constraint list is gone (as in Fusion) and the sketch name + degrees of freedom sit at the canvas's top left. Coincident / Collinear / Concentric constraints with icons; the sketch X/Y axes can be picked for constraints. Trim / Extend preview what a click does. Fillet/chamfer arrow points into the gap on inside corners.
 - Browser bodies: click selects (Ctrl/Shift adds, tinted in the view, Esc clears); right-click Remove (Fusion's Remove: a timeline feature `Feature::Remove` / `RemoveFeature`, errors if its body is gone, follows feature deletes, pruned when empty; Delete key does this) or Delete (deletes the feature that made the body). Offset constraint is signed (keeps its side — fixed a folded offset). Sketch menu says "Look at Sketch"; Trim/Extend/Offset/Fillet/Chamfer return to Select after use.
 - Measure to Fusion's reference (help.autodesk.com Measure): Selection Filter (Face/Edge/Vertex, Body — no components here), Precision 0–6, Units + Secondary units, XYZ Delta None/Global (corner pairs, coloured legs on canvas), Show Snap Points (edge ends/middles, circle and round-face centres; Ctrl locks, Shift hides), Clear selection; Selection 1 / 2 each list their fields (point XYZ; line length; arc length/radius/diameter/centre; circle circumference/…; face area + loop length (+ centre when round); cylinder/fillet radius/diameter/area/loop length; body none) plus Results (min distance, angle, centre distance); visible sketch points, curves and profiles (exact area/loop length) are measurable; hovering a result highlights it; distance search is box-pruned (two 7200-triangle meshes < 0.5 s debug).
 - Offset constraint: offset copies stay attached (lines a set distance off, arcs/circles share the centre), one editable dimension per offset; editing it moves the copy, not the original.

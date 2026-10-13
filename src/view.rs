@@ -182,8 +182,34 @@ impl View<'_> {
         }
     }
 
-    pub fn text(&self, at: Vec2, text: String, color: Color32) {
-        self.painter.text(to_pos(at), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(12.0), color);
+    /// Several short texts in a row, placed like `text_beside`; returns where
+    /// each one went (so they can be clicked).
+    pub fn texts_beside(&self, at: Vec2, dir: Vec2, gap: f32, items: &[(String, Color32)]) -> Vec<egui::Rect> {
+        let pick = |d: f32| {
+            if d > 0.3 {
+                egui::Align::Min
+            } else if d < -0.3 {
+                egui::Align::Max
+            } else {
+                egui::Align::Center
+            }
+        };
+        let align = egui::Align2([pick(dir.x), pick(dir.y)]);
+        let space = 6.0;
+        let galleys: Vec<_> = items.iter().map(|(t, c)| self.painter.layout_no_wrap(t.clone(), egui::FontId::proportional(12.0), *c)).collect();
+        let width = galleys.iter().map(|g| g.size().x).sum::<f32>() + space * galleys.len().saturating_sub(1) as f32;
+        let height = galleys.iter().map(|g| g.size().y).fold(0.0, f32::max);
+        let row = align.anchor_size(to_pos(at + dir * gap), egui::vec2(width, height));
+        let mut x = row.min.x;
+        galleys
+            .into_iter()
+            .map(|g| {
+                let r = egui::Rect::from_min_size(egui::pos2(x, row.min.y), g.size());
+                x += g.size().x + space;
+                self.painter.galley(r.min, g, Color32::WHITE);
+                r
+            })
+            .collect()
     }
 
     /// Text placed `gap` px from `at` in direction `dir`, aligned so the whole

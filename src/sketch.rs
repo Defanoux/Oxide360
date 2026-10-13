@@ -817,16 +817,6 @@ impl Sketch {
         }
     }
 
-    pub fn entity_name(&self, e: EntityId) -> String {
-        match self.entities.get(e) {
-            Some(Entity::Line { .. }) => format!("Line{}", e + 1),
-            Some(Entity::Circle { .. }) => format!("Circle{}", e + 1),
-            Some(Entity::Point { .. }) => format!("Point{}", e + 1),
-            Some(Entity::Arc { .. }) => format!("Arc{}", e + 1),
-            None => "?".into(),
-        }
-    }
-
     /// Closest selectable thing within `tol` mm. Points win over curves.
     pub fn hit(&self, p: DVec2, tol: f64) -> Option<Sel> {
         let point = self
@@ -1132,6 +1122,7 @@ impl Sketch {
     }
 
     /// Remove one constraint (and its label position and driven flag).
+    #[cfg(test)]
     pub fn remove_constraint(&mut self, ci: usize) {
         if ci < self.constraints.len() {
             self.constraints.remove(ci);
