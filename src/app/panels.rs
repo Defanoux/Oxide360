@@ -346,6 +346,22 @@ impl OpenCad {
 
     pub(crate) fn browser(&mut self, ui: &mut egui::Ui) {
         ui.heading("Browser");
+        // Fusion's Document Settings: this design's units (saved with it).
+        egui::CollapsingHeader::new("Document Settings").default_open(false).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Units");
+                egui::ComboBox::from_id_salt("design_units").selected_text(self.units.name()).show_ui(ui, |ui| {
+                    for u in units::Unit::ALL {
+                        ui.selectable_value(&mut self.units, u, u.long_name());
+                    }
+                });
+            });
+            ui.weak(format!("New designs start in {}.", self.default_units.name()));
+            if self.default_units != self.units && ui.small_button(format!("Make {} the default", self.units.name())).clicked() {
+                self.default_units = self.units;
+            }
+            ui.weak("Values are kept exactly; only how they're shown and typed changes. Type \"22 mm\" or \"1 in\" in any box.");
+        });
         // The Origin folder: one switch for all of it, then each plane and axis.
         let folder = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), egui::Id::new("origin_folder"), false);
         folder
@@ -620,6 +636,7 @@ impl OpenCad {
     }
 
     pub(crate) fn extrude_panel(&mut self, ui: &mut egui::Ui) {
+        let unit = self.units;
         // Until the user picks an operation: Join what it touches, else a new body.
         if let (Some(touches), true) = (self.extrude_touches_bodies(), self.dialog.as_ref().is_some_and(|d| !d.op_chosen)) {
             let toward = self.dialog.as_ref().and_then(|d| d.sketch).map(|s| self.cut_direction(s));
@@ -664,7 +681,7 @@ impl OpenCad {
                 model::Extent::TwoSides => "Side 1",
             });
             changed |= ui
-                .add(egui::DragValue::new(&mut d.distance).speed(0.5).min_decimals(2).suffix(" mm"))
+                .add(units::length_drag(&mut d.distance, unit, 0.5))
                 .changed();
             if ui.button("Flip").clicked() {
                 d.distance = -d.distance;
@@ -680,7 +697,7 @@ impl OpenCad {
         if d.extent == model::Extent::TwoSides {
             ui.horizontal(|ui| {
                 ui.label("Side 2");
-                changed |= ui.add(egui::DragValue::new(&mut d.distance2).speed(0.5).min_decimals(2).range(0.0..=f64::MAX).suffix(" mm")).changed();
+                changed |= ui.add(units::length_drag(&mut d.distance2, unit, 0.5).range(0.0..=f64::MAX)).changed();
             });
         }
         ui.horizontal(|ui| {
@@ -813,6 +830,7 @@ impl OpenCad {
 
     /// Right panel while filleting / chamfering.
     pub(crate) fn edge_panel(&mut self, ui: &mut egui::Ui) {
+        let unit = self.units;
         let dialog_error = self.dialog_error.clone();
         let Some(d) = self.edge_dialog.as_mut() else { return };
         ui.heading(if d.editing.is_some() { format!("Edit {}", d.kind.name()) } else { d.kind.name().to_string() });
@@ -830,7 +848,7 @@ impl OpenCad {
         ui.horizontal(|ui| {
             ui.label(d.kind.size_label());
             changed |= ui
-                .add(egui::DragValue::new(&mut d.size).speed(0.1).range(0.001..=1.0e5).min_decimals(2).suffix(" mm"))
+                .add(units::length_drag(&mut d.size, unit, 0.1).range(0.001..=1.0e5))
                 .changed();
         });
         let editing = d.editing;
@@ -874,6 +892,7 @@ impl OpenCad {
                 .is_some_and(|c| matches!(c, Constraint::Angle(..))),
             _ => false,
         };
+        let unit = self.units;
         let mut commit: Option<Option<f64>> = None; // Some(parsed) when Enter was pressed
         let mut close = false;
         let mut live: Option<f64> = None;
@@ -896,7 +915,7 @@ impl OpenCad {
                         } else if target == EditTarget::PolygonSides {
                             "sides"
                         } else {
-                            "mm"
+                            unit.name()
                         });
                         let (lost, changed, id) = (out.response.lost_focus(), out.response.changed(), out.response.id);
                         if fe.focus {
@@ -911,7 +930,9 @@ impl OpenCad {
                             out.state.store(ui.ctx(), id);
                             fe.focus = false;
                         }
-                        let parsed = parse_mm(&fe.text);
+                        // Lengths in the design's units (or as typed: "22 mm", "1 in");
+                        // angles in degrees whatever the units.
+                        let parsed = if degrees { units::parse_angle(&fe.text) } else { units::parse_length(&fe.text, unit) };
                         let (enter, esc) =
                             ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
                         match target {
@@ -952,7 +973,7 @@ impl OpenCad {
                                     extrude_ok = true;
                                 }
                                 if target == EditTarget::EdgeSize && (changed || (lost && enter)) {
-                                    edge_sizes = sketch::parse_sizes(&fe.text);
+                                    edge_sizes = sketch::parse_sizes(&fe.text, unit);
                                 }
                                 if lost && esc {
                                     extrude_cancel = true;
@@ -966,7 +987,7 @@ impl OpenCad {
         match target {
             EditTarget::Corner(p) => {
                 if let Some(text) = corner_text {
-                    match sketch::parse_sizes(&text) {
+                    match sketch::parse_sizes(&text, unit) {
                         Some((d1, d2)) => self.finish_corner(p, d1, d2),
                         None => self.message = Some("Type a number (a chamfer can take two: 2, 5)".into()),
                     }

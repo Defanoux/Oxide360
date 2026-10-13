@@ -155,6 +155,25 @@ impl GridSpec {
         Self { step: nice * mag, major_every }
     }
 
+    /// `for_distance`, in steps that suit the design's units: inch designs
+    /// get 1/16, 1/8, 1/4, 1/2, 1, 2, 6, 12 in… with a major line every inch
+    /// (or foot); metric ones keep 1-2-5 steps.
+    pub fn for_units(distance: f32, unit: crate::units::Unit) -> Self {
+        use crate::units::Unit;
+        if !matches!(unit, Unit::In | Unit::Ft) {
+            return Self::for_distance(distance);
+        }
+        let raw_in = (distance as f64 / 30.0).max(1e-4) / 25.4;
+        const STEPS: [f64; 14] = [1.0 / 64.0, 1.0 / 32.0, 1.0 / 16.0, 0.125, 0.25, 0.5, 1.0, 2.0, 6.0, 12.0, 24.0, 60.0, 120.0, 240.0];
+        let step = STEPS.iter().copied().find(|&s| s >= raw_in - 1e-12).unwrap_or(240.0);
+        let major_every = match step {
+            s if s < 1.0 => (1.0 / s).round() as i64, // a major line every inch
+            s if s < 12.0 => (12.0 / s).round() as i64, // …every foot
+            _ => 5,
+        };
+        Self { step: step * 25.4, major_every }
+    }
+
     pub fn snap(&self, p: DVec2) -> DVec2 {
         (p / self.step).round() * self.step
     }
@@ -500,20 +519,23 @@ pub struct CornerCut {
     pub arc: Option<(DVec2, f64, f64, f64)>,
 }
 
-/// "5" → (5, None); "2, 5" or "2 5" → (2, Some(5)). For the size box of
-/// chamfers, which can take a different distance along each side.
-pub fn parse_sizes(text: &str) -> Option<(f64, Option<f64>)> {
+/// "5" → (5, None); "2, 5" or "2 5" → (2, Some(5)), in mm. For the size box
+/// of chamfers, which can take a different distance along each side. Bare
+/// numbers are in `unit` (the design's); each can carry its own ("0.1 in, 3 mm").
+pub fn parse_sizes(text: &str, unit: crate::units::Unit) -> Option<(f64, Option<f64>)> {
+    use crate::units::parse_length;
     // One value, maybe with a unit ("0.5 in", pasted from Measure).
-    if let Some(v) = crate::measure::parse_value(text) {
+    if let Some(v) = parse_length(text, unit) {
         return Some((v, None));
     }
-    let num = |t: &str| t.parse::<f64>().ok().filter(|v| v.is_finite());
-    let text = text.replace("mm", " ");
-    let mut parts = text.split(|c: char| c == ',' || c == ';' || c.is_whitespace()).filter(|t| !t.is_empty());
-    let first = num(parts.next()?)?;
-    match parts.next() {
-        None => Some((first, None)),
-        Some(second) => parts.next().is_none().then(|| num(second)).flatten().map(|v| (first, Some(v))),
+    let parts: Vec<&str> = if text.contains([',', ';']) {
+        text.split([',', ';']).map(str::trim).collect()
+    } else {
+        text.split_whitespace().collect()
+    };
+    match parts[..] {
+        [a, b] => Some((parse_length(a, unit)?, Some(parse_length(b, unit)?))),
+        _ => None,
     }
 }
 
@@ -2672,6 +2694,11 @@ mod tests {
         assert!(close(GridSpec::for_distance(50.0).step, 2.0));
         assert!(close(GridSpec::for_distance(20.0).step, 1.0));
         assert!(close(GridSpec::for_distance(3000.0).step, 100.0));
+        // Inch designs: inch fractions, a major line every inch.
+        let g = GridSpec::for_units(100.0, crate::units::Unit::In);
+        assert!(close(g.step, 0.25 * 25.4) && g.major_every == 4, "{g:?}");
+        assert!(close(GridSpec::for_units(600.0, crate::units::Unit::In).step, 25.4));
+        assert_eq!(GridSpec::for_units(300.0, crate::units::Unit::Mm), GridSpec::for_distance(300.0));
     }
 
     #[test]
@@ -3742,14 +3769,17 @@ mod corner_tests {
 
     #[test]
     fn sizes_parse_one_or_two_numbers() {
-        assert_eq!(parse_sizes("5"), Some((5.0, None)));
-        assert_eq!(parse_sizes(" 2.5 mm "), Some((2.5, None)));
-        assert_eq!(parse_sizes("2, 5"), Some((2.0, Some(5.0))));
-        assert_eq!(parse_sizes("2 5"), Some((2.0, Some(5.0))));
-        assert_eq!(parse_sizes("2;5mm"), Some((2.0, Some(5.0))));
-        assert_eq!(parse_sizes("2,5,7"), None);
-        assert_eq!(parse_sizes("x"), None);
-        assert_eq!(parse_sizes(""), None);
+        let parse_sizes_mm = |t: &str| parse_sizes(t, crate::units::Unit::Mm);
+        // In an inch design a bare number is inches; a unit still wins.
+        assert_eq!(parse_sizes("1, 2 mm", crate::units::Unit::In), Some((25.4, Some(2.0))));
+        assert_eq!(parse_sizes_mm("5"), Some((5.0, None)));
+        assert_eq!(parse_sizes_mm(" 2.5 mm "), Some((2.5, None)));
+        assert_eq!(parse_sizes_mm("2, 5"), Some((2.0, Some(5.0))));
+        assert_eq!(parse_sizes_mm("2 5"), Some((2.0, Some(5.0))));
+        assert_eq!(parse_sizes_mm("2;5mm"), Some((2.0, Some(5.0))));
+        assert_eq!(parse_sizes_mm("2,5,7"), None);
+        assert_eq!(parse_sizes_mm("x"), None);
+        assert_eq!(parse_sizes_mm(""), None);
     }
 }
 

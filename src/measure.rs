@@ -6,7 +6,6 @@
 //! whatever the window shows.
 
 use glam::DVec3;
-use serde::{Deserialize, Serialize};
 use std::f64::consts::TAU;
 
 /// Something that was clicked.
@@ -515,41 +514,10 @@ pub fn circle_of(pts: &[DVec3]) -> Option<Geom> {
     Some(Geom::Circle { center, normal, radius, sweep })
 }
 
-/// Units the Measure window can show.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Unit {
-    #[default]
-    Mm,
-    Cm,
-    M,
-    In,
-    Ft,
-}
+pub use crate::units::Unit;
 
+/// How the Measure window shows values.
 impl Unit {
-    pub const ALL: [Unit; 5] = [Unit::Mm, Unit::Cm, Unit::M, Unit::In, Unit::Ft];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Unit::Mm => "mm",
-            Unit::Cm => "cm",
-            Unit::M => "m",
-            Unit::In => "in",
-            Unit::Ft => "ft",
-        }
-    }
-
-    /// How many millimetres one of these is.
-    pub fn mm(self) -> f64 {
-        match self {
-            Unit::Mm => 1.0,
-            Unit::Cm => 10.0,
-            Unit::M => 1000.0,
-            Unit::In => 25.4,
-            Unit::Ft => 304.8,
-        }
-    }
-
     /// A value (mm, mm² or degrees) as text in this unit with `decimals`
     /// places, e.g. "12.700 mm", "1.250 in²", "90.000°". `second` shows
     /// angles in radians (the second line under the degrees).
@@ -562,26 +530,6 @@ impl Unit {
             Kind::Angle => format!("{value:.d$}°"),
         }
     }
-}
-
-/// A typed or pasted number with an optional unit, in mm (lengths) or
-/// degrees (angles): "12.7", "12.7 mm", "0.5 in", "0.5\"", "3 cm", "90°",
-/// "1.5708 rad". So a value copied from the Measure window pastes anywhere.
-pub fn parse_value(text: &str) -> Option<f64> {
-    let t = text.trim();
-    let split = t.find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E'))).unwrap_or(t.len());
-    let (num, unit) = t.split_at(split);
-    let v: f64 = num.trim().parse().ok().filter(|v: &f64| v.is_finite())?;
-    let scale = match unit.trim() {
-        "" | "mm" | "°" | "deg" => 1.0,
-        "cm" => 10.0,
-        "m" => 1000.0,
-        "in" | "\"" => 25.4,
-        "ft" | "'" => 304.8,
-        "rad" => 180.0 / std::f64::consts::PI,
-        _ => return None,
-    };
-    Some(v * scale)
 }
 
 #[cfg(test)]
@@ -762,15 +710,11 @@ mod tests {
             for d in 0..=6 {
                 let text = u.format(12.7, Kind::Length, false, d);
                 let half_digit = 0.5 * 10f64.powi(-(d as i32)) * u.mm();
-                assert!((parse_value(&text).unwrap() - 12.7).abs() <= half_digit + 1e-12, "{text}");
+                assert!((crate::units::parse_length(&text, Unit::Mm).unwrap() - 12.7).abs() <= half_digit + 1e-12, "{text}");
             }
         }
-        assert_eq!(parse_value("90.000°"), Some(90.0));
-        assert_eq!(parse_value(" 3 "), Some(3.0));
-        assert_eq!(parse_value("-2.5mm"), Some(-2.5));
-        assert_eq!(parse_value("1\""), Some(25.4));
-        assert_eq!(parse_value("1e1"), Some(10.0));
-        assert_eq!(parse_value("2 parsecs"), None);
-        assert_eq!(parse_value(""), None);
+        assert_eq!(crate::units::parse_angle("90.000°"), Some(90.0));
+        // The radians line (copied) reads back as the same angle.
+        assert!((crate::units::parse_angle(&Unit::Mm.format(1.0, Kind::Angle, true, 6)).unwrap() - 1.0).abs() < 1e-4);
     }
 }

@@ -97,7 +97,7 @@ impl SketchPattern {
         self.center = self.centroid() + self.toward_center() * r.max(0.0);
     }
 
-    pub fn panel(&mut self, ui: &mut egui::Ui, error: Option<&str>) -> Action {
+    pub fn panel(&mut self, ui: &mut egui::Ui, unit: crate::units::Unit, error: Option<&str>) -> Action {
         ui.heading(match self.mode {
             Mode::Rectangular => "Rectangular Pattern",
             Mode::Circular => "Circular Pattern",
@@ -114,13 +114,13 @@ impl SketchPattern {
                 count_box(ui, &mut self.count);
                 ui.horizontal(|ui| {
                     ui.label("Distance");
-                    ui.add(egui::DragValue::new(&mut self.spacing).speed(0.5).suffix(" mm"));
+                    ui.add(crate::units::length_drag(&mut self.spacing, unit, 0.5));
                 });
                 ui.strong("Along Y");
                 count_box(ui, &mut self.count2);
                 ui.horizontal(|ui| {
                     ui.label("Distance");
-                    ui.add(egui::DragValue::new(&mut self.spacing2).speed(0.5).suffix(" mm"));
+                    ui.add(crate::units::length_drag(&mut self.spacing2, unit, 0.5));
                 });
             }
             Mode::Circular => {
@@ -143,7 +143,7 @@ impl SketchPattern {
                 ui.horizontal(|ui| {
                     ui.label("Distance");
                     let mut r = self.radius();
-                    if ui.add(egui::DragValue::new(&mut r).speed(0.5).range(0.0..=f64::MAX).suffix(" mm")).changed() {
+                    if ui.add(crate::units::length_drag(&mut r, unit, 0.5).range(0.0..=f64::MAX)).changed() {
                         self.set_radius(r);
                     }
                 });

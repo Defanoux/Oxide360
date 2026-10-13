@@ -29,6 +29,7 @@ mod inertia;
 mod kernel;
 mod app;
 mod measure;
+mod units;
 mod model;
 mod offset;
 mod origin;
@@ -120,16 +121,24 @@ fn apply_edit(
 }
 
 /// A size box's text: "5", or "2, 5" with a second distance.
-fn sizes_text(a: f64, b: Option<f64>) -> String {
-    match b {
-        Some(b) => format!("{a:.2}, {b:.2}"),
-        None => format!("{a:.2}"),
+impl OpenCad {
+    /// A dimension's value as typed in its box: lengths in the design's
+    /// units, angles in degrees.
+    fn value_text(&self, c: &Constraint) -> String {
+        match (c, c.value()) {
+            (Constraint::Angle(..), Some(d)) => format!("{d:.2}"),
+            (_, Some(d)) => self.units.plain(d),
+            (_, None) => String::new(),
+        }
     }
 }
 
-/// A typed number, with or without a unit ("12.7", "0.5 in", "90°"), in mm or degrees.
-fn parse_mm(text: &str) -> Option<f64> {
-    measure::parse_value(text)
+/// A chamfer's size box text, in the design's units ("2.00" or "2.00, 5.00").
+fn sizes_text(a: f64, b: Option<f64>, unit: units::Unit) -> String {
+    match b {
+        Some(b) => format!("{}, {}", unit.plain(a), unit.plain(b)),
+        None => unit.plain(a),
+    }
 }
 
 /// Hands one frame of solids to the GPU renderer inside egui's own frame.
@@ -184,6 +193,7 @@ fn draw_dimension(
     shift: DVec2,
     away_from: Vec2,
     color: Color32,
+    unit: units::Unit,
 ) -> Option<egui::Rect> {
     let line = |e: usize| match sk.entities.get(e)? {
         Entity::Line { a, b } => Some((sk.points[*a], sk.points[*b])),
@@ -195,7 +205,7 @@ fn draw_dimension(
     match *c {
         Constraint::Length(e, d) => {
             let (a, b) = line(e)?;
-            view.linear_dimension(plane, a, b, away_from, shift, text(format!("{:.2}", d_of(d))), color)
+            view.linear_dimension(plane, a, b, away_from, shift, text(unit.plain(d_of(d))), color)
         }
         Constraint::Distance(p, q, d) => view.linear_dimension(
             plane,
@@ -203,12 +213,12 @@ fn draw_dimension(
             *sk.points.get(q)?,
             away_from,
             shift,
-            text(format!("{:.2}", d_of(d))),
+            text(unit.plain(d_of(d))),
             color,
         ),
         Constraint::Diameter(e, d) => match sk.entities.get(e)? {
             Entity::Circle { center, radius } => {
-                view.diameter_dimension(plane, sk.points[*center], *radius, shift, text(format!("Ø{:.2}", d_of(d))), color)
+                view.diameter_dimension(plane, sk.points[*center], *radius, shift, text(format!("Ø{}", unit.plain(d_of(d)))), color)
             }
             _ => None,
         },
@@ -217,7 +227,7 @@ fn draw_dimension(
         }
         Constraint::Radius(e, d) => {
             let (c, r, a0, sweep) = sk.arc_geometry(e)?;
-            view.radius_dimension(plane, c, r, a0 + sweep * 0.5, shift, text(format!("R{:.2}", d_of(d))), color)
+            view.radius_dimension(plane, c, r, a0 + sweep * 0.5, shift, text(format!("R{}", unit.plain(d_of(d)))), color)
         }
         Constraint::Offset(o, e, d) => {
             // From the copy across to the original, square to both.
@@ -237,7 +247,7 @@ fn draw_dimension(
                     (centre + dir * sk.round_radius(o)?, centre + dir * sk.round_radius(e)?)
                 }
             };
-            view.linear_dimension(plane, from, to, away_from, shift, text(format!("{:.2}", d_of(d).abs())), color)
+            view.linear_dimension(plane, from, to, away_from, shift, text(unit.plain(d_of(d).abs())), color)
         }
         _ => None,
     }
@@ -492,6 +502,8 @@ struct OpenCad {
     copies: Vec<CopyFeature>,                // mirrors and patterns
     copy_errors: Vec<Option<String>>,
     removes: Vec<model::RemoveFeature>,     // Remove features (bodies taken out)
+    units: units::Unit,                     // the design's units (shown and typed in)
+    default_units: units::Unit,             // units new designs start in (settings)
     remove_errors: Vec<Option<String>>,
     selected_bodies: Vec<BodyId>,           // bodies selected in the browser
     copy_body_hover: Option<BodyId>,        // Mirror: the body under the cursor (a click adds / drops it)
@@ -616,6 +628,8 @@ impl Default for OpenCad {
             copies: Vec::new(),
             copy_errors: Vec::new(),
             removes: Vec::new(),
+            units: units::Unit::Mm,
+            default_units: units::Unit::Mm,
             remove_errors: Vec::new(),
             selected_bodies: Vec::new(),
             copy_body_hover: None,
@@ -765,6 +779,7 @@ impl eframe::App for OpenCad {
         // Tool dialogs float over the view's right side, like Fusion's.
         // Bottom right, above the timeline, so they cover no controls.
         let lift = self.timeline_height + 12.0;
+        let design_units = self.units;
         let float = |id: &'static str| {
             egui::Window::new(id)
                 .title_bar(false)
@@ -777,7 +792,7 @@ impl eframe::App for OpenCad {
             float("sketch_pattern").show(&ctx, |ui| {
                 let error = self.sketch_pattern.as_ref().and_then(|d| d.preview().err());
                 if let Some(d) = self.sketch_pattern.as_mut() {
-                    match d.panel(ui, error.as_deref()) {
+                    match d.panel(ui, design_units, error.as_deref()) {
                         copy_dialog::Action::Ok => self.commit_sketch_pattern(),
                         copy_dialog::Action::Cancel => self.cancel_sketch_pattern(),
                         copy_dialog::Action::None => {}
@@ -794,7 +809,7 @@ impl eframe::App for OpenCad {
             float("plane").show(&ctx, |ui| {
                 let error = self.dialog_error.clone();
                 if let Some(d) = self.plane_dialog.as_mut() {
-                    match d.panel(ui, error.as_deref()) {
+                    match d.panel(ui, design_units, error.as_deref()) {
                         copy_dialog::Action::Ok => self.commit_plane(),
                         copy_dialog::Action::Cancel => self.plane_dialog = None,
                         copy_dialog::Action::None => {}
@@ -859,6 +874,10 @@ fn main() -> eframe::Result {
                 app.measure_precision = s.measure_precision.min(6);
                 app.measure_snap = s.measure_snap;
                 app.measure_xyz = s.measure_xyz;
+                // A fresh design starts in the default units (and isn't "changed" by that).
+                app.default_units = s.default_units;
+                app.units = s.default_units;
+                app.saved.units = s.default_units;
                 app.settings_saved = s;
             }
             // Set up the GPU renderer once and keep it with egui's renderer.

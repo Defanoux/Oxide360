@@ -249,10 +249,10 @@ impl OpenCad {
             if driven {
                 return;
             }
-            if let Some(d) = cs.first().and_then(|c| c.value()) {
+            if let Some(c) = cs.first().filter(|c| c.value().is_some()) {
                 // Open the number box on the new dimension, ready to type.
-                self.float =
-                    Some(FloatEdit { target: EditTarget::Dimension(first_new), text: format!("{d:.2}"), focus: true, keep_text: false });
+                let text = self.value_text(c);
+                self.float = Some(FloatEdit { target: EditTarget::Dimension(first_new), text, focus: true, keep_text: false });
             }
         }
     }
@@ -331,9 +331,8 @@ impl OpenCad {
                     self.editor.selection.clear();
                     return;
                 }
-                let value = c.value().unwrap_or(0.0);
                 let keep_text = typed.is_some();
-                let text = typed.unwrap_or_else(|| format!("{value:.2}"));
+                let text = typed.unwrap_or_else(|| self.value_text(&c));
                 self.float = Some(FloatEdit { target: EditTarget::Dimension(ci), text, focus: true, keep_text });
             }
             Err(e) => self.report(Err(e)),
@@ -357,7 +356,7 @@ impl OpenCad {
     /// The fillet / chamfer the open size box would make right now.
     pub(crate) fn corner_preview(&self, i: usize, p: PointId) -> Option<sketch::CornerCut> {
         let text = &self.float.as_ref()?.text;
-        let (d1, d2) = sketch::parse_sizes(text).unwrap_or((self.corner_size, None));
+        let (d1, d2) = sketch::parse_sizes(text, self.units).unwrap_or((self.corner_size, None));
         let fillet = self.editor.tool == Tool::SketchFillet;
         self.sketches.get(i)?.corner_cut(p, fillet, d1, d2.unwrap_or(d1), self.corner_first)
     }

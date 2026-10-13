@@ -89,7 +89,7 @@ impl OpenCad {
         }
         let painter = ui.painter_at(rect);
         let view = View { painter: &painter, vp: self.camera.view_proj(aspect), min, size, trace: None };
-        let grid = GridSpec::for_distance(self.camera.distance);
+        let grid = GridSpec::for_units(self.camera.distance, self.units);
         let dplane = self.active.map_or(OriginPlane::XY.plane(), |i| self.plane_of(i));
         let mm_per_px = (self.camera.distance * 2.0 * (FOV_Y * 0.5).tan() / size.y) as f64;
         let regions: Vec<Vec<Region>> = self.sketches.iter().map(find_regions).collect();
@@ -910,10 +910,10 @@ impl OpenCad {
                             app.notify("Reference dimension: right-click it to make it drive".into());
                             return;
                         }
-                        if let Some(d) = app.sketches[i].constraints.get(ci).and_then(|c| c.value()) {
+                        if let Some(c) = app.sketches[i].constraints.get(ci).filter(|c| c.value().is_some()) {
                             app.float = Some(FloatEdit {
                                 target: EditTarget::Dimension(ci),
-                                text: format!("{d:.2}"),
+                                text: app.value_text(c),
                                 focus: true,
                                 keep_text: false,
                             });
@@ -987,7 +987,7 @@ impl OpenCad {
                             let hidden_painter = painter.with_clip_rect(egui::Rect::NOTHING);
                             let hidden = View { painter: &hidden_painter, ..view };
                             let centroid = sketch_centroid(&view, sk, &plane, to_vec(rect.center()));
-                            let at_default = draw_dimension(&hidden, sk, &plane, &c, false, DVec2::ZERO, centroid, COL_DIM)
+                            let at_default = draw_dimension(&hidden, sk, &plane, &c, false, DVec2::ZERO, centroid, COL_DIM, self.units)
                                 .and_then(|r| {
                                     let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(to_vec(r.center()), min, size));
                                     plane.intersect(&ray)
@@ -1103,7 +1103,7 @@ impl OpenCad {
                                 self.corner_first = None;
                                 self.float = Some(FloatEdit {
                                     target: EditTarget::Corner(p),
-                                    text: format!("{:.2}", self.corner_size),
+                                    text: self.units.plain(self.corner_size),
                                     focus: true,
                                     keep_text: false,
                                 });
@@ -1120,7 +1120,7 @@ impl OpenCad {
                                         self.corner_first = first; // a chamfer's first distance is on the first line picked
                                         self.float = Some(FloatEdit {
                                             target: EditTarget::Corner(p),
-                                            text: format!("{:.2}", self.corner_size),
+                                            text: self.units.plain(self.corner_size),
                                             focus: true,
                                             keep_text: false,
                                         });
@@ -1911,7 +1911,7 @@ impl OpenCad {
                         };
                         let trace = std::cell::RefCell::new(Vec::new());
                         let traced = View { trace: Some(&trace), ..view };
-                        let r = draw_dimension(&traced, sk, &plane, c, sk.is_driven(ci), sk.label_shift(ci), centroid, colour);
+                        let r = draw_dimension(&traced, sk, &plane, c, sk.is_driven(ci), sk.label_shift(ci), centroid, colour, self.units);
                         r.map(|r| (r, trace.into_inner()))
                     }
                     // Glyphs about a point sit at the point.
@@ -1935,7 +1935,7 @@ impl OpenCad {
             // The dimension being placed (Dimension tool), following the cursor.
             if let (Tool::Constrain("Dimension"), Some((c, shift))) = (self.editor.tool, self.dim_preview) {
                 if !self.editor.selection.is_empty() {
-                    draw_dimension(&view, sk, &plane, &c, false, shift, centroid, COL_DIM.gamma_multiply(0.7));
+                    draw_dimension(&view, sk, &plane, &c, false, shift, centroid, COL_DIM.gamma_multiply(0.7), self.units);
                 }
             }
             let glyph_colour = |ci: usize| {
@@ -2136,6 +2136,7 @@ impl OpenCad {
 
         // --- draw: snap marker, tool preview, readouts ---
         let mut status = String::new();
+        let u = self.units; // readouts in the design's units
         if let Some(i) = self.active {
             let sk = &self.sketches[i];
             let plane = self.plane_of(i);
@@ -2167,7 +2168,7 @@ impl OpenCad {
                         }
                     }
                 }
-                status = format!("x {:.2}  y {:.2} mm", here.x, here.y);
+                status = format!("x {}  y {}", u.show(here.x), u.show(here.y));
                 if let Some(start) = self.editor.start {
                     let from = sk.pos(start);
                     let preview = Stroke::new(1.5, COL_PREVIEW);
@@ -2178,12 +2179,12 @@ impl OpenCad {
                                     for k in 0..4 {
                                         view.line(plane.to_world(c[k]), plane.to_world(c[(k + 1) % 4]), preview);
                                     }
-                                    format!("{:.2} × {:.2} mm", c[0].distance(c[1]), c[1].distance(c[2]))
+                                    format!("{} × {}", u.show(c[0].distance(c[1])), u.show(c[1].distance(c[2])))
                                 }
                                 None => {
                                     // 3-point, first side: just that side so far.
                                     view.line(plane.to_world(from), plane.to_world(here), preview);
-                                    format!("{:.2} mm", from.distance(here))
+                                    u.show(from.distance(here))
                                 }
                             }
                         }
@@ -2194,12 +2195,12 @@ impl OpenCad {
                                     for k in 0..n {
                                         view.line(plane.to_world(p.verts[k]), plane.to_world(p.verts[(k + 1) % n]), preview);
                                     }
-                                    format!("{n} sides   side {:.2} mm   (↑/↓ changes the sides)", p.verts[0].distance(p.verts[1]))
+                                    format!("{n} sides   side {}   (↑/↓ changes the sides)", u.show(p.verts[0].distance(p.verts[1])))
                                 }
                                 None => {
                                     // Edge polygon, first edge so far.
                                     view.line(plane.to_world(from), plane.to_world(here), preview);
-                                    format!("{:.2} mm", from.distance(here))
+                                    u.show(from.distance(here))
                                 }
                             }
                         }
@@ -2207,7 +2208,7 @@ impl OpenCad {
                             let r = from.distance(here);
                             view.circle(&plane, from, r, preview);
                             let tangent = matches!(at, Anchor::OnLine(e, q) if sk.line_foot(e, from).is_some_and(|f| f.distance(q) < 1e-9 * (1.0 + r)));
-                            format!("Ø {:.2} mm{}   (or type the diameter)", 2.0 * r, if tangent { "  tangent" } else { "" })
+                            format!("Ø {}{}   (or type the diameter)", u.show(2.0 * r), if tangent { "  tangent" } else { "" })
                         }
                         Tool::Arc3Point | Tool::ArcCenter => match self.editor.arc_preview(sk, here) {
                             Some(a) => {
@@ -2231,12 +2232,12 @@ impl OpenCad {
                                         );
                                     }
                                 }
-                                format!("R {:.2} mm   {:.1}°", a.radius, a.sweep.to_degrees())
+                                format!("R {}   {:.1}°", u.show(a.radius), a.sweep.to_degrees())
                             }
                             None => {
                                 // First two clicks: the chord (3-point) or radius (centre).
                                 view.line(plane.to_world(from), plane.to_world(here), preview);
-                                format!("{:.2} mm", from.distance(here))
+                                u.show(from.distance(here))
                             }
                         },
                         Tool::Slot if self.editor.second.is_none() => {
@@ -2245,7 +2246,7 @@ impl OpenCad {
                             if let Some(px) = view.project(plane.to_world(from)) {
                                 painter.circle_filled(to_pos(px), 4.5, COL_PREVIEW);
                             }
-                            format!("{:.2} mm between centres", from.distance(here))
+                            format!("{} between centres", u.show(from.distance(here)))
                         }
                         Tool::Slot => match self.editor.slot_shape(sk, here) {
                             Some(sh) => {
@@ -2262,7 +2263,7 @@ impl OpenCad {
                                 let turn = dir.y.atan2(dir.x);
                                 view.arc(&plane, sh.b, sh.half, turn - std::f64::consts::FRAC_PI_2, std::f64::consts::PI, preview);
                                 view.arc(&plane, sh.a, sh.half, turn + std::f64::consts::FRAC_PI_2, std::f64::consts::PI, preview);
-                                format!("width {:.2} mm   (or type it)   length {:.2} mm", 2.0 * sh.half, sh.a.distance(sh.b))
+                                format!("width {}   (or type it)   length {}", u.show(2.0 * sh.half), u.show(sh.a.distance(sh.b)))
                             }
                             None => {
                                 if let Some(b) = self.editor.second {
@@ -2274,7 +2275,7 @@ impl OpenCad {
                         Tool::Circle2Point | Tool::Circle3Point => match self.editor.circle_preview(sk, here) {
                             Some((c, r)) => {
                                 view.circle(&plane, c, r, preview);
-                                format!("Ø {:.2} mm", 2.0 * r)
+                                format!("Ø {}", u.show(2.0 * r))
                             }
                             None => {
                                 // 3-point, first two clicks: just the chord so far.
@@ -2293,7 +2294,7 @@ impl OpenCad {
                                 Some(sketch::Align::Vertical) => "  V",
                                 None => "",
                             };
-                            format!("{:.2} mm{tag}", from.distance(to))
+                            format!("{}{tag}", u.show(from.distance(to)))
                         }
                     };
                     if let Some(px) = response.hover_pos() {
@@ -2317,7 +2318,7 @@ impl OpenCad {
                     match self.editor.tangent_circle(sk, at) {
                         Ok((c, r)) => {
                             view.circle(&plane, c, r, Stroke::new(1.5, COL_PREVIEW));
-                            format!("Ø {:.2} mm — click to place", 2.0 * r)
+                            format!("Ø {} — click to place", u.show(2.0 * r))
                         }
                         Err(e) => e,
                     }
@@ -2417,10 +2418,10 @@ impl OpenCad {
             rect.left_bottom() + egui::vec2(8.0, -8.0),
             egui::Align2::LEFT_BOTTOM,
             format!(
-                "{} {}  dist {:.0} mm   {}",
+                "{} {}  dist {}   {}",
                 if self.gpu { "gpu" } else { "cpu" },
                 if self.camera.is_ortho() { "ortho" } else { "persp" },
-                self.camera.distance,
+                self.units.show(self.camera.distance as f64),
                 status
             ),
             egui::FontId::monospace(12.0),

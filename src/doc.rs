@@ -146,6 +146,11 @@ pub struct Document {
     /// Remove features. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removes: Vec<RemoveFeature>,
+    /// The units the design is shown and typed in (Fusion's Document Settings
+    /// → Units). Values are always *stored* in mm (see the file header);
+    /// older files are mm.
+    #[serde(default)]
+    pub units: crate::units::Unit,
     pub timeline: Vec<Feature>,
     /// Features switched off: still in the timeline, but not built.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -203,6 +208,8 @@ pub struct HomeView {
 struct FileHeader {
     format: String,
     version: u32,
+    /// How numbers are stored: always "mm". (The units a design is *shown*
+    /// in are `Document::units`.)
     units: String,
 }
 
@@ -507,6 +514,7 @@ mod tests {
             axes: Vec::new(),
             planes: Vec::new(),
             removes: Vec::new(),
+            units: crate::units::Unit::Mm,
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],
             suppressed: Vec::new(),
             view: ViewState::default(),
@@ -588,6 +596,18 @@ mod tests {
         let mut tl = vec![Feature::Remove(0), Feature::Remove(1)];
         forget_feature(&mut tl, Feature::Remove(0));
         assert_eq!(tl, vec![Feature::Remove(0)]);
+    }
+
+    #[test]
+    fn a_designs_units_save_and_old_files_are_mm() {
+        let mut doc = sample();
+        doc.units = crate::units::Unit::In;
+        let text = to_json(&doc);
+        assert!(text.contains("\"units\": \"mm\""), "values are still stored in mm");
+        assert_eq!(from_json(&text).unwrap().units, crate::units::Unit::In);
+        let old = to_json(&sample()).replace("\"units\": \"Mm\",", "");
+        assert!(!old.contains("\"Mm\""));
+        assert_eq!(from_json(&old).unwrap().units, crate::units::Unit::Mm);
     }
 
     #[test]

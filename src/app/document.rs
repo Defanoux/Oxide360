@@ -13,6 +13,7 @@ impl OpenCad {
             axes: self.axes.clone(),
             planes: self.planes.clone(),
             removes: self.removes.clone(),
+            units: self.units,
             timeline: self.timeline.clone(),
             suppressed: self.suppressed.clone(),
             view: self.view_state(),
@@ -193,6 +194,7 @@ impl OpenCad {
             measure_precision: self.measure_precision,
             measure_snap: self.measure_snap,
             measure_xyz: self.measure_xyz,
+            default_units: self.default_units,
         };
         if now != self.settings_saved {
             if let Some(path) = settings::default_path() {
@@ -209,6 +211,7 @@ impl OpenCad {
             || self.revolves != self.saved.revolves
             || self.copies != self.saved.copies
             || self.removes != self.saved.removes
+            || self.units != self.saved.units
             || self.axes != self.saved.axes
             || self.planes != self.saved.planes
             || self.timeline != self.saved.timeline
@@ -240,6 +243,7 @@ impl OpenCad {
         self.revolves = doc.revolves.clone();
         self.copies = doc.copies.clone();
         self.removes = doc.removes.clone();
+        self.units = doc.units;
         self.selected_bodies.clear();
         self.axes = doc.axes.clone();
         self.planes = doc.planes.clone();
@@ -307,6 +311,7 @@ impl OpenCad {
         self.revolves = doc.revolves;
         self.copies = doc.copies;
         self.removes = doc.removes;
+        self.units = doc.units;
         self.selected_bodies.clear();
         self.axes = doc.axes;
         self.planes = doc.planes;
@@ -558,7 +563,7 @@ impl OpenCad {
 
     pub(crate) fn run(&mut self, action: Pending, ctx: &egui::Context) {
         match action {
-            Pending::New => self.reset_with(Document::default(), None),
+            Pending::New => self.reset_with(Document { units: self.default_units, ..Document::default() }, None),
             Pending::Open => self.open_dialog(),
             Pending::Quit => {
                 self.allow_close = true;

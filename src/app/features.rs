@@ -37,7 +37,7 @@ impl OpenCad {
         };
         self.float = Some(FloatEdit {
             target: EditTarget::ExtrudeDistance,
-            text: format!("{:.2}", d.distance),
+            text: self.units.plain(d.distance),
             focus: true,
             keep_text: false,
         });
@@ -200,7 +200,7 @@ impl OpenCad {
             let plane = self.plane_of(i);
             let origin = plane.to_world(corner);
             let dir = (plane.to_world(corner + bisector) - origin).normalize_or_zero();
-            let value = sketch::parse_sizes(text).map_or(self.corner_size, |(d, _)| d);
+            let value = sketch::parse_sizes(text, self.units).map_or(self.corner_size, |(d, _)| d);
             let line = LineHandle { origin: origin.as_dvec3(), dir: dir.as_dvec3() };
             return Some(Handle::Line { line, value, target: HandleTarget::Corner });
         }
@@ -277,11 +277,12 @@ impl OpenCad {
             }
             HandleTarget::Corner => {
                 // Scales a chamfer's two distances together, keeping their ratio.
+                let unit = self.units;
                 if let Some(fe) = self.float.as_mut() {
                     let v = v.max(0.01);
-                    fe.text = match sketch::parse_sizes(&fe.text) {
-                        Some((d1, Some(d2))) if d1 > 0.0 => format!("{v:.2}, {:.2}", d2 * v / d1),
-                        _ => format!("{v:.2}"),
+                    fe.text = match sketch::parse_sizes(&fe.text, unit) {
+                        Some((d1, Some(d2))) if d1 > 0.0 => sizes_text(v, Some(d2 * v / d1), unit),
+                        _ => unit.plain(v),
                     };
                 }
             }
@@ -822,7 +823,7 @@ impl OpenCad {
         let planes: Vec<String> = self.planes.iter().map(|p| p.name.clone()).collect();
         let (error, message) = (self.dialog_error.clone(), self.message.clone());
         let Some(d) = self.copy_dialog.as_mut() else { return };
-        match d.panel(ui, &bodies, &axes, &planes, error.as_deref(), message.as_deref()) {
+        match d.panel(ui, &bodies, &axes, &planes, self.units, error.as_deref(), message.as_deref()) {
             copy_dialog::Action::Ok => self.commit_copy(),
             copy_dialog::Action::Cancel => self.cancel_copy(),
             copy_dialog::Action::None => {}
@@ -873,7 +874,7 @@ impl OpenCad {
             Some(f) => EdgeDialog { editing, kind: f.kind, size: f.size, size2: f.size2, edges: f.edges.clone() },
             None => EdgeDialog { editing: None, kind, size: 2.0, size2: None, edges: Vec::new() },
         };
-        let text = sizes_text(d.size, d.size2);
+        let text = sizes_text(d.size, d.size2, self.units);
         self.float = Some(FloatEdit { target: EditTarget::EdgeSize, text, focus: true, keep_text: false });
         self.edge_dialog = Some(d);
     }
@@ -933,24 +934,26 @@ impl OpenCad {
     }
 
     pub(crate) fn set_edge_size_text(&mut self) {
+        let unit = self.units;
         if let (Some(fe), Some(d)) = (self.float.as_mut(), self.edge_dialog.as_ref()) {
             if fe.target == EditTarget::EdgeSize {
-                fe.text = format!("{:.2}", d.size);
+                fe.text = unit.plain(d.size);
             }
         }
     }
 
     pub(crate) fn set_distance_text(&mut self) {
+        let unit = self.units;
         let Some(fe) = self.float.as_mut() else { return };
         match fe.target {
             EditTarget::ExtrudeDistance => {
                 if let Some(d) = self.dialog.as_ref() {
-                    fe.text = format!("{:.2}", d.distance);
+                    fe.text = unit.plain(d.distance);
                 }
             }
             EditTarget::EdgeSize => {
                 if let Some(d) = self.edge_dialog.as_ref() {
-                    fe.text = sizes_text(d.size, d.size2);
+                    fe.text = sizes_text(d.size, d.size2, unit);
                 }
             }
             EditTarget::RevolveAngle => {

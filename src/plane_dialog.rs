@@ -35,11 +35,11 @@ impl PlaneDialog {
         FacePlane { origin: self.base.origin + self.base.normal() * self.distance, follow: None, ..self.base }
     }
 
-    pub fn panel(&mut self, ui: &mut egui::Ui, error: Option<&str>) -> Action {
+    pub fn panel(&mut self, ui: &mut egui::Ui, unit: crate::units::Unit, error: Option<&str>) -> Action {
         ui.heading(if self.editing.is_some() { "Edit Offset Plane" } else { "Offset Plane" });
         ui.horizontal(|ui| {
             ui.label("Distance");
-            ui.add(egui::DragValue::new(&mut self.distance).speed(0.5).suffix(" mm"));
+            ui.add(crate::units::length_drag(&mut self.distance, unit, 0.5));
             if ui.button("Flip").clicked() {
                 self.distance = -self.distance;
             }
