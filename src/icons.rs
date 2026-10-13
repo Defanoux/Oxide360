@@ -19,6 +19,9 @@ pub enum Icon {
     Chamfer,
     Construction,
     Trim,
+    Extend,
+    Offset,
+    Slot,
     Mirror,
     Midpoint,
     Plane,
@@ -184,6 +187,40 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             line((0.62, 0.15), (0.62, 0.85), thin);
             line((0.74, 0.3), (0.86, 0.7), Stroke::new(thin.width * 1.2, ink));
             line((0.86, 0.3), (0.74, 0.7), Stroke::new(thin.width * 1.2, ink));
+        }
+        Icon::Extend => {
+            // A short line running on (dashed) to a wall.
+            line((0.1, 0.5), (0.45, 0.5), Stroke::new(thin.width * 1.2, orange));
+            line((0.45, 0.5), (0.78, 0.5), Stroke::new(thin.width, Color32::from_gray(120)));
+            line((0.78, 0.15), (0.78, 0.85), thin);
+            line((0.66, 0.4), (0.78, 0.5), thin);
+            line((0.66, 0.6), (0.78, 0.5), thin);
+        }
+        Icon::Offset => {
+            // A shape and a bigger copy round it.
+            outline(&[(0.3, 0.3), (0.7, 0.3), (0.7, 0.7), (0.3, 0.7)], Stroke::new(thin.width * 1.2, orange));
+            outline(&[(0.12, 0.12), (0.88, 0.12), (0.88, 0.88), (0.12, 0.88)], Stroke::new(thin.width, ink));
+        }
+        Icon::Slot => {
+            // A stadium: two lines and two half circles.
+            let s = Stroke::new(thin.width * 1.2, orange);
+            line((0.3, 0.32), (0.7, 0.32), s);
+            line((0.3, 0.68), (0.7, 0.68), s);
+            let arc = |cx: f32, from: f32| {
+                let pts: Vec<(f32, f32)> = (0..=8)
+                    .map(|k| {
+                        let a = from + std::f32::consts::PI * k as f32 / 8.0;
+                        (cx + 0.18 * a.cos(), 0.5 + 0.18 * a.sin())
+                    })
+                    .collect();
+                for w in pts.windows(2) {
+                    line(w[0], w[1], s);
+                }
+            };
+            arc(0.7, -std::f32::consts::FRAC_PI_2);
+            arc(0.3, std::f32::consts::FRAC_PI_2);
+            dot(0.3, 0.5, ink);
+            dot(0.7, 0.5, ink);
         }
         Icon::Mirror => {
             // A shape and its reflection either side of a dashed axis.

@@ -4,7 +4,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Next
 
-9. **Sketch Extend / Offset**, then **Slot**, **Spline**. (Trim done for lines; trimming circles/arcs themselves not yet.)
+9. **Spline** (fit-point), and trimming circles/arcs themselves. (Extend, Offset, Slot done.)
 
 10. **Timeline**: rename, suppress, drag to reorder (with error checking) (rollback marker is done);
     browser: select/delete bodies; **Measure** tool.
@@ -26,6 +26,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Sketch Extend (line to the next line/circle/arc in its way, tied on or joined), Offset (a joined run of lines/arcs or a circle, side + distance from the cursor, live preview, click twice; `offset.rs`), Slot (centre-to-centre, tangent half circles, width dimension); sketch circular pattern's centre starts one Distance from the selection and the arrow drags it (no longer the origin).
 - Sketch Circular Pattern has a second blue arrow (distance from the centre, outside the selection) and a Distance box; copies move outward, the original stays.
 - N / the Create Sketch button starts a sketch on the plane you already selected (origin or construction), else asks you to click one; P = Project; projected lines are purple; dragging a line snaps it onto the grid (zoom-aware); polygons stay regular when dragged (circumscribed ones get a hidden circumcircle, drags walk in steps, no collapsing); circular pattern's distance arrow stands outside the bodies.
 - Offset planes start at 0 mm and are drawn as a square a little bigger than the picked face; polygons get a Diameter dimension on their reference circle (3 DOF left); dragging a line slides it sideways along its normal (`solver::drag_line`); Project on a body takes all its projectable edges; Rectangular / Circular Pattern inside sketches (select geometry, press the button, live preview, blue arrows + × boxes, Enter applies, Esc cancels; constraints carry over; circular centre can be a clicked point).

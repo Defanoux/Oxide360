@@ -28,6 +28,7 @@ mod icons;
 mod inertia;
 mod kernel;
 mod model;
+mod offset;
 mod origin;
 mod plane_dialog;
 mod pattern;
@@ -464,6 +465,7 @@ struct OpenCad {
     axis_pick: bool,                         // waiting for a click on a straight edge to put an axis on
     revolve_errors: Vec<Option<String>>,
     sketch_pattern: Option<SketchPattern>,   // an open Rectangular / Circular Pattern in a sketch
+    offset_preview: Option<Sketch>,          // the sketch with the offset the cursor would make
     sp_applied: Option<pattern::Layout>,     // the layout the sketch is showing now
     project_body_hover: Option<usize>,       // the body under the mouse when no edge is (Project tool: takes all its edges)
     project_hover: Option<EdgeRef>,          // the body edge under the mouse (Project tool)
@@ -571,6 +573,7 @@ impl Default for OpenCad {
             axis_pick: false,
             revolve_errors: Vec::new(),
             sketch_pattern: None,
+            offset_preview: None,
             sp_applied: None,
             project_body_hover: None,
             project_hover: None,
@@ -1722,15 +1725,31 @@ impl OpenCad {
 
     /// Trim tool: cut line `e` back at the click `p`.
     fn trim_at(&mut self, e: usize, p: DVec2) {
+        self.sketch_op("trim", move |sk| sk.trim_line(e, p));
+    }
+
+    /// Extend tool: run line `e` on from the end nearest `p`.
+    fn extend_at(&mut self, e: usize, p: DVec2) {
+        self.sketch_op("extend", move |sk| sk.extend_line(e, p));
+    }
+
+    /// Offset tool: copy the run `e` belongs to over to where `p` is.
+    fn offset_at(&mut self, e: usize, p: DVec2) {
+        self.sketch_op("offset", move |sk| sk.offset_chain(e, p, None).map(|_| Vec::new()));
+        self.editor.selection.clear();
+    }
+
+    /// One edit that can fail with a message and hands back constraints to add (one at a time:
+    /// a tie that turns out redundant is just skipped).
+    fn sketch_op(&mut self, what: &str, op: impl FnOnce(&mut Sketch) -> Result<Vec<Constraint>, String>) {
         let Some(i) = self.active else { return };
         let mut why = None;
         self.dim_selection.clear();
         self.editor.selection.clear();
         let r = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
             let mut trial = sk.clone();
-            match trial.trim_line(e, p) {
+            match op(&mut trial) {
                 Ok(cs) => {
-                    // One at a time: a tie that turns out redundant is just skipped.
                     for c in cs {
                         let mut t = trial.clone();
                         if solver::add_constraints(&mut t, &[c]).is_ok() {
@@ -1743,7 +1762,7 @@ impl OpenCad {
             }
         });
         match why {
-            Some(e) => self.notify(format!("Can't trim: {e}")),
+            Some(e) => self.notify(format!("Can't {what}: {e}")),
             None => self.report(r),
         }
     }
@@ -2924,6 +2943,9 @@ impl OpenCad {
                             }
                         }
                     });
+                    if icons::button(ui, Icon::Slot, "Slot: click the two end centres, then the width", true, self.editor.tool == Tool::Slot).clicked() {
+                        self.editor.set_tool(Tool::Slot);
+                    }
                 });
                 let _ = i;
                 group(ui, "MODIFY", |ui| {
@@ -2937,6 +2959,14 @@ impl OpenCad {
                     }
                     if icons::button(ui, Icon::Trim, "Trim: click the part of a line to remove, back to the nearest crossing", true, self.editor.tool == Tool::Trim).clicked() {
                         self.editor.set_tool(Tool::Trim);
+                    }
+                    for (tool, icon, tip) in [
+                        (Tool::Extend, Icon::Extend, "Extend: click a line near the end to run it on to the next geometry"),
+                        (Tool::Offset, Icon::Offset, "Offset: click a line, arc or circle (its joined run follows), then click the side and distance"),
+                    ] {
+                        if icons::button(ui, icon, tip, true, self.editor.tool == tool).clicked() {
+                            self.editor.set_tool(tool);
+                        }
                     }
                     for (mode, icon, tip) in [
                         (SpMode::Rectangular, Icon::RectPattern, "Rectangular Pattern: select geometry first, then click this"),
@@ -4415,6 +4445,8 @@ impl OpenCad {
                         | Tool::SketchFillet
                         | Tool::SketchChamfer
                         | Tool::Trim
+                        | Tool::Extend
+                        | Tool::Offset
                         | Tool::Mirror
                 ) && over_label.is_none()
                 {
@@ -4422,8 +4454,11 @@ impl OpenCad {
                     if tool.tangent_lines() > 0 {
                         hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e)));
                     }
-                    if matches!(tool, Tool::Trim | Tool::Mirror) {
+                    if matches!(tool, Tool::Trim | Tool::Extend | Tool::Mirror) {
                         hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e)));
+                    }
+                    if tool == Tool::Offset {
+                        hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if !matches!(sk.entities.get(*e), Some(Entity::Point { .. }))));
                     }
                     if matches!(tool, Tool::SketchFillet | Tool::SketchChamfer) {
                         // Corners where exactly two lines meet, or lines to pick in pairs.
@@ -4434,8 +4469,16 @@ impl OpenCad {
                         });
                     }
                 }
+                // Offset: the copy follows the cursor until the second click.
+                self.offset_preview = None;
+                if let (Tool::Offset, [Sel::Entity(e)], Some(p)) = (tool, self.editor.selection.as_slice(), raw_hover) {
+                    let mut trial = sk.clone();
+                    if trial.offset_chain(*e, p, None).is_ok() {
+                        self.offset_preview = Some(trial);
+                    }
+                }
                 // …drawing tools a snapped cursor.
-                if matches!(tool, Tool::Select | Tool::Constrain(_) | Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Mirror | Tool::Project) {
+                if matches!(tool, Tool::Select | Tool::Constrain(_) | Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Extend | Tool::Offset | Tool::Mirror | Tool::Project) {
                 } else if let Some(px) = hover_px {
                     let nearest = sk
                         .points
@@ -4906,6 +4949,29 @@ impl OpenCad {
                         }
                     }
                 }
+                Tool::Extend => {
+                    if response.clicked() {
+                        match (hovered, raw_hover) {
+                            (Some(Sel::Entity(e)), Some(p)) => self.extend_at(e, p),
+                            _ => self.notify("Click a line near the end you want to extend".into()),
+                        }
+                    }
+                }
+                Tool::Offset => {
+                    // Click the geometry, then click where the copy should go (the cursor shows it).
+                    if response.clicked() {
+                        match (self.editor.selection.first().copied(), hovered, raw_hover) {
+                            (Some(Sel::Entity(e)), None, Some(p)) => self.offset_at(e, p),
+                            (Some(Sel::Entity(e)), Some(Sel::Entity(h)), Some(p)) if h != e && !self.sketches[i].connected(Sel::Entity(e)).contains(&Sel::Entity(h)) => {
+                                let _ = p;
+                                self.editor.selection = vec![Sel::Entity(h)];
+                            }
+                            (Some(Sel::Entity(e)), Some(_), Some(p)) => self.offset_at(e, p),
+                            (_, Some(Sel::Entity(h)), _) => self.editor.selection = vec![Sel::Entity(h)],
+                            _ => self.notify("Click a line, arc or circle to offset".into()),
+                        }
+                    }
+                }
                 Tool::SketchFillet | Tool::SketchChamfer => {
                     // Click a corner, then type the size (Enter applies).
                     if response.clicked() && near_arrow(hover_px, &self.arrows).is_none() {
@@ -4993,6 +5059,7 @@ impl OpenCad {
                 | Tool::Circle3Point
                 | Tool::Arc3Point
                 | Tool::ArcCenter
+                | Tool::Slot
                 | Tool::PolygonCircumscribed
                 | Tool::PolygonInscribed
                 | Tool::PolygonEdge => {
@@ -5507,6 +5574,23 @@ impl OpenCad {
                     }
                 }
             }
+            if active {
+                if let Some(p) = &self.offset_preview {
+                    let stroke = Stroke::new(2.0, COL_PREVIEW);
+                    for e in sk.entities.len()..p.entities.len() {
+                        match p.entities[e] {
+                            Entity::Line { a, b } => view.line(plane.to_world(p.points[a]), plane.to_world(p.points[b]), stroke),
+                            Entity::Circle { center, radius } => view.circle(&plane, p.points[center], radius, stroke),
+                            Entity::Arc { .. } => {
+                                if let Some((c, r, a0, sweep)) = p.arc_geometry(e) {
+                                    view.arc(&plane, c, r, a0, sweep, stroke);
+                                }
+                            }
+                            Entity::Point { .. } => {}
+                        }
+                    }
+                }
+            }
             if !active {
                 continue;
             }
@@ -5821,6 +5905,24 @@ impl OpenCad {
                                 // First two clicks: the chord (3-point) or radius (centre).
                                 view.line(plane.to_world(from), plane.to_world(here), preview);
                                 format!("{:.2} mm", from.distance(here))
+                            }
+                        },
+                        Tool::Slot => match self.editor.slot_shape(sk, here) {
+                            Some(sh) => {
+                                let dir = (sh.b - sh.a).normalize();
+                                let n = dir.perp() * sh.half;
+                                view.line(plane.to_world(sh.a + n), plane.to_world(sh.b + n), preview);
+                                view.line(plane.to_world(sh.a - n), plane.to_world(sh.b - n), preview);
+                                let turn = dir.y.atan2(dir.x);
+                                view.arc(&plane, sh.b, sh.half, turn - std::f64::consts::FRAC_PI_2, std::f64::consts::PI, preview);
+                                view.arc(&plane, sh.a, sh.half, turn + std::f64::consts::FRAC_PI_2, std::f64::consts::PI, preview);
+                                format!("width {:.2} mm   length {:.2} mm", 2.0 * sh.half, sh.a.distance(sh.b))
+                            }
+                            None => {
+                                if let Some(b) = self.editor.second {
+                                    view.line(plane.to_world(from), plane.to_world(sk.pos(b)), preview);
+                                }
+                                String::new()
                             }
                         },
                         Tool::Circle2Point | Tool::Circle3Point => match self.editor.circle_preview(sk, here) {

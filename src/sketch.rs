@@ -496,7 +496,7 @@ fn segment_touches_rect(p: DVec2, q: DVec2, lo: DVec2, hi: DVec2) -> bool {
 }
 
 /// Parameters t where `p + t·d` crosses the circle (centre `c`, radius `r`).
-fn line_circle(p: DVec2, d: DVec2, c: DVec2, r: f64) -> Vec<f64> {
+pub(crate) fn line_circle(p: DVec2, d: DVec2, c: DVec2, r: f64) -> Vec<f64> {
     let f = p - c;
     let (qa, qb, qc) = (d.length_squared(), 2.0 * f.dot(d), f.length_squared() - r * r);
     let disc = qb * qb - 4.0 * qa * qc;
@@ -1677,6 +1677,12 @@ pub enum Tool {
     /// Bevel a corner where two lines meet.
     SketchChamfer,
     Trim,
+    /// Run a line on to the next geometry in its way.
+    Extend,
+    /// Copy a run of lines / arcs (or a circle) to one side.
+    Offset,
+    /// Centre-to-centre slot: two centres, then the width.
+    Slot,
     /// Copy the geometry that was selected across a clicked line.
     Mirror,
     /// Click a body edge to bring it into the sketch.
@@ -1723,6 +1729,9 @@ impl Tool {
             Tool::SketchFillet => "Fillet",
             Tool::SketchChamfer => "Chamfer",
             Tool::Trim => "Trim",
+            Tool::Extend => "Extend",
+            Tool::Offset => "Offset",
+            Tool::Slot => "Slot",
             Tool::Mirror => "Mirror",
             Tool::Project => "Project",
             Tool::PolygonCircumscribed => "Circumscribed Polygon",
@@ -1760,7 +1769,23 @@ pub struct Editor {
     pub polygon_sides: usize,
 }
 
+/// A slot: the two end-cap centres and half the width.
+#[derive(Clone, Copy, Debug)]
+pub struct SlotShape {
+    pub a: DVec2,
+    pub b: DVec2,
+    pub half: f64,
+}
+
 impl Editor {
+    /// The slot the clicks so far make, with the width set by `here`.
+    pub fn slot_shape(&self, sk: &Sketch, here: DVec2) -> Option<SlotShape> {
+        let (a, b) = (sk.pos(self.start?), sk.pos(self.second?));
+        let d = (b - a).try_normalize()?;
+        let half = d.perp_dot(here - a).abs();
+        (half >= MIN_SIZE / 2.0).then_some(SlotShape { a, b, half })
+    }
+
     pub const MAX_SIDES: usize = 64;
 
     /// Sides for the polygon tools, between 3 and 64 (Fusion starts at 6).
@@ -2009,6 +2034,8 @@ impl Editor {
                 | Tool::SketchFillet
                 | Tool::SketchChamfer
                 | Tool::Trim
+                | Tool::Extend
+                | Tool::Offset
                 | Tool::Mirror
                 | Tool::Project
         ) {
@@ -2144,6 +2171,37 @@ impl Editor {
                 }
                 // Its size is a dimension on the reference circle (edit it like any other).
                 out.push(Constraint::Diameter(circle, 2.0 * circle_r));
+                out.extend(ties);
+                out
+            }
+            Tool::Slot if self.second.is_none() => {
+                if size >= MIN_SIZE {
+                    self.second = Some(at); // the centres are set; the next click gives the width
+                }
+                Vec::new()
+            }
+            Tool::Slot => {
+                let second = self.second.take().expect("checked above");
+                self.start = None;
+                let probe = Editor { tool: self.tool, start: Some(start), second: Some(second), ..Default::default() };
+                let Some(shape) = probe.slot_shape(sk, sk.pos(at)) else { return Vec::new() };
+                let (ca, cb) = (resolve(sk, start), resolve(sk, second));
+                let n = (shape.b - shape.a).normalize().perp() * shape.half;
+                let [a_up, b_up, b_dn, a_dn] = [shape.a + n, shape.b + n, shape.b - n, shape.a - n].map(|q| sk.resolve(Anchor::Free(q)));
+                let first = sk.entities.len();
+                sk.entities.push(Entity::Line { a: a_up, b: b_up });
+                sk.entities.push(Entity::Line { a: b_dn, b: a_dn });
+                // Counter-clockwise: round B from its lower to its upper side (through the far end), round A the other way.
+                sk.entities.push(Entity::Arc { center: cb, a: b_dn, b: b_up });
+                sk.entities.push(Entity::Arc { center: ca, a: a_up, b: a_dn });
+                let mut out = vec![
+                    Constraint::Tangent(first, first + 2),
+                    Constraint::Tangent(first + 1, first + 2),
+                    Constraint::Tangent(first, first + 3),
+                    Constraint::Tangent(first + 1, first + 3),
+                    Constraint::Equal(first + 2, first + 3),
+                    Constraint::Radius(first + 2, shape.half),
+                ];
                 out.extend(ties);
                 out
             }
@@ -2309,7 +2367,7 @@ impl Editor {
                 ties
             }
             Tool::Circle2Tangent | Tool::Circle3Tangent | Tool::Constrain(_) | Tool::Point => Vec::new(),
-            Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Mirror | Tool::Project => Vec::new(),
+            Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Extend | Tool::Offset | Tool::Mirror | Tool::Project => Vec::new(),
             Tool::Select => Vec::new(),
         }
     }
@@ -3553,5 +3611,35 @@ mod marquee_tests {
         assert!(pts.contains(&Sel::Point(3)) && !pts.contains(&Sel::Point(4)), "the sticking-out line's near end, not its far end");
         assert!(!pts.contains(&Sel::Point(Sketch::ORIGIN)));
         assert!(sk.points_in_rect(DVec2::new(100.0, 100.0), DVec2::new(110.0, 110.0)).is_empty());
+    }
+
+    #[test]
+    fn a_slot_is_two_lines_and_two_half_circles_that_stay_tangent() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Slot);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(0.0, 10.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(20.0, 10.0)));
+        let cs = ed.click(&mut sk, Anchor::Free(DVec2::new(5.0, 13.0)));
+        assert_eq!(sk.entities.len(), 4);
+        for c in cs {
+            let mut t = sk.clone();
+            if crate::solver::add_constraints(&mut t, &[c]).is_ok() {
+                sk = t;
+            }
+        }
+        // Half circles of radius 3 at the two centres, 180° each.
+        for e in 2..4 {
+            let (_, r, _, sweep) = sk.arc_geometry(e).unwrap();
+            assert!((r - 3.0).abs() < 1e-9 && (sweep - std::f64::consts::PI).abs() < 1e-9, "arc {e}: r {r} sweep {sweep}");
+        }
+        let regions = crate::profile::find_regions(&sk);
+        assert_eq!(regions.len(), 1);
+        // The outline is the stadium: 20 × 6 plus the two caps (polygon approximation of the arcs).
+        let exact = 20.0 * 6.0 + std::f64::consts::PI * 9.0;
+        assert!((regions[0].area() - exact).abs() < 0.01 * exact);
+        // Only the two centres are free (the width is a dimension).
+        let solved = crate::solver::solve(&mut sk.clone(), &[]).unwrap();
+        assert_eq!(solved.dof, 4);
     }
 }
