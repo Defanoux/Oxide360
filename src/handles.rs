@@ -12,15 +12,25 @@ pub struct LineHandle {
     pub dir: DVec3,
 }
 
-/// The fillet / chamfer arrow for a picked edge: from the edge into the part,
-/// along the bisector of its two faces. None when the faces aren't known
-/// (older files) or the edge is between faces that face opposite ways.
-pub fn edge_handle(e: &EdgeRef) -> Option<LineHandle> {
+/// The fillet / chamfer arrow for a picked edge, along the bisector of its
+/// two faces: into the part on an outside corner (where it takes material
+/// off), out into the gap on an inside corner (where it adds material).
+/// `inside` says whether a point is in the part. None when the faces aren't
+/// known (older files) or the edge is between faces that face opposite ways.
+pub fn edge_handle(e: &EdgeRef, size: f64, inside: impl Fn(DVec3) -> bool) -> Option<LineHandle> {
     if e.faces[0] == DVec3::ZERO || e.faces[1] == DVec3::ZERO {
         return None;
     }
     let inward = -(e.faces[0] + e.faces[1]);
-    (inward.length() > 1e-6).then(|| LineHandle { origin: e.mid, dir: inward.normalize() })
+    if inward.length() <= 1e-6 {
+        return None;
+    }
+    let dir = inward.normalize();
+    // A step off the edge between the faces (along n1 − n2): empty space
+    // beside an outside corner, material beside an inside one.
+    let probe = e.mid + (e.faces[0] - e.faces[1]).normalize_or_zero() * (size.abs() * 0.05).max(1e-3);
+    let concave = inside(probe);
+    Some(LineHandle { origin: e.mid, dir: if concave { -dir } else { dir } })
 }
 
 /// An arrow that swings round an axis (the revolve angle).
@@ -92,12 +102,19 @@ mod tests {
     fn edge_arrow_points_into_the_part_along_the_bisector() {
         // The top-front edge of a box: faces point up and toward the viewer.
         let e = EdgeRef { mid: DVec3::new(5.0, 0.0, 10.0), dir: DVec3::X, faces: [DVec3::Z, -DVec3::Y], follow: None };
-        let h = edge_handle(&e).unwrap();
+        // The box: y in 0..20, z in 0..10.
+        let in_box = |p: DVec3| (0.0..=20.0).contains(&p.y) && (0.0..=10.0).contains(&p.z);
+        let h = edge_handle(&e, 2.0, in_box).unwrap();
         assert_eq!(h.origin, e.mid);
         assert!((h.dir - DVec3::new(0.0, 1.0, -1.0).normalize()).length() < 1e-12, "{:?}", h.dir);
+        // The same faces at an inside corner (a step: material below z = 10
+        // everywhere, and behind y = 0 up to z = 20): the arrow points out into the gap.
+        let step = |p: DVec3| p.z <= 10.0 || (p.y >= 0.0 && p.z <= 20.0);
+        let h = edge_handle(&e, 2.0, step).unwrap();
+        assert!((h.dir - DVec3::new(0.0, -1.0, 1.0).normalize()).length() < 1e-12, "{:?}", h.dir);
         // Unknown faces (old files) or opposite faces: no arrow.
-        assert!(edge_handle(&EdgeRef { faces: [DVec3::ZERO; 2], ..e }).is_none());
-        assert!(edge_handle(&EdgeRef { faces: [DVec3::Z, -DVec3::Z], ..e }).is_none());
+        assert!(edge_handle(&EdgeRef { faces: [DVec3::ZERO; 2], ..e }, 2.0, in_box).is_none());
+        assert!(edge_handle(&EdgeRef { faces: [DVec3::Z, -DVec3::Z], ..e }, 2.0, in_box).is_none());
     }
 
     #[test]

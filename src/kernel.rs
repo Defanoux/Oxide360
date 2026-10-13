@@ -1946,6 +1946,16 @@ mod tests {
     }
 
     #[test]
+    fn inside_tells_material_from_air() {
+        let m = plate_with(10.0, None); // 50 × 30 × 10
+        let mesh = &m.bodies[0].mesh;
+        assert!(crate::model::inside(mesh, Vec3::new(25.0, 15.0, 5.0)));
+        assert!(crate::model::inside(mesh, Vec3::new(0.01, 0.01, 9.99)));
+        assert!(!crate::model::inside(mesh, Vec3::new(25.0, 15.0, 10.5)));
+        assert!(!crate::model::inside(mesh, Vec3::new(-0.1, 15.0, 5.0)));
+    }
+
+    #[test]
     fn measure_box_faces_are_tagged_and_exact() {
         // 50 × 30 × 10 plate: faces 1500, 300 and 500 mm², two of each.
         let m = plate_with(10.0, None);

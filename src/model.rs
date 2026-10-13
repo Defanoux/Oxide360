@@ -497,6 +497,30 @@ pub fn prism_touches(points: &[Vec3], normal: Vec3, distance: f32, bodies: &[(Ve
     })
 }
 
+/// Is `p` inside a closed mesh? Counts crossings along a ray in an odd
+/// direction (so it doesn't graze edges of axis-aligned parts).
+pub fn inside(mesh: &Mesh, p: Vec3) -> bool {
+    let dir = Vec3::new(0.5773, 0.6131, 0.5392).normalize();
+    let mut crossings = 0;
+    for t in &mesh.tris {
+        let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+        let (e1, e2) = (b - a, c - a);
+        let q = dir.cross(e2);
+        let det = e1.dot(q);
+        if det.abs() < 1e-12 {
+            continue;
+        }
+        let s = p - a;
+        let u = s.dot(q) / det;
+        let r = s.cross(e1);
+        let v = dir.dot(r) / det;
+        if (0.0..=1.0).contains(&u) && v >= 0.0 && u + v <= 1.0 && e2.dot(r) / det > 0.0 {
+            crossings += 1;
+        }
+    }
+    crossings % 2 == 1
+}
+
 /// Distance along a ray to the first triangle it hits (Möller–Trumbore).
 pub fn ray_hit(mesh: &Mesh, origin: Vec3, dir: Vec3) -> Option<f32> {
     ray_hit_tri(mesh, origin, dir).map(|(t, _)| t)

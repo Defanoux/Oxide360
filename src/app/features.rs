@@ -211,7 +211,9 @@ impl OpenCad {
             return Some(Handle::Line { line, value, target: HandleTarget::Extrude });
         }
         if let Some(d) = &self.edge_dialog {
-            let line = handles::edge_handle(d.edges.first()?)?;
+            let model = self.model(Slot::Base);
+            let inside = |p: DVec3| model.bodies.iter().any(|b| model::inside(&b.mesh, p.as_vec3()));
+            let line = handles::edge_handle(d.edges.first()?, d.size, inside)?;
             return Some(Handle::Line { line, value: d.size, target: HandleTarget::EdgeSize });
         }
         if let Some(d) = &self.revolve_dialog {
