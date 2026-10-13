@@ -910,10 +910,10 @@ impl OpenCad {
                             app.notify("Reference dimension: right-click it to make it drive".into());
                             return;
                         }
-                        if let Some(c) = app.sketches[i].constraints.get(ci).filter(|c| c.value().is_some()) {
+                        if app.sketches[i].constraints.get(ci).is_some_and(|c| c.value().is_some()) {
                             app.float = Some(FloatEdit {
                                 target: EditTarget::Dimension(ci),
-                                text: app.value_text(c),
+                                text: app.value_text(i, ci),
                                 focus: true,
                                 keep_text: false,
                             });
@@ -1911,7 +1911,7 @@ impl OpenCad {
                         };
                         let trace = std::cell::RefCell::new(Vec::new());
                         let traced = View { trace: Some(&trace), ..view };
-                        let r = draw_dimension(&traced, sk, &plane, c, sk.is_driven(ci), sk.label_shift(ci), centroid, colour, self.units);
+                        let r = draw_dimension(&traced, sk, &plane, c, sk.is_driven(ci), sk.label_shift(ci), centroid, colour, sk.dim_unit(ci).unwrap_or(self.units));
                         r.map(|r| (r, trace.into_inner()))
                     }
                     // Glyphs about a point sit at the point.

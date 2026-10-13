@@ -892,7 +892,12 @@ impl OpenCad {
                 .is_some_and(|c| matches!(c, Constraint::Angle(..))),
             _ => false,
         };
-        let unit = self.units;
+        // A dimension is shown and typed in its own unit (if it was typed in one).
+        let unit = match (target, self.active) {
+            (EditTarget::Dimension(ci), Some(i)) => self.sketches.get(i).and_then(|sk| sk.dim_unit(ci)).unwrap_or(self.units),
+            _ => self.units,
+        };
+        let mut typed_unit = None; // the unit written in the box, when Enter was pressed
         let mut commit: Option<Option<f64>> = None; // Some(parsed) when Enter was pressed
         let mut close = false;
         let mut live: Option<f64> = None;
@@ -960,6 +965,7 @@ impl OpenCad {
                                 if lost {
                                     if enter {
                                         commit = Some(parsed);
+                                        typed_unit = units::typed_unit(&fe.text);
                                     }
                                     close = true; // Esc or clicking away cancels
                                 }
@@ -1020,7 +1026,17 @@ impl OpenCad {
             }
             EditTarget::Dimension(ci) => {
                 match commit {
-                    Some(Some(v)) => self.set_dimension(ci, v),
+                    Some(Some(v)) => {
+                        self.set_dimension(ci, v);
+                        // Typed in another unit: the dimension keeps showing in it
+                        // (typed in the design's: back to following the design).
+                        if let (Some(u), Some(i), false) = (typed_unit, self.active, degrees) {
+                            let keep = (u != self.units).then_some(u);
+                            if let Some(sk) = self.sketches.get_mut(i) {
+                                sk.set_dim_unit(ci, keep);
+                            }
+                        }
+                    }
                     Some(None) => self.message = Some("Type a number".into()),
                     None => {}
                 }

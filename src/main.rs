@@ -122,12 +122,19 @@ fn apply_edit(
 
 /// A size box's text: "5", or "2, 5" with a second distance.
 impl OpenCad {
-    /// A dimension's value as typed in its box: lengths in the design's
-    /// units, angles in degrees.
-    fn value_text(&self, c: &Constraint) -> String {
+    /// The unit sketch `i`'s dimension `ci` is shown and typed in: the one
+    /// it was typed in, else the design's.
+    fn dim_unit(&self, i: usize, ci: usize) -> units::Unit {
+        self.sketches.get(i).and_then(|sk| sk.dim_unit(ci)).unwrap_or(self.units)
+    }
+
+    /// A dimension's value as typed in its box: lengths in its unit, angles
+    /// in degrees.
+    fn value_text(&self, i: usize, ci: usize) -> String {
+        let Some(c) = self.sketches.get(i).and_then(|sk| sk.constraints.get(ci)) else { return String::new() };
         match (c, c.value()) {
             (Constraint::Angle(..), Some(d)) => format!("{d:.2}"),
-            (_, Some(d)) => self.units.plain(d),
+            (_, Some(d)) => self.dim_unit(i, ci).plain(d),
             (_, None) => String::new(),
         }
     }
@@ -205,7 +212,7 @@ fn draw_dimension(
     match *c {
         Constraint::Length(e, d) => {
             let (a, b) = line(e)?;
-            view.linear_dimension(plane, a, b, away_from, shift, text(unit.plain(d_of(d))), color)
+            view.linear_dimension(plane, a, b, away_from, shift, text(unit.show(d_of(d))), color)
         }
         Constraint::Distance(p, q, d) => view.linear_dimension(
             plane,
@@ -213,12 +220,12 @@ fn draw_dimension(
             *sk.points.get(q)?,
             away_from,
             shift,
-            text(unit.plain(d_of(d))),
+            text(unit.show(d_of(d))),
             color,
         ),
         Constraint::Diameter(e, d) => match sk.entities.get(e)? {
             Entity::Circle { center, radius } => {
-                view.diameter_dimension(plane, sk.points[*center], *radius, shift, text(format!("Ø{}", unit.plain(d_of(d)))), color)
+                view.diameter_dimension(plane, sk.points[*center], *radius, shift, text(format!("Ø{}", unit.show(d_of(d)))), color)
             }
             _ => None,
         },
@@ -227,7 +234,7 @@ fn draw_dimension(
         }
         Constraint::Radius(e, d) => {
             let (c, r, a0, sweep) = sk.arc_geometry(e)?;
-            view.radius_dimension(plane, c, r, a0 + sweep * 0.5, shift, text(format!("R{}", unit.plain(d_of(d)))), color)
+            view.radius_dimension(plane, c, r, a0 + sweep * 0.5, shift, text(format!("R{}", unit.show(d_of(d)))), color)
         }
         Constraint::Offset(o, e, d) => {
             // From the copy across to the original, square to both.
@@ -247,7 +254,7 @@ fn draw_dimension(
                     (centre + dir * sk.round_radius(o)?, centre + dir * sk.round_radius(e)?)
                 }
             };
-            view.linear_dimension(plane, from, to, away_from, shift, text(unit.plain(d_of(d).abs())), color)
+            view.linear_dimension(plane, from, to, away_from, shift, text(unit.show(d_of(d).abs())), color)
         }
         _ => None,
     }

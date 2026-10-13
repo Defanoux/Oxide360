@@ -389,6 +389,10 @@ pub struct Sketch {
     /// the geometry and are never solved. Missing entries mean driving.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub driven: Vec<bool>,
+    /// A unit a dimension was typed in that differs from the design's ("1 in"
+    /// in a mm design), by constraint index: it keeps showing in that unit.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dim_units: Vec<Option<crate::units::Unit>>,
     /// Entities that are construction geometry (by entity index): drawn
     /// dashed, ignored when finding regions to extrude, still constrainable.
     /// Missing entries mean normal geometry.
@@ -712,6 +716,7 @@ impl Sketch {
             constraints: Vec::new(),
             label_shift: Vec::new(),
             driven: Vec::new(),
+            dim_units: Vec::new(),
             construction: Vec::new(),
         }
     }
@@ -1143,17 +1148,23 @@ impl Sketch {
     pub fn retain_constraints(&mut self, mut keep: impl FnMut(&Constraint) -> bool) {
         let shifts = std::mem::take(&mut self.label_shift);
         let driven = std::mem::take(&mut self.driven);
-        let (mut kept, mut kept_driven) = (Vec::new(), Vec::new());
+        let units = std::mem::take(&mut self.dim_units);
+        let (mut kept, mut kept_driven, mut kept_units) = (Vec::new(), Vec::new(), Vec::new());
         let mut i = 0;
         self.constraints.retain(|c| {
             let k = keep(c);
             if k {
                 kept.push(shifts.get(i).copied().unwrap_or(DVec2::ZERO));
                 kept_driven.push(driven.get(i).copied().unwrap_or(false));
+                kept_units.push(units.get(i).copied().flatten());
             }
             i += 1;
             k
         });
+        while kept_units.last() == Some(&None) {
+            kept_units.pop();
+        }
+        self.dim_units = kept_units;
         while kept.last() == Some(&DVec2::ZERO) {
             kept.pop();
         }
@@ -1171,6 +1182,9 @@ impl Sketch {
             self.constraints.remove(ci);
             if ci < self.label_shift.len() {
                 self.label_shift.remove(ci);
+            }
+            if ci < self.dim_units.len() {
+                self.dim_units.remove(ci);
             }
             if ci < self.driven.len() {
                 self.driven.remove(ci);
@@ -1305,6 +1319,21 @@ impl Sketch {
     /// Where a dimension's label was dragged to (sketch units from default).
     pub fn label_shift(&self, ci: usize) -> DVec2 {
         self.label_shift.get(ci).copied().unwrap_or(DVec2::ZERO)
+    }
+
+    /// The unit dimension `ci` was typed in, if not the design's.
+    pub fn dim_unit(&self, ci: usize) -> Option<crate::units::Unit> {
+        self.dim_units.get(ci).copied().flatten()
+    }
+
+    pub fn set_dim_unit(&mut self, ci: usize, unit: Option<crate::units::Unit>) {
+        if self.dim_units.len() <= ci {
+            self.dim_units.resize(ci + 1, None);
+        }
+        self.dim_units[ci] = unit;
+        while self.dim_units.last() == Some(&None) {
+            self.dim_units.pop();
+        }
     }
 
     pub fn set_label_shift(&mut self, ci: usize, shift: DVec2) {
@@ -3508,6 +3537,22 @@ mod trim_tests {
         assert_eq!(ends(&sk, n), (DVec2::new(20.0, 0.0), DVec2::new(30.0, 0.0)));
         assert!(cs.contains(&Constraint::Horizontal(n)), "{cs:?}");
         assert!(!sk.constraints.iter().any(|c| matches!(c, Constraint::Length(..))), "old length dropped");
+    }
+
+    #[test]
+    fn a_dimensions_own_unit_stays_with_it() {
+        use crate::units::Unit;
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let l = seg(&mut sk, (0.0, 0.0), (25.4, 0.0));
+        let m = seg(&mut sk, (0.0, 5.0), (10.0, 5.0));
+        sk.constraints.extend([Constraint::Horizontal(l), Constraint::Length(l, 25.4), Constraint::Length(m, 10.0)]);
+        sk.set_dim_unit(1, Some(Unit::In));
+        assert_eq!((sk.dim_unit(1), sk.dim_unit(2)), (Some(Unit::In), None));
+        // Deleting an earlier constraint shifts it along with its dimension.
+        sk.retain_constraints(|c| !matches!(c, Constraint::Horizontal(_)));
+        assert_eq!((sk.dim_unit(0), sk.dim_unit(1)), (Some(Unit::In), None));
+        sk.set_dim_unit(0, None);
+        assert!(sk.dim_units.is_empty(), "nothing stored when every dimension follows the design");
     }
 
     #[test]

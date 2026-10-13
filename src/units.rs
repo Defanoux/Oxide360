@@ -110,6 +110,12 @@ pub fn parse_length(text: &str, unit: Unit) -> Option<f64> {
     Some(v * u.mm())
 }
 
+/// The unit written after a typed number, if any ("1 in" → In, "1" → None).
+pub fn typed_unit(text: &str) -> Option<Unit> {
+    let (_, word) = split(text)?;
+    Unit::from_word(word)
+}
+
 /// A typed angle in degrees: "90", "90°", "90 deg", "1.5708 rad". Never
 /// scaled by the design's length units.
 pub fn parse_angle(text: &str) -> Option<f64> {
@@ -141,6 +147,14 @@ mod tests {
         assert_eq!(parse_length("2 parsecs", Unit::Mm), None);
         assert_eq!(parse_length("", Unit::Mm), None);
         assert_eq!(parse_length("90°", Unit::Mm), None, "an angle isn't a length");
+    }
+
+    #[test]
+    fn the_unit_typed_is_known() {
+        assert_eq!(typed_unit("1 in"), Some(Unit::In));
+        assert_eq!(typed_unit("25.4mm"), Some(Unit::Mm));
+        assert_eq!(typed_unit("3"), None);
+        assert_eq!(typed_unit("x"), None);
     }
 
     #[test]

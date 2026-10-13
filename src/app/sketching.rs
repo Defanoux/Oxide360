@@ -249,9 +249,9 @@ impl OpenCad {
             if driven {
                 return;
             }
-            if let Some(c) = cs.first().filter(|c| c.value().is_some()) {
+            if cs.first().is_some_and(|c| c.value().is_some()) {
                 // Open the number box on the new dimension, ready to type.
-                let text = self.value_text(c);
+                let text = self.value_text(i, first_new);
                 self.float = Some(FloatEdit { target: EditTarget::Dimension(first_new), text, focus: true, keep_text: false });
             }
         }
@@ -332,7 +332,7 @@ impl OpenCad {
                     return;
                 }
                 let keep_text = typed.is_some();
-                let text = typed.unwrap_or_else(|| self.value_text(&c));
+                let text = typed.unwrap_or_else(|| self.value_text(i, ci));
                 self.float = Some(FloatEdit { target: EditTarget::Dimension(ci), text, focus: true, keep_text });
             }
             Err(e) => self.report(Err(e)),
