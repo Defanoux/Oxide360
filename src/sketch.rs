@@ -240,12 +240,34 @@ pub enum Constraint {
     /// (first): a line that far from the original's line, or an arc/circle
     /// sharing the original's centre with its radius that much bigger or
     /// smaller. The Offset tool adds one per piece, all the same distance.
+    /// The sign keeps the side: left of the original line's a→b (+) or right
+    /// (−); a bigger radius (+) or smaller (−). Shown and edited as the size.
     Offset(EntityId, EntityId, f64),
     /// Point locked where it is.
     Fix(PointId),
 }
 
 impl Constraint {
+    /// A dimension's value as shown and edited (an offset's size, not its side).
+    pub fn value(&self) -> Option<f64> {
+        use Constraint::*;
+        match *self {
+            Length(_, d) | Diameter(_, d) | Angle(_, _, d) | Distance(_, _, d) | Radius(_, d) => Some(d),
+            Offset(_, _, d) => Some(d.abs()),
+            _ => None,
+        }
+    }
+
+    /// Set a dimension's value (an offset keeps its side).
+    pub fn set_value(&mut self, v: f64) {
+        use Constraint::*;
+        match self {
+            Length(_, d) | Diameter(_, d) | Angle(_, _, d) | Distance(_, _, d) | Radius(_, d) => *d = v,
+            Offset(_, _, d) => *d = v.abs().copysign(*d),
+            _ => {}
+        }
+    }
+
     pub fn entities(&self) -> Vec<EntityId> {
         use Constraint::*;
         match *self {
@@ -1175,14 +1197,19 @@ impl Sketch {
     /// How far an offset copy `b` is from `a` now: from the middle of a copied
     /// line to the original's line, or the difference in radius.
     pub fn offset_between(&self, a: EntityId, b: EntityId) -> Option<f64> {
+        self.signed_offset(a, b).map(f64::abs)
+    }
+
+    /// `offset_between` with its side (see `Constraint::Offset`).
+    pub fn signed_offset(&self, a: EntityId, b: EntityId) -> Option<f64> {
         match (self.entities.get(a)?, self.entities.get(b)?) {
             (&Entity::Line { a: p, b: q }, &Entity::Line { a: r, b: s }) => {
                 let (p, q) = (self.points[p], self.points[q]);
                 let d = q - p;
                 let mid = (self.points[r] + self.points[s]) * 0.5;
-                Some((d.perp_dot(mid - p) / d.length().max(1e-12)).abs())
+                Some(d.perp_dot(mid - p) / d.length().max(1e-12))
             }
-            _ => Some((self.round_radius(a)? - self.round_radius(b)?).abs()),
+            _ => Some(self.round_radius(b)? - self.round_radius(a)?),
         }
     }
 

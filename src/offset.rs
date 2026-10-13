@@ -270,13 +270,14 @@ impl Sketch {
     pub fn offset_constrained(&mut self, e: EntityId, at: DVec2, distance: Option<f64>) -> Result<Vec<Constraint>, String> {
         let (pieces, _) = self.chain_of(e)?;
         let made = self.offset_chain(e, at, distance)?;
-        let d = self.offset_between(pieces[0].e, made[0]).ok_or("the copy has no size")?;
+        // Each piece keeps its own side (the sign); they share the size.
+        let d = |sk: &Sketch, o: EntityId, c: EntityId| sk.signed_offset(o, c).unwrap_or(0.0);
         let pairs: Vec<(EntityId, EntityId)> = pieces.iter().map(|p| p.e).zip(made.iter().copied()).collect();
         let ends = |sk: &Sketch, e: EntityId| match sk.entities[e] {
             Entity::Line { a, b } | Entity::Arc { a, b, .. } => vec![a, b],
             _ => Vec::new(),
         };
-        let mut out: Vec<Constraint> = pairs.iter().filter(|(o, _)| self.is_line(*o)).map(|&(o, c)| Constraint::Offset(o, c, d)).collect();
+        let mut out: Vec<Constraint> = pairs.iter().filter(|(o, _)| self.is_line(*o)).map(|&(o, c)| Constraint::Offset(o, c, d(self, o, c))).collect();
         for &(oa, ca) in pairs.iter().filter(|(o, _)| !self.is_line(*o)) {
             let mut smooth = 0;
             for &(ol, cl) in pairs.iter().filter(|(o, _)| self.is_line(*o)) {
@@ -291,7 +292,7 @@ impl Sketch {
                 }
             }
             if smooth < 2 {
-                out.push(Constraint::Offset(oa, ca, d));
+                out.push(Constraint::Offset(oa, ca, d(self, oa, ca)));
             }
         }
         Ok(out)
@@ -592,6 +593,41 @@ mod tests {
         crate::solver::set_dimension_value(&mut sk, ci, 5.0).unwrap();
         let (lo, hi) = (4..8).flat_map(|m| { let (a, b) = ends(&sk, m); [a, b] }).fold((DVec2::splat(1e9), DVec2::splat(-1e9)), |(l, h), p| (l.min(p), h.max(p)));
         assert!(lo.distance(DVec2::new(-5.0, -5.0)) < 1e-6 && hi.distance(DVec2::new(15.0, 11.0)) < 1e-6, "{lo} {hi}");
+    }
+
+    #[test]
+    fn an_offset_copy_cannot_fold_across_its_original() {
+        // Gavin's screenshot: the top of an outward offset ended with one end
+        // above the rectangle's top and one below it — the same distance off
+        // the line, the wrong side. The side is part of the constraint now.
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Rectangle);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(0.0, 0.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(10.0, 6.0)));
+        let cs = sk.offset_constrained(0, DVec2::new(5.0, -2.0), None).unwrap();
+        assert_eq!(add_each(&mut sk, cs), 0);
+        // Put a copy corner on the folded spot and let the solver settle.
+        let corner = (5..sk.points.len()).find(|&p| sk.points[p].distance(DVec2::new(12.0, 8.0)) < 1e-9).expect("top-right copy corner");
+        sk.points[corner] = DVec2::new(12.0, 4.0);
+        crate::solver::solve(&mut sk, &[]).unwrap();
+        // Every end of every copied side is the offset away, on its own side.
+        let held = |sk: &Sketch, want: f64| {
+            for c in &sk.constraints {
+                let Constraint::Offset(o, e, d) = *c else { continue };
+                let (Entity::Line { a, b }, Entity::Line { a: p, b: q }) = (sk.entities[o], sk.entities[e]) else { continue };
+                let (a, b) = (sk.points[a], sk.points[b]);
+                for x in [sk.points[p], sk.points[q]] {
+                    let side = (b - a).perp_dot(x - a) / (b - a).length();
+                    assert!((side - d).abs() < 1e-6 && (d.abs() - want).abs() < 1e-9, "end {x}: {side} vs {d}");
+                }
+            }
+        };
+        held(&sk, 2.0);
+        // Editing the dimension keeps it so.
+        let ci = offset_dim(&sk);
+        crate::solver::set_dimension_value(&mut sk, ci, 3.0).unwrap();
+        held(&sk, 3.0);
     }
 
     #[test]

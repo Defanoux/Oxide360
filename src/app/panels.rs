@@ -527,7 +527,7 @@ impl OpenCad {
                     _ => c.entities().iter().map(|&e| sk.entity_name(e)).collect::<Vec<_>>().join(", "),
                 };
                 ui.label(format!("{} {}", c.glyph(), what));
-                if let Constraint::Length(_, d) | Constraint::Diameter(_, d) | Constraint::Angle(_, _, d) | Constraint::Distance(_, _, d) | Constraint::Radius(_, d) | Constraint::Offset(_, _, d) = *c {
+                if let Some(d) = c.value() {
                     let mut v = d;
                     let field = if matches!(c, Constraint::Angle(..)) {
                         egui::DragValue::new(&mut v).speed(0.5).range(0.0..=179.999).min_decimals(1).suffix("°")
@@ -559,10 +559,7 @@ impl OpenCad {
             }
             let r = apply_edit(&mut self.sketches[i], None, |sk| {
                 for k in sk.offset_group(ci) {
-                    match &mut sk.constraints[k] {
-                        Constraint::Length(_, d) | Constraint::Diameter(_, d) | Constraint::Angle(_, _, d) | Constraint::Distance(_, _, d) | Constraint::Radius(_, d) | Constraint::Offset(_, _, d) => *d = v,
-                        _ => {}
-                    }
+                    sk.constraints[k].set_value(v);
                 }
             });
             self.report(r);

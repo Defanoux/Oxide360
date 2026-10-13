@@ -237,7 +237,7 @@ fn draw_dimension(
                     (centre + dir * sk.round_radius(o)?, centre + dir * sk.round_radius(e)?)
                 }
             };
-            view.linear_dimension(plane, from, to, away_from, shift, text(format!("{:.2}", d_of(d))), color)
+            view.linear_dimension(plane, from, to, away_from, shift, text(format!("{:.2}", d_of(d).abs())), color)
         }
         _ => None,
     }

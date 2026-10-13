@@ -250,10 +250,10 @@ impl Eval<'_> {
                 (Some((a, b)), Some(&Entity::Line { a: p, b: q })) => {
                     let n = b - a;
                     let x = self.pt(if k == 0 { p } else { q });
-                    (n.perp_dot(x - a) / n.length().max(1e-12)).abs() - d
+                    n.perp_dot(x - a) / n.length().max(1e-12) - d
                 }
                 // Round: radii that far apart (the centre is shared).
-                _ => (self.circle(c)?.1 - self.circle(o)?.1).abs() - d,
+                _ => self.circle(c)?.1 - self.circle(o)?.1 - d,
             },
             Fix(_) => return None, // handled by freezing the point, not an equation
         })
@@ -756,10 +756,7 @@ pub fn make_driven(sk: &mut Sketch, ci: usize) {
 }
 
 fn set_value(c: &mut Constraint, v: f64) {
-    use Constraint::*;
-    if let Length(_, d) | Diameter(_, d) | Angle(_, _, d) | Distance(_, _, d) | Radius(_, d) | Offset(_, _, d) = c {
-        *d = v;
-    }
+    c.set_value(v);
 }
 
 #[cfg(test)]

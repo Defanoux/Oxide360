@@ -249,7 +249,7 @@ impl OpenCad {
             if driven {
                 return;
             }
-            if let Some(Constraint::Length(_, d) | Constraint::Diameter(_, d) | Constraint::Angle(_, _, d) | Constraint::Distance(_, _, d) | Constraint::Radius(_, d) | Constraint::Offset(_, _, d)) = cs.first() {
+            if let Some(d) = cs.first().and_then(|c| c.value()) {
                 // Open the number box on the new dimension, ready to type.
                 self.float =
                     Some(FloatEdit { target: EditTarget::Dimension(first_new), text: format!("{d:.2}"), focus: true, keep_text: false });
@@ -331,13 +331,7 @@ impl OpenCad {
                     self.editor.selection.clear();
                     return;
                 }
-                let value = match c {
-                    Constraint::Length(_, d)
-                    | Constraint::Diameter(_, d)
-                    | Constraint::Angle(_, _, d)
-                    | Constraint::Distance(_, _, d) | Constraint::Radius(_, d) | Constraint::Offset(_, _, d) => d,
-                    _ => 0.0,
-                };
+                let value = c.value().unwrap_or(0.0);
                 let keep_text = typed.is_some();
                 let text = typed.unwrap_or_else(|| format!("{value:.2}"));
                 self.float = Some(FloatEdit { target: EditTarget::Dimension(ci), text, focus: true, keep_text });
@@ -658,10 +652,8 @@ impl OpenCad {
             if solver::set_dimension_value(sk, ci, v).is_err() {
                 // Couldn't solve: leave the new value in so the usual error shows.
                 for k in sk.offset_group(ci) {
-                    if let Some(Constraint::Length(_, d) | Constraint::Diameter(_, d) | Constraint::Angle(_, _, d) | Constraint::Distance(_, _, d) | Constraint::Radius(_, d) | Constraint::Offset(_, _, d)) =
-                        sk.constraints.get_mut(k)
-                    {
-                        *d = v;
+                    if let Some(c) = sk.constraints.get_mut(k) {
+                        c.set_value(v);
                     }
                 }
             }

@@ -842,13 +842,7 @@ impl OpenCad {
                             app.notify("Reference dimension: right-click it to make it drive".into());
                             return;
                         }
-                        if let Some(
-                            Constraint::Length(_, d)
-                            | Constraint::Diameter(_, d)
-                            | Constraint::Angle(_, _, d)
-                            | Constraint::Distance(_, _, d) | Constraint::Radius(_, d) | Constraint::Offset(_, _, d),
-                        ) = app.sketches[i].constraints.get(ci)
-                        {
+                        if let Some(d) = app.sketches[i].constraints.get(ci).and_then(|c| c.value()) {
                             app.float = Some(FloatEdit {
                                 target: EditTarget::Dimension(ci),
                                 text: format!("{d:.2}"),
