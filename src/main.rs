@@ -352,6 +352,16 @@ enum Pending {
     New,
     Open,
     Quit,
+    /// Close this tab (asked by the tab strip's ×).
+    CloseTab,
+}
+
+/// What the tab strip asks the tab holder to do.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TabRequest {
+    New,
+    Switch(usize),
+    Close(usize),
 }
 
 /// What the floating number box is editing.
@@ -544,6 +554,12 @@ struct OpenCad {
     removes: Vec<model::RemoveFeature>,     // Remove features (bodies taken out)
     units: units::Unit,                     // the design's units (shown and typed in)
     touchpad_zoom_flip: bool,               // touchpad Ctrl+scroll: fingers up zoom in
+    version: u32,                           // saves so far (shown by the name)
+    settings_open: bool,                    // the Settings window is open
+    tab_titles: Vec<(String, bool)>,        // every open design's title and unsaved mark (set by the tab holder)
+    tab_index: usize,                       // which of them this is
+    tab_request: Option<TabRequest>,        // what the tab strip asked for this frame
+    close_me: bool,                         // this tab is done (its × was confirmed)
     browser_open: bool,                     // the browser is shown (else folded to a button)
     view_rect: egui::Rect,                  // the 3D view's area last frame (the browser floats in it)
     default_units: units::Unit,             // units new designs start in (settings)
@@ -631,7 +647,6 @@ struct OpenCad {
     confirm: Option<Pending>,
     alert: Option<String>,
     allow_close: bool,
-    title: String,
     gpu: bool, // GPU renderer available (otherwise the CPU fallback draws)
 }
 
@@ -675,6 +690,12 @@ impl Default for OpenCad {
             removes: Vec::new(),
             units: units::Unit::Mm,
             touchpad_zoom_flip: true,
+            version: 0,
+            settings_open: false,
+            tab_titles: Vec::new(),
+            tab_index: 0,
+            tab_request: None,
+            close_me: false,
             browser_open: true,
             view_rect: egui::Rect::NOTHING,
             default_units: units::Unit::Mm,
@@ -762,15 +783,15 @@ impl Default for OpenCad {
             confirm: None,
             alert: None,
             allow_close: false,
-            title: String::new(),
             gpu: false,
         }
     }
 }
 
 
-impl eframe::App for OpenCad {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+impl OpenCad {
+    /// One frame of this design (the tab that's showing).
+    fn tab_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // Enter finishes the open tool window (OK) when nothing else takes it:
         // no text box focused and no number box open (that has its own Enter).
@@ -819,6 +840,8 @@ impl eframe::App for OpenCad {
             }
         }
 
+        egui::Panel::top("titlebar").show(ui, |ui| self.title_bar(ui));
+        self.settings_window(&ctx);
         // Side-scrollable, so a narrow window doesn't cut the ribbon off.
         egui::Panel::top("toolbar").show(ui, |ui| {
             // Carry-on scrolling: a flick keeps gliding a little (see `inertia`).
@@ -908,20 +931,114 @@ impl eframe::App for OpenCad {
         if let Some(cmd) = self.cmd.take() {
             self.run_cmd(cmd, &ctx);
         }
-        // Closing the window with unsaved work asks first.
-        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.is_dirty() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.confirm = Some(Pending::Quit);
-        }
         self.modals(&ctx);
         self.record_history(&ctx);
-
         self.save_settings_if_changed();
-        let title = format!("{}{} — opencad", self.file_name(), if self.is_dirty() { " •" } else { "" });
+    }
+
+    /// Take on the global settings (at start, and when this tab comes up).
+    fn apply_settings(&mut self, s: &settings::Settings) {
+        self.touchpad = s.touchpad;
+        self.cube_axes = s.cube_axes;
+        self.camera.projection = s.projection;
+        self.measure_unit = s.measure_unit_own;
+        self.measure_unit2 = s.measure_unit2;
+        self.measure_precision = s.measure_precision.min(8);
+        self.measure_snap = s.measure_snap;
+        self.measure_xyz = s.measure_xyz;
+        self.default_units = s.default_units;
+        self.touchpad_zoom_flip = s.touchpad_zoom_flip;
+        self.settings_saved = s.clone();
+    }
+
+    /// A fresh design in a new tab: the settings, starting in the default units.
+    fn fresh(s: &settings::Settings, gpu: bool) -> Self {
+        let mut app = OpenCad::default();
+        app.apply_settings(s);
+        // (Starting in the default units isn't a change to the design.)
+        app.units = s.default_units;
+        app.saved.units = s.default_units;
+        app.gpu = gpu;
+        app
+    }
+}
+
+/// The open designs, one per tab (like Fusion's document tabs).
+struct Tabs {
+    tabs: Vec<OpenCad>,
+    current: usize,
+    gpu: bool,
+    title: String,
+}
+
+impl eframe::App for Tabs {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let titles: Vec<(String, bool)> = self.tabs.iter().map(|t| (t.tab_title(), t.is_dirty())).collect();
+        let current = self.current;
+        let tab = &mut self.tabs[current];
+        (tab.tab_titles, tab.tab_index) = (titles, current);
+        tab.tab_ui(ui);
+        let settings = tab.current_settings();
+        let close_me = std::mem::take(&mut tab.close_me);
+        match tab.tab_request.take() {
+            Some(TabRequest::New) => {
+                self.tabs.push(OpenCad::fresh(&settings, self.gpu));
+                self.current = self.tabs.len() - 1;
+            }
+            Some(TabRequest::Switch(k)) if k < self.tabs.len() => self.show(k, &settings),
+            // Closing a tab with unsaved work asks first (in that tab).
+            Some(TabRequest::Close(k)) if k < self.tabs.len() => {
+                if self.tabs[k].is_dirty() {
+                    self.show(k, &settings);
+                    self.tabs[k].confirm = Some(Pending::CloseTab);
+                } else {
+                    self.close(k);
+                }
+            }
+            _ => {}
+        }
+        if close_me {
+            self.close(self.current.min(self.tabs.len() - 1));
+        }
+        // Closing the window: each tab with unsaved work asks in turn.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if let Some(k) = self.tabs.iter().position(|t| t.is_dirty() && !t.allow_close) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                let settings = self.tabs[self.current].current_settings();
+                self.show(k, &settings);
+                self.tabs[k].confirm = Some(Pending::Quit);
+            }
+        }
+        let t = &self.tabs[self.current];
+        let title = format!("{}{} — opencad", t.tab_title(), if t.is_dirty() { " •" } else { "" });
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
         }
+    }
+}
+
+impl Tabs {
+    /// Bring tab `k` up, carrying the global settings over to it.
+    fn show(&mut self, k: usize, settings: &settings::Settings) {
+        self.current = k;
+        self.tabs[k].apply_settings(settings);
+    }
+
+    /// Close tab `k` (an empty window gets a fresh design).
+    fn close(&mut self, k: usize) {
+        let settings = self.tabs[self.current].current_settings();
+        self.tabs.remove(k);
+        if self.tabs.is_empty() {
+            self.tabs.push(OpenCad::fresh(&settings, self.gpu));
+        }
+        if self.current >= k && self.current > 0 {
+            self.current -= 1;
+        }
+        self.current = self.current.min(self.tabs.len() - 1);
+        let k = self.current;
+        self.show(k, &settings);
     }
 }
 
@@ -942,31 +1059,16 @@ fn main() -> eframe::Result {
         "opencad",
         options,
         Box::new(|cc| {
-            let mut app = OpenCad::default();
-            if let Some(path) = settings::default_path() {
-                let s = settings::load(&path);
-                app.touchpad = s.touchpad;
-                app.cube_axes = s.cube_axes;
-                app.camera.projection = s.projection;
-                app.measure_unit = s.measure_unit_own;
-                app.measure_unit2 = s.measure_unit2;
-                app.measure_precision = s.measure_precision.min(8);
-                app.measure_snap = s.measure_snap;
-                app.measure_xyz = s.measure_xyz;
-                // A fresh design starts in the default units (and isn't "changed" by that).
-                app.default_units = s.default_units;
-                app.touchpad_zoom_flip = s.touchpad_zoom_flip;
-                app.units = s.default_units;
-                app.saved.units = s.default_units;
-                app.settings_saved = s;
-            }
-            // Set up the GPU renderer once and keep it with egui's renderer.
-            if let Some(rs) = cc.wgpu_render_state.as_ref() {
+            let s = settings::default_path().map(|p| settings::load(&p)).unwrap_or_default();
+            // Set up the GPU renderer once and keep it with egui's renderer (all tabs share it).
+            let gpu = if let Some(rs) = cc.wgpu_render_state.as_ref() {
                 let g = gpu::Gpu::new(&rs.device, rs.target_format);
                 rs.renderer.write().callback_resources.insert(g);
-                app.gpu = true;
-            }
-            Ok(Box::new(app))
+                true
+            } else {
+                false
+            };
+            Ok(Box::new(Tabs { tabs: vec![OpenCad::fresh(&s, gpu)], current: 0, gpu, title: String::new() }))
         }),
     )
 }

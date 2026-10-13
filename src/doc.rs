@@ -151,6 +151,9 @@ pub struct Document {
     /// older files are mm.
     #[serde(default)]
     pub units: crate::units::Unit,
+    /// Saves so far (older files: 0).
+    #[serde(default)]
+    pub version: Version,
     pub timeline: Vec<Feature>,
     /// Features switched off: still in the timeline, but not built.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -187,6 +190,18 @@ pub struct ViewState {
     /// Timeline rollback: how many features are built (None: all).
     #[serde(default)]
     pub marker: Option<usize>,
+}
+
+/// How many times the design has been saved (shown as "v3" by its name, as
+/// in Fusion). Not part of the design's equality: saving isn't a change.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Version(pub u32);
+
+impl PartialEq for Version {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl PartialEq for ViewState {
@@ -442,6 +457,11 @@ impl History {
         !self.future.is_empty()
     }
 
+    /// How many steps back / forward there are (for the undo / redo lists).
+    pub fn depth(&self) -> (usize, usize) {
+        (self.past.len(), self.future.len())
+    }
+
     /// The version to go back to. `current` is the design right now (it may
     /// have a change not recorded yet; that counts as its own step).
     pub fn undo(&mut self, current: Document) -> Option<Document> {
@@ -515,6 +535,7 @@ mod tests {
             planes: Vec::new(),
             removes: Vec::new(),
             units: crate::units::Unit::Mm,
+            version: Version(0),
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],
             suppressed: Vec::new(),
             view: ViewState::default(),
@@ -608,6 +629,15 @@ mod tests {
         let old = to_json(&sample()).replace("\"units\": \"Mm\",", "");
         assert!(!old.contains("\"Mm\""));
         assert_eq!(from_json(&old).unwrap().units, crate::units::Unit::Mm);
+    }
+
+    #[test]
+    fn the_version_saves_but_is_no_change() {
+        let mut doc = sample();
+        doc.version = Version(4);
+        assert_eq!(from_json(&to_json(&doc)).unwrap().version.0, 4);
+        assert_eq!(doc, sample(), "saving (a new version) isn't a change to the design");
+        assert_eq!(from_json(&to_json(&sample()).replace("\"version\": 0,", "")).unwrap().version.0, 0, "older files: 0");
     }
 
     #[test]

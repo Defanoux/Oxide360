@@ -14,6 +14,7 @@ impl OpenCad {
             planes: self.planes.clone(),
             removes: self.removes.clone(),
             units: self.units,
+            version: doc::Version(self.version),
             timeline: self.timeline.clone(),
             suppressed: self.suppressed.clone(),
             view: self.view_state(),
@@ -185,7 +186,18 @@ impl OpenCad {
 
     /// Write the preferences when one changed (checked every frame; cheap).
     pub(crate) fn save_settings_if_changed(&mut self) {
-        let now = settings::Settings {
+        let now = self.current_settings();
+        if now != self.settings_saved {
+            if let Some(path) = settings::default_path() {
+                let _ = settings::save(&path, &now); // a lost preference isn't worth an error box
+            }
+            self.settings_saved = now;
+        }
+    }
+
+    /// The global settings as they are now.
+    pub(crate) fn current_settings(&self) -> settings::Settings {
+        settings::Settings {
             touchpad: self.touchpad,
             cube_axes: self.cube_axes,
             projection: self.camera.projection,
@@ -196,12 +208,6 @@ impl OpenCad {
             measure_xyz: self.measure_xyz,
             default_units: self.default_units,
             touchpad_zoom_flip: self.touchpad_zoom_flip,
-        };
-        if now != self.settings_saved {
-            if let Some(path) = settings::default_path() {
-                let _ = settings::save(&path, &now); // a lost preference isn't worth an error box
-            }
-            self.settings_saved = now;
         }
     }
 
@@ -245,6 +251,7 @@ impl OpenCad {
         self.copies = doc.copies.clone();
         self.removes = doc.removes.clone();
         self.units = doc.units;
+        self.version = doc.version.0;
         self.selected_bodies.clear();
         self.axes = doc.axes.clone();
         self.planes = doc.planes.clone();
@@ -356,9 +363,12 @@ impl OpenCad {
     }
 
     pub(crate) fn save_to(&mut self, path: PathBuf) -> bool {
-        let doc = self.document();
+        // Every save is a new version (v1, v2… by the name).
+        let mut doc = self.document();
+        doc.version = doc::Version(self.version + 1);
         match doc::save(&path, &doc) {
             Ok(()) => {
+                self.version += 1;
                 self.saved = doc;
                 self.path = Some(path);
                 true
@@ -570,6 +580,7 @@ impl OpenCad {
                 self.allow_close = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
+            Pending::CloseTab => self.close_me = true,
         }
     }
 

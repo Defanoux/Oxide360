@@ -13,6 +13,164 @@ fn browser_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> eg
 }
 
 impl OpenCad {
+    /// The top bar, like Fusion's: file menu, save, undo / redo (with lists
+    /// of steps), the open designs as tabs (× closes, + opens a new one) and
+    /// Settings; under it, which workspace you're in. It doesn't scroll.
+    pub(crate) fn title_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let file = icons::button(ui, Icon::File, "File: new, open, save, export", true, false);
+            egui::Popup::menu(&file).show(|ui| {
+                for (cmd, label) in [
+                    (Cmd::New, "New                Ctrl+N"),
+                    (Cmd::Open, "Open…             Ctrl+O"),
+                    (Cmd::Save, "Save                Ctrl+S"),
+                    (Cmd::SaveAs, "Save As…  Ctrl+Shift+S"),
+                ] {
+                    if ui.button(label).clicked() {
+                        self.cmd = Some(cmd);
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                ui.menu_button("Export", |ui| {
+                    for f in export::Format::ALL {
+                        if ui.button(format!("{}…", f.label())).clicked() {
+                            self.cmd = Some(Cmd::Export(f));
+                            ui.close();
+                        }
+                    }
+                });
+            });
+            if icons::button(ui, Icon::Save, "Save (Ctrl+S) — each save is a new version", true, false).clicked() {
+                self.cmd = Some(Cmd::Save);
+            }
+            // Undo / redo, each with a list to jump several steps.
+            let (back, ahead) = self.history.depth();
+            if icons::button(ui, Icon::Undo, "Undo (Ctrl+Z)", self.can_undo(), false).clicked() {
+                self.undo();
+            }
+            let list = ui.add_enabled(back > 0, egui::Button::new("▾").small()).on_hover_text("Undo several steps");
+            egui::Popup::menu(&list).show(|ui| {
+                for n in 1..=back.min(20) {
+                    if ui.button(format!("Undo {n} step{}", if n == 1 { "" } else { "s" })).clicked() {
+                        for _ in 0..n {
+                            self.undo();
+                        }
+                        ui.close();
+                    }
+                }
+            });
+            if icons::button(ui, Icon::Redo, "Redo (Ctrl+Shift+Z or Ctrl+Y)", self.history.can_redo(), false).clicked() {
+                self.redo();
+            }
+            let list = ui.add_enabled(ahead > 0, egui::Button::new("▾").small()).on_hover_text("Redo several steps");
+            egui::Popup::menu(&list).show(|ui| {
+                for n in 1..=ahead.min(20) {
+                    if ui.button(format!("Redo {n} step{}", if n == 1 { "" } else { "s" })).clicked() {
+                        for _ in 0..n {
+                            self.redo();
+                        }
+                        ui.close();
+                    }
+                }
+            });
+            ui.separator();
+            // The open designs: name, version, a dot when unsaved; × closes.
+            let titles = if self.tab_titles.is_empty() { vec![(self.tab_title(), self.is_dirty())] } else { self.tab_titles.clone() };
+            for (k, (title, dirty)) in titles.iter().enumerate() {
+                let current = k == self.tab_index;
+                let text = format!("{title}{}", if *dirty { " •" } else { "" });
+                egui::Frame::new()
+                    .fill(if current { Color32::from_gray(58) } else { Color32::from_gray(36) })
+                    .corner_radius(5.0)
+                    .inner_margin(egui::Margin::symmetric(8, 3))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let label = egui::RichText::new(text).color(if current { Color32::WHITE } else { Color32::from_gray(160) });
+                            if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() && !current {
+                                self.tab_request = Some(TabRequest::Switch(k));
+                            }
+                            if ui.small_button("×").on_hover_text("Close this design").clicked() {
+                                self.tab_request = Some(TabRequest::Close(k));
+                            }
+                        });
+                    });
+            }
+            if ui.button("+").on_hover_text("New design in a new tab").clicked() {
+                self.tab_request = Some(TabRequest::New);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("⚙").on_hover_text("Settings").clicked() {
+                    self.settings_open = !self.settings_open;
+                }
+            });
+        });
+        // Which workspace you're in, like Fusion's SOLID / SKETCH tabs.
+        let sketching = self.active.is_some();
+        ui.horizontal(|ui| {
+            for (name, on) in [("SOLID", !sketching), ("SKETCH", sketching)] {
+                let text = egui::RichText::new(name).size(12.0);
+                let text = if on { text.color(Color32::from_rgb(110, 170, 255)).strong() } else { text.color(Color32::from_gray(110)) };
+                ui.label(text);
+                ui.add_space(10.0);
+            }
+            if let Some(i) = self.active {
+                ui.weak(format!("— editing {}", self.sketches[i].name));
+            }
+        });
+    }
+
+    /// This design's tab title: its name and version ("Bracket v3").
+    pub(crate) fn tab_title(&self) -> String {
+        let name = self.file_name().trim_end_matches(".ocad").to_string();
+        if self.version > 0 { format!("{name} v{}", self.version) } else { name }
+    }
+
+    /// Global settings (kept between runs, for every design).
+    pub(crate) fn settings_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.settings_open;
+        egui::Window::new("Settings").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            egui::Grid::new("settings_grid").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+                ui.label("Input device");
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.touchpad, false, "Mouse").on_hover_text("Scroll zooms · right/middle-drag pans");
+                    ui.radio_value(&mut self.touchpad, true, "Touchpad")
+                        .on_hover_text("Two-finger scroll pans · Shift+two-finger orbits · Ctrl+two-finger zooms");
+                });
+                ui.end_row();
+                ui.label("Touchpad zoom");
+                ui.checkbox(&mut self.touchpad_zoom_flip, "Fingers up zoom in");
+                ui.end_row();
+                ui.label("Units for new designs");
+                egui::ComboBox::from_id_salt("settings_units").selected_text(self.default_units.long_name()).show_ui(ui, |ui| {
+                    for u in units::Unit::ALL {
+                        ui.selectable_value(&mut self.default_units, u, u.long_name());
+                    }
+                });
+                ui.end_row();
+                ui.label("Camera");
+                egui::ComboBox::from_id_salt("settings_camera").selected_text(self.camera.projection.name()).show_ui(ui, |ui| {
+                    for p in Projection::ALL {
+                        ui.selectable_value(&mut self.camera.projection, p, p.name());
+                    }
+                });
+                ui.end_row();
+                ui.label("View cube");
+                ui.checkbox(&mut self.cube_axes, "Show X/Y/Z axes");
+                ui.end_row();
+                ui.label("Measure precision");
+                egui::ComboBox::from_id_salt("settings_precision").selected_text(format!("{:.*}", self.measure_precision, 0.0)).show_ui(ui, |ui| {
+                    for d in 0..=8 {
+                        ui.selectable_value(&mut self.measure_precision, d, format!("{:.*}", d, 0.0));
+                    }
+                });
+                ui.end_row();
+            });
+            ui.weak("A design's own units are under Document Settings in the browser.");
+        });
+        self.settings_open = open;
+    }
+
     /// The ribbon: quick-access icons (file, save, undo, redo), then tool
     /// groups with their names underneath, like Fusion's toolbar.
     pub(crate) fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -49,64 +207,7 @@ impl OpenCad {
             });
             ui.separator();
         }
-        // Which workspace you're in, like Fusion's SOLID / SKETCH tabs.
-        let sketching = self.active.is_some();
         ui.horizontal(|ui| {
-            for (name, on) in [("SOLID", !sketching), ("SKETCH", sketching)] {
-                let text = egui::RichText::new(name).size(12.0);
-                let text = if on { text.color(Color32::from_rgb(110, 170, 255)).strong() } else { text.color(Color32::from_gray(110)) };
-                ui.label(text);
-                ui.add_space(10.0);
-            }
-            if let Some(i) = self.active {
-                ui.weak(format!("— editing {}", self.sketches[i].name));
-            }
-        });
-        ui.horizontal(|ui| {
-            // --- quick access ---
-            group(ui, "FILE", |ui| {
-                let file = icons::button(ui, Icon::File, "File: new, open, save, export", true, false);
-                egui::Popup::menu(&file).show(|ui| {
-                    for (cmd, label) in [
-                        (Cmd::New, "New                Ctrl+N"),
-                        (Cmd::Open, "Open…             Ctrl+O"),
-                        (Cmd::Save, "Save                Ctrl+S"),
-                        (Cmd::SaveAs, "Save As…  Ctrl+Shift+S"),
-                    ] {
-                        if ui.button(label).clicked() {
-                            self.cmd = Some(cmd);
-                            ui.close();
-                        }
-                    }
-                    ui.separator();
-                    ui.menu_button("Input device", |ui| {
-                        ui.radio_value(&mut self.touchpad, false, "Mouse")
-                            .on_hover_text("Scroll zooms · right/middle-drag pans · drag a dimension to move it");
-                        ui.radio_value(&mut self.touchpad, true, "Touchpad").on_hover_text(
-                            "Two-finger scroll pans · Shift+two-finger orbits · Ctrl+two-finger zooms · \
-                             click a selected dimension to pick it up, click again to drop it",
-                        );
-                    });
-                    ui.menu_button("Export", |ui| {
-                        for f in export::Format::ALL {
-                            if ui.button(format!("{}…", f.label())).clicked() {
-                                self.cmd = Some(Cmd::Export(f));
-                                ui.close();
-                            }
-                        }
-                    });
-                });
-                if icons::button(ui, Icon::Save, "Save (Ctrl+S)", true, false).clicked() {
-                    self.cmd = Some(Cmd::Save);
-                }
-                if icons::button(ui, Icon::Undo, "Undo (Ctrl+Z)", self.can_undo(), false).clicked() {
-                    self.undo();
-                }
-                if icons::button(ui, Icon::Redo, "Redo (Ctrl+Shift+Z or Ctrl+Y)", self.history.can_redo(), false).clicked() {
-                    self.redo();
-                }
-            });
-
             if let Some(i) = self.active {
                 // --- sketch mode ---
                 group(ui, "CREATE", |ui| {
