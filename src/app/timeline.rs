@@ -183,7 +183,7 @@ impl OpenCad {
         // Visible sketches: their points and curves (drawn over the bodies, so
         // they win), and their profiles.
         let mut profile: Option<(f32, Pick)> = None;
-        for s in (0..self.sketches.len()).filter(|&s| self.sketch_visible(s)) {
+        for s in (0..self.sketches.len()).filter(|&s| self.sketch_visible(s) || self.active == Some(s)) {
             let sk = &self.sketches[s];
             let Some((t, p)) = self.plane_of(s).intersect_t(ray) else { continue };
             let world = self.plane_of(s).to_world(p);

@@ -271,6 +271,13 @@ impl OpenCad {
                         self.grid_snap = !self.grid_snap;
                     }
                 });
+                group(ui, "INSPECT", |ui| {
+                    if icons::button(ui, Icon::Measure, "Measure: click sketch geometry or the model — one for its size, two for distance and angle", true, self.measure.is_some()).clicked() {
+                        self.measure = if self.measure.is_some() { None } else { Some(measure::Measure::default()) };
+                        self.editor.set_tool(Tool::Select);
+                        self.editor.selection.clear();
+                    }
+                });
                 group(ui, "FINISH SKETCH", |ui| {
                     if icons::button(ui, Icon::FinishSketch, "Finish Sketch", true, false).clicked() {
                         self.finish_sketch();

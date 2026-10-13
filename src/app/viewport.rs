@@ -527,7 +527,12 @@ impl OpenCad {
         self.refresh_sketch_pattern();
         let mut cursor: Option<Anchor> = None; // drawing target (snapped)
         let mut hovered: Option<Sel> = None; // select-tool hover
-        if let Some(i) = self.active {
+        // Measuring inside a sketch: clicks go to Measure, not the sketch tools.
+        if self.active.is_some() && self.measure.is_some() {
+            self.ensure_model(Slot::Committed);
+            self.measure_input(&view, hover_px, &response, aspect, min, size);
+        }
+        if let Some(i) = self.active.filter(|_| self.measure.is_none()) {
             let plane = self.plane_of(i);
             let raw = |px: Vec2| plane.intersect(&self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size)));
             let raw_hover = hover_px.and_then(raw);
@@ -1688,7 +1693,7 @@ impl OpenCad {
         }
 
         // --- draw: measure ---
-        if let (Some(m), None) = (&self.measure, self.active) {
+        if let Some(m) = &self.measure {
             use measure::{Geom, Pick, Show};
             let model = &self.model(Slot::Committed);
             let show = |p: &measure::Picked, col: Color32, width: f32| match p.pick {

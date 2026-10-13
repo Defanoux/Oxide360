@@ -886,7 +886,7 @@ impl eframe::App for OpenCad {
             });
         } else if self.revolve_dialog.is_some() && self.active.is_none() {
             float("revolve").show(&ctx, |ui| self.revolve_panel(ui));
-        } else if self.measure.is_some() && self.active.is_none() {
+        } else if self.measure.is_some() {
             float("measure").show(&ctx, |ui| self.measure_panel(ui));
         }
         self.timeline_height = egui::Panel::bottom("timeline").show(ui, |ui| self.timeline_bar(ui)).response.rect.height();
