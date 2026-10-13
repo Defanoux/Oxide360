@@ -849,6 +849,19 @@ mod tests {
     }
 
     #[test]
+    fn a_horizontal_line_goes_onto_the_x_axis_one_end_at_a_time() {
+        // Collinear with the X axis = both ends on it; with Horizontal already
+        // there the second end is implied, so it's skipped (the app adds them one by one).
+        let mut sk = loose();
+        add_constraints(&mut sk, &[Horizontal(0)]).unwrap();
+        let both = [OnAxis(1, 0), OnAxis(2, 0)];
+        assert!(add_constraints(&mut sk.clone(), &both).is_err(), "together: refused as redundant");
+        add_constraints(&mut sk, &both[..1]).unwrap();
+        assert!(add_constraints(&mut sk.clone(), &both[1..]).is_err());
+        assert!(sk.points[1].y.abs() < 1e-9 && sk.points[2].y.abs() < 1e-9, "on the axis anyway");
+    }
+
+    #[test]
     fn the_sketch_axes_can_be_picked_for_constraints() {
         let mut sk = loose();
         // Near the X axis, away from geometry: the axis.

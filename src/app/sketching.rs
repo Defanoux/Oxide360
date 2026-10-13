@@ -234,6 +234,24 @@ impl OpenCad {
                 driven = d;
                 Some(s)
             }),
+            // Several at once (both ends of a line onto an axis, H on several
+            // lines): one at a time, skipping any already implied — it works
+            // if at least one takes.
+            _ if cs.len() > 1 => {
+                let mut result = Err(solver::SolveError::Redundant);
+                for c in &cs {
+                    let mut t = trial.clone();
+                    match solver::add_constraints(&mut t, std::slice::from_ref(c)) {
+                        Ok(s) => {
+                            trial = t;
+                            result = Ok(Some(s));
+                        }
+                        Err(e) if result.is_err() => result = Err(e),
+                        Err(_) => {}
+                    }
+                }
+                result
+            }
             _ => solver::add_constraints(&mut trial, &cs).map(Some),
         };
         let ok = r.is_ok();
