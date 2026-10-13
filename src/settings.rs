@@ -18,7 +18,8 @@ pub struct Settings {
     /// Perspective, orthographic, or perspective with ortho faces.
     pub projection: Projection,
     /// The Measure window's unit, and a second one shown under it.
-    pub measure_unit: Unit,
+    /// The Measure window's own unit; None follows the design's units.
+    pub measure_unit_own: Option<Unit>,
     pub measure_unit2: Option<Unit>,
     /// Measure: decimal places, snap points on, X/Y/Z delta shown.
     pub measure_precision: usize,
@@ -30,7 +31,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { touchpad: false, cube_axes: true, projection: Projection::default(), measure_unit: Unit::Mm, measure_unit2: None, measure_precision: 3, measure_snap: true, measure_xyz: true, default_units: Unit::Mm }
+        Self { touchpad: false, cube_axes: true, projection: Projection::default(), measure_unit_own: None, measure_unit2: None, measure_precision: 3, measure_snap: true, measure_xyz: true, default_units: Unit::Mm }
     }
 }
 
@@ -74,7 +75,7 @@ mod tests {
         let d = dir("roundtrip");
         let path = d.join("nested").join("settings.json");
         assert_eq!(load(&path), Settings::default(), "nothing saved yet");
-        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic, measure_unit: Unit::In, measure_unit2: Some(Unit::Mm), measure_precision: 5, measure_snap: false, measure_xyz: false, default_units: Unit::In };
+        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic, measure_unit_own: Some(Unit::In), measure_unit2: Some(Unit::Mm), measure_precision: 5, measure_snap: false, measure_xyz: false, default_units: Unit::In };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);
         let _ = std::fs::remove_dir_all(&d);

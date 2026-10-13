@@ -538,7 +538,7 @@ struct OpenCad {
     body_colors: HashMap<BodyId, [u8; 3]>,  // colours the user gave bodies
     body_ids: Vec<BodyId>,                  // the bodies of the last build, in order
     measure: Option<measure::Measure>,      // the Measure tool while it's on
-    measure_unit: measure::Unit,            // the Measure window's unit
+    measure_unit: Option<measure::Unit>,    // the Measure window's unit (None: the design's)
     measure_unit2: Option<measure::Unit>,   // and the one shown under it, if any
     measure_precision: usize,               // decimal places in the Measure window
     measure_snap: bool,                     // Measure shows / snaps to snap points
@@ -664,7 +664,7 @@ impl Default for OpenCad {
             body_colors: HashMap::new(),
             body_ids: Vec::new(),
             measure: None,
-            measure_unit: measure::Unit::Mm,
+            measure_unit: None,
             measure_unit2: None,
             measure_precision: 3,
             measure_snap: true,
@@ -884,7 +884,7 @@ fn main() -> eframe::Result {
                 app.touchpad = s.touchpad;
                 app.cube_axes = s.cube_axes;
                 app.camera.projection = s.projection;
-                app.measure_unit = s.measure_unit;
+                app.measure_unit = s.measure_unit_own;
                 app.measure_unit2 = s.measure_unit2;
                 app.measure_precision = s.measure_precision.min(6);
                 app.measure_snap = s.measure_snap;

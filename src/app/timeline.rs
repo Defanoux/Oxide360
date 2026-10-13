@@ -234,7 +234,7 @@ impl OpenCad {
     pub(crate) fn measure_panel(&mut self, ui: &mut egui::Ui) {
         use measure::{Filter, Section, Show};
         let Some(m) = self.measure.as_mut() else { return };
-        let (unit, unit2, decimals) = (self.measure_unit, self.measure_unit2, self.measure_precision);
+        let (unit, unit2, decimals) = (self.measure_unit.unwrap_or(self.units), self.measure_unit2, self.measure_precision);
         ui.strong("Measure");
         ui.horizontal(|ui| {
             ui.label("Selection filter");
@@ -316,9 +316,12 @@ impl OpenCad {
             });
             ui.end_row();
             ui.label("Units");
-            egui::ComboBox::from_id_salt("measure_unit").selected_text(self.measure_unit.name()).show_ui(ui, |ui| {
+            let design = format!("Document ({})", self.units.name());
+            let shown = self.measure_unit.map_or(design.clone(), |u| u.name().to_string());
+            egui::ComboBox::from_id_salt("measure_unit").selected_text(shown).show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.measure_unit, None, design.as_str());
                 for u in measure::Unit::ALL {
-                    ui.selectable_value(&mut self.measure_unit, u, u.name());
+                    ui.selectable_value(&mut self.measure_unit, Some(u), u.name());
                 }
             });
             ui.end_row();

@@ -189,7 +189,7 @@ impl OpenCad {
             touchpad: self.touchpad,
             cube_axes: self.cube_axes,
             projection: self.camera.projection,
-            measure_unit: self.measure_unit,
+            measure_unit_own: self.measure_unit,
             measure_unit2: self.measure_unit2,
             measure_precision: self.measure_precision,
             measure_snap: self.measure_snap,
