@@ -6,8 +6,6 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 9. **Spline** (fit-point), and trimming circles/arcs themselves. (Extend, Offset, Slot done.)
 
-10. **Browser**: select/delete bodies. (Timeline drag and Measure done.)
-
 11. **Extrude options**: "to object". (Symmetric, Two Sides, Taper done; taper is One Side only.)
 
 ## Polish (do when nearby code is touched)
@@ -22,6 +20,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Browser bodies: click selects (Ctrl/Shift adds, tinted in the view, Esc clears); right-click Remove (Fusion's Remove: a timeline feature `Feature::Remove` / `RemoveFeature`, errors if its body is gone, follows feature deletes, pruned when empty; Delete key does this) or Delete (deletes the feature that made the body). Offset constraint is signed (keeps its side — fixed a folded offset). Sketch menu says "Look at Sketch"; Trim/Extend/Offset/Fillet/Chamfer return to Select after use.
 - Measure to Fusion's reference (help.autodesk.com Measure): Selection Filter (Face/Edge/Vertex, Body — no components here), Precision 0–6, Units + Secondary units, XYZ Delta None/Global (corner pairs, coloured legs on canvas), Show Snap Points (edge ends/middles, circle and round-face centres; Ctrl locks, Shift hides), Clear selection; Selection 1 / 2 each list their fields (point XYZ; line length; arc length/radius/diameter/centre; circle circumference/…; face area + loop length (+ centre when round); cylinder/fillet radius/diameter/area/loop length; body none) plus Results (min distance, angle, centre distance); visible sketch points, curves and profiles (exact area/loop length) are measurable; hovering a result highlights it; distance search is box-pruned (two 7200-triangle meshes < 0.5 s debug).
 - Offset constraint: offset copies stay attached (lines a set distance off, arcs/circles share the centre), one editable dimension per offset; editing it moves the copy, not the original.
 - Extrude / revolve only pick profiles from visible sketches (plus the sketch of the feature being edited).

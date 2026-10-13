@@ -12,6 +12,7 @@ impl OpenCad {
             copies: self.copies.clone(),
             axes: self.axes.clone(),
             planes: self.planes.clone(),
+            removes: self.removes.clone(),
             timeline: self.timeline.clone(),
             suppressed: self.suppressed.clone(),
             view: self.view_state(),
@@ -96,7 +97,12 @@ impl OpenCad {
         for c in &mut self.copies {
             c.bodies = c.bodies.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
         }
+        for r in &mut self.removes {
+            r.bodies = r.bodies.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
+        }
+        self.selected_bodies.clear();
         self.renaming = None;
+        self.prune_removes();
     }
 
     /// A mirror / pattern was deleted: its copies are gone, later ones renumber.
@@ -107,7 +113,46 @@ impl OpenCad {
         for c in &mut self.copies {
             c.bodies = c.bodies.iter().filter_map(|id| id.after_copy_delete(k)).collect();
         }
+        for r in &mut self.removes {
+            r.bodies = r.bodies.iter().filter_map(|id| id.after_copy_delete(k)).collect();
+        }
+        self.selected_bodies.clear();
         self.renaming = None;
+        self.prune_removes();
+    }
+
+    /// A Remove whose bodies were all deleted has nothing left to do: it goes.
+    fn prune_removes(&mut self) {
+        while let Some(k) = self.removes.iter().position(|r| r.bodies.is_empty()) {
+            self.delete_remove(k);
+        }
+    }
+
+    pub(crate) fn delete_remove(&mut self, k: usize) {
+        if k >= self.removes.len() {
+            return;
+        }
+        self.removes.remove(k);
+        self.timeline_remove(Feature::Remove(k));
+        for f in &mut self.timeline {
+            if let Feature::Remove(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+    }
+
+    /// Fusion's Remove: take the bodies out of the design from the marker on
+    /// (a timeline feature; the features that made them stay).
+    pub(crate) fn remove_bodies(&mut self, bodies: Vec<BodyId>) {
+        if bodies.is_empty() {
+            return;
+        }
+        let name = format!("Remove{}", self.removes.len() + 1);
+        self.removes.push(model::RemoveFeature { name, bodies });
+        self.timeline_insert(Feature::Remove(self.removes.len() - 1));
+        self.selected_bodies.clear();
     }
 
     /// What's hidden and where Home is, for saving with the design.
@@ -163,6 +208,7 @@ impl OpenCad {
             || self.edge_features != self.saved.edge_features
             || self.revolves != self.saved.revolves
             || self.copies != self.saved.copies
+            || self.removes != self.saved.removes
             || self.axes != self.saved.axes
             || self.planes != self.saved.planes
             || self.timeline != self.saved.timeline
@@ -193,6 +239,8 @@ impl OpenCad {
         self.edge_features = doc.edge_features.clone();
         self.revolves = doc.revolves.clone();
         self.copies = doc.copies.clone();
+        self.removes = doc.removes.clone();
+        self.selected_bodies.clear();
         self.axes = doc.axes.clone();
         self.planes = doc.planes.clone();
         self.plane_hidden.clear();
@@ -258,6 +306,8 @@ impl OpenCad {
         self.edge_features = doc.edge_features;
         self.revolves = doc.revolves;
         self.copies = doc.copies;
+        self.removes = doc.removes;
+        self.selected_bodies.clear();
         self.axes = doc.axes;
         self.planes = doc.planes;
         self.plane_hidden.retain(|&k| k < self.planes.len());
@@ -445,12 +495,14 @@ impl OpenCad {
                 && c.copies == copies
                 && c.axes == axes
                 && c.planes == planes
+                && c.removes == self.removes
                 && c.timeline == timeline
         });
         if !fresh {
-            let model = kernel::build_with(&self.sketches, &extrudes, &revolves, &edge_features, &copies, &axes, &planes, &timeline);
+            let removes = self.removes.clone();
+            let model = kernel::build_all(&self.sketches, &extrudes, &revolves, &edge_features, &copies, &axes, &planes, &removes, &timeline);
             self.caches[slot as usize] =
-                Some(KernelCache { sketches: self.sketches.clone(), extrudes, revolves, edge_features, copies, axes, planes, timeline, model });
+                Some(KernelCache { sketches: self.sketches.clone(), extrudes, revolves, edge_features, copies, axes, planes, removes, timeline, model });
         }
     }
 

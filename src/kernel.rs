@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{PlaneFeature, AxisFeature, CopyFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{PlaneFeature, AxisFeature, CopyFeature, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::measure::{self, Geom};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
@@ -65,7 +65,14 @@ impl Model {
     /// How many features failed to build.
     pub fn error_count(&self) -> usize {
         let n = |v: &Vec<Option<String>>| v.iter().flatten().count();
-        n(&self.sketch_errors) + n(&self.errors) + n(&self.edge_errors) + n(&self.revolve_errors) + n(&self.copy_errors) + n(&self.axis_errors) + n(&self.plane_errors)
+        n(&self.sketch_errors)
+            + n(&self.errors)
+            + n(&self.edge_errors)
+            + n(&self.revolve_errors)
+            + n(&self.copy_errors)
+            + n(&self.axis_errors)
+            + n(&self.plane_errors)
+            + n(&self.remove_errors)
     }
 }
 
@@ -85,6 +92,8 @@ pub struct Model {
     pub revolve_errors: Vec<Option<String>>,
     /// One entry per mirror / pattern.
     pub copy_errors: Vec<Option<String>>,
+    /// One entry per Remove.
+    pub remove_errors: Vec<Option<String>>,
     /// Each construction axis as built: a point on it and its direction.
     pub axes: Vec<Option<(DVec3, DVec3)>>,
     /// One entry per construction axis.
@@ -988,6 +997,7 @@ fn apply_copy(bodies: Tagged, cf: &CopyFeature, k: usize, axes: &[Option<(DVec3,
     Ok((uniquify(bodies.into_iter().chain(made).collect()), first))
 }
 
+#[cfg(test)]
 pub fn build_with(
     sketches: &[Sketch],
     extrudes: &[Extrude],
@@ -998,6 +1008,22 @@ pub fn build_with(
     plane_features: &[PlaneFeature],
     timeline: &[Feature],
 ) -> Model {
+    build_all(sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, &[], timeline)
+}
+
+/// `build_with`, plus Remove features.
+pub fn build_all(
+    sketches: &[Sketch],
+    extrudes: &[Extrude],
+    revolves: &[Revolve],
+    edge_features: &[EdgeFeature],
+    copies: &[CopyFeature],
+    axis_features: &[AxisFeature],
+    plane_features: &[PlaneFeature],
+    removes: &[RemoveFeature],
+    timeline: &[Feature],
+) -> Model {
+    let mut remove_errors: Vec<Option<String>> = vec![None; removes.len()];
     let mut planes: Vec<Option<FacePlane>> = vec![None; plane_features.len()];
     let mut plane_errors: Vec<Option<String>> = vec![None; plane_features.len()];
     let mut axes: Vec<Option<(DVec3, DVec3)>> = vec![None; axis_features.len()];
@@ -1106,6 +1132,20 @@ pub fn build_with(
                 shapes = current;
                 continue;
             }
+            Feature::Remove(k) => {
+                // Take the bodies out; the rest carry on.
+                if let Some(rf) = removes.get(k) {
+                    let before = current.len();
+                    let kept: Tagged = current.into_iter().filter(|(_, id)| !rf.bodies.contains(id)).collect();
+                    if kept.len() == before {
+                        remove_errors[k] = Some("the body it removes is gone".into());
+                    }
+                    shapes = kept;
+                } else {
+                    shapes = current;
+                }
+                continue;
+            }
             Feature::Copy(k) => {
                 let Some(cf) = copies.get(k) else {
                     shapes = current;
@@ -1153,7 +1193,7 @@ pub fn build_with(
         })
         .collect();
     let caps = caps_of(&extrude_ends, &revolve_ends);
-    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, axes, axis_errors, planes, plane_errors, caps, touched: touched_by }
+    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, caps, touched: touched_by }
 }
 
 /// Exact STEP export of all bodies (true planes, cylinders, arcs).
@@ -1874,6 +1914,35 @@ mod tests {
         let far = EdgeRef { mid: DVec3::new(500.0, 500.0, 500.0), dir: DVec3::X, ..Default::default() };
         let m = plate_with(10.0, Some((EdgeKind::Fillet, 2.0, far)));
         assert!(m.edge_errors[0].is_some());
+    }
+
+    /// Two separate rectangles extruded as one New Body feature: pieces 0 and 1.
+    fn two_blocks(removes: &[RemoveFeature], tl: &[Feature]) -> Model {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk, 0.0, 0.0, 10.0, 10.0);
+        rect(&mut sk, 20.0, 0.0, 50.0, 10.0);
+        build_all(&[sk], &[ex(0, vec![0, 1], 5.0, Operation::NewBody)], &[], &[], &[], &[], &[], removes, tl)
+    }
+
+    #[test]
+    fn remove_takes_one_body_out_and_leaves_the_rest() {
+        let all = two_blocks(&[], &timeline(1, 1));
+        assert_eq!(all.bodies.len(), 2);
+        assert!(close(total(&all), 500.0 + 1500.0));
+        // Remove the big one (whichever piece it is).
+        let big = all.bodies.iter().find(|b| close(b.shape.volume(), 1500.0)).unwrap().id;
+        let rf = RemoveFeature { name: "Remove1".into(), bodies: vec![big] };
+        let mut tl = timeline(1, 1);
+        tl.push(Feature::Remove(0));
+        let m = two_blocks(std::slice::from_ref(&rf), &tl);
+        assert_eq!(m.remove_errors, vec![None]);
+        assert_eq!(m.bodies.len(), 1);
+        assert!(close(total(&m), 500.0));
+        // Before the extrude that makes it, there's nothing to remove: an error.
+        let early = two_blocks(std::slice::from_ref(&rf), &[Feature::Sketch(0), Feature::Remove(0), Feature::Extrude(0)]);
+        assert_eq!(early.error_count(), 1);
+        assert!(early.remove_errors[0].as_deref().is_some_and(|e| e.contains("gone")));
+        assert_eq!(early.bodies.len(), 2, "the rest still builds");
     }
 
     #[test]

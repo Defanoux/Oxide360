@@ -287,6 +287,14 @@ pub struct CopyFeature {
     pub kind: CopyKind,
 }
 
+/// Remove bodies from the design from this point in the timeline on
+/// (Fusion's Remove: the features that made them stay).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RemoveFeature {
+    pub name: String,
+    pub bodies: Vec<BodyId>,
+}
+
 /// A construction axis: along a straight edge of a body.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AxisFeature {

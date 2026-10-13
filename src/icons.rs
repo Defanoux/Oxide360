@@ -53,6 +53,7 @@ pub enum Icon {
     Tangent,
     Fix,
     Grid,
+    Remove,
 }
 
 const BLUE: Color32 = Color32::from_rgb(70, 145, 230);
@@ -450,6 +451,15 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             line((0.32, 0.42), (0.32, 0.5), Stroke::new(thin.width * 1.4, ink));
             line((0.68, 0.42), (0.68, 0.5), Stroke::new(thin.width * 1.4, ink));
             poly(&[(0.24, 0.5), (0.76, 0.5), (0.76, 0.88), (0.24, 0.88)], Color32::from_rgb(230, 80, 80));
+        }
+        Icon::Remove => {
+            // A body (box) with a red cross over it.
+            poly(&[(0.18, 0.4), (0.62, 0.4), (0.62, 0.84), (0.18, 0.84)], blue_dark);
+            poly(&[(0.18, 0.4), (0.38, 0.22), (0.82, 0.22), (0.62, 0.4)], blue);
+            poly(&[(0.62, 0.4), (0.82, 0.22), (0.82, 0.66), (0.62, 0.84)], blue_dark);
+            let red = Stroke::new(thin.width * 1.6, if enabled { Color32::from_rgb(230, 80, 80) } else { ink });
+            line((0.5, 0.5), (0.92, 0.92), red);
+            line((0.92, 0.5), (0.5, 0.92), red);
         }
         Icon::Grid => {
             for t in [0.2, 0.5, 0.8] {

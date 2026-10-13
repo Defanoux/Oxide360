@@ -170,6 +170,11 @@ impl OpenCad {
             )
         });
 
+        // Esc in the 3D view lets go of bodies selected in the browser.
+        if esc && !typing && self.active.is_none() {
+            self.selected_bodies.clear();
+        }
+
         // --- pattern axis: click one of the axes in the view ---
         self.copy_axis_hover = None;
         if self.copy_dialog.as_ref().is_some_and(|d| d.picking_axis) {
@@ -1303,6 +1308,7 @@ impl OpenCad {
         self.sketch_errors = self.model(Slot::Committed).sketch_errors.clone();
         self.revolve_errors = self.model(Slot::Committed).revolve_errors.clone();
         self.copy_errors = self.model(Slot::Committed).copy_errors.clone();
+        self.remove_errors = self.model(Slot::Committed).remove_errors.clone();
         self.axis_errors = self.model(Slot::Committed).axis_errors.clone();
         self.plane_errors = self.model(Slot::Committed).plane_errors.clone();
         self.body_count = self.model(Slot::Committed).bodies.len();
@@ -1346,7 +1352,17 @@ impl OpenCad {
             .iter()
             .enumerate()
             .filter(|(k, _)| !hidden.contains(k))
-            .map(|(_, b)| (&b.mesh, if previewing { body_color } else { self.body_color(b.id) }))
+            .map(|(_, b)| {
+                let c = if previewing { body_color } else { self.body_color(b.id) };
+                // Bodies selected in the browser are tinted with the selection colour.
+                let c = if self.selected_bodies.contains(&b.id) {
+                    let mix = |x: u8, y: u8| ((x as u16 + y as u16) / 2) as u8;
+                    Color32::from_rgb(mix(c.r(), COL_SELECT.r()), mix(c.g(), COL_SELECT.g()), mix(c.b(), COL_SELECT.b()))
+                } else {
+                    c
+                };
+                (&b.mesh, c)
+            })
             .collect();
         if self.gpu {
             let list: Vec<(&Mesh, [f32; 3])> = meshes.iter().map(|(m, c)| (*m, rgb(*c))).collect();

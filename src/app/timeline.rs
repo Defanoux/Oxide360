@@ -363,6 +363,7 @@ impl OpenCad {
             Feature::Copy(k) => &mut self.copies.get_mut(k)?.name,
             Feature::Axis(k) => &mut self.axes.get_mut(k)?.name,
             Feature::Plane(k) => &mut self.planes.get_mut(k)?.name,
+            Feature::Remove(k) => &mut self.removes.get_mut(k)?.name,
         })
     }
 
@@ -403,7 +404,7 @@ impl OpenCad {
         let mut tl = new.clone();
         tl.truncate(self.applied());
         tl.retain(|f| !self.suppressed.contains(f));
-        let after = kernel::build_with(&self.sketches, &extrudes, &revolves, &edge_features, &copies, &axes, &planes, &tl).error_count();
+        let after = kernel::build_all(&self.sketches, &extrudes, &revolves, &edge_features, &copies, &axes, &planes, &self.removes, &tl).error_count();
         if after > before {
             self.notify("Can't move it there: something in the timeline would stop building".into());
             return;
@@ -468,6 +469,7 @@ impl OpenCad {
                         self.copies[k].name.clone(),
                         self.copy_dialog.as_ref().is_some_and(|d| d.editing == Some(k)),
                     ),
+                    Feature::Remove(k) => (self.removes[k].name.clone(), false),
                 };
                 let error = match *f {
                     Feature::Extrude(k) => self.feature_errors.get(k).cloned().flatten(),
@@ -477,6 +479,7 @@ impl OpenCad {
                     Feature::Axis(k) => self.axis_errors.get(k).cloned().flatten(),
                     Feature::Plane(k) => self.plane_errors.get(k).cloned().flatten(),
                     Feature::Sketch(k) => self.sketch_errors.get(k).cloned().flatten(),
+                    Feature::Remove(k) => self.remove_errors.get(k).cloned().flatten(),
                 };
                 let icon = match *f {
                     Feature::Sketch(_) => Icon::Sketch,
@@ -484,6 +487,7 @@ impl OpenCad {
                     Feature::Revolve(_) => Icon::Revolve,
                     Feature::Axis(_) => Icon::Axis,
                     Feature::Plane(_) => Icon::Plane,
+                    Feature::Remove(_) => Icon::Remove,
                     Feature::Copy(k) => match self.copies[k].kind {
                         model::CopyKind::Mirror(_) => Icon::Mirror,
                         model::CopyKind::Rectangular { .. } => Icon::RectPattern,
@@ -596,6 +600,7 @@ impl OpenCad {
             Some(Feature::Copy(k)) => self.delete_copy(k),
             Some(Feature::Axis(k)) => self.delete_axis(k),
             Some(Feature::Plane(k)) => self.delete_plane(k),
+            Some(Feature::Remove(k)) => self.delete_remove(k),
             None => {}
         }
         if delete.is_some() {
@@ -605,7 +610,7 @@ impl OpenCad {
             Some(Feature::Sketch(i)) => self.edit_sketch(i),
             Some(Feature::Extrude(k)) => self.open_extrude(Some(k)),
             Some(Feature::Revolve(k)) => self.open_revolve(Some(k)),
-            Some(Feature::Axis(_)) => {}
+            Some(Feature::Axis(_) | Feature::Remove(_)) => {}
             Some(Feature::Plane(k)) => {
                 self.cancel_all_dialogs();
                 self.plane_dialog = Some(PlaneDialog::from_feature(k, &self.planes[k]));

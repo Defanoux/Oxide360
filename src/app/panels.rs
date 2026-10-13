@@ -391,6 +391,8 @@ impl OpenCad {
         }
         ui.label("Bodies");
         let mut rename_done: Option<(BodyId, Option<String>)> = None;
+        let (mut remove, mut delete_maker): (Option<Vec<BodyId>>, Option<Feature>) = (None, None);
+        self.selected_bodies.retain(|id| self.body_ids.contains(id));
         for id in self.body_ids.clone() {
             ui.horizontal(|ui| {
                 let mut shown = !self.hidden_bodies.contains(&id);
@@ -415,13 +417,50 @@ impl OpenCad {
                     }
                 } else {
                     let name = self.body_name(id);
+                    let selected = self.selected_bodies.contains(&id);
                     let r = ui
-                        .add(egui::Label::new(name.clone()).sense(egui::Sense::click()))
-                        .on_hover_text("Double-click to rename · right-click for more");
+                        .selectable_label(selected, name.clone())
+                        .on_hover_text("Click to select (Ctrl/Shift adds) · double-click to rename · right-click for more");
                     if r.double_clicked() {
                         self.renaming = Some((id, name.clone()));
+                    } else if r.clicked() {
+                        let add = ui.input(|i| i.modifiers.ctrl || i.modifiers.shift || i.modifiers.command);
+                        if add {
+                            if selected {
+                                self.selected_bodies.retain(|b| *b != id);
+                            } else {
+                                self.selected_bodies.push(id);
+                            }
+                        } else if selected && self.selected_bodies.len() == 1 {
+                            self.selected_bodies.clear();
+                        } else {
+                            self.selected_bodies = vec![id];
+                        }
+                    }
+                    if r.secondary_clicked() && !selected {
+                        self.selected_bodies = vec![id];
                     }
                     r.context_menu(|ui| {
+                        // Fusion's two ways to get rid of a body.
+                        let n = self.selected_bodies.len().max(1);
+                        let what = if n == 1 { "this body".to_string() } else { format!("the {n} selected bodies") };
+                        if ui.button("Remove").on_hover_text(format!("Take {what} out from here on (a Remove feature in the timeline; Delete key)")).clicked() {
+                            remove = Some(if self.selected_bodies.is_empty() { vec![id] } else { self.selected_bodies.clone() });
+                            ui.close();
+                        }
+                        let maker = id.feature;
+                        let maker_name = self.feature_name_mut(maker).map(|s| s.clone()).unwrap_or_default();
+                        let siblings = self.body_ids.iter().filter(|b| b.feature == maker).count();
+                        let tip = if siblings > 1 {
+                            format!("Deletes {maker_name}, which made this body — and its other {} bod{}", siblings - 1, if siblings == 2 { "y" } else { "ies" })
+                        } else {
+                            format!("Deletes {maker_name}, the feature that made this body")
+                        };
+                        if ui.button(format!("Delete ({maker_name})")).on_hover_text(tip).clicked() {
+                            delete_maker = Some(maker);
+                            ui.close();
+                        }
+                        ui.separator();
                         if ui.button("Rename").clicked() {
                             self.renaming = Some((id, name));
                             ui.close();
@@ -444,6 +483,21 @@ impl OpenCad {
                     });
                 }
             });
+        }
+        // Delete key with bodies selected: Remove them (the safe one; the
+        // right-click menu has Delete, which deletes the making feature).
+        let typing = ui.ctx().text_edit_focused();
+        if self.active.is_none() && !typing && !self.selected_bodies.is_empty() && ui.input(|i| i.key_pressed(egui::Key::Delete)) {
+            remove = Some(self.selected_bodies.clone());
+        }
+        if let Some(bodies) = remove {
+            self.remove_bodies(bodies);
+        }
+        match delete_maker {
+            Some(Feature::Extrude(k)) => self.delete_extrude(k),
+            Some(Feature::Revolve(k)) => self.delete_revolve(k),
+            Some(Feature::Copy(k)) => self.delete_copy(k),
+            _ => {}
         }
         if let Some((id, name)) = rename_done {
             self.renaming = None;

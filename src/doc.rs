@@ -4,7 +4,7 @@
 //! index and number so a damaged or hand-edited file gives a clear error
 //! instead of crashing the app.
 
-use crate::model::{PlaneFeature, AxisFeature, CopyFeature, EdgeFeature, Extrude, MAX_COPIES, Revolve};
+use crate::model::{PlaneFeature, AxisFeature, CopyFeature, EdgeFeature, Extrude, MAX_COPIES, RemoveFeature, Revolve};
 use crate::sketch::{Constraint, Entity, Sketch};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -27,6 +27,8 @@ pub enum Feature {
     Axis(usize),
     /// A construction plane (index into `planes`).
     Plane(usize),
+    /// Bodies taken out of the design (index into `removes`).
+    Remove(usize),
 }
 
 /// Put `f` into the timeline at the rollback marker (the end when there is
@@ -59,6 +61,7 @@ pub fn forget_feature(list: &mut Vec<Feature>, gone: Feature) {
             (Feature::Copy(i), Feature::Copy(k)) if i > k => Feature::Copy(i - 1),
             (Feature::Axis(i), Feature::Axis(k)) if i > k => Feature::Axis(i - 1),
             (Feature::Plane(i), Feature::Plane(k)) if i > k => Feature::Plane(i - 1),
+            (Feature::Remove(i), Feature::Remove(k)) if i > k => Feature::Remove(i - 1),
             (f, _) => f,
         };
     }
@@ -140,6 +143,9 @@ pub struct Document {
     /// Construction planes. Older files have none.
     #[serde(default)]
     pub planes: Vec<PlaneFeature>,
+    /// Remove features. Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removes: Vec<RemoveFeature>,
     pub timeline: Vec<Feature>,
     /// Features switched off: still in the timeline, but not built.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -317,6 +323,17 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             return Err(format!("{}: invalid count, spacing or angle", c.name));
         }
     }
+    for r in &doc.removes {
+        let made_bodies = |id: &BodyId| match id.feature {
+            Feature::Extrude(k) => k < doc.extrudes.len(),
+            Feature::Revolve(k) => k < doc.revolves.len(),
+            Feature::Copy(k) => k < doc.copies.len(),
+            _ => false,
+        };
+        if r.bodies.is_empty() || !r.bodies.iter().all(made_bodies) {
+            return Err(format!("{}: invalid body reference", r.name));
+        }
+    }
     for p in &doc.planes {
         let f = p.base;
         if !(p.offset.is_finite() && f.origin.is_finite() && f.u.is_finite() && f.v.is_finite() && f.normal().length() > 0.5) {
@@ -349,6 +366,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     let mut seen_c = vec![false; doc.copies.len()];
     let mut seen_a = vec![false; doc.axes.len()];
     let mut seen_p = vec![false; doc.planes.len()];
+    let mut seen_x = vec![false; doc.removes.len()];
     for f in &doc.timeline {
         let slot = match *f {
             Feature::Sketch(i) => seen_s.get_mut(i),
@@ -358,6 +376,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Feature::Copy(i) => seen_c.get_mut(i),
             Feature::Axis(i) => seen_a.get_mut(i),
             Feature::Plane(i) => seen_p.get_mut(i),
+            Feature::Remove(i) => seen_x.get_mut(i),
         };
         match slot {
             Some(s) if !*s => *s = true,
@@ -367,7 +386,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     if doc.suppressed.iter().any(|f| !doc.timeline.contains(f)) {
         return Err("a suppressed feature isn't in the timeline".into());
     }
-    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).any(|s| !s) {
+    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).any(|s| !s) {
         return Err("timeline is missing a feature".into());
     }
     Ok(())
@@ -483,6 +502,7 @@ mod tests {
             copies: Vec::new(),
             axes: Vec::new(),
             planes: Vec::new(),
+            removes: Vec::new(),
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],
             suppressed: Vec::new(),
             view: ViewState::default(),
@@ -543,6 +563,27 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, History::LIMIT);
+    }
+
+    #[test]
+    fn removes_save_load_and_validate() {
+        let mut doc = sample();
+        let body = BodyId { feature: Feature::Extrude(0), piece: 0 };
+        doc.removes.push(RemoveFeature { name: "Remove1".into(), bodies: vec![body] });
+        doc.timeline.push(Feature::Remove(0));
+        assert_eq!(from_json(&to_json(&doc)).unwrap(), doc);
+        // Older files have no "removes" at all (and an empty list isn't written).
+        assert!(!to_json(&sample()).contains("removes"));
+        let mut bad = doc.clone();
+        bad.removes[0].bodies = vec![BodyId { feature: Feature::Extrude(7), piece: 0 }];
+        assert!(validate(&bad).is_err(), "a body from a feature that doesn't exist");
+        let mut bad = doc.clone();
+        bad.timeline.pop();
+        assert!(validate(&bad).is_err(), "a Remove missing from the timeline");
+        // Deleting Remove1 elsewhere renumbers later ones.
+        let mut tl = vec![Feature::Remove(0), Feature::Remove(1)];
+        forget_feature(&mut tl, Feature::Remove(0));
+        assert_eq!(tl, vec![Feature::Remove(0)]);
     }
 
     #[test]
