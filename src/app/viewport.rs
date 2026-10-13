@@ -71,8 +71,11 @@ impl OpenCad {
             let at = hover_px.map_or(Vec2::ZERO, |p| ndc_from_pixel(p, min, size));
             let (scroll, pinch) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta()));
             if pinch != 1.0 {
-                // Pinch on a touchpad, or Ctrl+scroll.
-                self.camera.zoom_at(pinch.ln() / 0.002, aspect, at);
+                // Pinch on a touchpad, or Ctrl+scroll. On a touchpad, fingers
+                // up zoom in (unless flipped back in Settings).
+                let z = pinch.ln() / 0.002;
+                let z = if self.touchpad && self.touchpad_zoom_flip { -z } else { z };
+                self.camera.zoom_at(z, aspect, at);
             }
             if scroll != egui::Vec2::ZERO {
                 if self.touchpad {
@@ -683,9 +686,25 @@ impl OpenCad {
                         let g = self.grid_snap.then_some(grid);
                         cursor = Some(Anchor::Free(self.editor.arc3_snap(sk, p, g, tol_px(mm_per_px)).0));
                     }
+                    // Line with a typed length: the end stays that far from the start,
+                    // toward the cursor (onto horizontal/vertical when close); the
+                    // click sets the angle.
+                    if self.editor.tool != Tool::Line || self.editor.start.is_none() {
+                        self.line_length = None;
+                    }
+                    if let (Some(l), Some(start), Some(c)) = (self.line_length, self.editor.start.filter(|a| sk.is_valid_anchor(*a)), cursor) {
+                        let a = sk.pos(start);
+                        if let Some(mut dir) = (sk.pos(c) - a).try_normalize() {
+                            let deg = dir.y.atan2(dir.x).to_degrees().rem_euclid(90.0);
+                            if deg <= sketch::ALIGN_SNAP_DEG || deg >= 90.0 - sketch::ALIGN_SNAP_DEG {
+                                dir = if dir.x.abs() >= dir.y.abs() { DVec2::new(dir.x.signum(), 0.0) } else { DVec2::new(0.0, dir.y.signum()) };
+                            }
+                            cursor = Some(Anchor::Free(a + dir * l));
+                        }
+                    }
                     // Inference: lined up with a line's middle or a circle's centre
                     // (dashed lines show it; both at once lands where they cross).
-                    if let (false, Some(Anchor::Free(g)), Some(raw)) = (tool.tangent_lines() > 0 || arc3_third, cursor, raw_hover) {
+                    if let (false, Some(Anchor::Free(g)), Some(raw)) = (tool.tangent_lines() > 0 || arc3_third || self.line_length.is_some(), cursor, raw_hover) {
                         let (q, above, beside) = sk.line_up(raw, SNAP_PX as f64 * mm_per_px);
                         if above.is_some() || beside.is_some() {
                             let q = DVec2::new(if above.is_some() { q.x } else { g.x }, if beside.is_some() { q.y } else { g.y });
@@ -1215,7 +1234,9 @@ impl OpenCad {
                     if response.clicked() {
                         if let Some(at) = cursor {
                             let ed = &mut self.editor;
+                            let length = self.line_length.filter(|_| ed.tool == Tool::Line && ed.start.is_some());
                             let r = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
+                                let before = sk.entities.len();
                                 // A line drawn nearly horizontal/vertical gets that constraint,
                                 // unless it would over-constrain the sketch (then it's skipped).
                                 for c in ed.click(sk, at) {
@@ -1224,8 +1245,16 @@ impl OpenCad {
                                         *sk = t;
                                     }
                                 }
+                                // A typed length: the new line keeps it as a dimension.
+                                if let (Some(l), true) = (length, sk.entities.len() > before && sk.is_line(sk.entities.len() - 1)) {
+                                    let mut t = sk.clone();
+                                    if solver::add_constraints(&mut t, &[Constraint::Length(sk.entities.len() - 1, l)]).is_ok() {
+                                        *sk = t;
+                                    }
+                                }
                             });
                             self.report(r);
+                            self.line_length = None;
                         }
                     }
                 }

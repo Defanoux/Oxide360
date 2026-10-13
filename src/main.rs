@@ -543,6 +543,7 @@ struct OpenCad {
     copy_errors: Vec<Option<String>>,
     removes: Vec<model::RemoveFeature>,     // Remove features (bodies taken out)
     units: units::Unit,                     // the design's units (shown and typed in)
+    touchpad_zoom_flip: bool,               // touchpad Ctrl+scroll: fingers up zoom in
     browser_open: bool,                     // the browser is shown (else folded to a button)
     view_rect: egui::Rect,                  // the 3D view's area last frame (the browser floats in it)
     default_units: units::Unit,             // units new designs start in (settings)
@@ -567,6 +568,7 @@ struct OpenCad {
     offset_preview: Option<Sketch>,          // the sketch with the offset the cursor would make
     cut_preview: Option<(Tool, DVec2, DVec2)>, // what Trim would cut / Extend would add, under the cursor
     line_up: Option<(Option<DVec2>, Option<DVec2>, DVec2)>, // inference: lined up above/beside these, at this point
+    line_length: Option<f64>,               // Line tool: a typed length the next segment keeps (the click sets its angle)
     sp_applied: Option<pattern::Layout>,     // the layout the sketch is showing now
     project_body_hover: Option<usize>,       // the body under the mouse when no edge is (Project tool: takes all its edges)
     project_hover: Option<EdgeRef>,          // the body edge under the mouse (Project tool)
@@ -672,6 +674,7 @@ impl Default for OpenCad {
             copy_errors: Vec::new(),
             removes: Vec::new(),
             units: units::Unit::Mm,
+            touchpad_zoom_flip: true,
             browser_open: true,
             view_rect: egui::Rect::NOTHING,
             default_units: units::Unit::Mm,
@@ -696,6 +699,7 @@ impl Default for OpenCad {
             offset_preview: None,
             cut_preview: None,
             line_up: None,
+            line_length: None,
             sp_applied: None,
             project_body_hover: None,
             project_hover: None,
@@ -951,6 +955,7 @@ fn main() -> eframe::Result {
                 app.measure_xyz = s.measure_xyz;
                 // A fresh design starts in the default units (and isn't "changed" by that).
                 app.default_units = s.default_units;
+                app.touchpad_zoom_flip = s.touchpad_zoom_flip;
                 app.units = s.default_units;
                 app.saved.units = s.default_units;
                 app.settings_saved = s;

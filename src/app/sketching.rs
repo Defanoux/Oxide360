@@ -393,45 +393,6 @@ impl OpenCad {
     }
 
     /// Typed width for the slot being drawn (the third click, at that width).
-    /// Typed length for the line being drawn: it goes toward the cursor (onto
-    /// the horizontal or vertical when that's within a few degrees), that long,
-    /// with a Length dimension holding it.
-    pub(crate) fn finish_line_typed(&mut self, length: f64) {
-        let (Some(i), Some(start), Some(cursor)) = (self.active, self.editor.start, self.sketch_cursor) else { return };
-        let sk = &self.sketches[i];
-        if !(length > 0.0) || !sk.is_valid_anchor(start) {
-            self.notify("The length must be greater than zero".into());
-            return;
-        }
-        let a = sk.pos(start);
-        let Some(mut dir) = (cursor - a).try_normalize() else {
-            self.notify("Move the cursor the way the line should go, then type its length".into());
-            return;
-        };
-        let deg = dir.y.atan2(dir.x).to_degrees().rem_euclid(90.0);
-        if deg <= sketch::ALIGN_SNAP_DEG || deg >= 90.0 - sketch::ALIGN_SNAP_DEG {
-            dir = if dir.x.abs() >= dir.y.abs() { DVec2::new(dir.x.signum(), 0.0) } else { DVec2::new(0.0, dir.y.signum()) };
-        }
-        let end = Anchor::Free(a + dir * length);
-        let ed = &mut self.editor;
-        let r = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
-            let before = sk.entities.len();
-            for c in ed.click(sk, end) {
-                let mut t = sk.clone();
-                if solver::add_constraints(&mut t, &[c]).is_ok() {
-                    *sk = t;
-                }
-            }
-            if sk.entities.len() > before && sk.is_line(sk.entities.len() - 1) {
-                let mut t = sk.clone();
-                if solver::add_constraints(&mut t, &[Constraint::Length(sk.entities.len() - 1, length)]).is_ok() {
-                    *sk = t;
-                }
-            }
-        });
-        self.report(r);
-    }
-
     pub(crate) fn finish_slot_typed(&mut self, width: f64) {
         let (Some(i), Some(a), Some(b)) = (self.active, self.editor.start, self.editor.second) else { return };
         let sk = &self.sketches[i];

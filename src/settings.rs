@@ -27,11 +27,13 @@ pub struct Settings {
     pub measure_xyz: bool,
     /// Units new designs start in (each design then keeps its own).
     pub default_units: Unit,
+    /// Touchpad Ctrl+two-finger scroll: fingers up zoom in.
+    pub touchpad_zoom_flip: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { touchpad: false, cube_axes: true, projection: Projection::default(), measure_unit_own: None, measure_unit2: None, measure_precision: 3, measure_snap: true, measure_xyz: true, default_units: Unit::Mm }
+        Self { touchpad: false, cube_axes: true, projection: Projection::default(), measure_unit_own: None, measure_unit2: None, measure_precision: 3, measure_snap: true, measure_xyz: true, default_units: Unit::Mm, touchpad_zoom_flip: true }
     }
 }
 
@@ -75,7 +77,7 @@ mod tests {
         let d = dir("roundtrip");
         let path = d.join("nested").join("settings.json");
         assert_eq!(load(&path), Settings::default(), "nothing saved yet");
-        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic, measure_unit_own: Some(Unit::In), measure_unit2: Some(Unit::Mm), measure_precision: 5, measure_snap: false, measure_xyz: false, default_units: Unit::In };
+        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic, measure_unit_own: Some(Unit::In), measure_unit2: Some(Unit::Mm), measure_precision: 5, measure_snap: false, measure_xyz: false, default_units: Unit::In, touchpad_zoom_flip: false };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);
         let _ = std::fs::remove_dir_all(&d);

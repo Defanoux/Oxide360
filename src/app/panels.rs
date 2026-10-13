@@ -1145,7 +1145,8 @@ impl OpenCad {
                 match commit {
                     Some(Some(v)) => match self.editor.tool {
                         Tool::Slot => self.finish_slot_typed(v),
-                        Tool::Line => self.finish_line_typed(v),
+                        // A line keeps the length; the next click sets its angle.
+                        Tool::Line if v > 0.0 => self.line_length = Some(v),
                         Tool::Offset => self.finish_offset_typed(v),
                         _ => self.finish_circle_typed(v),
                     },

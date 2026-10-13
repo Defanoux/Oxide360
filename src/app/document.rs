@@ -195,6 +195,7 @@ impl OpenCad {
             measure_snap: self.measure_snap,
             measure_xyz: self.measure_xyz,
             default_units: self.default_units,
+            touchpad_zoom_flip: self.touchpad_zoom_flip,
         };
         if now != self.settings_saved {
             if let Some(path) = settings::default_path() {
