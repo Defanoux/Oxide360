@@ -12,6 +12,88 @@ fn browser_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> eg
         .show(ui, |ui| ui.horizontal(add).inner)
 }
 
+/// A tool in a toolbar group: what the group shows and returns when clicked.
+struct ToolItem {
+    name: &'static str,
+    icon: Icon,
+    tip: &'static str,
+    enabled: bool,
+    on: bool,
+}
+
+/// A toolbar group whose tools can be tucked away: the ones on the toolbar
+/// as icons, every one of them in the list under the group's name (its ▾).
+/// Right-click a tool — on the bar or in the list — to add it to the toolbar
+/// or take it off. Returns the tool clicked.
+fn tool_group(ui: &mut egui::Ui, label: &str, items: &[ToolItem], hidden: &mut Vec<String>) -> Option<&'static str> {
+    let mut chosen = None;
+    let mut toggle: Option<&'static str> = None;
+    ui.vertical(|ui| {
+        let row = ui
+            .horizontal(|ui| {
+                for it in items.iter().filter(|it| !hidden.iter().any(|h| h == it.name)) {
+                    let r = icons::button(ui, it.icon, it.tip, it.enabled, it.on);
+                    if r.clicked() {
+                        chosen = Some(it.name);
+                    }
+                    r.context_menu(|ui| {
+                        if ui.button("Remove from toolbar").clicked() {
+                            toggle = Some(it.name);
+                            ui.close();
+                        }
+                    });
+                }
+            })
+            .response
+            .rect
+            .width();
+        // The group's name with a ▾: every tool, with names.
+        let font = egui::FontId::proportional(11.0);
+        let galley = ui.painter().layout_no_wrap(label.to_string(), font, Color32::from_gray(150));
+        let width = row.max(galley.size().x + 18.0);
+        let (rect, r) = ui.allocate_exact_size(egui::vec2(width, 14.0), egui::Sense::click());
+        let ink = if r.hovered() { Color32::from_gray(230) } else { Color32::from_gray(150) };
+        let text_at = rect.center() - egui::vec2((galley.size().x + 12.0) / 2.0, galley.size().y / 2.0);
+        ui.painter().galley_with_override_text_color(text_at, galley.clone(), ink);
+        let c = egui::pos2(text_at.x + galley.size().x + 8.0, rect.center().y);
+        ui.painter().add(egui::Shape::convex_polygon(vec![c + egui::vec2(-4.0, -2.0), c + egui::vec2(4.0, -2.0), c + egui::vec2(0.0, 3.0)], ink, Stroke::NONE));
+        let r = r.on_hover_text("All the tools in this group (right-click one to add it to the toolbar or take it off)");
+        egui::Popup::menu(&r).show(|ui| {
+            for it in items {
+                let shown = !hidden.iter().any(|h| h == it.name);
+                let row = ui.add_enabled_ui(it.enabled, |ui| {
+                    ui.horizontal(|ui| {
+                        icons::small(ui, it.icon);
+                        ui.selectable_label(it.on, format!("{}{}", it.name, if shown { "" } else { "   (not on the toolbar)" }))
+                    })
+                    .inner
+                });
+                let entry = row.inner.on_hover_text(it.tip);
+                if entry.clicked() {
+                    chosen = Some(it.name);
+                    ui.close();
+                }
+                entry.context_menu(|ui| {
+                    if ui.button(if shown { "Remove from toolbar" } else { "Add to toolbar" }).clicked() {
+                        toggle = Some(it.name);
+                        ui.close();
+                    }
+                });
+            }
+        });
+    });
+    ui.separator();
+    if let Some(name) = toggle {
+        match hidden.iter().position(|h| h == name) {
+            Some(k) => {
+                hidden.remove(k);
+            }
+            None => hidden.push(name.to_string()),
+        }
+    }
+    chosen
+}
+
 impl OpenCad {
     /// The top bar, like Fusion's: file menu, save, undo / redo (with lists
     /// of steps), the open designs as tabs (× closes, + opens a new one) and
@@ -336,50 +418,36 @@ impl OpenCad {
                     }
                 });
                 let _ = i;
-                group(ui, "MODIFY", |ui| {
-                    for (tool, icon, tip) in [
-                        (Tool::SketchFillet, Icon::Fillet, "Fillet: click a corner (or its two lines), type the radius"),
-                        (Tool::SketchChamfer, Icon::Chamfer, "Chamfer: click a corner (or its two lines), type the distance — or two, like 2, 5 (first = first line)"),
-                    ] {
-                        if icons::button(ui, icon, tip, true, self.editor.tool == tool).clicked() {
-                            self.editor.set_tool(tool);
-                        }
-                    }
-                    if icons::button(ui, Icon::Trim, "Trim: click the part of a line to remove, back to the nearest crossing", true, self.editor.tool == Tool::Trim).clicked() {
-                        self.editor.set_tool(Tool::Trim);
-                    }
-                    for (tool, icon, tip) in [
-                        (Tool::Extend, Icon::Extend, "Extend: click a line near the end to run it on to the next geometry"),
-                        (Tool::Offset, Icon::Offset, "Offset: click a line, arc or circle (its joined run follows), then click the side and distance"),
-                    ] {
-                        if icons::button(ui, icon, tip, true, self.editor.tool == tool).clicked() {
-                            self.editor.set_tool(tool);
-                        }
-                    }
-                    for (mode, icon, tip) in [
-                        (SpMode::Rectangular, Icon::RectPattern, "Rectangular Pattern: select geometry first, then click this"),
-                        (SpMode::Circular, Icon::CircPattern, "Circular Pattern: select geometry first, then click this"),
-                    ] {
-                        let on = self.sketch_pattern.as_ref().is_some_and(|d| d.mode == mode);
-                        if icons::button(ui, icon, tip, true, on).clicked() {
-                            self.start_sketch_pattern(mode);
-                        }
-                    }
-                    if icons::button(ui, Icon::Mirror, "Mirror: select geometry first, then click this and the mirror line", true, self.editor.tool == Tool::Mirror).clicked() {
-                        self.start_mirror();
-                    }
-                    let tip = "Project: click a body edge to bring it into the sketch (as locked construction geometry)";
-                    if icons::button(ui, Icon::Project, tip, self.body_count > 0, self.editor.tool == Tool::Project).clicked() {
-                        self.editor.set_tool(Tool::Project);
-                    }
-                    let tip = "Construction (X): toggle the selected geometry, or what you draw next";
-                    if icons::button(ui, Icon::Construction, tip, true, self.editor.construction).clicked() {
-                        self.toggle_construction();
-                    }
-                });
-                let mut chosen = None;
-                group(ui, "CONSTRAINTS", |ui| {
-                    for label in CONSTRAINT_ACTIONS {
+                let t = self.editor.tool;
+                let pattern_on = |m: SpMode| self.sketch_pattern.as_ref().is_some_and(|d| d.mode == m);
+                let items = [
+                    ToolItem { name: "Fillet", icon: Icon::Fillet, tip: "Fillet: click a corner (or its two lines), type the radius", enabled: true, on: t == Tool::SketchFillet },
+                    ToolItem { name: "Chamfer", icon: Icon::Chamfer, tip: "Chamfer: click a corner (or its two lines), type the distance — or two, like 2, 5 (first = first line)", enabled: true, on: t == Tool::SketchChamfer },
+                    ToolItem { name: "Trim", icon: Icon::Trim, tip: "Trim: click the part of a line to remove, back to the nearest crossing", enabled: true, on: t == Tool::Trim },
+                    ToolItem { name: "Extend", icon: Icon::Extend, tip: "Extend: click a line near the end to run it on to the next geometry", enabled: true, on: t == Tool::Extend },
+                    ToolItem { name: "Offset", icon: Icon::Offset, tip: "Offset: click a line, arc or circle (its joined run follows), then click the side and distance", enabled: true, on: t == Tool::Offset },
+                    ToolItem { name: "Rectangular Pattern", icon: Icon::RectPattern, tip: "Rectangular Pattern: select geometry first, then click this", enabled: true, on: pattern_on(SpMode::Rectangular) },
+                    ToolItem { name: "Circular Pattern", icon: Icon::CircPattern, tip: "Circular Pattern: select geometry first, then click this", enabled: true, on: pattern_on(SpMode::Circular) },
+                    ToolItem { name: "Mirror", icon: Icon::Mirror, tip: "Mirror: select geometry first, then click this and the mirror line", enabled: true, on: t == Tool::Mirror },
+                    ToolItem { name: "Project", icon: Icon::Project, tip: "Project: click a body edge to bring it into the sketch (as locked construction geometry)", enabled: self.body_count > 0, on: t == Tool::Project },
+                    ToolItem { name: "Construction", icon: Icon::Construction, tip: "Construction (X): toggle the selected geometry, or what you draw next", enabled: true, on: self.editor.construction },
+                ];
+                match tool_group(ui, "MODIFY", &items, &mut self.toolbar_hidden) {
+                    Some("Fillet") => self.editor.set_tool(Tool::SketchFillet),
+                    Some("Chamfer") => self.editor.set_tool(Tool::SketchChamfer),
+                    Some("Trim") => self.editor.set_tool(Tool::Trim),
+                    Some("Extend") => self.editor.set_tool(Tool::Extend),
+                    Some("Offset") => self.editor.set_tool(Tool::Offset),
+                    Some("Rectangular Pattern") => self.start_sketch_pattern(SpMode::Rectangular),
+                    Some("Circular Pattern") => self.start_sketch_pattern(SpMode::Circular),
+                    Some("Mirror") => self.start_mirror(),
+                    Some("Project") => self.editor.set_tool(Tool::Project),
+                    Some("Construction") => self.toggle_construction(),
+                    _ => {}
+                }
+                let items: Vec<ToolItem> = CONSTRAINT_ACTIONS
+                    .into_iter()
+                    .map(|label| {
                         let (icon, tip) = match label {
                             "Dimension" => (
                                 Icon::Dimension,
@@ -399,12 +467,10 @@ impl OpenCad {
                         };
                         // Always clickable: with the right things selected it's added
                         // at once, otherwise it becomes the tool and you pick them.
-                        if icons::button(ui, icon, tip, true, self.editor.tool == Tool::Constrain(label)).clicked() {
-                            chosen = Some(label);
-                        }
-                    }
-                });
-                if let Some(label) = chosen {
+                        ToolItem { name: label, icon, tip, enabled: true, on: self.editor.tool == Tool::Constrain(label) }
+                    })
+                    .collect();
+                if let Some(label) = tool_group(ui, "CONSTRAINTS", &items, &mut self.toolbar_hidden) {
                     self.constraint_button(label);
                 }
                 group(ui, "OPTIONS", |ui| {

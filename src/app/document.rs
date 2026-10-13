@@ -208,6 +208,7 @@ impl OpenCad {
             measure_xyz: self.measure_xyz,
             default_units: self.default_units,
             touchpad_zoom_flip: self.touchpad_zoom_flip,
+            toolbar_hidden: self.toolbar_hidden.clone(),
         }
     }
 

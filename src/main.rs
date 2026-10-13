@@ -560,6 +560,7 @@ struct OpenCad {
     tab_index: usize,                       // which of them this is
     tab_request: Option<TabRequest>,        // what the tab strip asked for this frame
     close_me: bool,                         // this tab is done (its × was confirmed)
+    toolbar_hidden: Vec<String>,            // tools tucked into their group's ▾ list (settings)
     browser_open: bool,                     // the browser is shown (else folded to a button)
     view_rect: egui::Rect,                  // the 3D view's area last frame (the browser floats in it)
     default_units: units::Unit,             // units new designs start in (settings)
@@ -700,6 +701,7 @@ impl Default for OpenCad {
             name: None,
             renaming_design: None,
             close_me: false,
+            toolbar_hidden: settings::Settings::default().toolbar_hidden,
             browser_open: true,
             view_rect: egui::Rect::NOTHING,
             default_units: units::Unit::Mm,
@@ -938,6 +940,7 @@ impl OpenCad {
         self.measure_xyz = s.measure_xyz;
         self.default_units = s.default_units;
         self.touchpad_zoom_flip = s.touchpad_zoom_flip;
+        self.toolbar_hidden = s.toolbar_hidden.clone();
         self.settings_saved = s.clone();
     }
 
