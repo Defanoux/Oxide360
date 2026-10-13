@@ -236,6 +236,11 @@ pub enum Constraint {
     Angle(EntityId, EntityId, f64),
     /// Two points a set distance apart.
     Distance(PointId, PointId, f64),
+    /// An offset copy (second) stays a set distance from its original
+    /// (first): a line that far from the original's line, or an arc/circle
+    /// sharing the original's centre with its radius that much bigger or
+    /// smaller. The Offset tool adds one per piece, all the same distance.
+    Offset(EntityId, EntityId, f64),
     /// Point locked where it is.
     Fix(PointId),
 }
@@ -245,7 +250,7 @@ impl Constraint {
         use Constraint::*;
         match *self {
             Horizontal(e) | Vertical(e) | Length(e, _) | Diameter(e, _) => vec![e],
-            Parallel(a, b) | Perpendicular(a, b) | Equal(a, b) | Tangent(a, b) | Angle(a, b, _) => vec![a, b],
+            Parallel(a, b) | Perpendicular(a, b) | Equal(a, b) | Tangent(a, b) | Angle(a, b, _) | Offset(a, b, _) => vec![a, b],
             OnCircle(_, c) | OnLine(_, c) | Radius(c, _) | ArcEnds(c) => vec![c],
             Fix(_) | Distance(..) | Midpoint(..) | OnAxis(..) => vec![],
         }
@@ -277,6 +282,7 @@ impl Constraint {
             Tangent(..) => "Tan",
             Angle(..) => "Angle",
             Distance(..) => "Distance",
+            Offset(..) => "Offset",
             OnCircle(..) | OnLine(..) => "On",
             Midpoint(..) => "Mid",
             Radius(..) => "R",
@@ -1036,6 +1042,7 @@ impl Sketch {
                 Tangent(a, b) => Tangent(ent_map[a], ent_map[b]),
                 Angle(a, b, d) => Angle(ent_map[a], ent_map[b], d),
                 Distance(p, q, d) => Distance(pt_map[p], pt_map[q], d),
+                Offset(a, b, d) => Offset(ent_map[a], ent_map[b], d),
                 OnCircle(p, c) => OnCircle(pt_map[p], ent_map[c]),
                 OnLine(p, c) => OnLine(pt_map[p], ent_map[c]),
                 Midpoint(p, a, b) => Midpoint(pt_map[p], pt_map[a], pt_map[b]),
@@ -1160,8 +1167,57 @@ impl Sketch {
             },
             Constraint::Radius(e, _) => self.arc_geometry(e).map(|(_, r, _, _)| r),
             Constraint::Angle(a, b, _) => self.angle_between(a, b),
+            Constraint::Offset(a, b, _) => self.offset_between(a, b),
             _ => None,
         }
+    }
+
+    /// How far an offset copy `b` is from `a` now: from the middle of a copied
+    /// line to the original's line, or the difference in radius.
+    pub fn offset_between(&self, a: EntityId, b: EntityId) -> Option<f64> {
+        match (self.entities.get(a)?, self.entities.get(b)?) {
+            (&Entity::Line { a: p, b: q }, &Entity::Line { a: r, b: s }) => {
+                let (p, q) = (self.points[p], self.points[q]);
+                let d = q - p;
+                let mid = (self.points[r] + self.points[s]) * 0.5;
+                Some((d.perp_dot(mid - p) / d.length().max(1e-12)).abs())
+            }
+            _ => Some((self.round_radius(a)? - self.round_radius(b)?).abs()),
+        }
+    }
+
+    /// A circle's or an arc's radius.
+    pub fn round_radius(&self, e: EntityId) -> Option<f64> {
+        match *self.entities.get(e)? {
+            Entity::Circle { radius, .. } => Some(radius),
+            Entity::Arc { .. } => self.arc_geometry(e).map(|(_, r, _, _)| r),
+            _ => None,
+        }
+    }
+
+    /// The Offset constraints made by the same offset as constraint `ci` (their
+    /// copies joined end to end), lowest first; just `ci` for anything else.
+    /// They share one value, and only the first shows a dimension.
+    pub fn offset_group(&self, ci: usize) -> Vec<usize> {
+        let Some(&Constraint::Offset(_, first, _)) = self.constraints.get(ci) else { return vec![ci] };
+        let ends = |e: EntityId| match self.entities.get(e) {
+            Some(&Entity::Line { a, b }) | Some(&Entity::Arc { a, b, .. }) => vec![a, b],
+            _ => Vec::new(),
+        };
+        let offsets: Vec<(usize, EntityId)> =
+            self.constraints.iter().enumerate().filter_map(|(k, c)| if let Constraint::Offset(_, b, _) = *c { Some((k, b)) } else { None }).collect();
+        let mut group = vec![first];
+        let mut grew = true;
+        while grew {
+            grew = false;
+            for &(_, e) in &offsets {
+                if !group.contains(&e) && group.iter().any(|&g| ends(g).iter().any(|p| ends(e).contains(p))) {
+                    group.push(e);
+                    grew = true;
+                }
+            }
+        }
+        offsets.into_iter().filter(|(_, e)| group.contains(e)).map(|(k, _)| k).collect()
     }
 
     /// Where a dimension's label was dragged to (sketch units from default).
@@ -1557,6 +1613,7 @@ impl Sketch {
         use Constraint::*;
         self.constraints.iter().any(|x| match (*x, *c) {
             (Length(a, _), Length(b, _)) | (Diameter(a, _), Diameter(b, _)) | (Radius(a, _), Radius(b, _)) => a == b,
+            (Offset(a, b, _), Offset(c, d, _)) => (a, b) == (c, d),
             (Angle(a, b, _), Angle(c, d, _)) | (Distance(a, b, _), Distance(c, d, _)) => {
                 (a, b) == (c, d) || (a, b) == (d, c)
             }

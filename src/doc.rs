@@ -282,6 +282,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
                 OnLine(p, l) => p < np && line(l),
                 OnAxis(p, axis) => p < np && axis < 2,
                 Radius(e, r) => sk.is_arc(e) && finite(r) && r > 0.0,
+                Offset(a, b, d) => a != b && ((line(a) && line(b)) || (circle(a) && circle(b))) && finite(d) && d > 0.0,
                 ArcEnds(_) => false, // internal to the solver, never saved
                 Midpoint(p, a, b) => p < np && a < np && b < np && p != a && p != b && a != b,
                 Fix(p) => p < np,

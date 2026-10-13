@@ -262,6 +262,41 @@ impl Sketch {
         }
     }
 
+    /// Offset like Fusion: the copy (see `offset_chain`) plus the constraints
+    /// that keep it there, for the caller to add one by one. Lines get an
+    /// Offset constraint each (one shared value, shown as one dimension);
+    /// where an arc met a line smoothly the copies get a Tangent there; an
+    /// arc or circle without two such joints gets a radius Offset.
+    pub fn offset_constrained(&mut self, e: EntityId, at: DVec2, distance: Option<f64>) -> Result<Vec<Constraint>, String> {
+        let (pieces, _) = self.chain_of(e)?;
+        let made = self.offset_chain(e, at, distance)?;
+        let d = self.offset_between(pieces[0].e, made[0]).ok_or("the copy has no size")?;
+        let pairs: Vec<(EntityId, EntityId)> = pieces.iter().map(|p| p.e).zip(made.iter().copied()).collect();
+        let ends = |sk: &Sketch, e: EntityId| match sk.entities[e] {
+            Entity::Line { a, b } | Entity::Arc { a, b, .. } => vec![a, b],
+            _ => Vec::new(),
+        };
+        let mut out: Vec<Constraint> = pairs.iter().filter(|(o, _)| self.is_line(*o)).map(|&(o, c)| Constraint::Offset(o, c, d)).collect();
+        for &(oa, ca) in pairs.iter().filter(|(o, _)| !self.is_line(*o)) {
+            let mut smooth = 0;
+            for &(ol, cl) in pairs.iter().filter(|(o, _)| self.is_line(*o)) {
+                // The originals' shared end, and whether the arc was square to the line there.
+                let Some(&j) = ends(self, oa).iter().find(|p| ends(self, ol).contains(p)) else { continue };
+                let (Some(&Entity::Arc { center, .. }), Some(&Entity::Line { a, b })) = (self.entities.get(oa), self.entities.get(ol)) else { continue };
+                let dir = (self.points[b] - self.points[a]).normalize_or_zero();
+                let radial = self.points[j] - self.points[center];
+                if radial.dot(dir).abs() <= 1e-6 * radial.length().max(1.0) && ends(self, ca).iter().any(|p| ends(self, cl).contains(p)) {
+                    out.push(Constraint::Tangent(cl, ca));
+                    smooth += 1;
+                }
+            }
+            if smooth < 2 {
+                out.push(Constraint::Offset(oa, ca, d));
+            }
+        }
+        Ok(out)
+    }
+
     /// Offset the run of lines / arcs (or the circle) that `e` is part of. The
     /// side is where `at` is; the distance is how far `at` is from `e`, unless
     /// `distance` says. Returns the new entities. Corners are kept sharp where
@@ -287,9 +322,8 @@ impl Sketch {
             if r < 1e-6 {
                 return Err("the offset is bigger than the circle".into());
             }
-            let c = self.points[center];
-            self.points.push(c);
-            self.entities.push(Entity::Circle { center: self.points.len() - 1, radius: r });
+            // Concentric: the copy shares the centre point.
+            self.entities.push(Entity::Circle { center, radius: r });
             self.set_construction(first_new, construction[0]);
             return Ok(vec![first_new]);
         }
@@ -349,14 +383,8 @@ impl Sketch {
             let (a, b) = if p.forward { (from, to) } else { (to, from) };
             let ent = match self.entities[p.e] {
                 Entity::Line { .. } => Entity::Line { a, b },
-                Entity::Arc { center, .. } => {
-                    let c = match curves[k] {
-                        Curve::Circle { c, .. } => c,
-                        Curve::Line { .. } => self.points[center],
-                    };
-                    self.points.push(c);
-                    Entity::Arc { center: self.points.len() - 1, a, b }
-                }
+                // Concentric: the copy shares the centre point.
+                Entity::Arc { center, .. } => Entity::Arc { center, a, b },
                 other => other,
             };
             self.entities.push(ent);
@@ -519,6 +547,96 @@ mod tests {
         let Entity::Arc { a: arc_a, .. } = sk.entities[m[1]] else { panic!() };
         let Entity::Line { b: line_b, .. } = sk.entities[m[0]] else { panic!() };
         assert_eq!(arc_a, line_b);
+    }
+
+    /// Add constraints one at a time as the app does; how many were refused.
+    fn add_each(sk: &mut Sketch, cs: Vec<Constraint>) -> usize {
+        let mut refused = 0;
+        for c in cs {
+            let mut t = sk.clone();
+            match crate::solver::add_constraints(&mut t, &[c]) {
+                Ok(_) => *sk = t,
+                Err(_) => refused += 1,
+            }
+        }
+        refused
+    }
+
+    fn dof(sk: &Sketch) -> usize {
+        crate::solver::solve(&mut sk.clone(), &[]).unwrap().dof
+    }
+
+    /// The dimension an offset shows (the first of its Offset constraints).
+    fn offset_dim(sk: &Sketch) -> usize {
+        let ci = sk.constraints.iter().position(|c| matches!(c, Constraint::Offset(..))).unwrap();
+        assert_eq!(sk.offset_group(ci)[0], ci);
+        ci
+    }
+
+    #[test]
+    fn an_offset_rectangle_is_held_by_one_dimension() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Rectangle);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(0.0, 0.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(10.0, 6.0)));
+        let before = dof(&sk);
+        let cs = sk.offset_constrained(0, DVec2::new(5.0, -2.0), None).unwrap();
+        assert_eq!(cs.len(), 4);
+        assert_eq!(add_each(&mut sk, cs), 0, "every side's offset holds");
+        assert_eq!(dof(&sk), before, "the copy moves only with the original");
+        let ci = offset_dim(&sk);
+        assert_eq!(sk.offset_group(ci).len(), 4);
+        assert!((sk.measure(&sk.constraints[ci]).unwrap() - 2.0).abs() < 1e-9);
+        // Change the one dimension: every side moves out to 5.
+        crate::solver::set_dimension_value(&mut sk, ci, 5.0).unwrap();
+        let (lo, hi) = (4..8).flat_map(|m| { let (a, b) = ends(&sk, m); [a, b] }).fold((DVec2::splat(1e9), DVec2::splat(-1e9)), |(l, h), p| (l.min(p), h.max(p)));
+        assert!(lo.distance(DVec2::new(-5.0, -5.0)) < 1e-6 && hi.distance(DVec2::new(15.0, 11.0)) < 1e-6, "{lo} {hi}");
+    }
+
+    #[test]
+    fn an_offset_slot_stays_a_slot_when_its_dimension_changes() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Slot);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(0.0, 0.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(20.0, 0.0)));
+        let cs = ed.click(&mut sk, Anchor::Free(DVec2::new(5.0, 3.0)));
+        add_each(&mut sk, cs);
+        let before = dof(&sk);
+        // Outward by 1 (the cursor 1 above the top side).
+        let cs = sk.offset_constrained(0, DVec2::new(10.0, 4.0), None).unwrap();
+        // (The far side's offset is already implied by the near side, the
+        // tangents and the shared centres, so the solver skips it.)
+        add_each(&mut sk, cs);
+        assert_eq!(dof(&sk), before, "the copy is fully held");
+        let ci = offset_dim(&sk);
+        crate::solver::set_dimension_value(&mut sk, ci, 2.5).unwrap();
+        // Copies: half circles of radius 3 + 2.5 round the same centres, sides 5.5 out.
+        for e in 5..sk.entities.len() {
+            match sk.entities[e] {
+                Entity::Arc { .. } => assert!((sk.arc_geometry(e).unwrap().1 - 5.5).abs() < 1e-6),
+                Entity::Line { .. } => {
+                    let (a, b) = ends(&sk, e);
+                    assert!((a.y.abs() - 5.5).abs() < 1e-6 && (b.y.abs() - 5.5).abs() < 1e-6, "{a} {b}");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn an_offset_circle_keeps_its_centre_and_gap() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        sk.points.push(DVec2::new(1.0, 1.0));
+        sk.entities.push(Entity::Circle { center: 1, radius: 5.0 });
+        let before = dof(&sk);
+        let cs = sk.offset_constrained(0, DVec2::new(1.0, 3.0), Some(1.5)).unwrap();
+        assert_eq!(add_each(&mut sk, cs), 0);
+        assert_eq!(dof(&sk), before);
+        let ci = offset_dim(&sk);
+        crate::solver::set_dimension_value(&mut sk, ci, 4.0).unwrap();
+        assert!(matches!(sk.entities[1], Entity::Circle { center: 1, radius } if (radius - 1.0).abs() < 1e-9));
     }
 
     #[test]

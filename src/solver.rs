@@ -245,6 +245,16 @@ impl Eval<'_> {
                 // distance from centre to the (infinite) line = radius
                 d.perp_dot(center - a).abs() / d.length().max(1e-12) - r
             }
+            Offset(o, c, d) => match (self.line(o), self.sk.entities.get(c)) {
+                // Each end of the copied line (equation k) that far from the original's line.
+                (Some((a, b)), Some(&Entity::Line { a: p, b: q })) => {
+                    let n = b - a;
+                    let x = self.pt(if k == 0 { p } else { q });
+                    (n.perp_dot(x - a) / n.length().max(1e-12)).abs() - d
+                }
+                // Round: radii that far apart (the centre is shared).
+                _ => (self.circle(c)?.1 - self.circle(o)?.1).abs() - d,
+            },
             Fix(_) => return None, // handled by freezing the point, not an equation
         })
     }
@@ -267,6 +277,7 @@ fn equations(sk: &Sketch) -> Vec<(Constraint, u8)> {
         .flat_map(|(_, &c)| match c {
             Constraint::Fix(_) | Constraint::ArcEnds(_) => vec![],
             Constraint::Midpoint(..) => vec![(c, 0), (c, 1)],
+            Constraint::Offset(o, _, _) if sk.is_line(o) => vec![(c, 0), (c, 1)],
             _ => vec![(c, 0)],
         })
         .chain(arcs)
@@ -484,6 +495,13 @@ fn stiffness(sk: &Sketch, p: PointId) -> Vec<f64> {
         }
         match *c {
             Constraint::Distance(a, b, _) => join(a, b),
+            // An offset copy moves with its original.
+            Constraint::Offset(o, c, _) => {
+                if let (Some(Entity::Line { a, b }), Some(Entity::Line { a: p, b: q })) = (sk.entities.get(o), sk.entities.get(c)) {
+                    join(*a, *p);
+                    join(*b, *q);
+                }
+            }
             // A centre is joined to each corner (not the corners to each other).
             Constraint::Midpoint(m, a, b) => {
                 join(m, a);
@@ -652,9 +670,30 @@ fn virtual_sharps(sk: &Sketch) -> Vec<PointId> {
 /// own end moves, instead of the whole corner sliding to make room.
 pub fn set_dimension_value(sk: &mut Sketch, ci: usize, v: f64) -> Result<Solved, SolveError> {
     let mut trial = sk.clone();
-    set_value(trial.constraints.get_mut(ci).ok_or(SolveError::Invalid)?, v);
+    // (An offset's pieces all share its one value.)
+    for k in trial.offset_group(ci) {
+        set_value(trial.constraints.get_mut(k).ok_or(SolveError::Invalid)?, v);
+    }
     let pins = match trial.constraints[ci] {
         Constraint::Distance(a, b, _) => virtual_sharps(&trial).into_iter().filter(|&p| p == a || p == b).collect(),
+        Constraint::Offset(..) => {
+            // Like Fusion, the copy moves and the original stays (if it can):
+            // hold the originals' points and their circles' size.
+            let mut held = trial.clone();
+            let mut pins = Vec::new();
+            for k in trial.offset_group(ci) {
+                let Constraint::Offset(o, _, _) = trial.constraints[k] else { continue };
+                pins.extend(trial.entity_points(o));
+                if let Some(&Entity::Circle { radius, .. }) = trial.entities.get(o) {
+                    held.constraints.push(Constraint::Diameter(o, 2.0 * radius));
+                }
+            }
+            if solve(&mut held, &pins).is_ok() {
+                trial.points = held.points;
+                trial.entities = held.entities;
+            }
+            pins
+        }
         _ => Vec::new(),
     };
     let solved = match solve(&mut trial.clone(), &pins) {
@@ -718,7 +757,7 @@ pub fn make_driven(sk: &mut Sketch, ci: usize) {
 
 fn set_value(c: &mut Constraint, v: f64) {
     use Constraint::*;
-    if let Length(_, d) | Diameter(_, d) | Angle(_, _, d) | Distance(_, _, d) | Radius(_, d) = c {
+    if let Length(_, d) | Diameter(_, d) | Angle(_, _, d) | Distance(_, _, d) | Radius(_, d) | Offset(_, _, d) = c {
         *d = v;
     }
 }

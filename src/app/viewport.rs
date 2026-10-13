@@ -846,7 +846,7 @@ impl OpenCad {
                             Constraint::Length(_, d)
                             | Constraint::Diameter(_, d)
                             | Constraint::Angle(_, _, d)
-                            | Constraint::Distance(_, _, d) | Constraint::Radius(_, d),
+                            | Constraint::Distance(_, _, d) | Constraint::Radius(_, d) | Constraint::Offset(_, _, d),
                         ) = app.sketches[i].constraints.get(ci)
                         {
                             app.float = Some(FloatEdit {
@@ -1723,10 +1723,13 @@ impl OpenCad {
             let mut glyphs: Vec<Vec<&str>> = vec![Vec::new(); sk.entities.len()];
             for (ci, c) in sk.constraints.iter().enumerate() {
                 let label = match *c {
+                    // An offset's pieces share one dimension, on the first.
+                    Constraint::Offset(..) if sk.offset_group(ci).first() != Some(&ci) => None,
                     Constraint::Length(..)
                     | Constraint::Distance(..)
                     | Constraint::Diameter(..)
                     | Constraint::Radius(..)
+                    | Constraint::Offset(..)
                     | Constraint::Angle(..) => {
                         // Drawn with its lines recorded, so they can be clicked.
                         let colour = if self.dim_selection.contains(&ci) {

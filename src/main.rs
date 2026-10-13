@@ -219,6 +219,26 @@ fn draw_dimension(
             let (c, r, a0, sweep) = sk.arc_geometry(e)?;
             view.radius_dimension(plane, c, r, a0 + sweep * 0.5, shift, text(format!("R{:.2}", d_of(d))), color)
         }
+        Constraint::Offset(o, e, d) => {
+            // From the copy across to the original, square to both.
+            let (from, to) = match (line(o), line(e)) {
+                (Some((a, b)), Some((p, q))) => {
+                    let mid = (p + q) * 0.5;
+                    let u = (b - a).normalize_or_zero();
+                    (a + u * (mid - a).dot(u), mid)
+                }
+                _ => {
+                    let (centre, ang) = match *sk.entities.get(e)? {
+                        Entity::Circle { center, .. } => (sk.points[center], std::f64::consts::FRAC_PI_4),
+                        Entity::Arc { .. } => sk.arc_geometry(e).map(|(c, _, a0, sweep)| (c, a0 + sweep * 0.5))?,
+                        _ => return None,
+                    };
+                    let dir = DVec2::from_angle(ang);
+                    (centre + dir * sk.round_radius(o)?, centre + dir * sk.round_radius(e)?)
+                }
+            };
+            view.linear_dimension(plane, from, to, away_from, shift, text(format!("{:.2}", d_of(d))), color)
+        }
         _ => None,
     }
 }

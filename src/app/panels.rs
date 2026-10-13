@@ -527,7 +527,7 @@ impl OpenCad {
                     _ => c.entities().iter().map(|&e| sk.entity_name(e)).collect::<Vec<_>>().join(", "),
                 };
                 ui.label(format!("{} {}", c.glyph(), what));
-                if let Constraint::Length(_, d) | Constraint::Diameter(_, d) | Constraint::Angle(_, _, d) | Constraint::Distance(_, _, d) | Constraint::Radius(_, d) = *c {
+                if let Constraint::Length(_, d) | Constraint::Diameter(_, d) | Constraint::Angle(_, _, d) | Constraint::Distance(_, _, d) | Constraint::Radius(_, d) | Constraint::Offset(_, _, d) = *c {
                     let mut v = d;
                     let field = if matches!(c, Constraint::Angle(..)) {
                         egui::DragValue::new(&mut v).speed(0.5).range(0.0..=179.999).min_decimals(1).suffix("°")
@@ -557,9 +557,13 @@ impl OpenCad {
             if start && self.undo.last() != Some(&self.sketches[i]) {
                 self.undo.push(self.sketches[i].clone());
             }
-            let r = apply_edit(&mut self.sketches[i], None, |sk| match &mut sk.constraints[ci] {
-                Constraint::Length(_, d) | Constraint::Diameter(_, d) | Constraint::Angle(_, _, d) | Constraint::Distance(_, _, d) | Constraint::Radius(_, d) => *d = v,
-                _ => {}
+            let r = apply_edit(&mut self.sketches[i], None, |sk| {
+                for k in sk.offset_group(ci) {
+                    match &mut sk.constraints[k] {
+                        Constraint::Length(_, d) | Constraint::Diameter(_, d) | Constraint::Angle(_, _, d) | Constraint::Distance(_, _, d) | Constraint::Radius(_, d) | Constraint::Offset(_, _, d) => *d = v,
+                        _ => {}
+                    }
+                }
             });
             self.report(r);
         }

@@ -249,7 +249,7 @@ impl OpenCad {
             if driven {
                 return;
             }
-            if let Some(Constraint::Length(_, d) | Constraint::Diameter(_, d) | Constraint::Angle(_, _, d) | Constraint::Distance(_, _, d) | Constraint::Radius(_, d)) = cs.first() {
+            if let Some(Constraint::Length(_, d) | Constraint::Diameter(_, d) | Constraint::Angle(_, _, d) | Constraint::Distance(_, _, d) | Constraint::Radius(_, d) | Constraint::Offset(_, _, d)) = cs.first() {
                 // Open the number box on the new dimension, ready to type.
                 self.float =
                     Some(FloatEdit { target: EditTarget::Dimension(first_new), text: format!("{d:.2}"), focus: true, keep_text: false });
@@ -335,7 +335,7 @@ impl OpenCad {
                     Constraint::Length(_, d)
                     | Constraint::Diameter(_, d)
                     | Constraint::Angle(_, _, d)
-                    | Constraint::Distance(_, _, d) | Constraint::Radius(_, d) => d,
+                    | Constraint::Distance(_, _, d) | Constraint::Radius(_, d) | Constraint::Offset(_, _, d) => d,
                     _ => 0.0,
                 };
                 let keep_text = typed.is_some();
@@ -429,7 +429,7 @@ impl OpenCad {
             self.notify("The distance must be greater than zero".into());
             return;
         }
-        self.sketch_op("offset", move |sk| sk.offset_chain(e, at, Some(distance)).map(|_| Vec::new()));
+        self.sketch_op("offset", move |sk| sk.offset_constrained(e, at, Some(distance)));
     }
 
     /// Centre circle: a diameter was typed after placing the centre. Make the
@@ -582,7 +582,7 @@ impl OpenCad {
 
     /// Offset tool: copy the run `e` belongs to over to where `p` is.
     pub(crate) fn offset_at(&mut self, e: usize, p: DVec2) {
-        self.sketch_op("offset", move |sk| sk.offset_chain(e, p, None).map(|_| Vec::new()));
+        self.sketch_op("offset", move |sk| sk.offset_constrained(e, p, None));
         self.editor.selection.clear();
     }
 
@@ -657,10 +657,12 @@ impl OpenCad {
             // (Keeps a chamfer's virtual sharp where it is; see the solver.)
             if solver::set_dimension_value(sk, ci, v).is_err() {
                 // Couldn't solve: leave the new value in so the usual error shows.
-                if let Some(Constraint::Length(_, d) | Constraint::Diameter(_, d) | Constraint::Angle(_, _, d) | Constraint::Distance(_, _, d) | Constraint::Radius(_, d)) =
-                    sk.constraints.get_mut(ci)
-                {
-                    *d = v;
+                for k in sk.offset_group(ci) {
+                    if let Some(Constraint::Length(_, d) | Constraint::Diameter(_, d) | Constraint::Angle(_, _, d) | Constraint::Distance(_, _, d) | Constraint::Radius(_, d) | Constraint::Offset(_, _, d)) =
+                        sk.constraints.get_mut(k)
+                    {
+                        *d = v;
+                    }
                 }
             }
         });
