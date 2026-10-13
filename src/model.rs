@@ -119,7 +119,46 @@ pub struct Extrude {
     pub name: String,
     pub sketch: usize,
     pub profiles: Vec<usize>,
+    /// One side: `distance` from the sketch. Symmetric: `distance` in all, half each way.
+    /// Two sides: `distance` one way and `distance2` the other.
     pub distance: f64,
+    #[serde(default)]
+    pub extent: Extent,
+    #[serde(default)]
+    pub distance2: f64,
+}
+
+/// How far an extrude reaches either side of its sketch.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Extent {
+    #[default]
+    OneSide,
+    Symmetric,
+    TwoSides,
+}
+
+impl Extent {
+    pub const ALL: [Extent; 3] = [Extent::OneSide, Extent::Symmetric, Extent::TwoSides];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Extent::OneSide => "One Side",
+            Extent::Symmetric => "Symmetric",
+            Extent::TwoSides => "Two Sides",
+        }
+    }
+}
+
+impl Extrude {
+    /// Where the solid starts and ends along the sketch normal: (from, to), signed.
+    pub fn span(&self) -> (f64, f64) {
+        let n = if self.distance < 0.0 { -1.0 } else { 1.0 };
+        match self.extent {
+            Extent::OneSide => (0.0, self.distance),
+            Extent::Symmetric => (-self.distance / 2.0, self.distance / 2.0),
+            Extent::TwoSides => (-n * self.distance2.abs(), self.distance),
+        }
+    }
 }
 
 /// Build the body for an extrude from the current sketch geometry (mesh-only, tests).
@@ -547,7 +586,7 @@ mod tests {
     fn box_has_right_volume_and_faces_outward() {
         for plane in OriginPlane::ALL {
             let sk = rect_sketch(plane);
-            let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 20.0 };
+            let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 20.0, extent: Default::default(), distance2: 0.0 };
             let m = build_extrude(&[sk], &ex).unwrap();
             assert!((m.volume() - 50.0 * 30.0 * 20.0).abs() < 1e-2, "{plane:?}: {}", m.volume());
             assert!(is_closed(&m));
@@ -559,7 +598,7 @@ mod tests {
     fn a_faces_extent_is_where_the_face_lies_in_its_planes_coordinates() {
         // The box is 50 × 30 × 20 from the origin; its top face is z = 20.
         let sk = rect_sketch(OriginPlane::XY);
-        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 20.0 };
+        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 20.0, extent: Default::default(), distance2: 0.0 };
         let m = build_extrude(&[sk], &ex).unwrap();
         let top = FacePlane::from_face(DVec3::Z, DVec3::new(10.0, 10.0, 20.0));
         let e = face_extent(&m, &top);
@@ -575,7 +614,7 @@ mod tests {
     #[test]
     fn negative_distance_goes_the_other_way_and_stays_outward() {
         let sk = rect_sketch(OriginPlane::XY);
-        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: -10.0 };
+        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: -10.0, extent: Default::default(), distance2: 0.0 };
         let m = build_extrude(&[sk], &ex).unwrap();
         assert!((m.volume() - 15000.0).abs() < 1e-2);
         assert!(m.positions.iter().all(|p| p.z <= 0.0));
@@ -590,7 +629,7 @@ mod tests {
         ed.click(&mut sk, Anchor::Free(DVec2::new(25.0, 15.0)));
         ed.click(&mut sk, Anchor::Free(DVec2::new(30.0, 15.0)));
         let regions = find_regions(&sk);
-        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 5.0 };
+        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 5.0, extent: Default::default(), distance2: 0.0 };
         let m = build_extrude(&[sk], &ex).unwrap();
         assert!(is_closed(&m));
         assert!((m.volume() - regions[0].area() * 5.0).abs() < 1e-2);
@@ -614,7 +653,7 @@ mod tests {
         let regions = find_regions(&sk);
         assert_eq!(regions.len(), 3);
         let total: f64 = regions.iter().map(|r| r.area()).sum();
-        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0, 1, 2], distance: 15.0 };
+        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0, 1, 2], distance: 15.0, extent: Default::default(), distance2: 0.0 };
         let m = build_extrude(&[sk], &ex).unwrap();
         assert!(is_closed(&m), "one watertight body");
         assert!((m.volume() - total * 15.0).abs() < 1e-2);
@@ -635,7 +674,7 @@ mod tests {
         ed.set_tool(Tool::Circle);
         ed.click(&mut sk, Anchor::Free(DVec2::new(25.0, 15.0)));
         ed.click(&mut sk, Anchor::Free(DVec2::new(30.0, 15.0)));
-        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 7.0 };
+        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 7.0, extent: Default::default(), distance2: 0.0 };
         let m = build_extrude(&[sk], &ex).unwrap();
         let caps: Vec<Vec3> = (0..m.tris.len()).map(|t| m.normal(t)).filter(|n| n.z.abs() > 0.5).collect();
         assert!(caps.len() > 4);
@@ -646,7 +685,7 @@ mod tests {
     #[test]
     fn ray_hits_the_nearest_face() {
         let sk = rect_sketch(OriginPlane::XY);
-        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 20.0 };
+        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 20.0, extent: Default::default(), distance2: 0.0 };
         let m = build_extrude(&[sk], &ex).unwrap();
         // Straight down onto the top face (z = 20) from z = 100.
         let t = ray_hit(&m, Vec3::new(10.0, 10.0, 100.0), Vec3::NEG_Z).unwrap();
@@ -660,7 +699,7 @@ mod tests {
     #[test]
     fn edges_find_box_corners_only() {
         let sk = rect_sketch(OriginPlane::XY);
-        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 20.0 };
+        let ex = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 20.0, extent: Default::default(), distance2: 0.0 };
         let m = build_extrude(&[sk], &ex).unwrap();
         let sharp = mesh_edges(&m).iter().filter(|e| e.sharp).count();
         assert_eq!(sharp, 12, "a box has 12 edges; face diagonals are not sharp");
@@ -669,9 +708,9 @@ mod tests {
     #[test]
     fn missing_profile_or_zero_distance_is_an_error() {
         let sk = rect_sketch(OriginPlane::XY);
-        let bad = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![3], distance: 5.0 };
+        let bad = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![3], distance: 5.0, extent: Default::default(), distance2: 0.0 };
         assert!(build_extrude(&[sk.clone()], &bad).is_err());
-        let zero = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 0.0 };
+        let zero = Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: 0.0, extent: Default::default(), distance2: 0.0 };
         assert!(build_extrude(&[sk], &zero).is_err());
     }
 

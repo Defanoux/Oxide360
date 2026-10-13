@@ -298,6 +298,8 @@ struct ExtrudeDialog {
     sketch: Option<usize>,
     profiles: Vec<usize>,
     distance: f64,
+    extent: model::Extent,
+    distance2: f64,
     op: Operation,
 }
 
@@ -1858,6 +1860,8 @@ impl OpenCad {
                 sketch: Some(e.sketch),
                 profiles: e.profiles.clone(),
                 distance: e.distance,
+                extent: e.extent,
+                distance2: e.distance2,
                 op: e.op,
             },
             None => ExtrudeDialog {
@@ -1867,6 +1871,8 @@ impl OpenCad {
                 sketch: None,
                 profiles: Vec::new(),
                 distance: 10.0,
+                extent: model::Extent::OneSide,
+                distance2: 10.0,
                 op: Operation::NewBody, // follows what the profile touches until chosen
             },
         };
@@ -1885,7 +1891,7 @@ impl OpenCad {
             Some(k) => self.extrudes[k].name.clone(),
             None => format!("Extrude{}", self.extrudes.len() + 1),
         };
-        Some(Extrude { op: d.op, name, sketch: d.sketch?, profiles: d.profiles.clone(), distance: d.distance })
+        Some(Extrude { op: d.op, name, sketch: d.sketch?, profiles: d.profiles.clone(), distance: d.distance, extent: d.extent, distance2: d.distance2 })
     }
 
     fn commit_extrude(&mut self) {
@@ -2042,7 +2048,8 @@ impl OpenCad {
         if let Some(d) = &self.dialog {
             let (origin, normal) = self.extrude_axis(regions)?;
             let line = LineHandle { origin: origin.as_dvec3(), dir: normal.as_dvec3() };
-            return Some(Handle::Line { line, value: d.distance, target: HandleTarget::Extrude });
+            let value = if d.extent == model::Extent::Symmetric { d.distance / 2.0 } else { d.distance };
+            return Some(Handle::Line { line, value, target: HandleTarget::Extrude });
         }
         if let Some(d) = &self.edge_dialog {
             let line = handles::edge_handle(d.edges.first()?)?;
@@ -2064,7 +2071,7 @@ impl OpenCad {
         match target {
             HandleTarget::Extrude => {
                 if let Some(d) = self.dialog.as_mut() {
-                    d.distance = v;
+                    d.distance = if d.extent == model::Extent::Symmetric { v * 2.0 } else { v };
                 }
             }
             HandleTarget::EdgeSize => {
@@ -3374,7 +3381,10 @@ impl OpenCad {
         }
         let cache = self.caches[Slot::Committed as usize].as_ref()?;
         let bounds: Vec<(Vec3, Vec3)> = cache.model.bodies.iter().filter_map(|b| model::mesh_bounds(&b.mesh)).collect();
-        Some(model::prism_touches(&points, plane.normal(), d.distance as f32, &bounds, 1e-3))
+        let ex = Extrude { op: d.op, name: String::new(), sketch: s, profiles: Vec::new(), distance: d.distance, extent: d.extent, distance2: d.distance2 };
+        let (from, to) = ex.span();
+        let touches = |len: f64| model::prism_touches(&points, plane.normal(), len as f32, &bounds, 1e-3);
+        Some(touches(to) || (from != 0.0 && touches(from)))
     }
 
     fn extrude_panel(&mut self, ui: &mut egui::Ui) {
@@ -3383,7 +3393,7 @@ impl OpenCad {
             let toward = self.dialog.as_ref().and_then(|d| d.sketch).map(|s| self.cut_direction(s));
             if let Some(d) = self.dialog.as_mut() {
                 // Pulled into the body: Cut. Away from it: Join. Clear of every body: New Body.
-                let into = toward.is_some_and(|t| d.distance * t > 0.0);
+                let into = d.extent == model::Extent::OneSide && toward.is_some_and(|t| d.distance * t > 0.0);
                 d.op = match (touches, into) {
                     (true, true) => Operation::Cut,
                     (true, false) => Operation::Join,
@@ -3407,7 +3417,20 @@ impl OpenCad {
         ui.separator();
         let mut changed = false;
         ui.horizontal(|ui| {
-            ui.label("Distance");
+            ui.label("Extent");
+            for ex in model::Extent::ALL {
+                if ui.selectable_label(d.extent == ex, ex.name()).clicked() && d.extent != ex {
+                    d.extent = ex;
+                    changed = true;
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label(match d.extent {
+                model::Extent::OneSide => "Distance",
+                model::Extent::Symmetric => "Length",
+                model::Extent::TwoSides => "Side 1",
+            });
             changed |= ui
                 .add(egui::DragValue::new(&mut d.distance).speed(0.5).min_decimals(2).suffix(" mm"))
                 .changed();
@@ -3416,6 +3439,12 @@ impl OpenCad {
                 changed = true;
             }
         });
+        if d.extent == model::Extent::TwoSides {
+            ui.horizontal(|ui| {
+                ui.label("Side 2");
+                changed |= ui.add(egui::DragValue::new(&mut d.distance2).speed(0.5).min_decimals(2).range(0.0..=f64::MAX).suffix(" mm")).changed();
+            });
+        }
         ui.horizontal(|ui| {
             ui.label("Operation");
             for op in Operation::ALL {

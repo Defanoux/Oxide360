@@ -301,16 +301,23 @@ fn tool(sketches: &[Sketch], frames: &[Option<FacePlane>], ex: &Extrude) -> Resu
         .map(|&p| regions.get(p).ok_or("a selected profile no longer exists — the sketch changed"))
         .collect::<Result<Vec<&Region>, _>>()?;
     let plane = frame_for(sk, frames.get(ex.sketch).copied().flatten())?;
-    let dir = kv(plane.normal() * ex.distance);
+    let (from, to) = ex.span();
+    if (to - from).abs() < 1e-6 {
+        return Err("distance is zero".into());
+    }
+    let dir = kv(plane.normal() * (to - from));
     let mut out: Option<Shape> = None;
     for r in union(&picked) {
-        let solid: Shape = region_face(&plane, &r)?.extrude(dir).into();
+        let mut solid: Shape = region_face(&plane, &r)?.extrude(dir).into();
+        if from != 0.0 {
+            solid = solid.translated(kv(plane.normal() * from));
+        }
         out = Some(match out {
             None => solid,
             Some(acc) => acc.try_union(&solid).ok_or("the kernel couldn't merge the profiles")?,
         });
     }
-    let end = End::Extrude { origin: plane.origin, normal: plane.normal(), distance: ex.distance };
+    let end = End::Extrude { origin: plane.origin, normal: plane.normal(), distance: to };
     out.map(|s| (s, end)).ok_or_else(|| "nothing to extrude".into())
 }
 
@@ -1067,7 +1074,7 @@ mod tests {
     }
 
     fn ex(sketch: usize, profiles: Vec<usize>, distance: f64, op: Operation) -> Extrude {
-        Extrude { op, name: "E".into(), sketch, profiles, distance }
+        Extrude { op, name: "E".into(), sketch, profiles, distance, extent: Default::default(), distance2: 0.0 }
     }
 
     fn timeline(sketches: usize, extrudes: usize) -> Vec<Feature> {
@@ -1108,6 +1115,47 @@ mod tests {
     fn box_of(b: &Body) -> (DVec3, DVec3) {
         let bb = opencascade::bounding_box::aabb(&b.shape);
         (DVec3::new(bb.min().x, bb.min().y, bb.min().z), DVec3::new(bb.max().x, bb.max().y, bb.max().z))
+    }
+
+    fn extruded(extent: crate::model::Extent, distance: f64, distance2: f64) -> Model {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk, 0.0, 0.0, 4.0, 3.0);
+        let mut e = ex(0, vec![0], distance, Operation::NewBody);
+        e.extent = extent;
+        e.distance2 = distance2;
+        build_with(&[sk], &[e], &[], &[], &[], &[], &[], &timeline(1, 1))
+    }
+
+    #[test]
+    fn symmetric_extrude_reaches_half_the_length_each_way() {
+        let m = extruded(crate::model::Extent::Symmetric, 10.0, 0.0);
+        assert!(close(total(&m), 120.0), "{}", total(&m));
+        let (lo, hi) = box_of(&m.bodies[0]);
+        assert!((lo.z + 5.0).abs() < 1e-6 && (hi.z - 5.0).abs() < 1e-6, "{lo:?} {hi:?}");
+        // A negative length is the same body.
+        let m = extruded(crate::model::Extent::Symmetric, -10.0, 0.0);
+        let (lo, hi) = box_of(&m.bodies[0]);
+        assert!((lo.z + 5.0).abs() < 1e-6 && (hi.z - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn two_sided_extrude_reaches_each_distance_its_own_way() {
+        let m = extruded(crate::model::Extent::TwoSides, 10.0, 4.0);
+        assert!(close(total(&m), 12.0 * 14.0), "{}", total(&m));
+        let (lo, hi) = box_of(&m.bodies[0]);
+        assert!((lo.z + 4.0).abs() < 1e-6 && (hi.z - 10.0).abs() < 1e-6, "{lo:?} {hi:?}");
+        // Flipped: side 1 goes down, side 2 up.
+        let m = extruded(crate::model::Extent::TwoSides, -10.0, 4.0);
+        let (lo, hi) = box_of(&m.bodies[0]);
+        assert!((lo.z + 10.0).abs() < 1e-6 && (hi.z - 4.0).abs() < 1e-6, "{lo:?} {hi:?}");
+    }
+
+    #[test]
+    fn an_extrude_with_no_extent_in_an_old_file_is_one_sided() {
+        let json = r#"{"op":"NewBody","name":"E","sketch":0,"profiles":[0],"distance":5.0}"#;
+        let e: Extrude = serde_json::from_str(json).unwrap();
+        assert_eq!(e.extent, crate::model::Extent::OneSide);
+        assert_eq!(e.span(), (0.0, 5.0));
     }
 
     #[test]
