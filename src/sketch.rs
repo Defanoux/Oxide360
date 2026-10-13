@@ -1536,6 +1536,19 @@ impl Sketch {
     /// other line when it ends there, else tied onto it); a middle piece
     /// splits the line in two; a line nothing crosses is deleted.
     /// Returns constraints for the caller to add through the solver.
+    /// The stretch of line `e` that Trim would take away for a click at `at`
+    /// (for showing it before the click).
+    pub fn trim_preview(&self, e: EntityId, at: DVec2) -> Option<(DVec2, DVec2)> {
+        let Some(&Entity::Line { a, b }) = self.entities.get(e) else { return None };
+        let (pa, pb) = (self.points[a], self.points[b]);
+        let d = pb - pa;
+        let tc = ((at - pa).dot(d) / d.length_squared().max(1e-30)).clamp(0.0, 1.0);
+        let cuts = self.line_cuts(e);
+        let lo = cuts.iter().rev().find(|c| c.0 <= tc).map_or(pa, |c| c.1);
+        let hi = cuts.iter().find(|c| c.0 > tc).map_or(pb, |c| c.1);
+        Some((lo, hi))
+    }
+
     pub fn trim_line(&mut self, e: EntityId, at: DVec2) -> Result<Vec<Constraint>, String> {
         let Some(&Entity::Line { a, b }) = self.entities.get(e) else {
             return Err("Trim works on lines".into());
@@ -3394,6 +3407,25 @@ mod trim_tests {
         assert_eq!(ends(&sk, n), (DVec2::new(20.0, 0.0), DVec2::new(30.0, 0.0)));
         assert!(cs.contains(&Constraint::Horizontal(n)), "{cs:?}");
         assert!(!sk.constraints.iter().any(|c| matches!(c, Constraint::Length(..))), "old length dropped");
+    }
+
+    #[test]
+    fn trim_preview_shows_the_stretch_a_click_removes() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let l = seg(&mut sk, (0.0, 0.0), (30.0, 0.0));
+        seg(&mut sk, (10.0, -5.0), (10.0, 5.0));
+        seg(&mut sk, (20.0, -5.0), (20.0, 5.0));
+        assert_eq!(sk.trim_preview(l, DVec2::new(15.0, 1.0)), Some((DVec2::new(10.0, 0.0), DVec2::new(20.0, 0.0))));
+        assert_eq!(sk.trim_preview(l, DVec2::new(25.0, 0.0)), Some((DVec2::new(20.0, 0.0), DVec2::new(30.0, 0.0))));
+        // It's what trimming really takes: the kept pieces are the rest.
+        let before = sk.clone();
+        sk.trim_line(l, DVec2::new(25.0, 0.0)).unwrap();
+        assert_eq!(ends(&sk, l), (DVec2::ZERO, DVec2::new(20.0, 0.0)));
+        // Nothing crossing: the whole line.
+        let mut lone = Sketch::new("S".into(), OriginPlane::XY);
+        let l2 = seg(&mut lone, (0.0, 0.0), (8.0, 0.0));
+        assert_eq!(lone.trim_preview(l2, DVec2::new(3.0, 0.0)), Some((DVec2::ZERO, DVec2::new(8.0, 0.0))));
+        assert_eq!(before.trim_preview(99, DVec2::ZERO), None);
     }
 
     #[test]

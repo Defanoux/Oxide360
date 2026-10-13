@@ -526,6 +526,12 @@ impl OpenCad {
                         });
                     }
                 }
+                // Trim / Extend: show what a click on the hovered line would do.
+                self.cut_preview = match (tool, hovered, raw_hover) {
+                    (Tool::Trim, Some(Sel::Entity(e)), Some(p)) => sk.trim_preview(e, p).map(|(a, b)| (tool, a, b)),
+                    (Tool::Extend, Some(Sel::Entity(e)), Some(p)) => sk.extend_preview(e, p).map(|(a, b)| (tool, a, b)),
+                    _ => None,
+                };
                 // Offset: the copy follows the cursor until the second click.
                 self.offset_preview = None;
                 if let (Tool::Offset, [Sel::Entity(e)], Some(p)) = (tool, self.editor.selection.as_slice(), raw_hover) {
@@ -1723,6 +1729,18 @@ impl OpenCad {
                 }
             }
             if active {
+                match self.cut_preview {
+                    // The stretch Trim takes away: red over the line.
+                    Some((Tool::Trim, a, b)) => view.line(plane.to_world(a), plane.to_world(b), Stroke::new(4.0, Color32::from_rgb(230, 70, 70))),
+                    // The piece Extend adds: dashed, to a dot where the end goes.
+                    Some((_, a, b)) => {
+                        view.dashed(plane.to_world(a), plane.to_world(b), Stroke::new(2.0, COL_PREVIEW));
+                        if let Some(px) = view.project(plane.to_world(b)) {
+                            painter.circle_filled(to_pos(px), 4.0, COL_PREVIEW);
+                        }
+                    }
+                    None => {}
+                }
                 if let Some(p) = &self.offset_preview {
                     let stroke = Stroke::new(2.0, COL_PREVIEW);
                     for e in sk.entities.len()..p.entities.len() {

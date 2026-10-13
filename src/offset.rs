@@ -54,6 +54,19 @@ impl Sketch {
     /// its way (a line, circle or arc that really extends that far). The end
     /// moves to a new point, tied onto what it meets (or joined to it, when it
     /// meets another's end). Constraints for the caller to add one by one.
+    /// The piece Extend would add to line `e` for a click at `at`: from the
+    /// end it moves to where that end would go (for showing it first).
+    pub fn extend_preview(&self, e: EntityId, at: DVec2) -> Option<(DVec2, DVec2)> {
+        let Some(&Entity::Line { a, b }) = self.entities.get(e) else { return None };
+        let (pa, pb) = (self.points[a], self.points[b]);
+        let mut t = self.clone();
+        t.extend_line(e, at).ok()?;
+        let Some(&Entity::Line { a: na, b: nb }) = t.entities.get(e) else { return None };
+        let (qa, qb) = (t.points[na], t.points[nb]);
+        // Whichever end moved.
+        if qa.distance(pa) > 1e-9 { Some((pa, qa)) } else if qb.distance(pb) > 1e-9 { Some((pb, qb)) } else { None }
+    }
+
     pub fn extend_line(&mut self, e: EntityId, at: DVec2) -> Result<Vec<Constraint>, String> {
         let Some(&Entity::Line { a, b }) = self.entities.get(e) else {
             return Err("Extend works on lines".into());
@@ -426,6 +439,16 @@ mod tests {
         let (a, b) = ends(&sk, 0);
         assert!(a.distance(DVec2::ZERO) < 1e-12 && b.distance(DVec2::new(10.0, 0.0)) < 1e-12);
         assert!(matches!(cs.as_slice(), [Constraint::OnLine(_, 1)]));
+    }
+
+    #[test]
+    fn extend_preview_is_the_piece_extend_adds() {
+        let sk = lines(&[((0.0, 0.0), (5.0, 0.0)), ((10.0, -5.0), (10.0, 5.0)), ((-8.0, -5.0), (-8.0, 5.0))]);
+        assert_eq!(sk.extend_preview(0, DVec2::new(4.0, 0.0)), Some((DVec2::new(5.0, 0.0), DVec2::new(10.0, 0.0))));
+        assert_eq!(sk.extend_preview(0, DVec2::new(1.0, 0.0)), Some((DVec2::new(0.0, 0.0), DVec2::new(-8.0, 0.0))));
+        // Nothing in the way: no preview.
+        let alone = lines(&[((0.0, 0.0), (5.0, 0.0))]);
+        assert_eq!(alone.extend_preview(0, DVec2::new(4.0, 0.0)), None);
     }
 
     #[test]

@@ -510,6 +510,7 @@ struct OpenCad {
     revolve_errors: Vec<Option<String>>,
     sketch_pattern: Option<SketchPattern>,   // an open Rectangular / Circular Pattern in a sketch
     offset_preview: Option<Sketch>,          // the sketch with the offset the cursor would make
+    cut_preview: Option<(Tool, DVec2, DVec2)>, // what Trim would cut / Extend would add, under the cursor
     sp_applied: Option<pattern::Layout>,     // the layout the sketch is showing now
     project_body_hover: Option<usize>,       // the body under the mouse when no edge is (Project tool: takes all its edges)
     project_hover: Option<EdgeRef>,          // the body edge under the mouse (Project tool)
@@ -632,6 +633,7 @@ impl Default for OpenCad {
             revolve_errors: Vec::new(),
             sketch_pattern: None,
             offset_preview: None,
+            cut_preview: None,
             sp_applied: None,
             project_body_hover: None,
             project_hover: None,
