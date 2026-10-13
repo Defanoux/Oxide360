@@ -49,7 +49,7 @@ impl OpenCad {
             if icons::button(ui, Icon::Undo, "Undo (Ctrl+Z)", self.can_undo(), false).clicked() {
                 self.undo();
             }
-            let list = ui.add_enabled(back > 0, egui::Button::new("▾").small()).on_hover_text("Undo several steps");
+            let list = ui.add_enabled_ui(back > 0, |ui| icons::dropdown(ui, "Undo several steps")).inner;
             egui::Popup::menu(&list).show(|ui| {
                 for n in 1..=back.min(20) {
                     if ui.button(format!("Undo {n} step{}", if n == 1 { "" } else { "s" })).clicked() {
@@ -63,7 +63,7 @@ impl OpenCad {
             if icons::button(ui, Icon::Redo, "Redo (Ctrl+Shift+Z or Ctrl+Y)", self.history.can_redo(), false).clicked() {
                 self.redo();
             }
-            let list = ui.add_enabled(ahead > 0, egui::Button::new("▾").small()).on_hover_text("Redo several steps");
+            let list = ui.add_enabled_ui(ahead > 0, |ui| icons::dropdown(ui, "Redo several steps")).inner;
             egui::Popup::menu(&list).show(|ui| {
                 for n in 1..=ahead.min(20) {
                     if ui.button(format!("Redo {n} step{}", if n == 1 { "" } else { "s" })).clicked() {
@@ -77,24 +77,54 @@ impl OpenCad {
             ui.separator();
             // The open designs: name, version, a dot when unsaved; × closes.
             let titles = if self.tab_titles.is_empty() { vec![(self.tab_title(), self.is_dirty())] } else { self.tab_titles.clone() };
-            for (k, (title, dirty)) in titles.iter().enumerate() {
+            let mut rename_done: Option<Option<String>> = None;
+            for (k, (title, _)) in titles.iter().enumerate() {
                 let current = k == self.tab_index;
-                let text = format!("{title}{}", if *dirty { " •" } else { "" });
+                let text = title.clone();
                 egui::Frame::new()
                     .fill(if current { Color32::from_gray(58) } else { Color32::from_gray(36) })
                     .corner_radius(5.0)
                     .inner_margin(egui::Margin::symmetric(8, 3))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            let label = egui::RichText::new(text).color(if current { Color32::WHITE } else { Color32::from_gray(160) });
-                            if ui.add(egui::Label::new(label).sense(egui::Sense::click())).clicked() && !current {
-                                self.tab_request = Some(TabRequest::Switch(k));
+                            // Right-click → Rename (this tab's name is edited in place).
+                            if let (true, Some(t)) = (current, self.renaming_design.as_mut()) {
+                                let edit = ui.add(egui::TextEdit::singleline(t).desired_width(140.0));
+                                edit.request_focus();
+                                let (enter, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+                                if enter {
+                                    rename_done = Some(Some(t.clone()));
+                                } else if esc || edit.lost_focus() {
+                                    rename_done = Some(None);
+                                }
+                            } else {
+                                let label = egui::RichText::new(text).color(if current { Color32::WHITE } else { Color32::from_gray(160) });
+                                let r = ui.add(egui::Label::new(label).sense(egui::Sense::click())).on_hover_text("Right-click to rename");
+                                if r.clicked() && !current {
+                                    self.tab_request = Some(TabRequest::Switch(k));
+                                }
+                                if current {
+                                    r.context_menu(|ui| {
+                                        if ui.button("Rename…").clicked() {
+                                            self.renaming_design = Some(self.file_name().trim_end_matches(".ocad").to_string());
+                                            ui.close();
+                                        }
+                                    });
+                                }
                             }
                             if ui.small_button("×").on_hover_text("Close this design").clicked() {
                                 self.tab_request = Some(TabRequest::Close(k));
                             }
                         });
                     });
+            }
+            match rename_done {
+                Some(Some(name)) => {
+                    self.renaming_design = None;
+                    self.rename_design(&name);
+                }
+                Some(None) => self.renaming_design = None,
+                None => {}
             }
             if ui.button("+").on_hover_text("New design in a new tab").clicked() {
                 self.tab_request = Some(TabRequest::New);
@@ -469,8 +499,9 @@ impl OpenCad {
                 self.browser_open = false;
             }
         });
-        // As tall as the view allows; it only scrolls when there's more than that.
-        let room = (self.view_rect.height() - 60.0).max(120.0);
+        // Down to the bottom of the space it's given; it only scrolls when
+        // there's more than fits.
+        let room = ui.available_height().max(80.0);
         egui::ScrollArea::vertical().max_height(room).auto_shrink([true, true]).show(ui, |ui| {
             // The design itself (a single part for now; assemblies come later).
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), egui::Id::new("browser_root"), true)

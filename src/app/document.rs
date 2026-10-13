@@ -228,7 +228,36 @@ impl OpenCad {
         self.path
             .as_ref()
             .and_then(|p| p.file_name())
-            .map_or("Untitled".into(), |n| n.to_string_lossy().into_owned())
+            .map(|n| n.to_string_lossy().into_owned())
+            .or_else(|| self.name.clone())
+            .unwrap_or_else(|| "Untitled".into())
+    }
+
+    /// Give the design a new name: a saved one's file is renamed (in the same
+    /// folder); an unsaved one keeps it for its first save.
+    pub(crate) fn rename_design(&mut self, new: &str) {
+        let new = new.trim().trim_end_matches(".ocad").trim();
+        if new.is_empty() || new.contains(['/', '\\']) {
+            self.notify("A name can't be empty or contain / or \\".into());
+            return;
+        }
+        match self.path.clone() {
+            None => self.name = Some(new.to_string()),
+            Some(old) => {
+                let to = old.with_file_name(format!("{new}.{}", doc::EXTENSION));
+                if to == old {
+                    return;
+                }
+                if to.exists() {
+                    self.alert = Some(format!("There's already a design called \"{new}\" in that folder."));
+                    return;
+                }
+                match std::fs::rename(&old, &to) {
+                    Ok(()) => self.path = Some(to),
+                    Err(e) => self.alert = Some(format!("Couldn't rename the file: {e}")),
+                }
+            }
+        }
     }
 
     /// Replace the whole design (New / Open) and reset every editing state.
@@ -252,6 +281,7 @@ impl OpenCad {
         self.removes = doc.removes.clone();
         self.units = doc.units;
         self.version = doc.version.0;
+        self.name = None;
         self.selected_bodies.clear();
         self.axes = doc.axes.clone();
         self.planes = doc.planes.clone();

@@ -13,7 +13,7 @@ impl OpenCad {
         let (hover, snaps) = match hover_px {
             Some(px) => {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
-                self.measure_pick_at(view, px, &ray, size.y, mods.ctrl, mods.shift)
+                self.measure_pick_at(view, px, &ray, mods.ctrl, mods.shift)
             }
             None => (None, Vec::new()),
         };
@@ -137,11 +137,13 @@ impl OpenCad {
     /// What's under the cursor for Measure, and the snap points to show on it.
     /// With the Face/Edge/Vertex filter: corners and sketch points first, then
     /// edges and sketch curves, then faces and sketch profiles (nearest).
-    fn measure_pick_at(&self, view: &View, px: Vec2, ray: &Ray, height_px: f32, ctrl: bool, shift: bool) -> (Option<measure::Picked>, Vec<DVec3>) {
+    fn measure_pick_at(&self, view: &View, px: Vec2, ray: &Ray, ctrl: bool, shift: bool) -> (Option<measure::Picked>, Vec<DVec3>) {
         use measure::{Filter, Pick, Picked};
         let Some(m) = self.measure.as_ref() else { return (None, Vec::new()) };
         let Some(model) = self.caches[Slot::Committed as usize].as_ref().map(|c| &c.model) else { return (None, Vec::new()) };
-        let visible = |b: &&kernel::Body| !self.hidden_bodies.contains(&b.id);
+        // In a sketch only sketch geometry is measured (bodies in the model view).
+        let sketching = self.active.is_some();
+        let visible = |b: &&kernel::Body| !sketching && !self.hidden_bodies.contains(&b.id);
         let hit = model
             .bodies
             .iter()
@@ -149,7 +151,7 @@ impl OpenCad {
             .filter(|(_, b)| visible(b))
             .filter_map(|(i, b)| model::ray_hit_tri(&b.mesh, ray.origin, ray.dir).map(|(t, tri)| (t, tri, i)))
             .min_by(|x, y| x.0.total_cmp(&y.0));
-        if m.filter == Filter::Body {
+        if m.filter == Filter::Body && !sketching {
             return (hit.and_then(|(_, _, body)| self.measure_resolve(Pick::Body { body })), Vec::new());
         }
         // Things behind a body can't be picked.
@@ -190,8 +192,14 @@ impl OpenCad {
             if !in_front(world) {
                 continue;
             }
-            let mm_per_px = (t * 2.0 * (camera::FOV_Y * 0.5).tan() / height_px.max(1.0)) as f64;
-            match sk.hit(p, SNAP_PX as f64 * mm_per_px) {
+            // How big a millimetre is on screen here (right in both
+            // perspective and orthographic views).
+            let plane = self.plane_of(s);
+            let px_per_mm = match (view.project(plane.to_world(p)), view.project(plane.to_world(p + DVec2::X))) {
+                (Some(a), Some(b)) => a.distance(b).max(1e-6),
+                _ => continue,
+            };
+            match sk.hit(p, SNAP_PX as f64 / px_per_mm as f64) {
                 Some(Sel::Point(q)) if q != Sketch::ORIGIN => point = Some((0.0, Pick::SketchPoint { sketch: s, point: q })),
                 Some(Sel::Entity(e)) => curve = Some((0.0, Pick::SketchCurve { sketch: s, entity: e })),
                 _ => {}
@@ -236,22 +244,28 @@ impl OpenCad {
         let Some(m) = self.measure.as_mut() else { return };
         let (unit, unit2, decimals) = (self.measure_unit.unwrap_or(self.units), self.measure_unit2, self.measure_precision);
         ui.strong("Measure");
-        ui.horizontal(|ui| {
-            ui.label("Selection filter");
-            let before = m.filter;
-            egui::ComboBox::from_id_salt("measure_filter")
-                .selected_text(match m.filter {
-                    Filter::FaceEdgeVertex => "Face/Edge/Vertex",
-                    Filter::Body => "Body",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut m.filter, Filter::FaceEdgeVertex, "Face/Edge/Vertex");
-                    ui.selectable_value(&mut m.filter, Filter::Body, "Body");
-                });
-            if m.filter != before {
-                m.clear();
-            }
-        });
+        let sketching = self.active.is_some();
+        if sketching {
+            m.filter = Filter::FaceEdgeVertex;
+        }
+        if !sketching {
+            ui.horizontal(|ui| {
+                ui.label("Selection filter");
+                let before = m.filter;
+                egui::ComboBox::from_id_salt("measure_filter")
+                    .selected_text(match m.filter {
+                        Filter::FaceEdgeVertex => "Face/Edge/Vertex",
+                        Filter::Body => "Body",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut m.filter, Filter::FaceEdgeVertex, "Face/Edge/Vertex");
+                        ui.selectable_value(&mut m.filter, Filter::Body, "Body");
+                    });
+                if m.filter != before {
+                    m.clear();
+                }
+            });
+        }
         let mut copy: Option<String> = None;
         let mut hovered: Option<Show> = None;
         let xyz = self.measure_xyz;

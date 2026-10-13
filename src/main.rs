@@ -642,6 +642,8 @@ struct OpenCad {
     arrow_drag: Option<(usize, f64)>,   // which arrow is being dragged, and its grab offset
     arrow_turn: Option<(f64, f64)>,     // revolve arrow: cursor angle so far (unwrapped, last raw)
     path: Option<PathBuf>,              // where this design is saved
+    name: Option<String>,               // a name given before the first save
+    renaming_design: Option<String>,    // the tab's name being edited
     saved: Document,                    // what's on disk, to detect unsaved changes
     cmd: Option<Cmd>,
     confirm: Option<Pending>,
@@ -695,6 +697,8 @@ impl Default for OpenCad {
             tab_titles: Vec::new(),
             tab_index: 0,
             tab_request: None,
+            name: None,
+            renaming_design: None,
             close_me: false,
             browser_open: true,
             view_rect: egui::Rect::NOTHING,
@@ -911,20 +915,6 @@ impl OpenCad {
         }
         self.timeline_height = egui::Panel::bottom("timeline").show(ui, |ui| self.timeline_bar(ui)).response.rect.height();
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui));
-        // The browser floats over the view's top left (no panel of its own).
-        if self.view_rect.is_positive() {
-            egui::Area::new(egui::Id::new("browser_area"))
-                .order(egui::Order::Middle)
-                .fixed_pos(self.view_rect.left_top() + egui::vec2(8.0, 8.0))
-                .show(&ctx, |ui| {
-                    ui.set_max_width(260.0);
-                    if self.browser_open {
-                        self.browser(ui);
-                    } else if ui.button("» Browser").on_hover_text("Show the browser").clicked() {
-                        self.browser_open = true;
-                    }
-                });
-        }
         self.float_editor(&ctx);
         self.copy_quantity_boxes(&ctx);
 
@@ -1011,7 +1001,7 @@ impl eframe::App for Tabs {
             }
         }
         let t = &self.tabs[self.current];
-        let title = format!("{}{} — opencad", t.tab_title(), if t.is_dirty() { " •" } else { "" });
+        let title = format!("{} — opencad", t.tab_title());
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;

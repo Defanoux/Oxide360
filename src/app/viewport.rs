@@ -2469,6 +2469,18 @@ impl OpenCad {
 
         view.view_cube(&self.camera, &cells, to_vec(cube_center), CUBE_SCALE, cube_hover, self.cube_axes);
 
+        // The browser floats over the view's left side, from the top down to the
+        // status line (drawn here, on top of the model, so clicks between its
+        // rows still reach the view).
+        let strip = egui::Rect::from_min_max(rect.left_top() + egui::vec2(8.0, 8.0), egui::pos2(rect.left() + 300.0, rect.bottom() - 30.0));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(strip).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+            if self.browser_open {
+                self.browser(ui);
+            } else if ui.button("» Browser").on_hover_text("Show the browser").clicked() {
+                self.browser_open = true;
+            }
+        });
+
         // View cube controls, placed after everything else so they draw on top:
         // Home at the top-left, the view options menu at the bottom-right.
         let icon = Color32::from_gray(215);
