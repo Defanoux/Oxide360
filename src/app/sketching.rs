@@ -389,6 +389,8 @@ impl OpenCad {
             None => {
                 self.corner_size = size;
                 self.report(r);
+                // A modify tool is done once used (back to Select).
+                self.editor.set_tool(Tool::Select);
             }
         }
     }
@@ -604,7 +606,11 @@ impl OpenCad {
         });
         match why {
             Some(e) => self.notify(format!("Can't {what}: {e}")),
-            None => self.report(r),
+            None => {
+                self.report(r);
+                // Trim, Extend, Offset: done once used (back to Select).
+                self.editor.set_tool(Tool::Select);
+            }
         }
     }
 

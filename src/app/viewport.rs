@@ -1856,7 +1856,7 @@ impl OpenCad {
                         return;
                     }
                 } else {
-                    if ui.button("Look At").on_hover_text("Look straight at the sketch plane").clicked() {
+                    if ui.button("Look at Sketch").on_hover_text("Look straight at the sketch plane").clicked() {
                         self.look_at(self.sketches[i].view_angles(), None);
                         ui.close();
                     }
@@ -1878,7 +1878,7 @@ impl OpenCad {
                     }
                 }
                 ui.separator();
-                if ui.button("Look At").on_hover_text("Look straight at the sketch plane").clicked() {
+                if ui.button("Look at Sketch").on_hover_text("Look straight at the sketch plane").clicked() {
                     self.look_at(self.sketches[i].view_angles(), None);
                     ui.close();
                 }
