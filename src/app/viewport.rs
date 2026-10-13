@@ -279,6 +279,52 @@ impl OpenCad {
             }
         }
 
+        // --- Mirror: click a plane (origin or construction) and bodies in the view ---
+        self.copy_body_hover = None;
+        let mirroring = self.active.is_none() && !self.face_pick && self.copy_dialog.as_ref().is_some_and(|d| d.mode == CopyMode::Mirror && !d.picking_axis);
+        if mirroring {
+            self.ensure_model(Slot::Committed);
+            if let Some(px) = hover_px {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                let psize = origin::size_for(self.camera.distance);
+                let origin_hit = origin::pick(&ray, psize, |_| true).map(|(op, t)| (Some(op), None, t));
+                let custom_hit = self.pick_cplane(&ray, psize).map(|(k, t)| (None, Some(k), t));
+                let plane = [origin_hit, custom_hit].into_iter().flatten().min_by(|a, b| a.2.total_cmp(&b.2));
+                let model = self.model(Slot::Committed);
+                let body = model
+                    .bodies
+                    .iter()
+                    .filter(|b| !self.hidden_bodies.contains(&b.id))
+                    .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir).map(|t| (b.id, t)))
+                    .min_by(|a, b| a.1.total_cmp(&b.1));
+                // The nearer wins; a plane lying in a face wins the tie.
+                match (plane, body) {
+                    (Some((op, k, tp)), b) if b.is_none_or(|(_, tb)| tp <= tb + origin::tie_tolerance(tb)) => {
+                        self.origin_hover = op;
+                        self.cplane_hover = k;
+                    }
+                    (_, Some((id, _))) => self.copy_body_hover = Some(id),
+                    _ => {}
+                }
+            }
+            if response.clicked() {
+                let (op, k, body) = (self.origin_hover, self.cplane_hover, self.copy_body_hover);
+                if let Some(d) = self.copy_dialog.as_mut() {
+                    if let Some(op) = op {
+                        (d.plane, d.mirror_custom) = (op, None);
+                    } else if let Some(k) = k {
+                        d.mirror_custom = Some(k);
+                    } else if let Some(id) = body {
+                        if d.bodies.contains(&id) {
+                            d.bodies.retain(|b| *b != id);
+                        } else {
+                            d.bodies.push(id);
+                        }
+                    }
+                }
+            }
+        }
+
         // --- the 3D view: hover origin planes and faces; click selects a plane, right-click offers a sketch ---
         if !self.face_pick && self.active.is_none() {
             self.marquee = None;
@@ -1181,9 +1227,11 @@ impl OpenCad {
         let sketching = self.active.is_some();
         let origin_size = origin::size_for(self.camera.distance);
         // Create Sketch shows the whole origin, whatever the browser says.
-        let picking_axis = self.copy_dialog.as_ref().is_some_and(|d| d.picking_axis);
+        // Picking an axis or a mirror plane shows the whole origin too.
+        let picking_axis = self.copy_dialog.as_ref().is_some_and(|d| d.picking_axis || d.mode == CopyMode::Mirror);
         let shown = if self.face_pick || picking_axis { origin::Shown::default() } else { self.origin_shown };
         let show_origin = !sketching && (shown.all || self.face_pick || picking_axis);
+        let mirror_plane = self.copy_dialog.as_ref().filter(|d| d.mode == CopyMode::Mirror).map(|d| (d.mirror_custom, d.plane));
         let mut grid_segments: Vec<(Vec3, Vec3, [f32; 4])> = if sketching {
             sketch::grid_lines(&dplane, centre, grid, GRID_HALF_LINES)
                 .into_iter()
@@ -1253,7 +1301,7 @@ impl OpenCad {
             let mut outlines: Vec<(Vec3, Vec3, [f32; 4])> = Vec::new();
             for op in OriginPlane::ALL.into_iter().filter(|&p| shown.plane(p)) {
                 let hot = self.origin_hover == Some(op);
-                let chosen = self.selected_plane == Some(op);
+                let chosen = self.selected_plane == Some(op) || mirror_plane == Some((None, op));
                 let alpha = if hot { 150 } else if chosen { 120 } else if self.face_pick { 80 } else { 55 };
                 let p = op.plane();
                 let s = origin_size;
@@ -1302,7 +1350,15 @@ impl OpenCad {
                     continue;
                 }
                 if let Some(f) = self.model(Slot::Committed).planes.get(k).copied().flatten() {
-                    let alpha = if self.cplane_hover == Some(k) { 150.0 } else if self.face_pick { 80.0 } else { 55.0 };
+                    let alpha = if self.cplane_hover == Some(k) {
+                        150.0
+                    } else if mirror_plane.is_some_and(|(c, _)| c == Some(k)) {
+                        120.0
+                    } else if self.face_pick {
+                        80.0
+                    } else {
+                        55.0
+                    };
                     items.push((f, self.planes[k].on_origin, alpha / 255.0, self.planes[k].extent));
                 }
             }
@@ -1388,8 +1444,13 @@ impl OpenCad {
             .filter(|(k, _)| !hidden.contains(k))
             .map(|(_, b)| {
                 let c = if previewing { body_color } else { self.body_color(b.id) };
-                // Bodies selected in the browser are tinted with the selection colour.
-                let c = if self.selected_bodies.contains(&b.id) {
+                // Bodies selected in the browser (or picked for a mirror / pattern)
+                // are tinted with the selection colour; the one under the cursor lighter.
+                let picked = self.copy_dialog.as_ref().is_some_and(|d| d.bodies.contains(&b.id));
+                let c = if self.copy_body_hover == Some(b.id) && !picked {
+                    let mix = |x: u8, y: u8| ((x as u16 * 3 + y as u16) / 4) as u8;
+                    Color32::from_rgb(mix(c.r(), COL_HOVER.r()), mix(c.g(), COL_HOVER.g()), mix(c.b(), COL_HOVER.b()))
+                } else if self.selected_bodies.contains(&b.id) || picked {
                     let mix = |x: u8, y: u8| ((x as u16 + y as u16) / 2) as u8;
                     Color32::from_rgb(mix(c.r(), COL_SELECT.r()), mix(c.g(), COL_SELECT.g()), mix(c.b(), COL_SELECT.b()))
                 } else {

@@ -494,6 +494,7 @@ struct OpenCad {
     removes: Vec<model::RemoveFeature>,     // Remove features (bodies taken out)
     remove_errors: Vec<Option<String>>,
     selected_bodies: Vec<BodyId>,           // bodies selected in the browser
+    copy_body_hover: Option<BodyId>,        // Mirror: the body under the cursor (a click adds / drops it)
     copy_dialog: Option<CopyDialog>,
     axes: Vec<AxisFeature>,                  // construction axes
     axis_errors: Vec<Option<String>>,
@@ -617,6 +618,7 @@ impl Default for OpenCad {
             removes: Vec::new(),
             remove_errors: Vec::new(),
             selected_bodies: Vec::new(),
+            copy_body_hover: None,
             copy_dialog: None,
             axes: Vec::new(),
             axis_errors: Vec::new(),

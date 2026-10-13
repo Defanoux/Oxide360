@@ -50,6 +50,8 @@ pub struct CopyDialog {
     pub radial: f64,
     /// Waiting for a click on an axis in the 3D view.
     pub picking_axis: bool,
+    /// Mirror in a construction plane instead of `plane`.
+    pub mirror_custom: Option<usize>,
 }
 
 impl CopyDialog {
@@ -71,6 +73,7 @@ impl CopyDialog {
             angle: 360.0,
             radial: 0.0,
             picking_axis: false,
+            mirror_custom: None,
         }
     }
 
@@ -80,6 +83,7 @@ impl CopyDialog {
         d.editing = Some(k);
         match f.kind {
             CopyKind::Mirror(p) => d.plane = p,
+            CopyKind::MirrorPlane(k) => d.mirror_custom = Some(k),
             CopyKind::Rectangular { dir, count, spacing, dir2, count2, spacing2 } => {
                 (d.mode, d.dir, d.count, d.spacing, d.dir2, d.count2, d.spacing2) = (Mode::Rectangular, dir, count, spacing, dir2, count2, spacing2);
             }
@@ -92,7 +96,10 @@ impl CopyDialog {
 
     pub fn kind(&self) -> CopyKind {
         match self.mode {
-            Mode::Mirror => CopyKind::Mirror(self.plane),
+            Mode::Mirror => match self.mirror_custom {
+                Some(k) => CopyKind::MirrorPlane(k),
+                None => CopyKind::Mirror(self.plane),
+            },
             Mode::Rectangular => CopyKind::Rectangular {
                 dir: self.dir,
                 count: self.count,
@@ -116,6 +123,7 @@ impl CopyDialog {
         ui: &mut egui::Ui,
         bodies: &[(BodyId, String)],
         axes: &[String],
+        planes: &[String],
         error: Option<&str>,
         message: Option<&str>,
     ) -> Action {
@@ -151,12 +159,20 @@ impl CopyDialog {
         };
         match self.mode {
             Mode::Mirror => {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Mirror plane");
                     for p in OriginPlane::ALL {
-                        ui.selectable_value(&mut self.plane, p, p.name());
+                        if ui.selectable_label(self.mirror_custom.is_none() && self.plane == p, p.name()).clicked() {
+                            (self.plane, self.mirror_custom) = (p, None);
+                        }
+                    }
+                    for (k, name) in planes.iter().enumerate() {
+                        if ui.selectable_label(self.mirror_custom == Some(k), name.as_str()).clicked() {
+                            self.mirror_custom = Some(k);
+                        }
                     }
                 });
+                ui.weak("Or click a plane in the view; click bodies there to add or drop them.");
             }
             Mode::Rectangular => {
                 ui.strong("Direction 1");
@@ -255,6 +271,13 @@ mod tests {
         r.spacing2 = 7.5;
         let f = r.feature("R".into()).unwrap();
         assert_eq!(CopyDialog::from_feature(0, &f).feature("R".into()), Some(f));
+
+        // Mirror in a construction plane, and back.
+        let mut mp = CopyDialog::new(Mode::Mirror, vec![id(1)]);
+        mp.mirror_custom = Some(2);
+        let f = mp.feature("M".into()).unwrap();
+        assert_eq!(f.kind, CopyKind::MirrorPlane(2));
+        assert_eq!(CopyDialog::from_feature(0, &f).feature("M".into()), Some(f));
 
         let m = CopyDialog::new(Mode::Mirror, vec![id(1)]).feature("M".into()).unwrap();
         assert_eq!(m.kind, CopyKind::Mirror(OriginPlane::YZ));

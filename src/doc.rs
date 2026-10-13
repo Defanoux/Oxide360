@@ -315,6 +315,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
         use crate::model::CopyKind::*;
         let ok = match c.kind {
             Mirror(_) => true,
+            MirrorPlane(k) => k < doc.planes.len(),
             Rectangular { count, spacing, count2, spacing2, .. } => {
                 (1..=MAX_COPIES).contains(&count) && (1..=MAX_COPIES).contains(&count2) && spacing.is_finite() && spacing2.is_finite()
             }

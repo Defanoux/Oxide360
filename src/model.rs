@@ -249,6 +249,8 @@ impl WorldAxis {
 pub enum CopyKind {
     /// Reflect in an origin plane.
     Mirror(OriginPlane),
+    /// Reflect in a construction plane (index into the design's planes).
+    MirrorPlane(usize),
     /// `count` copies (the original included) every `spacing` mm along `dir`,
     /// and the same again along `dir2` (`count2` = 1 for a single row).
     Rectangular { dir: WorldAxis, count: u32, spacing: f64, dir2: WorldAxis, count2: u32, spacing2: f64 },
@@ -274,8 +276,8 @@ pub enum Placement {
     Translate(DVec3),
     /// About an axis through the origin, in radians.
     Rotate { origin: DVec3, axis: DVec3, radians: f64, radial: f64 },
-    /// In the plane through the origin with this normal.
-    Reflect { normal: DVec3 },
+    /// In the plane through `origin` with this normal.
+    Reflect { origin: DVec3, normal: DVec3 },
 }
 
 /// Copy bodies: mirrored in a plane, or repeated in a pattern. The copies
@@ -349,12 +351,17 @@ pub const MAX_COPIES: u32 = 200;
 
 impl CopyKind {
     /// One placement per new copy (the original isn't one).
-    /// `axes` are the construction axes as built: (point on it, direction).
-    pub fn placements(&self, axes: &[Option<(DVec3, DVec3)>]) -> Result<Vec<Placement>, String> {
+    /// `axes` are the construction axes as built: (point on it, direction);
+    /// `planes` the construction planes as built.
+    pub fn placements(&self, axes: &[Option<(DVec3, DVec3)>], planes: &[Option<FacePlane>]) -> Result<Vec<Placement>, String> {
         match *self {
             CopyKind::Mirror(p) => {
                 let n = p.plane().normal().as_dvec3();
-                Ok(vec![Placement::Reflect { normal: n }])
+                Ok(vec![Placement::Reflect { origin: DVec3::ZERO, normal: n }])
+            }
+            CopyKind::MirrorPlane(k) => {
+                let p = planes.get(k).copied().flatten().ok_or("its mirror plane couldn't be built")?;
+                Ok(vec![Placement::Reflect { origin: p.origin, normal: p.normal() }])
             }
             CopyKind::Rectangular { dir, count, spacing, dir2, count2, spacing2 } => {
                 let mut out = Vec::new();

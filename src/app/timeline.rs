@@ -489,7 +489,7 @@ impl OpenCad {
                     Feature::Plane(_) => Icon::Plane,
                     Feature::Remove(_) => Icon::Remove,
                     Feature::Copy(k) => match self.copies[k].kind {
-                        model::CopyKind::Mirror(_) => Icon::Mirror,
+                        model::CopyKind::Mirror(_) | model::CopyKind::MirrorPlane(_) => Icon::Mirror,
                         model::CopyKind::Rectangular { .. } => Icon::RectPattern,
                         model::CopyKind::Circular { .. } => Icon::CircPattern,
                     },
@@ -617,7 +617,7 @@ impl OpenCad {
             }
             Some(Feature::Copy(k)) => {
                 let mode = match self.copies[k].kind {
-                    model::CopyKind::Mirror(_) => CopyMode::Mirror,
+                    model::CopyKind::Mirror(_) | model::CopyKind::MirrorPlane(_) => CopyMode::Mirror,
                     model::CopyKind::Rectangular { .. } => CopyMode::Rectangular,
                     model::CopyKind::Circular { .. } => CopyMode::Circular,
                 };

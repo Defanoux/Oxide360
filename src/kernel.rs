@@ -962,12 +962,12 @@ pub fn build(
 
 /// Copy the picked bodies once per placement (mirror or pattern). The copies
 /// are new bodies; the originals stay.
-fn apply_copy(bodies: Tagged, cf: &CopyFeature, k: usize, axes: &[Option<(DVec3, DVec3)>]) -> Result<(Tagged, Option<BodyId>), String> {
+fn apply_copy(bodies: Tagged, cf: &CopyFeature, k: usize, axes: &[Option<(DVec3, DVec3)>], planes: &[Option<FacePlane>]) -> Result<(Tagged, Option<BodyId>), String> {
     let sources: Vec<usize> = (0..bodies.len()).filter(|&i| cf.bodies.contains(&bodies[i].1)).collect();
     if sources.is_empty() {
         return Err("the bodies it copies are gone — edit it and pick again".into());
     }
-    let placements = cf.kind.placements(axes)?;
+    let placements = cf.kind.placements(axes, planes)?;
     if placements.is_empty() {
         return Err("it makes no copies — raise the quantity".into());
     }
@@ -984,7 +984,7 @@ fn apply_copy(bodies: Tagged, cf: &CopyFeature, k: usize, axes: &[Option<(DVec3,
                     let moved = if out == DVec3::ZERO { None } else { Some(src.translated(kv(out))) };
                     moved.as_ref().unwrap_or(src).rotated_about(kv(origin), kv(axis), radians)
                 }
-                Placement::Reflect { normal } => src.mirrored_in_plane(kv(DVec3::ZERO), kv(normal)),
+                Placement::Reflect { origin, normal } => src.mirrored_in_plane(kv(origin), kv(normal)),
             };
             let id = BodyId { feature: Feature::Copy(k), piece };
             piece += 1;
@@ -1151,8 +1151,8 @@ pub fn build_all(
                     shapes = current;
                     continue;
                 };
-                let axes_now = &axes;
-                let r = catch_unwind(AssertUnwindSafe(|| apply_copy(current, cf, k, axes_now)));
+                let (axes_now, planes_now) = (&axes, &planes);
+                let r = catch_unwind(AssertUnwindSafe(|| apply_copy(current, cf, k, axes_now, planes_now)));
                 (r, &mut copy_errors[k])
             }
             Feature::Edge(k) => {
@@ -1530,6 +1530,31 @@ mod tests {
         let up = AxisFeature { name: "Up".into(), edge: EdgeRef { mid: DVec3::new(6.0, 3.0, 2.5), dir: DVec3::Z, faces: [DVec3::ZERO; 2], follow: None } };
         let m = build_with(&[sk, sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[rv(RevolveAxis::Construction(0))], &[], &[], &[up], &[], &t);
         assert!(m.revolve_errors[0].as_deref().is_some_and(|e| e.contains("parallel")), "{:?}", m.revolve_errors);
+    }
+
+    #[test]
+    fn mirror_in_a_construction_plane() {
+        use crate::model::PlaneFeature;
+        // The 4×3×5 box at x 2..6, mirrored in a plane 10 mm along X from the YZ plane: x 14..18.
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk, 2.0, 0.0, 6.0, 3.0);
+        let yz = FacePlane::from_face(DVec3::X, DVec3::ZERO);
+        let plane = PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4] };
+        let c = CopyFeature { name: "M".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: crate::model::CopyKind::MirrorPlane(0) };
+        let t = [Feature::Sketch(0), Feature::Extrude(0), Feature::Plane(0), Feature::Copy(0)];
+        let m = build_all(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[], &[plane], &[], &t);
+        assert_eq!(m.copy_errors, vec![None]);
+        assert_eq!(m.bodies.len(), 2);
+        let copy = m.bodies.iter().find(|b| b.id.feature == Feature::Copy(0)).unwrap();
+        let (lo, hi) = box_of(copy);
+        assert!((lo - DVec3::new(14.0, 0.0, 0.0)).length() < 1e-6 && (hi - DVec3::new(18.0, 3.0, 5.0)).length() < 1e-6, "{lo} {hi}");
+        assert!(close(copy.shape.volume(), 60.0));
+        // Before its plane is built, the mirror can't work.
+        let c2 = CopyFeature { name: "M".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: crate::model::CopyKind::MirrorPlane(0) };
+        let mut sk2 = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk2, 2.0, 0.0, 6.0, 3.0);
+        let early = build_all(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c2], &[], &[PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4] }], &[], &[Feature::Sketch(0), Feature::Extrude(0), Feature::Copy(0), Feature::Plane(0)]);
+        assert!(early.copy_errors[0].is_some());
     }
 
     #[test]

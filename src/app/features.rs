@@ -534,6 +534,24 @@ impl OpenCad {
             self.notify("A sketch is on that plane — delete the sketch first".into());
             return;
         }
+        if self.copies.iter().any(|c| c.kind == model::CopyKind::MirrorPlane(k)) {
+            self.notify("A mirror uses that plane — delete it or pick another plane first".into());
+            return;
+        }
+        for c in &mut self.copies {
+            if let model::CopyKind::MirrorPlane(j) = &mut c.kind {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+        if let Some(d) = self.copy_dialog.as_mut() {
+            d.mirror_custom = match d.mirror_custom {
+                Some(j) if j == k => None,
+                Some(j) if j > k => Some(j - 1),
+                other => other,
+            };
+        }
         self.planes.remove(k);
         self.plane_hidden = self.plane_hidden.iter().filter(|&&j| j != k).map(|&j| if j > k { j - 1 } else { j }).collect();
         self.timeline_remove(Feature::Plane(k));
@@ -787,9 +805,10 @@ impl OpenCad {
     pub(crate) fn copy_panel(&mut self, ui: &mut egui::Ui) {
         let bodies: Vec<(BodyId, String)> = self.body_ids.iter().map(|&id| (id, self.body_name(id))).collect();
         let axes: Vec<String> = self.axes.iter().map(|a| a.name.clone()).collect();
+        let planes: Vec<String> = self.planes.iter().map(|p| p.name.clone()).collect();
         let (error, message) = (self.dialog_error.clone(), self.message.clone());
         let Some(d) = self.copy_dialog.as_mut() else { return };
-        match d.panel(ui, &bodies, &axes, error.as_deref(), message.as_deref()) {
+        match d.panel(ui, &bodies, &axes, &planes, error.as_deref(), message.as_deref()) {
             copy_dialog::Action::Ok => self.commit_copy(),
             copy_dialog::Action::Cancel => self.cancel_copy(),
             copy_dialog::Action::None => {}
