@@ -57,6 +57,9 @@ pub enum Icon {
     Coincident,
     Collinear,
     Concentric,
+    Folder,
+    Gear,
+    Part,
 }
 
 const BLUE: Color32 = Color32::from_rgb(70, 145, 230);
@@ -483,6 +486,24 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             painter.circle_stroke(p(0.5, 0.5), w * 0.2, Stroke::new(thin.width * 1.2, orange));
             dot(0.5, 0.5, ink);
         }
+        Icon::Folder => {
+            poly(&[(0.08, 0.28), (0.4, 0.28), (0.48, 0.38), (0.92, 0.38), (0.92, 0.84), (0.08, 0.84)], Color32::from_rgb(150, 150, 150));
+            poly(&[(0.08, 0.44), (0.92, 0.44), (0.92, 0.84), (0.08, 0.84)], Color32::from_rgb(185, 185, 185));
+        }
+        Icon::Gear => {
+            for k in 0..8 {
+                let a = k as f32 * std::f32::consts::FRAC_PI_4;
+                line((0.5 + 0.22 * a.cos(), 0.5 + 0.22 * a.sin()), (0.5 + 0.4 * a.cos(), 0.5 + 0.4 * a.sin()), Stroke::new(w * 0.12, ink));
+            }
+            painter.circle_filled(p(0.5, 0.5), w * 0.27, ink);
+            painter.circle_filled(p(0.5, 0.5), w * 0.11, Color32::from_gray(45));
+        }
+        Icon::Part => {
+            // A single part: one solid box.
+            poly(&[(0.15, 0.38), (0.6, 0.38), (0.6, 0.86), (0.15, 0.86)], blue_dark);
+            poly(&[(0.15, 0.38), (0.38, 0.16), (0.84, 0.16), (0.6, 0.38)], blue);
+            poly(&[(0.6, 0.38), (0.84, 0.16), (0.84, 0.64), (0.6, 0.86)], blue_dark);
+        }
         Icon::Grid => {
             for t in [0.2, 0.5, 0.8] {
                 line((t, 0.12), (t, 0.88), thin);
@@ -491,6 +512,40 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             dot(0.5, 0.5, blue);
         }
     }
+}
+
+/// A small icon in a row of the browser (no click).
+pub fn small(ui: &mut egui::Ui, icon: Icon) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+    paint(ui.painter(), rect, icon, true);
+}
+
+/// The browser's visibility eye: open when shown, shut (greyed, struck
+/// through) when hidden. Click to switch.
+pub fn eye(ui: &mut egui::Ui, shown: bool, tooltip: &str) -> egui::Response {
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(18.0, 16.0), egui::Sense::click());
+    let painter = ui.painter();
+    let ink = if r.hovered() { Color32::from_gray(245) } else if shown { Color32::from_gray(200) } else { Color32::from_gray(105) };
+    let c = rect.center();
+    let (w, h) = (rect.width() * 0.42, rect.height() * 0.26);
+    // The almond outline: two arcs.
+    let arc = |up: f32| -> Vec<Pos2> {
+        (0..=16)
+            .map(|i| {
+                let t = i as f32 / 16.0 * 2.0 - 1.0;
+                Pos2::new(c.x + t * w, c.y + up * h * (1.0 - t * t))
+            })
+            .collect()
+    };
+    let s = Stroke::new(1.3, ink);
+    painter.add(egui::Shape::line(arc(-1.0), s));
+    painter.add(egui::Shape::line(arc(1.0), s));
+    if shown {
+        painter.circle_filled(c, h * 0.8, ink);
+    } else {
+        painter.line_segment([Pos2::new(c.x - w, c.y + h * 1.3), Pos2::new(c.x + w, c.y - h * 1.3)], s);
+    }
+    r.on_hover_text(tooltip)
 }
 
 /// A square icon button with a tooltip. `selected` draws it pressed in.

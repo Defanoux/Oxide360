@@ -345,81 +345,189 @@ impl OpenCad {
     }
 
     pub(crate) fn browser(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Browser");
-        // Fusion's Document Settings: this design's units (saved with it).
-        egui::CollapsingHeader::new("Document Settings").default_open(false).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.strong("BROWSER");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("«").on_hover_text("Fold the browser away (more room to work)").clicked() {
+                    self.browser_open = false;
+                }
+            });
+        });
+        ui.separator();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            // The design itself (a single part for now; assemblies come later).
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), egui::Id::new("browser_root"), true)
+                .show_header(ui, |ui| {
+                    icons::small(ui, Icon::Part);
+                    ui.strong(self.file_name()).on_hover_text("This design (one part)");
+                })
+                .body(|ui| {
+                    self.browser_settings(ui);
+                    self.browser_origin(ui);
+                    self.browser_analysis(ui);
+                    self.browser_construction(ui);
+                    self.browser_bodies(ui);
+                    self.browser_sketches(ui);
+                });
+        });
+    }
+
+    /// A folder row in the browser: an eye (when it has one), the folder
+    /// icon and its name; returns the folder's open/closed state to show its
+    /// rows in. `eye`: is anything in it shown, and set when clicked.
+    fn folder<R>(&mut self, ui: &mut egui::Ui, id: &str, icon: Icon, name: &str, eye: Option<bool>, body: impl FnOnce(&mut Self, &mut egui::Ui) -> R) -> bool {
+        let mut eye_clicked = false;
+        let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), egui::Id::new(id), false);
+        state
+            .show_header(ui, |ui| {
+                if let Some(shown) = eye {
+                    eye_clicked = icons::eye(ui, shown, if shown { "Hide everything in it" } else { "Show everything in it" }).clicked();
+                }
+                icons::small(ui, icon);
+                ui.label(name);
+            })
+            .body(|ui| body(self, ui));
+        eye_clicked
+    }
+
+    /// Document Settings: the design's units (saved with it).
+    fn browser_settings(&mut self, ui: &mut egui::Ui) {
+        self.folder(ui, "folder_settings", Icon::Gear, "Document Settings", None, |app, ui| {
             ui.horizontal(|ui| {
                 ui.label("Units");
-                egui::ComboBox::from_id_salt("design_units").selected_text(self.units.name()).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("design_units").selected_text(app.units.name()).show_ui(ui, |ui| {
                     for u in units::Unit::ALL {
-                        ui.selectable_value(&mut self.units, u, u.long_name());
+                        ui.selectable_value(&mut app.units, u, u.long_name());
                     }
                 });
             });
-            ui.weak(format!("New designs start in {}.", self.default_units.name()));
-            if self.default_units != self.units && ui.small_button(format!("Make {} the default", self.units.name())).clicked() {
-                self.default_units = self.units;
+            ui.weak(format!("New designs start in {}.", app.default_units.name()));
+            if app.default_units != app.units && ui.small_button(format!("Make {} the default", app.units.name())).clicked() {
+                app.default_units = app.units;
             }
             ui.weak("Values are kept exactly; only how they're shown and typed changes. Type \"22 mm\" or \"1 in\" in any box.");
         });
-        // The Origin folder: one switch for all of it, then each plane and axis.
-        let folder = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), egui::Id::new("origin_folder"), false);
-        folder
-            .show_header(ui, |ui| {
-                ui.checkbox(&mut self.origin_shown.all, "Origin").on_hover_text("Show or hide the whole origin");
-            })
-            .body(|ui| {
-                for op in OriginPlane::ALL {
-                    ui.checkbox(&mut self.origin_shown.planes[op as usize], format!("{} plane", op.name()));
-                }
-                for (k, name) in ["X axis", "Y axis", "Z axis"].into_iter().enumerate() {
-                    ui.checkbox(&mut self.origin_shown.axes[k], name);
-                }
-            });
-        if !self.axes.is_empty() {
-            ui.label("Construction");
-            for k in 0..self.axes.len() {
+    }
+
+    /// The origin planes and axes.
+    fn browser_origin(&mut self, ui: &mut egui::Ui) {
+        let shown = self.origin_shown.all;
+        let clicked = self.folder(ui, "origin_folder", Icon::Folder, "Origin", Some(shown), |app, ui| {
+            for op in OriginPlane::ALL {
+                let k = op as usize;
                 ui.horizontal(|ui| {
-                    let mut shown = !self.axis_hidden.contains(&k);
-                    if ui.checkbox(&mut shown, "").on_hover_text("Show or hide this axis").changed() {
-                        if shown {
-                            self.axis_hidden.remove(&k);
-                        } else {
-                            self.axis_hidden.insert(k);
-                        }
+                    if icons::eye(ui, app.origin_shown.planes[k], "Show or hide").clicked() {
+                        app.origin_shown.planes[k] = !app.origin_shown.planes[k];
                     }
-                    ui.label(self.axes[k].name.as_str());
+                    icons::small(ui, Icon::Plane);
+                    ui.label(format!("{} plane", op.name()));
                 });
             }
-        }
-        for k in 0..self.planes.len() {
-            if k == 0 && self.axes.is_empty() {
-                ui.label("Construction");
-            }
-            ui.horizontal(|ui| {
-                let mut shown = !self.plane_hidden.contains(&k);
-                if ui.checkbox(&mut shown, "").on_hover_text("Show or hide this plane").changed() {
-                    if shown {
-                        self.plane_hidden.remove(&k);
-                    } else {
-                        self.plane_hidden.insert(k);
+            for (k, name) in ["X axis", "Y axis", "Z axis"].into_iter().enumerate() {
+                ui.horizontal(|ui| {
+                    if icons::eye(ui, app.origin_shown.axes[k], "Show or hide").clicked() {
+                        app.origin_shown.axes[k] = !app.origin_shown.axes[k];
                     }
-                }
-                ui.label(self.planes[k].name.as_str());
-            });
+                    icons::small(ui, Icon::Axis);
+                    ui.label(name);
+                });
+            }
+        });
+        if clicked {
+            self.origin_shown.all = !shown;
         }
-        ui.label("Bodies");
+    }
+
+    /// Analysis (sections, zebra… later): empty for now, as a placeholder.
+    fn browser_analysis(&mut self, ui: &mut egui::Ui) {
+        self.folder(ui, "folder_analysis", Icon::Folder, "Analysis", None, |_, ui| {
+            ui.weak("Nothing yet");
+        });
+    }
+
+    /// Construction planes and axes.
+    fn browser_construction(&mut self, ui: &mut egui::Ui) {
+        if self.axes.is_empty() && self.planes.is_empty() {
+            return;
+        }
+        let any = (0..self.axes.len()).any(|k| !self.axis_hidden.contains(&k)) || (0..self.planes.len()).any(|k| !self.plane_hidden.contains(&k));
+        let clicked = self.folder(ui, "folder_construction", Icon::Folder, "Construction", Some(any), |app, ui| {
+            for k in 0..app.planes.len() {
+                ui.horizontal(|ui| {
+                    let shown = !app.plane_hidden.contains(&k);
+                    if icons::eye(ui, shown, "Show or hide this plane").clicked() {
+                        if shown {
+                            app.plane_hidden.insert(k);
+                        } else {
+                            app.plane_hidden.remove(&k);
+                        }
+                    }
+                    icons::small(ui, Icon::Plane);
+                    ui.label(app.planes[k].name.as_str());
+                });
+            }
+            for k in 0..app.axes.len() {
+                ui.horizontal(|ui| {
+                    let shown = !app.axis_hidden.contains(&k);
+                    if icons::eye(ui, shown, "Show or hide this axis").clicked() {
+                        if shown {
+                            app.axis_hidden.insert(k);
+                        } else {
+                            app.axis_hidden.remove(&k);
+                        }
+                    }
+                    icons::small(ui, Icon::Axis);
+                    ui.label(app.axes[k].name.as_str());
+                });
+            }
+        });
+        if clicked {
+            if any {
+                self.plane_hidden = (0..self.planes.len()).collect();
+                self.axis_hidden = (0..self.axes.len()).collect();
+            } else {
+                self.plane_hidden.clear();
+                self.axis_hidden.clear();
+            }
+        }
+    }
+
+    fn browser_bodies(&mut self, ui: &mut egui::Ui) {
+        let any = self.body_ids.iter().any(|id| !self.hidden_bodies.contains(id));
+        let clicked = self.folder(ui, "folder_bodies", Icon::Folder, "Bodies", Some(any), |app, ui| app.body_rows(ui));
+        if clicked {
+            if any {
+                self.hidden_bodies.extend(self.body_ids.iter().copied());
+            } else {
+                for id in &self.body_ids {
+                    self.hidden_bodies.remove(id);
+                }
+            }
+        }
+    }
+
+    fn browser_sketches(&mut self, ui: &mut egui::Ui) {
+        let any = (0..self.sketches.len()).any(|i| self.sketch_visible(i));
+        let clicked = self.folder(ui, "folder_sketches", Icon::Folder, "Sketches", Some(any), |app, ui| app.sketch_rows(ui));
+        if clicked {
+            for i in 0..self.sketches.len() {
+                self.sketch_shown.insert(i, !any);
+            }
+        }
+    }
+
+    fn body_rows(&mut self, ui: &mut egui::Ui) {
         let mut rename_done: Option<(BodyId, Option<String>)> = None;
         let (mut remove, mut delete_maker): (Option<Vec<BodyId>>, Option<Feature>) = (None, None);
         self.selected_bodies.retain(|id| self.body_ids.contains(id));
         for id in self.body_ids.clone() {
             ui.horizontal(|ui| {
-                let mut shown = !self.hidden_bodies.contains(&id);
-                if ui.checkbox(&mut shown, "").on_hover_text("Show or hide this body").changed() {
+                let shown = !self.hidden_bodies.contains(&id);
+                if icons::eye(ui, shown, "Show or hide this body").clicked() {
                     if shown {
-                        self.hidden_bodies.remove(&id);
-                    } else {
                         self.hidden_bodies.insert(id);
+                    } else {
+                        self.hidden_bodies.remove(&id);
                     }
                 }
                 // The body's colour, as a small swatch.
@@ -530,14 +638,17 @@ impl OpenCad {
                 None => {}
             }
         }
-        ui.label("Sketches");
+    }
+
+    fn sketch_rows(&mut self, ui: &mut egui::Ui) {
         let (mut edit, mut delete, mut toggle) = (None, None, None);
         for (i, s) in self.sketches.iter().enumerate() {
             ui.horizontal(|ui| {
-                let mut shown = self.sketch_visible(i);
-                if ui.checkbox(&mut shown, "").on_hover_text("Show or hide this sketch").changed() {
-                    toggle = Some((i, shown));
+                let shown = self.sketch_visible(i);
+                if icons::eye(ui, shown, "Show or hide this sketch").clicked() {
+                    toggle = Some((i, !shown));
                 }
+                icons::small(ui, Icon::Sketch);
                 let r = ui
                     .selectable_label(self.active == Some(i), format!("{} ({})", s.name, s.plane_name()))
                     .on_hover_text("Click to edit · right-click for more");

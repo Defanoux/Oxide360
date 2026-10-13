@@ -510,6 +510,7 @@ struct OpenCad {
     copy_errors: Vec<Option<String>>,
     removes: Vec<model::RemoveFeature>,     // Remove features (bodies taken out)
     units: units::Unit,                     // the design's units (shown and typed in)
+    browser_open: bool,                     // the browser is shown (else folded to a strip)
     default_units: units::Unit,             // units new designs start in (settings)
     remove_errors: Vec<Option<String>>,
     selected_bodies: Vec<BodyId>,           // bodies selected in the browser
@@ -636,6 +637,7 @@ impl Default for OpenCad {
             copy_errors: Vec::new(),
             removes: Vec::new(),
             units: units::Unit::Mm,
+            browser_open: true,
             default_units: units::Unit::Mm,
             remove_errors: Vec::new(),
             selected_bodies: Vec::new(),
@@ -797,7 +799,16 @@ impl eframe::App for OpenCad {
                 ui.ctx().request_repaint();
             }
         });
-        egui::Panel::left("browser").resizable(true).default_size(200.0).show(ui, |ui| self.browser(ui));
+        if self.browser_open {
+            egui::Panel::left("browser").resizable(true).default_size(220.0).show(ui, |ui| self.browser(ui));
+        } else {
+            // Folded away: a thin strip with the button to bring it back.
+            egui::Panel::left("browser_folded").resizable(false).exact_size(26.0).show(ui, |ui| {
+                if ui.small_button("»").on_hover_text("Show the browser").clicked() {
+                    self.browser_open = true;
+                }
+            });
+        }
         // Tool dialogs float over the view's right side, like Fusion's.
         // Bottom right, above the timeline, so they cover no controls.
         let lift = self.timeline_height + 12.0;
