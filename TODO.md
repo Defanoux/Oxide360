@@ -10,9 +10,6 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 11. **Extrude options**: taper angle, "to object". (Symmetric and Two Sides done.)
 
-12. **Split `main.rs`** into `app/*` modules (see CLAUDE.md) — do it earlier
-    if any item above needs big changes there.
-
 ## Polish (do when nearby code is touched)
 
 - On-canvas glyphs for OnAxis / Midpoint / Distance constraints.
@@ -25,6 +22,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- `main.rs` split into `app/{document,sketching,features,panels,timeline,viewport}.rs` (mechanical, no behaviour change; 804 lines left in main.rs).
 - Timeline right-click: Rename…, Suppress / Unsuppress (greyed, not built, saved as `Document.suppressed`, follows deletes), Move earlier / later (refused when it would make something fail: `Model::error_count`). Measure tool (Inspect group): two clicks on the model, corners and edge middles snap, shows distance and Δx/Δy/Δz.
 - Extrude Extent: One Side / Symmetric (whole length, half each way) / Two Sides (distance each way); `Extent` + `distance2` on `Extrude` (serde default), kernel `Extrude::span`, exact bbox/volume tests; the drag arrow follows the far end.
 - Sketch Extend (line to the next line/circle/arc in its way, tied on or joined), Offset (a joined run of lines/arcs or a circle, side + distance from the cursor, live preview, click twice; `offset.rs`), Slot (centre-to-centre, tangent half circles, width dimension); sketch circular pattern's centre starts one Distance from the selection and the arrow drags it (no longer the origin).

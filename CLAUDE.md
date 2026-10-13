@@ -53,7 +53,8 @@ Rust toolchain: 1.98 (edition 2024).
 
 | file | owns |
 |---|---|
-| `main.rs` | eframe app: ribbon toolbar (icon groups), browser, timeline, dialogs (extrude / revolve / fillet), viewport input + drawing, undo/redo, notifications |
+| `main.rs` | the `OpenCad` state struct, small types, constants, `eframe::App::ui`, `main` |
+| `app/*.rs` | the rest of `impl OpenCad`, by topic: `document` (files, undo, kernel cache), `sketching`, `features` (extrude/revolve/pattern/plane/fillet dialogs + drag arrows), `panels` (toolbar, browser, side panels), `timeline` (timeline bar, rename, Measure), `viewport` (input + drawing) |
 | `view.rs` | egui drawing helpers: projection, lines, arcs, grid, dimensions (`linear_`, `diameter_`, `radius_`, `angle_dimension`), dashed lines, view cube. `View.trace` records drawn segments so dimensions can be clicked |
 | `icons.rs` | vector-drawn toolbar icons (`Icon`, `paint`, `button`, `dropdown`). No image files — keep it that way |
 | `camera.rs` | orbit camera, `zoom_at` (toward cursor), rays, view cube cells/labels |
@@ -108,9 +109,6 @@ Rust toolchain: 1.98 (edition 2024).
 - Don't add image assets, new heavy dependencies, or network access without
   a good reason.
 
-## When main.rs gets too big
+## Where new code goes
 
-It's ~3,700 lines. When an item touches it heavily, first do a mechanical
-split (no behaviour change): `app/toolbar.rs`, `app/viewport.rs`,
-`app/sketch_input.rs`, `app/dialogs.rs`, `app/panels.rs`. Build + test +
-commit the split on its own before the feature.
+New logic goes in a testable module (`sketch.rs`, `offset.rs`, …). `app/*.rs` only wires input → those functions → drawing; pick the file by topic and add `pub(crate)` to methods other files call.
