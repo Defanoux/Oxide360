@@ -20,6 +20,7 @@ pub enum Icon {
     Construction,
     Trim,
     Extend,
+    Measure,
     Offset,
     Slot,
     Mirror,
@@ -187,6 +188,14 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             line((0.62, 0.15), (0.62, 0.85), thin);
             line((0.74, 0.3), (0.86, 0.7), Stroke::new(thin.width * 1.2, ink));
             line((0.86, 0.3), (0.74, 0.7), Stroke::new(thin.width * 1.2, ink));
+        }
+        Icon::Measure => {
+            // Two points with a dimension line and end ticks.
+            line((0.15, 0.7), (0.85, 0.3), Stroke::new(thin.width * 1.2, orange));
+            line((0.1, 0.55), (0.2, 0.85), thin);
+            line((0.8, 0.15), (0.9, 0.45), thin);
+            dot(0.15, 0.7, ink);
+            dot(0.85, 0.3, ink);
         }
         Icon::Extend => {
             // A short line running on (dashed) to a wall.

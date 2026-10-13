@@ -46,6 +46,36 @@ pub fn remove_keeping_marker(timeline: &mut Vec<Feature>, marker: Option<usize>,
     marker.and_then(|m| if m > pos { Some(m - 1) } else { Some(m) }).filter(|&m| m < timeline.len())
 }
 
+/// After feature `gone` was deleted: drop it from `list` and renumber the later
+/// features of its kind.
+pub fn forget_feature(list: &mut Vec<Feature>, gone: Feature) {
+    list.retain(|f| *f != gone);
+    for f in list.iter_mut() {
+        *f = match (*f, gone) {
+            (Feature::Sketch(i), Feature::Sketch(k)) if i > k => Feature::Sketch(i - 1),
+            (Feature::Extrude(i), Feature::Extrude(k)) if i > k => Feature::Extrude(i - 1),
+            (Feature::Edge(i), Feature::Edge(k)) if i > k => Feature::Edge(i - 1),
+            (Feature::Revolve(i), Feature::Revolve(k)) if i > k => Feature::Revolve(i - 1),
+            (Feature::Copy(i), Feature::Copy(k)) if i > k => Feature::Copy(i - 1),
+            (Feature::Axis(i), Feature::Axis(k)) if i > k => Feature::Axis(i - 1),
+            (Feature::Plane(i), Feature::Plane(k)) if i > k => Feature::Plane(i - 1),
+            (f, _) => f,
+        };
+    }
+}
+
+/// The timeline with the feature at `at` swapped with its neighbour (`later`
+/// moves it one place on, else one back). None at either end.
+pub fn swapped(timeline: &[Feature], at: usize, later: bool) -> Option<Vec<Feature>> {
+    let to = if later { at.checked_add(1)? } else { at.checked_sub(1)? };
+    if at >= timeline.len() || to >= timeline.len() {
+        return None;
+    }
+    let mut t = timeline.to_vec();
+    t.swap(at, to);
+    Some(t)
+}
+
 /// Which body, however the list of bodies shifts: the feature that created
 /// it (a NewBody extrude or revolve) and which piece of that it is (a cut can
 /// split a body, and the pieces are numbered). Join, Cut and fillets keep a
@@ -107,6 +137,9 @@ pub struct Document {
     #[serde(default)]
     pub planes: Vec<PlaneFeature>,
     pub timeline: Vec<Feature>,
+    /// Features switched off: still in the timeline, but not built.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suppressed: Vec<Feature>,
     /// What's shown and where Home goes. Saved with the file, but never part
     /// of undo or the "unsaved changes" test (see `ViewState`'s equality).
     #[serde(default)]
@@ -326,6 +359,9 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             _ => return Err(format!("timeline entry {f:?} is invalid or repeated")),
         }
     }
+    if doc.suppressed.iter().any(|f| !doc.timeline.contains(f)) {
+        return Err("a suppressed feature isn't in the timeline".into());
+    }
     if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).any(|s| !s) {
         return Err("timeline is missing a feature".into());
     }
@@ -443,6 +479,7 @@ mod tests {
             axes: Vec::new(),
             planes: Vec::new(),
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],
+            suppressed: Vec::new(),
             view: ViewState::default(),
             body_names: Vec::new(),
             body_colors: Vec::new(),
@@ -751,5 +788,32 @@ mod tests {
         // Removing the last rolled-back feature leaves nothing to roll back past.
         let mut t = vec![Sketch(0), Extrude(0)];
         assert_eq!(remove_keeping_marker(&mut t, Some(1), Extrude(0)), None);
+    }
+
+    #[test]
+    fn forgetting_a_feature_renumbers_the_later_ones_of_its_kind() {
+        let mut list = vec![Feature::Extrude(0), Feature::Extrude(1), Feature::Extrude(2), Feature::Sketch(2)];
+        forget_feature(&mut list, Feature::Extrude(1));
+        assert_eq!(list, vec![Feature::Extrude(0), Feature::Extrude(1), Feature::Sketch(2)]);
+    }
+
+    #[test]
+    fn swapping_moves_one_place_and_stops_at_the_ends() {
+        let t = [Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)];
+        assert_eq!(swapped(&t, 1, true), Some(vec![Feature::Sketch(0), Feature::Edge(0), Feature::Extrude(0)]));
+        assert_eq!(swapped(&t, 1, false), Some(vec![Feature::Extrude(0), Feature::Sketch(0), Feature::Edge(0)]));
+        assert_eq!(swapped(&t, 0, false), None);
+        assert_eq!(swapped(&t, 2, true), None);
+    }
+
+    #[test]
+    fn suppressed_features_are_saved_and_old_files_have_none() {
+        let mut doc = sample();
+        doc.suppressed.push(Feature::Edge(0));
+        let json = serde_json::to_string(&doc).unwrap();
+        let back: Document = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.suppressed, vec![Feature::Edge(0)]);
+        let plain = serde_json::to_string(&sample()).unwrap();
+        assert!(!plain.contains("suppressed"));
     }
 }

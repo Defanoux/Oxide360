@@ -43,6 +43,14 @@ pub struct Body {
     pub flat_faces: Vec<(DVec3, DVec3)>,
 }
 
+impl Model {
+    /// How many features failed to build.
+    pub fn error_count(&self) -> usize {
+        let n = |v: &Vec<Option<String>>| v.iter().flatten().count();
+        n(&self.sketch_errors) + n(&self.errors) + n(&self.edge_errors) + n(&self.revolve_errors) + n(&self.copy_errors) + n(&self.axis_errors) + n(&self.plane_errors)
+    }
+}
+
 /// The evaluated design.
 pub struct Model {
     pub bodies: Vec<Body>,
@@ -1597,6 +1605,30 @@ mod tests {
         let mut tl = timeline(1, 1);
         tl.push(Feature::Edge(0));
         build4(&[a], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[f], &tl)
+    }
+
+    #[test]
+    fn a_fillet_moved_before_its_body_is_an_error_the_app_can_refuse() {
+        let mut a = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut a, 0.0, 0.0, 50.0, 30.0);
+        let f = EdgeFeature { name: "F".into(), kind: EdgeKind::Fillet, size: 2.0, size2: None, edges: vec![picked_top_front(10.0)] };
+        let mut tl = timeline(1, 1);
+        tl.push(Feature::Edge(0));
+        let ok = build4(&[a.clone()], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[f.clone()], &tl);
+        assert_eq!(ok.error_count(), 0);
+        let swapped = crate::doc::swapped(&tl, 2, false).unwrap();
+        let bad = build4(&[a], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[f], &swapped);
+        assert!(bad.error_count() > 0);
+    }
+
+    #[test]
+    fn suppressing_a_feature_leaves_it_unbuilt() {
+        let mut a = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut a, 0.0, 0.0, 50.0, 30.0);
+        let mut tl = timeline(1, 1);
+        tl.retain(|f| *f != Feature::Extrude(0));
+        let m = build4(&[a], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[], &tl);
+        assert!(m.bodies.is_empty());
     }
 
     #[test]
