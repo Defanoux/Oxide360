@@ -522,6 +522,9 @@ struct OpenCad {
     measure: Option<measure::Measure>,      // the Measure tool while it's on
     measure_unit: measure::Unit,            // the Measure window's unit
     measure_unit2: Option<measure::Unit>,   // and the one shown under it, if any
+    measure_precision: usize,               // decimal places in the Measure window
+    measure_snap: bool,                     // Measure shows / snaps to snap points
+    measure_xyz: bool,                      // Measure shows the X/Y/Z delta between corners
     sketch_cursor: Option<DVec2>,           // where the cursor last was on the sketch plane
     timeline_drag: Option<usize>,           // the timeline feature being dragged to a new place
     timeline_height: f32,                   // last frame's, so floating windows sit above it
@@ -638,6 +641,9 @@ impl Default for OpenCad {
             measure: None,
             measure_unit: measure::Unit::Mm,
             measure_unit2: None,
+            measure_precision: 3,
+            measure_snap: true,
+            measure_xyz: true,
             sketch_cursor: None,
             timeline_drag: None,
             timeline_height: 40.0,
@@ -842,6 +848,9 @@ fn main() -> eframe::Result {
                 app.camera.projection = s.projection;
                 app.measure_unit = s.measure_unit;
                 app.measure_unit2 = s.measure_unit2;
+                app.measure_precision = s.measure_precision.min(6);
+                app.measure_snap = s.measure_snap;
+                app.measure_xyz = s.measure_xyz;
                 app.settings_saved = s;
             }
             // Set up the GPU renderer once and keep it with egui's renderer.

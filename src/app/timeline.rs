@@ -3,27 +3,30 @@
 use crate::*;
 
 impl OpenCad {
-    /// Measure tool: what's under the cursor (corner, then edge, then face),
-    /// clicks pick it, Esc leaves.
+    /// Measure tool: what's under the cursor, clicks pick it, Esc leaves.
+    /// Ctrl locks to snap points, Shift hides them (as in Fusion).
     pub(crate) fn measure_input(&mut self, view: &View, hover_px: Option<Vec2>, response: &egui::Response, aspect: f32, min: Vec2, size: Vec2) {
         if self.measure.is_none() {
             return;
         }
-        let hover = hover_px.and_then(|px| {
-            let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
-            self.measure_pick_at(view, px, &ray)
-        });
-        let model = self.caches[Slot::Committed as usize].as_ref().map(|c| &c.model);
-        let Some(m) = self.measure.as_mut() else { return };
-        m.keep_valid(|p| {
-            let b = |i: usize| model?.bodies.get(i);
-            match *p {
-                measure::Pick::Point(q) => Some(measure::Geom::Point(q)),
-                measure::Pick::Edge { body, edge } => b(body)?.edges.get(edge).map(|e| e.geom.clone()),
-                measure::Pick::Face { body, face } => b(body)?.faces.get(face).cloned(),
+        let mods = response.ctx.input(|i| i.modifiers);
+        let (hover, snaps) = match hover_px {
+            Some(px) => {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                self.measure_pick_at(view, px, &ray, size.y, mods.ctrl, mods.shift)
             }
+            None => (None, Vec::new()),
+        };
+        // Picks whose geometry changed in a rebuild go.
+        let now: Vec<Option<measure::Geom>> = self.measure.as_ref().map_or(Vec::new(), |m| m.picks.iter().map(|p| self.measure_resolve(p.pick).map(|q| q.geom)).collect());
+        let Some(m) = self.measure.as_mut() else { return };
+        let mut k = 0;
+        m.keep_valid(|_| {
+            k += 1;
+            now.get(k - 1).cloned().flatten()
         });
         m.hover = hover;
+        m.snaps = snaps;
         if response.clicked() {
             if let Some(p) = m.hover.clone() {
                 m.click(p);
@@ -34,11 +37,109 @@ impl OpenCad {
         }
     }
 
-    /// The corner, edge or face of a visible body under the cursor, in that
-    /// order of preference (like Fusion: corners and edges win near them).
-    fn measure_pick_at(&self, view: &View, px: Vec2, ray: &Ray) -> Option<measure::Picked> {
+    /// Where a sketch's plane is, exactly: (origin, x axis, y axis).
+    fn sketch_frame(&self, i: usize) -> (DVec3, DVec3, DVec3) {
+        let sk = &self.sketches[i];
+        let now = self.caches[Slot::Committed as usize]
+            .as_ref()
+            .filter(|c| c.sketches.get(i).is_some_and(|s| s.same_shape(sk)))
+            .and_then(|c| c.model.sketch_frames.get(i).copied().flatten());
+        match (sk.face, now) {
+            (Some(_), Some(f)) => (f.origin, f.u, f.v),
+            _ => {
+                let p = sk.sketch_plane();
+                (p.origin.as_dvec3(), p.u.as_dvec3(), p.v.as_dvec3())
+            }
+        }
+    }
+
+    /// A pick as it is in the current model and sketches.
+    pub(crate) fn measure_resolve(&self, pick: measure::Pick) -> Option<measure::Picked> {
         use measure::{Geom, Pick, Picked, Samples};
         let model = &self.caches[Slot::Committed as usize].as_ref()?.model;
+        let segments = |pts: &[DVec3]| Samples { segments: pts.windows(2).map(|w| [w[0], w[1]]).collect(), ..Default::default() };
+        let (geom, samples) = match pick {
+            Pick::Point(p) => return Some(Picked::point(p)),
+            Pick::Edge { body, edge } => {
+                let e = model.bodies.get(body)?.edges.get(edge)?;
+                let pts: Vec<DVec3> = e.points.iter().map(|p| p.as_dvec3()).collect();
+                (e.geom.clone(), segments(&pts))
+            }
+            Pick::Face { body, face } => {
+                let b = model.bodies.get(body)?;
+                (b.faces.get(face)?.clone(), Samples { triangles: b.face_tris(face).collect(), ..Default::default() })
+            }
+            Pick::Body { body } => {
+                let b = model.bodies.get(body)?;
+                let triangles = b.mesh.tris.iter().map(|t| t.map(|i| b.mesh.positions[i as usize].as_dvec3())).collect();
+                (Geom::Body, Samples { triangles, ..Default::default() })
+            }
+            Pick::SketchPoint { sketch, point } => {
+                let (o, u, v) = self.sketch_frame(sketch);
+                let q = *self.sketches.get(sketch)?.points.get(point)?;
+                return Some(Picked { pick, ..Picked::point(o + u * q.x + v * q.y) });
+            }
+            Pick::SketchCurve { sketch, entity } => {
+                let sk = self.sketches.get(sketch)?;
+                let (o, u, v) = self.sketch_frame(sketch);
+                let w = |p: DVec2| o + u * p.x + v * p.y;
+                let round = |c: DVec2, r: f64, a0: f64, sweep: f64| {
+                    let pts: Vec<DVec3> = (0..=96).map(|k| w(c + DVec2::from_angle(a0 + sweep * k as f64 / 96.0) * r)).collect();
+                    (Geom::Circle { center: w(c), normal: u.cross(v), radius: r, sweep }, segments(&pts))
+                };
+                match *sk.entities.get(entity)? {
+                    sketch::Entity::Line { a, b } => {
+                        let (a, b) = (w(sk.points[a]), w(sk.points[b]));
+                        (Geom::Line { a, b }, segments(&[a, b]))
+                    }
+                    sketch::Entity::Circle { center, radius } => round(sk.points[center], radius, 0.0, std::f64::consts::TAU),
+                    sketch::Entity::Arc { .. } => {
+                        let (c, r, a0, sweep) = sk.arc_geometry(entity)?;
+                        round(c, r, a0, sweep)
+                    }
+                    sketch::Entity::Point { p } => return Some(Picked { pick, ..Picked::point(w(sk.points[p])) }),
+                }
+            }
+            Pick::Profile { sketch, region } => {
+                let sk = self.sketches.get(sketch)?;
+                let r = find_regions(sk).into_iter().nth(region)?;
+                let (o, u, v) = self.sketch_frame(sketch);
+                let w = |p: DVec2| o + u * p.x + v * p.y;
+                let (verts, tris) = r.triangulate();
+                let triangles = tris.iter().map(|t| t.map(|i| w(verts[i]))).collect();
+                let geom = Geom::Plane { normal: u.cross(v), area: r.exact_area(), loop_length: r.loop_length(), center: r.round_center().map(w) };
+                (geom, Samples { triangles, ..Default::default() })
+            }
+        };
+        Some(Picked { pick, geom, samples })
+    }
+
+    /// Snap points on a pick (beyond its corners): an edge's middle, a circle's centre.
+    fn measure_snaps(p: &measure::Picked) -> Vec<DVec3> {
+        use measure::Geom;
+        let mut out = Vec::new();
+        if let (Some(first), Some(last)) = (p.samples.segments.first(), p.samples.segments.last()) {
+            let pts: Vec<DVec3> = std::iter::once(first[0]).chain(p.samples.segments.iter().map(|s| s[1])).collect();
+            if first[0].distance(last[1]) > 1e-9 {
+                out.extend([first[0], last[1]]);
+            }
+            out.extend(measure::middle(&pts));
+        }
+        match p.geom {
+            Geom::Circle { center, .. } => out.push(center),
+            Geom::Plane { center: Some(c), .. } => out.push(c),
+            _ => {}
+        }
+        out
+    }
+
+    /// What's under the cursor for Measure, and the snap points to show on it.
+    /// With the Face/Edge/Vertex filter: corners and sketch points first, then
+    /// edges and sketch curves, then faces and sketch profiles (nearest).
+    fn measure_pick_at(&self, view: &View, px: Vec2, ray: &Ray, height_px: f32, ctrl: bool, shift: bool) -> (Option<measure::Picked>, Vec<DVec3>) {
+        use measure::{Filter, Pick, Picked};
+        let Some(m) = self.measure.as_ref() else { return (None, Vec::new()) };
+        let Some(model) = self.caches[Slot::Committed as usize].as_ref().map(|c| &c.model) else { return (None, Vec::new()) };
         let visible = |b: &&kernel::Body| !self.hidden_bodies.contains(&b.id);
         let hit = model
             .bodies
@@ -47,11 +148,14 @@ impl OpenCad {
             .filter(|(_, b)| visible(b))
             .filter_map(|(i, b)| model::ray_hit_tri(&b.mesh, ray.origin, ray.dir).map(|(t, tri)| (t, tri, i)))
             .min_by(|x, y| x.0.total_cmp(&y.0));
+        if m.filter == Filter::Body {
+            return (hit.and_then(|(_, _, body)| self.measure_resolve(Pick::Body { body })), Vec::new());
+        }
         // Things behind a body can't be picked.
         let slack = self.camera.distance * 0.01;
         let in_front = |p: Vec3| hit.is_none_or(|(h, ..)| (p - ray.origin).dot(ray.dir) <= h + slack);
-        let mut corner: Option<(f32, Vec3)> = None;
-        let mut edge: Option<(f32, usize, usize)> = None;
+        let mut point: Option<(f32, Pick)> = None;
+        let mut curve: Option<(f32, Pick)> = None;
         for (bi, body) in model.bodies.iter().enumerate().filter(|(_, b)| visible(b)) {
             for (ei, e) in body.edges.iter().enumerate() {
                 let (Some(&first), Some(&last)) = (e.points.first(), e.points.last()) else { continue };
@@ -60,105 +164,181 @@ impl OpenCad {
                     for p in [first, last] {
                         let Some(q) = view.project(p) else { continue };
                         let d = px.distance(q);
-                        if d <= SNAP_PX && corner.is_none_or(|(bd, _)| d < bd) && in_front(p) {
-                            corner = Some((d, p));
+                        if d <= SNAP_PX && point.is_none_or(|(bd, _)| d < bd) && in_front(p) {
+                            point = Some((d, Pick::Point(p.as_dvec3())));
                         }
                     }
                 }
                 for w in e.points.windows(2) {
                     let (Some(a), Some(b)) = (view.project(w[0]), view.project(w[1])) else { continue };
-                    let ab = b - a;
-                    let t = if ab.length_squared() > 0.0 { ((px - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
-                    let d = px.distance(a + ab * t);
-                    if d <= SNAP_PX && edge.is_none_or(|(bd, ..)| d < bd) && in_front(w[0].lerp(w[1], t)) {
-                        edge = Some((d, bi, ei));
+                    let d = dist_to_segment_px(px, a, b);
+                    let t = ((px - a).dot(b - a) / (b - a).length_squared().max(1e-12)).clamp(0.0, 1.0);
+                    if d <= SNAP_PX && curve.is_none_or(|(bd, _)| d < bd) && in_front(w[0].lerp(w[1], t)) {
+                        curve = Some((d, Pick::Edge { body: bi, edge: ei }));
                     }
                 }
             }
         }
-        if let Some((_, p)) = corner {
-            let p = p.as_dvec3();
-            return Some(Picked { pick: Pick::Point(p), geom: Geom::Point(p), samples: Samples { points: vec![p], ..Default::default() } });
+        // Visible sketches: their points and curves (drawn over the bodies, so
+        // they win), and their profiles.
+        let mut profile: Option<(f32, Pick)> = None;
+        for s in (0..self.sketches.len()).filter(|&s| self.sketch_visible(s)) {
+            let sk = &self.sketches[s];
+            let Some((t, p)) = self.plane_of(s).intersect_t(ray) else { continue };
+            let world = self.plane_of(s).to_world(p);
+            if !in_front(world) {
+                continue;
+            }
+            let mm_per_px = (t * 2.0 * (camera::FOV_Y * 0.5).tan() / height_px.max(1.0)) as f64;
+            match sk.hit(p, SNAP_PX as f64 * mm_per_px) {
+                Some(Sel::Point(q)) if q != Sketch::ORIGIN => point = Some((0.0, Pick::SketchPoint { sketch: s, point: q })),
+                Some(Sel::Entity(e)) => curve = Some((0.0, Pick::SketchCurve { sketch: s, entity: e })),
+                _ => {}
+            }
+            // The smallest profile under the cursor on the nearest sketch.
+            let regions = find_regions(sk);
+            if let Some((ri, _)) = regions.iter().enumerate().filter(|(_, r)| r.contains(p)).min_by(|a, b| a.1.area().total_cmp(&b.1.area())) {
+                if profile.is_none_or(|(bt, _)| t < bt) {
+                    profile = Some((t, Pick::Profile { sketch: s, region: ri }));
+                }
+            }
         }
-        if let Some((_, bi, ei)) = edge {
-            let e = &model.bodies[bi].edges[ei];
-            let pts: Vec<DVec3> = e.points.iter().map(|p| p.as_dvec3()).collect();
-            let segments = pts.windows(2).map(|w| [w[0], w[1]]).collect();
-            return Some(Picked { pick: Pick::Edge { body: bi, edge: ei }, geom: e.geom.clone(), samples: Samples { segments, ..Default::default() } });
+        let surface = match (profile, hit) {
+            (Some((tp, pick)), Some((th, ..))) if tp <= th + slack => Some(pick),
+            (Some((_, pick)), None) => Some(pick),
+            (_, Some((_, tri, bi))) => model.bodies[bi].tri_face.get(tri).map(|&f| Pick::Face { body: bi, face: f as usize }),
+            (None, None) => None,
+        };
+        let Some(pick) = point.or(curve).map(|(_, p)| p).or(surface) else { return (None, Vec::new()) };
+        let Some(picked) = self.measure_resolve(pick) else { return (None, Vec::new()) };
+        // Snap points on it (Shift hides them, Ctrl locks to the nearest).
+        if shift || !self.measure_snap {
+            return (Some(picked), Vec::new());
         }
-        let (_, tri, bi) = hit?;
-        let body = &model.bodies[bi];
-        let face = *body.tri_face.get(tri)? as usize;
-        let geom = body.faces.get(face)?.clone();
-        Some(Picked { pick: Pick::Face { body: bi, face }, geom, samples: Samples { triangles: body.face_tris(face).collect(), ..Default::default() } })
+        let snaps = Self::measure_snaps(&picked);
+        let near = snaps
+            .iter()
+            .filter_map(|&q| view.project(q.as_vec3()).map(|s| (px.distance(s), q)))
+            .filter(|&(d, _)| ctrl || d <= SNAP_PX)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        match near {
+            Some((_, q)) if !matches!(picked.pick, Pick::Point(_) | Pick::SketchPoint { .. }) => (Some(Picked::point(q)), snaps),
+            _ => (Some(picked), snaps),
+        }
     }
 
-    /// The floating Measure window: what's picked, the readings (click one to
-    /// copy it), and the units.
+    /// The floating Measure window, laid out like Fusion's: selection filter,
+    /// Selection 1 / 2 with their readings, Results, then the settings. Click
+    /// a value to copy it; hover one to see it in the view.
     pub(crate) fn measure_panel(&mut self, ui: &mut egui::Ui) {
-        let Some(m) = self.measure.as_ref() else { return };
-        let (unit, unit2) = (self.measure_unit, self.measure_unit2);
+        use measure::{Filter, Section, Show};
+        let Some(m) = self.measure.as_mut() else { return };
+        let (unit, unit2, decimals) = (self.measure_unit, self.measure_unit2, self.measure_precision);
         ui.strong("Measure");
-        let name = |p: &measure::Picked| match &p.geom {
-            measure::Geom::Point(_) => "Corner",
-            measure::Geom::Line { .. } => "Edge (straight)",
-            measure::Geom::Circle { sweep, .. } if *sweep >= std::f64::consts::TAU - 1e-9 => "Edge (circle)",
-            measure::Geom::Circle { .. } => "Edge (arc)",
-            measure::Geom::Curve { .. } => "Edge (curve)",
-            measure::Geom::Plane { .. } => "Face (flat)",
-            measure::Geom::Cylinder { .. } => "Face (cylinder)",
-            measure::Geom::Surface { .. } => "Face",
-        };
-        for (i, label) in ["Selection 1", "Selection 2"].into_iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!("{label}:"));
-                match m.picks.get(i) {
-                    Some(p) => ui.label(egui::RichText::new(name(p)).color(COL_SELECT)),
-                    None => ui.weak("click a corner, edge or face"),
-                };
-            });
-        }
+        ui.horizontal(|ui| {
+            ui.label("Selection filter");
+            let before = m.filter;
+            egui::ComboBox::from_id_salt("measure_filter")
+                .selected_text(match m.filter {
+                    Filter::FaceEdgeVertex => "Face/Edge/Vertex",
+                    Filter::Body => "Body",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut m.filter, Filter::FaceEdgeVertex, "Face/Edge/Vertex");
+                    ui.selectable_value(&mut m.filter, Filter::Body, "Body");
+                });
+            if m.filter != before {
+                m.clear();
+            }
+        });
         let mut copy: Option<String> = None;
-        if !m.rows.is_empty() {
-            ui.separator();
-            egui::Grid::new("measure_rows").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
-                for r in &m.rows {
-                    ui.label(r.label);
-                    ui.vertical(|ui| {
-                        let main = unit.format(r.value, r.kind, false);
+        let mut hovered: Option<Show> = None;
+        let xyz = self.measure_xyz;
+        let mut rows_ui = |ui: &mut egui::Ui, section: Section| {
+            egui::Grid::new(("measure_rows", format!("{section:?}"))).num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
+                for r in m.rows.iter().filter(|r| r.section == section && (xyz || !matches!(r.show, Show::Delta(_)))) {
+                    let l = ui.label(r.label);
+                    let cell = ui.vertical(|ui| {
+                        let main = unit.format(r.value, r.kind, false, decimals);
                         if ui.add(egui::Button::new(egui::RichText::new(&main).monospace()).frame(false)).on_hover_text("Click to copy").clicked() {
                             copy = Some(main);
                         }
                         if let Some(u2) = unit2 {
-                            let other = u2.format(r.value, r.kind, true);
+                            let other = u2.format(r.value, r.kind, true, decimals);
                             if ui.add(egui::Button::new(egui::RichText::new(&other).monospace().small().weak()).frame(false)).on_hover_text("Click to copy").clicked() {
                                 copy = Some(other);
                             }
                         }
                     });
+                    if l.hovered() || cell.response.contains_pointer() {
+                        hovered = Some(r.show);
+                    }
                     ui.end_row();
                 }
             });
+        };
+        for i in 0..2 {
+            ui.separator();
+            match m.picks.get(i) {
+                Some(p) => {
+                    let name = p.name();
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Selection {}:", i + 1));
+                        ui.label(egui::RichText::new(name).color(COL_SELECT));
+                    });
+                    rows_ui(ui, Section::Selection(i));
+                }
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Selection {}:", i + 1));
+                        ui.weak(if i == 0 || !m.picks.is_empty() { "click something" } else { "" });
+                    });
+                }
+            }
+        }
+        if m.rows.iter().any(|r| r.section == Section::Results) {
+            ui.separator();
+            ui.label("Results");
+            rows_ui(ui, Section::Results);
+        }
+        m.hover_row = hovered;
+        if !m.rows.is_empty() {
             ui.weak("Click a value to copy it");
         }
         ui.separator();
-        ui.horizontal(|ui| {
+        egui::Grid::new("measure_settings").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+            ui.label("Precision");
+            egui::ComboBox::from_id_salt("measure_precision").selected_text(format!("{:.*}", decimals, 0.0)).show_ui(ui, |ui| {
+                for d in 0..=6 {
+                    ui.selectable_value(&mut self.measure_precision, d, format!("{:.*}", d, 0.0));
+                }
+            });
+            ui.end_row();
             ui.label("Units");
-            egui::ComboBox::from_id_salt("measure_unit").width(56.0).selected_text(self.measure_unit.name()).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("measure_unit").selected_text(self.measure_unit.name()).show_ui(ui, |ui| {
                 for u in measure::Unit::ALL {
                     ui.selectable_value(&mut self.measure_unit, u, u.name());
                 }
             });
-            ui.label("2nd");
-            egui::ComboBox::from_id_salt("measure_unit2").width(56.0).selected_text(self.measure_unit2.map_or("none", |u| u.name())).show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.measure_unit2, None, "none");
+            ui.end_row();
+            ui.label("Secondary units");
+            egui::ComboBox::from_id_salt("measure_unit2").selected_text(self.measure_unit2.map_or("None", |u| u.name())).show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.measure_unit2, None, "None");
                 for u in measure::Unit::ALL {
                     ui.selectable_value(&mut self.measure_unit2, Some(u), u.name());
                 }
             });
+            ui.end_row();
+            ui.label("XYZ Delta");
+            egui::ComboBox::from_id_salt("measure_xyz").selected_text(if self.measure_xyz { "Global" } else { "None" }).show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.measure_xyz, false, "None");
+                ui.selectable_value(&mut self.measure_xyz, true, "Global");
+            });
+            ui.end_row();
         });
+        ui.checkbox(&mut self.measure_snap, "Show snap points").on_hover_text("Edge middles and circle centres. Hold Ctrl to lock to them, Shift to hide them");
         ui.horizontal(|ui| {
-            if ui.button("Clear").clicked() {
+            if ui.button("Clear selection").clicked() {
                 if let Some(m) = self.measure.as_mut() {
                     m.clear();
                 }

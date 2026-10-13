@@ -145,6 +145,9 @@ impl OpenCad {
             projection: self.camera.projection,
             measure_unit: self.measure_unit,
             measure_unit2: self.measure_unit2,
+            measure_precision: self.measure_precision,
+            measure_snap: self.measure_snap,
+            measure_xyz: self.measure_xyz,
         };
         if now != self.settings_saved {
             if let Some(path) = settings::default_path() {

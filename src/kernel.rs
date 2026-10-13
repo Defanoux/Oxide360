@@ -772,9 +772,12 @@ fn face_geoms(shape: &Shape) -> Vec<Geom> {
                 .filter(|(i, (p, _))| !edges.iter().enumerate().any(|(j, (q, _))| j != *i && matches!((mid(p), mid(q)), (Some(a), Some(b)) if a.distance(b) < tol)))
                 .map(|(_, e)| e)
                 .collect();
+            let loop_length = boundary.iter().map(|(_, g)| geom_length(g)).sum();
             if let Some((normal, _, _)) = face_flat(&face, tol) {
-                let perimeter = boundary.iter().map(|(_, g)| geom_length(g)).sum();
-                return Geom::Plane { normal, area, perimeter };
+                // Round (a disc, or a ring round one centre): its centre too.
+                let centres: Vec<DVec3> = boundary.iter().filter_map(|(_, g)| if let Geom::Circle { center, .. } = g { Some(*center) } else { None }).collect();
+                let center = (!centres.is_empty() && centres.len() == boundary.len() && centres.iter().all(|c| c.distance(centres[0]) < tol * 10.0)).then(|| centres[0]);
+                return Geom::Plane { normal, area, loop_length, center };
             }
             // A cylinder: its circular edges share an axis and a radius, and the
             // surface faces straight out from that axis along them.
@@ -794,10 +797,10 @@ fn face_geoms(shape: &Shape) -> Vec<Geom> {
                     })
                 });
                 if same && square_on {
-                    return Geom::Cylinder { axis, radius, area };
+                    return Geom::Cylinder { axis, radius, area, loop_length };
                 }
             }
-            Geom::Surface { area }
+            Geom::Surface { area, loop_length }
         })
         .collect()
 }
@@ -1881,7 +1884,8 @@ mod tests {
         assert_eq!(b.faces.len(), 6);
         assert_eq!(b.tri_face.len(), b.mesh.tris.len());
         let mut areas: Vec<f64> = b.faces.iter().map(|g| match *g {
-            Geom::Plane { area, perimeter, normal } => {
+            Geom::Plane { area, loop_length: perimeter, normal, center } => {
+                assert_eq!(center, None);
                 // Every triangle tagged with this face lies flat in it, facing the same way.
                 let i = b.faces.iter().position(|h| h == g).unwrap();
                 assert!(b.face_tris(i).count() >= 2);
@@ -1912,14 +1916,20 @@ mod tests {
         let m = build4(&[sk], &[ex(0, vec![0], 20.0, Operation::NewBody)], &[], &timeline(1, 1));
         let b = &m.bodies[0];
         let side = b.faces.iter().find_map(|g| match *g {
-            Geom::Cylinder { axis, radius, area } => Some((axis, radius, area)),
+            Geom::Cylinder { axis, radius, area, loop_length } => {
+                // Two rims (the seam isn't boundary).
+                assert!((loop_length - 40.0 * PI).abs() < 1e-9, "{loop_length}");
+                Some((axis, radius, area))
+            }
             _ => None,
         });
         let (axis, radius, area) = side.expect("the side is a cylinder");
         assert!(axis.z.abs() > 1.0 - 1e-9 && (radius - 10.0).abs() < 1e-9 && (area - 400.0 * PI).abs() < 1e-6, "{radius} {area}");
         let caps: Vec<f64> = b.faces.iter().filter_map(|g| match *g {
-            Geom::Plane { area, perimeter, .. } => {
-                assert!((perimeter - 20.0 * PI).abs() < 1e-9);
+            Geom::Plane { area, loop_length, center, .. } => {
+                assert!((loop_length - 20.0 * PI).abs() < 1e-9);
+                let c = center.expect("a round face has a centre");
+                assert!(c.x.abs() < 1e-9 && c.y.abs() < 1e-9);
                 Some(area)
             }
             _ => None,
@@ -1928,9 +1938,9 @@ mod tests {
         let rims: Vec<&BodyEdge> = b.edges.iter().filter(|e| matches!(e.geom, Geom::Circle { .. })).collect();
         assert_eq!(rims.len(), 2);
         for e in rims {
-            let rows = measure::describe(&e.geom);
+            let rows = measure::describe(&e.geom, 0);
             assert_eq!(rows[0].label, "Circumference");
-            assert!((rows[0].value - 20.0 * PI).abs() < 1e-9 && (rows[1].value - 20.0).abs() < 1e-9 && (rows[2].value - 10.0).abs() < 1e-9);
+            assert!((rows[0].value - 20.0 * PI).abs() < 1e-9 && (rows[1].value - 10.0).abs() < 1e-9 && (rows[2].value - 20.0).abs() < 1e-9);
         }
         // Rim to rim: 20 apart, parallel.
         let pick = |i: usize| {
@@ -1945,7 +1955,7 @@ mod tests {
         let (rows, _) = measure::compare(&pick(0), &pick(1));
         assert!((rows[0].value - 20.0).abs() < 1e-6, "{rows:?}");
         assert_eq!(rows.iter().find(|r| r.label == "Angle").unwrap().value, 0.0);
-        assert!(rows.iter().any(|r| r.label == "Centre distance" && (r.value - 20.0).abs() < 1e-9));
+        assert!(rows.iter().any(|r| r.label == "Center distance" && (r.value - 20.0).abs() < 1e-9));
     }
 
     #[test]
@@ -1955,6 +1965,7 @@ mod tests {
         let b = &m.bodies[0];
         let r = b.faces.iter().find_map(|g| match *g {
             Geom::Cylinder { radius, area, .. } => Some((radius, area)),
+            // (The other faces of the plate stay flat.)
             _ => None,
         });
         // A quarter cylinder of r = 2 along 50 mm: area πr/2 · 50.

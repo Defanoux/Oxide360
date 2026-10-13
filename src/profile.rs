@@ -121,6 +121,66 @@ impl Region {
         triangulate(&self.loops())
     }
 
+    /// The true area: the polygon's, plus (or minus) the sliver between each
+    /// arc and the short chords it is drawn with.
+    pub fn exact_area(&self) -> f64 {
+        self.loops_with_curves()
+            .into_iter()
+            .map(|(pts, curves)| {
+                let n = pts.len();
+                signed_area(pts)
+                    + (0..n)
+                        .map(|i| match curves.get(i) {
+                            Some(&Curve::Arc { center, radius }) => {
+                                let (a, b) = (pts[i], pts[(i + 1) % n]);
+                                let half = (a.distance(b) / (2.0 * radius)).min(1.0).asin();
+                                let sliver = radius * radius * 0.5 * (2.0 * half - (2.0 * half).sin());
+                                // The arc bulges away from its centre: outward when the
+                                // centre is on the left of the walk (the loop's inside).
+                                if (b - a).perp_dot(center - a) > 0.0 { sliver } else { -sliver }
+                            }
+                            _ => 0.0,
+                        })
+                        .sum::<f64>()
+            })
+            .sum()
+    }
+
+    /// The true length of all its loops (arcs measured round, not along chords).
+    pub fn loop_length(&self) -> f64 {
+        self.loops_with_curves()
+            .into_iter()
+            .map(|(pts, curves)| {
+                let n = pts.len();
+                (0..n)
+                    .map(|i| {
+                        let (a, b) = (pts[i], pts[(i + 1) % n]);
+                        match curves.get(i) {
+                            Some(&Curve::Arc { radius, .. }) => 2.0 * radius * (a.distance(b) / (2.0 * radius)).min(1.0).asin(),
+                            _ => a.distance(b),
+                        }
+                    })
+                    .sum::<f64>()
+            })
+            .sum()
+    }
+
+    /// The centre of a round profile (a disc, or a ring between circles round
+    /// one centre), else None.
+    pub fn round_center(&self) -> Option<DVec2> {
+        let mut centre: Option<DVec2> = None;
+        for (_, curves) in self.loops_with_curves() {
+            for c in curves {
+                let Curve::Arc { center, .. } = *c else { return None };
+                if centre.is_some_and(|k| k.distance(center) > TOL) {
+                    return None;
+                }
+                centre = Some(center);
+            }
+        }
+        centre
+    }
+
     /// Area-weighted centre, guaranteed to be computed from inside triangles.
     pub fn centroid(&self) -> DVec2 {
         let (v, tris) = self.triangulate();
@@ -585,6 +645,28 @@ mod tests {
         assert!((r[0].area() - 1500.0).abs() < 1e-9);
         assert!(r[0].contains(DVec2::new(10.0, 10.0)));
         assert!(!r[0].contains(DVec2::new(60.0, 10.0)));
+    }
+
+    #[test]
+    fn exact_area_and_loop_length_count_arcs_as_arcs() {
+        // A 50 × 30 plate with a radius-8 hole: 1500 − 64π, loops 160 + 16π.
+        let mut sk = new();
+        rect(&mut sk, 0.0, 0.0, 50.0, 30.0);
+        circle(&mut sk, 25.0, 15.0, 8.0);
+        let r = find_regions(&sk);
+        let ring = r.iter().find(|r| r.holes.len() == 1).unwrap();
+        let disc = r.iter().find(|r| r.holes.is_empty()).unwrap();
+        assert!((ring.exact_area() - (1500.0 - 64.0 * std::f64::consts::PI)).abs() < 1e-9, "{}", ring.exact_area());
+        assert!((ring.loop_length() - (160.0 + 16.0 * std::f64::consts::PI)).abs() < 1e-9);
+        assert!((disc.exact_area() - 64.0 * std::f64::consts::PI).abs() < 1e-9);
+        assert!((disc.loop_length() - 16.0 * std::f64::consts::PI).abs() < 1e-9);
+        assert!(disc.round_center().unwrap().distance(DVec2::new(25.0, 15.0)) < 1e-9);
+        assert_eq!(ring.round_center(), None);
+        // Straight-sided: the same as the polygon.
+        let mut sq = new();
+        rect(&mut sq, 0.0, 0.0, 4.0, 3.0);
+        let r = &find_regions(&sq)[0];
+        assert!((r.exact_area() - 12.0).abs() < 1e-12 && (r.loop_length() - 14.0).abs() < 1e-12);
     }
 
     #[test]

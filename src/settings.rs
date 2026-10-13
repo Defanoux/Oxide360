@@ -20,11 +20,15 @@ pub struct Settings {
     /// The Measure window's unit, and a second one shown under it.
     pub measure_unit: Unit,
     pub measure_unit2: Option<Unit>,
+    /// Measure: decimal places, snap points on, X/Y/Z delta shown.
+    pub measure_precision: usize,
+    pub measure_snap: bool,
+    pub measure_xyz: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { touchpad: false, cube_axes: true, projection: Projection::default(), measure_unit: Unit::Mm, measure_unit2: None }
+        Self { touchpad: false, cube_axes: true, projection: Projection::default(), measure_unit: Unit::Mm, measure_unit2: None, measure_precision: 3, measure_snap: true, measure_xyz: true }
     }
 }
 
@@ -68,7 +72,7 @@ mod tests {
         let d = dir("roundtrip");
         let path = d.join("nested").join("settings.json");
         assert_eq!(load(&path), Settings::default(), "nothing saved yet");
-        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic, measure_unit: Unit::In, measure_unit2: Some(Unit::Mm) };
+        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic, measure_unit: Unit::In, measure_unit2: Some(Unit::Mm), measure_precision: 5, measure_snap: false, measure_xyz: false };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);
         let _ = std::fs::remove_dir_all(&d);
