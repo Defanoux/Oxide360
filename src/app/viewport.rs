@@ -1502,7 +1502,7 @@ impl OpenCad {
         }
         if self.face_pick {
             painter.text(
-                rect.center_top() + egui::vec2(0.0, 14.0),
+                rect.center_top() + egui::vec2(0.0, 40.0),
                 egui::Align2::CENTER_TOP,
                 if self.plane_pick { "Click an origin plane or a flat face to measure the offset from   (Esc to cancel)" } else { "Click a plane or a flat face to sketch on   (Esc to cancel)" },
                 egui::FontId::proportional(15.0),
@@ -1554,7 +1554,7 @@ impl OpenCad {
                 view.line(a, b, Stroke::new(4.0, COL_HOVER));
             }
             painter.text(
-                rect.center_top() + egui::vec2(0.0, 14.0),
+                rect.center_top() + egui::vec2(0.0, 40.0),
                 egui::Align2::CENTER_TOP,
                 "Click an axis to turn the pattern about   (Esc to cancel)",
                 egui::FontId::proportional(15.0),
@@ -1574,7 +1574,7 @@ impl OpenCad {
                 }
             }
             painter.text(
-                rect.center_top() + egui::vec2(0.0, 14.0),
+                rect.center_top() + egui::vec2(0.0, 40.0),
                 egui::Align2::CENTER_TOP,
                 "Click a straight edge to put an axis along it   (Esc to cancel)",
                 egui::FontId::proportional(15.0),
@@ -1755,9 +1755,9 @@ impl OpenCad {
                 }
             }
             painter.text(
-                rect.left_top() + egui::vec2(12.0, 12.0),
-                egui::Align2::LEFT_TOP,
-                "Measure: click one or two things   (Ctrl: lock to snap points, Shift: hide them, Esc: leave)",
+                rect.center_top() + egui::vec2(0.0, 40.0),
+                egui::Align2::CENTER_TOP,
+                "Click one or two things   (Ctrl: lock to snap points, Shift: hide them, Esc: leave)",
                 egui::FontId::proportional(13.0),
                 COL_PREVIEW,
             );
@@ -2358,17 +2358,35 @@ impl OpenCad {
 
         // Sketch status, top left (Fusion has no constraint list; constraints
         // are picked on the canvas by their glyphs).
-        if let Some(i) = self.active {
-            let (text, col) = match self.dof {
-                Some(0) => ("Fully constrained".to_string(), Color32::from_rgb(120, 220, 120)),
-                Some(n) => (format!("{n} degree{} of freedom left", if n == 1 { "" } else { "s" }), COL_UNDER),
-                None => ("Not solvable".to_string(), COL_FIXED),
-            };
-            let at = rect.left_top() + egui::vec2(12.0, 10.0);
-            painter.text(at, egui::Align2::LEFT_TOP, self.sketches[i].name.as_str(), egui::FontId::proportional(15.0), Color32::from_gray(220));
-            painter.text(at + egui::vec2(0.0, 20.0), egui::Align2::LEFT_TOP, text, egui::FontId::proportional(13.0), col);
-            if let Some(msg) = &self.message {
-                painter.text(at + egui::vec2(0.0, 38.0), egui::Align2::LEFT_TOP, msg.as_str(), egui::FontId::proportional(13.0), COL_FIXED);
+        // Top centre: the sketch (name, how constrained) and the tool in use.
+        {
+            let mut parts: Vec<(String, Color32)> = Vec::new();
+            if let Some(i) = self.active {
+                parts.push((self.sketches[i].name.clone(), Color32::from_gray(225)));
+                parts.push(match self.dof {
+                    Some(0) => ("fully constrained".to_string(), Color32::from_rgb(120, 220, 120)),
+                    Some(n) => (format!("{n} degree{} of freedom left", if n == 1 { "" } else { "s" }), COL_UNDER),
+                    None => ("not solvable".to_string(), COL_FIXED),
+                });
+            }
+            if let Some(tool) = self.tool_name() {
+                parts.push((format!("Tool: {tool}"), COL_PREVIEW));
+            }
+            if !parts.is_empty() {
+                let mut job = egui::text::LayoutJob::default();
+                for (k, (t, c)) in parts.iter().enumerate() {
+                    if k > 0 {
+                        job.append("   ·   ", 0.0, egui::TextFormat::simple(egui::FontId::proportional(14.0), Color32::from_gray(120)));
+                    }
+                    job.append(t, 0.0, egui::TextFormat::simple(egui::FontId::proportional(14.0), *c));
+                }
+                let galley = painter.layout_job(job);
+                let at = rect.center_top() + egui::vec2(-galley.size().x / 2.0, 8.0);
+                painter.rect_filled(egui::Rect::from_min_size(at, galley.size()).expand(6.0), 6.0, Color32::from_rgba_unmultiplied(28, 28, 28, 210));
+                painter.galley(at, galley, Color32::WHITE);
+            }
+            if let (Some(msg), Some(_)) = (&self.message, self.active) {
+                painter.text(rect.center_top() + egui::vec2(0.0, 58.0), egui::Align2::CENTER_TOP, msg.as_str(), egui::FontId::proportional(13.0), COL_FIXED);
             }
         }
 

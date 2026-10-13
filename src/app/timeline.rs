@@ -310,7 +310,7 @@ impl OpenCad {
         egui::Grid::new("measure_settings").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
             ui.label("Precision");
             egui::ComboBox::from_id_salt("measure_precision").selected_text(format!("{:.*}", decimals, 0.0)).show_ui(ui, |ui| {
-                for d in 0..=6 {
+                for d in 0..=8 {
                     ui.selectable_value(&mut self.measure_precision, d, format!("{:.*}", d, 0.0));
                 }
             });

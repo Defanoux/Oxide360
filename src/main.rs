@@ -122,6 +122,39 @@ fn apply_edit(
 
 /// A size box's text: "5", or "2, 5" with a second distance.
 impl OpenCad {
+    /// The tool in use, for the top of the view (None when just looking).
+    fn tool_name(&self) -> Option<String> {
+        if self.measure.is_some() {
+            return Some("Measure".into());
+        }
+        if self.active.is_some() {
+            return Some(match self.editor.tool {
+                Tool::Constrain(label) => label.to_string(),
+                t => t.name().to_string(),
+            });
+        }
+        Some(
+            if self.dialog.is_some() {
+                "Extrude"
+            } else if self.revolve_dialog.is_some() {
+                "Revolve"
+            } else if let Some(d) = &self.edge_dialog {
+                d.kind.name()
+            } else if let Some(d) = &self.copy_dialog {
+                d.mode.title()
+            } else if self.plane_dialog.is_some() || self.plane_pick {
+                "Offset Plane"
+            } else if self.face_pick {
+                "Create Sketch — click a plane or face"
+            } else if self.axis_pick {
+                "Construction Axis — click a straight edge"
+            } else {
+                return None;
+            }
+            .to_string(),
+        )
+    }
+
     /// The unit sketch `i`'s dimension `ci` is shown and typed in: the one
     /// it was typed in, else the design's.
     fn dim_unit(&self, i: usize, ci: usize) -> units::Unit {
@@ -904,7 +937,7 @@ fn main() -> eframe::Result {
                 app.camera.projection = s.projection;
                 app.measure_unit = s.measure_unit_own;
                 app.measure_unit2 = s.measure_unit2;
-                app.measure_precision = s.measure_precision.min(6);
+                app.measure_precision = s.measure_precision.min(8);
                 app.measure_snap = s.measure_snap;
                 app.measure_xyz = s.measure_xyz;
                 // A fresh design starts in the default units (and isn't "changed" by that).
