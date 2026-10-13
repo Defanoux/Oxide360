@@ -2,6 +2,16 @@
 
 use crate::*;
 
+/// One row of the floating browser: its own small dark box, so the model
+/// shows between the rows (as in Fusion).
+fn browser_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
+    egui::Frame::new()
+        .fill(Color32::from_rgba_unmultiplied(30, 30, 30, 215))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(5, 1))
+        .show(ui, |ui| ui.horizontal(add).inner)
+}
+
 impl OpenCad {
     /// The ribbon: quick-access icons (file, save, undo, redo), then tool
     /// groups with their names underneath, like Fusion's toolbar.
@@ -352,21 +362,20 @@ impl OpenCad {
     }
 
     pub(crate) fn browser(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        browser_row(ui, |ui| {
             ui.strong("BROWSER");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("«").on_hover_text("Fold the browser away (more room to work)").clicked() {
-                    self.browser_open = false;
-                }
-            });
+            if ui.small_button("«").on_hover_text("Fold the browser away").clicked() {
+                self.browser_open = false;
+            }
         });
-        ui.separator();
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(ui.ctx().content_rect().height() * 0.7).show(ui, |ui| {
             // The design itself (a single part for now; assemblies come later).
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), egui::Id::new("browser_root"), true)
                 .show_header(ui, |ui| {
-                    icons::small(ui, Icon::Part);
-                    ui.strong(self.file_name()).on_hover_text("This design (one part)");
+                    browser_row(ui, |ui| {
+                        icons::small(ui, Icon::Part);
+                        ui.strong(self.file_name()).on_hover_text("This design (one part)");
+                    });
                 })
                 .body(|ui| {
                     self.browser_settings(ui);
@@ -387,11 +396,13 @@ impl OpenCad {
         let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), egui::Id::new(id), false);
         state
             .show_header(ui, |ui| {
-                if let Some(shown) = eye {
-                    eye_clicked = icons::eye(ui, shown, if shown { "Hide everything in it" } else { "Show everything in it" }).clicked();
-                }
-                icons::small(ui, icon);
-                ui.label(name);
+                browser_row(ui, |ui| {
+                    if let Some(shown) = eye {
+                        eye_clicked = icons::eye(ui, shown, if shown { "Hide everything in it" } else { "Show everything in it" }).clicked();
+                    }
+                    icons::small(ui, icon);
+                    ui.label(name);
+                });
             })
             .body(|ui| body(self, ui));
         eye_clicked
@@ -400,7 +411,7 @@ impl OpenCad {
     /// Document Settings: the design's units (saved with it).
     fn browser_settings(&mut self, ui: &mut egui::Ui) {
         self.folder(ui, "folder_settings", Icon::Gear, "Document Settings", None, |app, ui| {
-            ui.horizontal(|ui| {
+            browser_row(ui, |ui| {
                 ui.label("Units");
                 egui::ComboBox::from_id_salt("design_units").selected_text(app.units.name()).show_ui(ui, |ui| {
                     for u in units::Unit::ALL {
@@ -422,7 +433,7 @@ impl OpenCad {
         let clicked = self.folder(ui, "origin_folder", Icon::Folder, "Origin", Some(shown), |app, ui| {
             for op in OriginPlane::ALL {
                 let k = op as usize;
-                ui.horizontal(|ui| {
+                browser_row(ui, |ui| {
                     if icons::eye(ui, app.origin_shown.planes[k], "Show or hide").clicked() {
                         app.origin_shown.planes[k] = !app.origin_shown.planes[k];
                     }
@@ -431,7 +442,7 @@ impl OpenCad {
                 });
             }
             for (k, name) in ["X axis", "Y axis", "Z axis"].into_iter().enumerate() {
-                ui.horizontal(|ui| {
+                browser_row(ui, |ui| {
                     if icons::eye(ui, app.origin_shown.axes[k], "Show or hide").clicked() {
                         app.origin_shown.axes[k] = !app.origin_shown.axes[k];
                     }
@@ -460,7 +471,7 @@ impl OpenCad {
         let any = (0..self.axes.len()).any(|k| !self.axis_hidden.contains(&k)) || (0..self.planes.len()).any(|k| !self.plane_hidden.contains(&k));
         let clicked = self.folder(ui, "folder_construction", Icon::Folder, "Construction", Some(any), |app, ui| {
             for k in 0..app.planes.len() {
-                ui.horizontal(|ui| {
+                browser_row(ui, |ui| {
                     let shown = !app.plane_hidden.contains(&k);
                     if icons::eye(ui, shown, "Show or hide this plane").clicked() {
                         if shown {
@@ -474,7 +485,7 @@ impl OpenCad {
                 });
             }
             for k in 0..app.axes.len() {
-                ui.horizontal(|ui| {
+                browser_row(ui, |ui| {
                     let shown = !app.axis_hidden.contains(&k);
                     if icons::eye(ui, shown, "Show or hide this axis").clicked() {
                         if shown {
@@ -528,7 +539,7 @@ impl OpenCad {
         let (mut remove, mut delete_maker): (Option<Vec<BodyId>>, Option<Feature>) = (None, None);
         self.selected_bodies.retain(|id| self.body_ids.contains(id));
         for id in self.body_ids.clone() {
-            ui.horizontal(|ui| {
+            browser_row(ui, |ui| {
                 let shown = !self.hidden_bodies.contains(&id);
                 if icons::eye(ui, shown, "Show or hide this body").clicked() {
                     if shown {
@@ -650,7 +661,7 @@ impl OpenCad {
     fn sketch_rows(&mut self, ui: &mut egui::Ui) {
         let (mut edit, mut delete, mut toggle) = (None, None, None);
         for (i, s) in self.sketches.iter().enumerate() {
-            ui.horizontal(|ui| {
+            browser_row(ui, |ui| {
                 let shown = self.sketch_visible(i);
                 if icons::eye(ui, shown, "Show or hide this sketch").clicked() {
                     toggle = Some((i, !shown));

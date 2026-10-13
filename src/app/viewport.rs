@@ -5,6 +5,7 @@ use crate::*;
 impl OpenCad {
     pub(crate) fn viewport(&mut self, ui: &mut egui::Ui) {
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+        self.view_rect = rect;
         let sketching = self.active.is_some();
 
         // --- view cube: sits on top of the viewport, so it gets clicks first ---

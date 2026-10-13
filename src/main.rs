@@ -543,7 +543,8 @@ struct OpenCad {
     copy_errors: Vec<Option<String>>,
     removes: Vec<model::RemoveFeature>,     // Remove features (bodies taken out)
     units: units::Unit,                     // the design's units (shown and typed in)
-    browser_open: bool,                     // the browser is shown (else folded to a strip)
+    browser_open: bool,                     // the browser is shown (else folded to a button)
+    view_rect: egui::Rect,                  // the 3D view's area last frame (the browser floats in it)
     default_units: units::Unit,             // units new designs start in (settings)
     remove_errors: Vec<Option<String>>,
     selected_bodies: Vec<BodyId>,           // bodies selected in the browser
@@ -672,6 +673,7 @@ impl Default for OpenCad {
             removes: Vec::new(),
             units: units::Unit::Mm,
             browser_open: true,
+            view_rect: egui::Rect::NOTHING,
             default_units: units::Unit::Mm,
             remove_errors: Vec::new(),
             selected_bodies: Vec::new(),
@@ -834,16 +836,7 @@ impl eframe::App for OpenCad {
                 ui.ctx().request_repaint();
             }
         });
-        if self.browser_open {
-            egui::Panel::left("browser").resizable(true).default_size(220.0).show(ui, |ui| self.browser(ui));
-        } else {
-            // Folded away: a thin strip with the button to bring it back.
-            egui::Panel::left("browser_folded").resizable(false).exact_size(26.0).show(ui, |ui| {
-                if ui.small_button("»").on_hover_text("Show the browser").clicked() {
-                    self.browser_open = true;
-                }
-            });
-        }
+
         // Tool dialogs float over the view's right side, like Fusion's.
         // Bottom right, above the timeline, so they cover no controls.
         let lift = self.timeline_height + 12.0;
@@ -891,6 +884,20 @@ impl eframe::App for OpenCad {
         }
         self.timeline_height = egui::Panel::bottom("timeline").show(ui, |ui| self.timeline_bar(ui)).response.rect.height();
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui));
+        // The browser floats over the view's top left (no panel of its own).
+        if self.view_rect.is_positive() {
+            egui::Area::new(egui::Id::new("browser_area"))
+                .order(egui::Order::Middle)
+                .fixed_pos(self.view_rect.left_top() + egui::vec2(8.0, 8.0))
+                .show(&ctx, |ui| {
+                    ui.set_max_width(260.0);
+                    if self.browser_open {
+                        self.browser(ui);
+                    } else if ui.button("» Browser").on_hover_text("Show the browser").clicked() {
+                        self.browser_open = true;
+                    }
+                });
+        }
         self.float_editor(&ctx);
         self.copy_quantity_boxes(&ctx);
 
