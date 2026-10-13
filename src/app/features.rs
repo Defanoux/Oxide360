@@ -211,8 +211,10 @@ impl OpenCad {
             return Some(Handle::Line { line, value, target: HandleTarget::Extrude });
         }
         if let Some(d) = &self.edge_dialog {
-            let model = self.model(Slot::Base);
-            let inside = |p: DVec3| model.bodies.iter().any(|b| model::inside(&b.mesh, p.as_vec3()));
+            // (The model before the fillet may not be built yet this frame: then
+            // the arrow points the usual way until it is.)
+            let base = self.caches[Slot::Base as usize].as_ref().map(|c| &c.model);
+            let inside = |p: DVec3| base.is_some_and(|m| m.bodies.iter().any(|b| model::inside(&b.mesh, p.as_vec3())));
             let line = handles::edge_handle(d.edges.first()?, d.size, inside)?;
             return Some(Handle::Line { line, value: d.size, target: HandleTarget::EdgeSize });
         }
