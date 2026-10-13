@@ -23,6 +23,14 @@ impl Mode {
     }
 }
 
+/// Which selection field is waiting for clicks in the view (Fusion's
+/// blue "Select" boxes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Field {
+    Bodies,
+    Plane,
+}
+
 pub enum Action {
     None,
     Ok,
@@ -52,6 +60,8 @@ pub struct CopyDialog {
     pub picking_axis: bool,
     /// Mirror in a construction plane instead of `plane`.
     pub mirror_custom: Option<usize>,
+    /// The field clicks in the view go to.
+    pub picking: Option<Field>,
 }
 
 impl CopyDialog {
@@ -74,6 +84,7 @@ impl CopyDialog {
             radial: 0.0,
             picking_axis: false,
             mirror_custom: None,
+            picking: None,
         }
     }
 
@@ -128,17 +139,29 @@ impl CopyDialog {
         message: Option<&str>,
     ) -> Action {
         ui.heading(if self.editing.is_some() { format!("Edit {}", self.mode.title()) } else { self.mode.title().to_string() });
-        ui.label("Bodies");
-        for (id, name) in bodies {
-            let mut on = self.bodies.contains(id);
-            if ui.checkbox(&mut on, name.as_str()).changed() {
-                if on {
-                    self.bodies.push(*id);
-                } else {
-                    self.bodies.retain(|b| b != id);
-                }
+        // Selection fields: click one, then click in the view.
+        let field = |ui: &mut egui::Ui, active: bool, text: String| {
+            let text = if active { egui::RichText::new(text).strong() } else { egui::RichText::new(text) };
+            ui.add(egui::Button::selectable(active, text).min_size(egui::vec2(150.0, 0.0)))
+        };
+        ui.horizontal(|ui| {
+            ui.label("Bodies");
+            let names: Vec<&str> = bodies.iter().filter(|(id, _)| self.bodies.contains(id)).map(|(_, n)| n.as_str()).collect();
+            let picking = self.picking == Some(Field::Bodies);
+            let text = match (picking, names.len()) {
+                (true, 0) => "Click bodies in the view…".to_string(),
+                (_, 0) => "Click to select".to_string(),
+                (_, n) if n <= 2 => names.join(", "),
+                (_, n) => format!("{n} bodies"),
+            };
+            if field(ui, picking, text).on_hover_text("Click, then click bodies in the view (click again to drop one)").clicked() {
+                self.picking = if picking { None } else { Some(Field::Bodies) };
+                self.picking_axis = false;
             }
-        }
+            if !self.bodies.is_empty() && ui.small_button("×").on_hover_text("Clear").clicked() {
+                self.bodies.clear();
+            }
+        });
         if bodies.is_empty() {
             ui.weak("Make a body first.");
         }
@@ -159,20 +182,18 @@ impl CopyDialog {
         };
         match self.mode {
             Mode::Mirror => {
-                ui.horizontal_wrapped(|ui| {
+                ui.horizontal(|ui| {
                     ui.label("Mirror plane");
-                    for p in OriginPlane::ALL {
-                        if ui.selectable_label(self.mirror_custom.is_none() && self.plane == p, p.name()).clicked() {
-                            (self.plane, self.mirror_custom) = (p, None);
-                        }
-                    }
-                    for (k, name) in planes.iter().enumerate() {
-                        if ui.selectable_label(self.mirror_custom == Some(k), name.as_str()).clicked() {
-                            self.mirror_custom = Some(k);
-                        }
+                    let picking = self.picking == Some(Field::Plane);
+                    let name = match self.mirror_custom.and_then(|k| planes.get(k)) {
+                        Some(n) => n.clone(),
+                        None => format!("{} plane", self.plane.name()),
+                    };
+                    let text = if picking { "Click a plane in the view…".to_string() } else { name };
+                    if field(ui, picking, text).on_hover_text("Click, then click an origin or construction plane in the view").clicked() {
+                        self.picking = if picking { None } else { Some(Field::Plane) };
                     }
                 });
-                ui.weak("Or click a plane in the view; click bodies there to add or drop them.");
             }
             Mode::Rectangular => {
                 ui.strong("Direction 1");
@@ -202,6 +223,7 @@ impl CopyDialog {
                     let text = if self.picking_axis { "Click an axis…".to_string() } else { name };
                     if ui.selectable_label(self.picking_axis, text).clicked() {
                         self.picking_axis = !self.picking_axis;
+                        self.picking = None;
                     }
                 });
                 if self.picking_axis {

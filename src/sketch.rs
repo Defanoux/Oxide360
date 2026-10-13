@@ -296,6 +296,27 @@ impl Constraint {
         }
     }
 
+    /// Its full name (for the tooltip on a glyph).
+    pub fn name(&self) -> &'static str {
+        use Constraint::*;
+        match self {
+            Horizontal(_) => "Horizontal",
+            Vertical(_) => "Vertical",
+            Length(..) | Diameter(..) | Radius(..) | Angle(..) | Distance(..) => "Dimension",
+            Parallel(..) => "Parallel",
+            Perpendicular(..) => "Perpendicular",
+            Equal(..) => "Equal",
+            Tangent(..) => "Tangent",
+            Offset(..) => "Offset",
+            Coincident(..) | OnCircle(..) | OnLine(..) | OnAxis(..) => "Coincident",
+            Collinear(..) => "Collinear",
+            Concentric(..) => "Concentric",
+            Midpoint(..) => "Midpoint",
+            ArcEnds(..) => "",
+            Fix(_) => "Fix",
+        }
+    }
+
     /// Short label for the constraint list and viewport glyphs.
     pub fn glyph(&self) -> &'static str {
         use Constraint::*;

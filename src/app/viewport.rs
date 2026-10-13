@@ -279,41 +279,43 @@ impl OpenCad {
             }
         }
 
-        // --- Mirror: click a plane (origin or construction) and bodies in the view ---
+        // --- Mirror / patterns: the active selection field takes clicks in the
+        // view: bodies (click again to drop one), or a mirror plane ---
         self.copy_body_hover = None;
-        let mirroring = self.active.is_none() && !self.face_pick && self.copy_dialog.as_ref().is_some_and(|d| d.mode == CopyMode::Mirror && !d.picking_axis);
-        if mirroring {
+        let field = self.copy_dialog.as_ref().filter(|d| !d.picking_axis).and_then(|d| d.picking).filter(|_| self.active.is_none() && !self.face_pick);
+        if let Some(field) = field {
             self.ensure_model(Slot::Committed);
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
-                let psize = origin::size_for(self.camera.distance);
-                let origin_hit = origin::pick(&ray, psize, |_| true).map(|(op, t)| (Some(op), None, t));
-                let custom_hit = self.pick_cplane(&ray, psize).map(|(k, t)| (None, Some(k), t));
-                let plane = [origin_hit, custom_hit].into_iter().flatten().min_by(|a, b| a.2.total_cmp(&b.2));
-                let model = self.model(Slot::Committed);
-                let body = model
-                    .bodies
-                    .iter()
-                    .filter(|b| !self.hidden_bodies.contains(&b.id))
-                    .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir).map(|t| (b.id, t)))
-                    .min_by(|a, b| a.1.total_cmp(&b.1));
-                // The nearer wins; a plane lying in a face wins the tie.
-                match (plane, body) {
-                    (Some((op, k, tp)), b) if b.is_none_or(|(_, tb)| tp <= tb + origin::tie_tolerance(tb)) => {
-                        self.origin_hover = op;
-                        self.cplane_hover = k;
+                match field {
+                    copy_dialog::Field::Plane => {
+                        let psize = origin::size_for(self.camera.distance);
+                        let origin_hit = origin::pick(&ray, psize, |_| true).map(|(op, t)| (Some(op), None, t));
+                        let custom_hit = self.pick_cplane(&ray, psize).map(|(k, t)| (None, Some(k), t));
+                        if let Some((op, k, _)) = [origin_hit, custom_hit].into_iter().flatten().min_by(|a, b| a.2.total_cmp(&b.2)) {
+                            self.origin_hover = op;
+                            self.cplane_hover = k;
+                        }
                     }
-                    (_, Some((id, _))) => self.copy_body_hover = Some(id),
-                    _ => {}
+                    copy_dialog::Field::Bodies => {
+                        let model = self.model(Slot::Committed);
+                        self.copy_body_hover = model
+                            .bodies
+                            .iter()
+                            .filter(|b| !self.hidden_bodies.contains(&b.id))
+                            .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir).map(|t| (b.id, t)))
+                            .min_by(|a, b| a.1.total_cmp(&b.1))
+                            .map(|(id, _)| id);
+                    }
                 }
             }
             if response.clicked() {
                 let (op, k, body) = (self.origin_hover, self.cplane_hover, self.copy_body_hover);
                 if let Some(d) = self.copy_dialog.as_mut() {
                     if let Some(op) = op {
-                        (d.plane, d.mirror_custom) = (op, None);
+                        (d.plane, d.mirror_custom, d.picking) = (op, None, None);
                     } else if let Some(k) = k {
-                        d.mirror_custom = Some(k);
+                        (d.mirror_custom, d.picking) = (Some(k), None);
                     } else if let Some(id) = body {
                         if d.bodies.contains(&id) {
                             d.bodies.retain(|b| *b != id);
@@ -321,6 +323,11 @@ impl OpenCad {
                             d.bodies.push(id);
                         }
                     }
+                }
+            }
+            if esc && !typing {
+                if let Some(d) = self.copy_dialog.as_mut() {
+                    d.picking = None;
                 }
             }
         }
@@ -1994,12 +2001,20 @@ impl OpenCad {
             }
             // Glyphs are picked like dimension labels (but not dragged or edited).
             self.dim_labels.extend(glyph_rects.into_iter().map(|(ci, r)| (ci, r.expand(2.0), Vec::new())));
+            // Over a glyph: what it is and what clicking does.
+            if let (Some(ci), Some(px)) = (self.dim_hover, hover_px) {
+                if let Some(c) = sk.constraints.get(ci).filter(|c| c.value().is_none()) {
+                    let tip = format!("{} constraint — click to select (Shift adds), then Delete to remove it", c.name());
+                    view.label(px + Vec2::new(14.0, 18.0), egui::Align2::LEFT_TOP, tip, Color32::from_gray(225));
+                }
+            }
         }
 
         // --- right-click menu: a sketch's selection, or an origin plane ---
         response.context_menu(|ui| {
             if let Some(i) = self.active {
-                let has_sel = !self.editor.selection.is_empty() || !self.dim_selection.is_empty();
+                // (The sketch's axes can be picked for constraints but not deleted.)
+                let has_sel = self.editor.selection.iter().any(|s| !matches!(s, Sel::Axis(_))) || !self.dim_selection.is_empty();
                 if self.editor.tool == Tool::Select && has_sel {
                     if ui.button("Delete").clicked() {
                         self.delete_selection();

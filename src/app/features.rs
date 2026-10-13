@@ -444,14 +444,26 @@ impl OpenCad {
         self.cancel_edge_dialog();
         self.message = None;
         self.ensure_model(Slot::Committed);
-        let d = match editing.and_then(|k| self.copies.get(k)) {
+        let mut d = match editing.and_then(|k| self.copies.get(k)) {
             Some(c) => CopyDialog::from_feature(editing.unwrap_or(0), c),
             None => {
                 // With a single body there's nothing to choose.
                 let ids: Vec<BodyId> = self.model(Slot::Committed).bodies.iter().map(|b| b.id).collect();
-                CopyDialog::new(mode, if ids.len() == 1 { ids } else { Vec::new() })
+                let mut d = CopyDialog::new(mode, if ids.len() == 1 { ids } else { Vec::new() });
+                // Start with the field that needs a pick, as Fusion does.
+                d.picking = if d.bodies.is_empty() {
+                    Some(copy_dialog::Field::Bodies)
+                } else if mode == CopyMode::Mirror {
+                    Some(copy_dialog::Field::Plane)
+                } else {
+                    None
+                };
+                d
             }
         };
+        if editing.is_some() {
+            d.picking = None;
+        }
         self.copy_dialog = Some(d);
     }
 

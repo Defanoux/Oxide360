@@ -514,9 +514,13 @@ fn stiffness(sk: &Sketch, p: PointId) -> Vec<f64> {
         match *c {
             Constraint::Distance(a, b, _) | Constraint::Coincident(a, b) => join(a, b),
             Constraint::Collinear(l1, l2) => {
-                if let (Some(Entity::Line { a, b }), Some(Entity::Line { a: p, b: q })) = (sk.entities.get(l1), sk.entities.get(l2)) {
-                    join(*a, *p);
-                    join(*b, *q);
+                // Each end of the second line to the nearer end of the first, so
+                // a drag turns the shared line about the far end.
+                if let (Some(&Entity::Line { a, b }), Some(&Entity::Line { a: p, b: q })) = (sk.entities.get(l1), sk.entities.get(l2)) {
+                    for x in [p, q] {
+                        let near = if sk.points[x].distance(sk.points[a]) <= sk.points[x].distance(sk.points[b]) { a } else { b };
+                        join(near, x);
+                    }
                 }
             }
             Constraint::Concentric(c1, c2) => {

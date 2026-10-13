@@ -389,8 +389,6 @@ impl OpenCad {
             None => {
                 self.corner_size = size;
                 self.report(r);
-                // A modify tool is done once used (back to Select).
-                self.editor.set_tool(Tool::Select);
             }
         }
     }
@@ -608,8 +606,11 @@ impl OpenCad {
             Some(e) => self.notify(format!("Can't {what}: {e}")),
             None => {
                 self.report(r);
-                // Trim, Extend, Offset: done once used (back to Select).
-                self.editor.set_tool(Tool::Select);
+                // Trim and Extend stay on (used many times in a row, as in
+                // Fusion); Offset makes a whole new run, so it's done once used.
+                if what == "offset" {
+                    self.editor.set_tool(Tool::Select);
+                }
             }
         }
     }
