@@ -313,9 +313,9 @@ impl OpenCad {
                 let (op, k, body) = (self.origin_hover, self.cplane_hover, self.copy_body_hover);
                 if let Some(d) = self.copy_dialog.as_mut() {
                     if let Some(op) = op {
-                        (d.plane, d.mirror_custom, d.picking) = (op, None, None);
+                        (d.plane, d.mirror_custom, d.picking, d.plane_set) = (op, None, None, true);
                     } else if let Some(k) = k {
-                        (d.mirror_custom, d.picking) = (Some(k), None);
+                        (d.mirror_custom, d.picking, d.plane_set) = (Some(k), None, true);
                     } else if let Some(id) = body {
                         if d.bodies.contains(&id) {
                             d.bodies.retain(|b| *b != id);
@@ -1236,7 +1236,7 @@ impl OpenCad {
         let picking_axis = self.copy_dialog.as_ref().is_some_and(|d| d.picking_axis || d.mode == CopyMode::Mirror);
         let shown = if self.face_pick || picking_axis { origin::Shown::default() } else { self.origin_shown };
         let show_origin = !sketching && (shown.all || self.face_pick || picking_axis);
-        let mirror_plane = self.copy_dialog.as_ref().filter(|d| d.mode == CopyMode::Mirror).map(|d| (d.mirror_custom, d.plane));
+        let mirror_plane = self.copy_dialog.as_ref().filter(|d| d.mode == CopyMode::Mirror && d.plane_set).map(|d| (d.mirror_custom, d.plane));
         let mut grid_segments: Vec<(Vec3, Vec3, [f32; 4])> = if sketching {
             sketch::grid_lines(&dplane, centre, grid, GRID_HALF_LINES)
                 .into_iter()

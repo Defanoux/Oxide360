@@ -62,6 +62,8 @@ pub struct CopyDialog {
     pub mirror_custom: Option<usize>,
     /// The field clicks in the view go to.
     pub picking: Option<Field>,
+    /// A mirror plane has been chosen (a new Mirror starts with none).
+    pub plane_set: bool,
 }
 
 impl CopyDialog {
@@ -85,6 +87,7 @@ impl CopyDialog {
             picking_axis: false,
             mirror_custom: None,
             picking: None,
+            plane_set: false,
         }
     }
 
@@ -92,6 +95,7 @@ impl CopyDialog {
     pub fn from_feature(k: usize, f: &CopyFeature) -> Self {
         let mut d = CopyDialog::new(Mode::Mirror, f.bodies.clone());
         d.editing = Some(k);
+        d.plane_set = true;
         match f.kind {
             CopyKind::Mirror(p) => d.plane = p,
             CopyKind::MirrorPlane(k) => d.mirror_custom = Some(k),
@@ -123,9 +127,11 @@ impl CopyDialog {
         }
     }
 
-    /// The feature this dialog would make; None until a body is picked.
+    /// The feature this dialog would make; None until a body (and, for a
+    /// mirror, a plane) is picked.
     pub fn feature(&self, name: String) -> Option<CopyFeature> {
-        (!self.bodies.is_empty()).then(|| CopyFeature { name, bodies: self.bodies.clone(), kind: self.kind() })
+        let ready = !self.bodies.is_empty() && (self.mode != Mode::Mirror || self.plane_set);
+        ready.then(|| CopyFeature { name, bodies: self.bodies.clone(), kind: self.kind() })
     }
 
     /// The right-hand panel. `bodies` are the bodies that can be picked.
@@ -187,7 +193,8 @@ impl CopyDialog {
                     let picking = self.picking == Some(Field::Plane);
                     let name = match self.mirror_custom.and_then(|k| planes.get(k)) {
                         Some(n) => n.clone(),
-                        None => format!("{} plane", self.plane.name()),
+                        None if self.plane_set => format!("{} plane", self.plane.name()),
+                        None => "Click to select".to_string(),
                     };
                     let text = if picking { "Click a plane in the view…".to_string() } else { name };
                     if field(ui, picking, text).on_hover_text("Click, then click an origin or construction plane in the view").clicked() {
@@ -253,7 +260,8 @@ impl CopyDialog {
         ui.separator();
         let mut action = Action::None;
         ui.horizontal(|ui| {
-            if ui.add_enabled(!self.bodies.is_empty() && error.is_none(), egui::Button::new("OK")).clicked() {
+            let ready = !self.bodies.is_empty() && (self.mode != Mode::Mirror || self.plane_set);
+            if ui.add_enabled(ready && error.is_none(), egui::Button::new("OK")).clicked() {
                 action = Action::Ok;
             }
             if ui.button("Cancel").clicked() {
@@ -294,15 +302,19 @@ mod tests {
         let f = r.feature("R".into()).unwrap();
         assert_eq!(CopyDialog::from_feature(0, &f).feature("R".into()), Some(f));
 
-        // Mirror in a construction plane, and back.
+        // A new mirror has no plane until one is picked: no feature yet.
         let mut mp = CopyDialog::new(Mode::Mirror, vec![id(1)]);
-        mp.mirror_custom = Some(2);
+        assert!(mp.feature("M".into()).is_none(), "no mirror plane picked");
+        // Mirror in a construction plane, and back.
+        (mp.mirror_custom, mp.plane_set) = (Some(2), true);
         let f = mp.feature("M".into()).unwrap();
         assert_eq!(f.kind, CopyKind::MirrorPlane(2));
         assert_eq!(CopyDialog::from_feature(0, &f).feature("M".into()), Some(f));
 
-        let m = CopyDialog::new(Mode::Mirror, vec![id(1)]).feature("M".into()).unwrap();
-        assert_eq!(m.kind, CopyKind::Mirror(OriginPlane::YZ));
+        let mut o = CopyDialog::new(Mode::Mirror, vec![id(1)]);
+        (o.plane, o.plane_set) = (OriginPlane::XZ, true);
+        let m = o.feature("M".into()).unwrap();
+        assert_eq!(m.kind, CopyKind::Mirror(OriginPlane::XZ));
         assert_eq!(CopyDialog::from_feature(0, &m).mode, Mode::Mirror);
     }
 }
