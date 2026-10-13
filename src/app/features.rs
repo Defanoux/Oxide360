@@ -811,6 +811,13 @@ impl OpenCad {
         }
     }
 
+    /// Can a sketch's profiles be picked (and are they shown) while picking?
+    /// Only visible sketches — plus the one the dialog already uses, so
+    /// editing an extrude shows its own (hidden) sketch. Like Fusion.
+    pub(crate) fn pickable_sketch(&self, s: usize) -> bool {
+        self.sketch_visible(s) || self.profile_pick().is_some_and(|(sk, _)| sk == Some(s))
+    }
+
     pub(crate) fn profile_pick_mut(&mut self) -> Option<(&mut Option<usize>, &mut Vec<usize>)> {
         if self.dialog.is_some() {
             self.dialog.as_mut().map(|d| (&mut d.sketch, &mut d.profiles))

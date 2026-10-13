@@ -380,7 +380,7 @@ impl OpenCad {
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 let mut best: Option<(f32, f64)> = None;
-                for s in 0..self.sketches.len() {
+                for s in (0..self.sketches.len()).filter(|&s| self.pickable_sketch(s)) {
                     let Some((t, p)) = self.plane_of(s).intersect_t(&ray) else { continue };
                     for (ri, r) in regions.get(s).into_iter().flatten().enumerate() {
                         if !r.contains(p) {
@@ -1531,7 +1531,7 @@ impl OpenCad {
 
         // --- draw: profile fills ---
         if let Some((pick_sketch, pick_profiles)) = self.profile_pick() {
-            for s in 0..self.sketches.len() {
+            for s in (0..self.sketches.len()).filter(|&s| self.pickable_sketch(s)) {
                 let plane = self.plane_of(s);
                 for (ri, r) in regions.get(s).into_iter().flatten().enumerate() {
                     let selected = pick_sketch == Some(s) && pick_profiles.contains(&ri);
@@ -1615,12 +1615,12 @@ impl OpenCad {
         for (j, sk) in self.sketches.iter().enumerate() {
             let plane = self.plane_of(j);
             let active = self.active == Some(j);
-            // Like Fusion: a sketch used by a feature hides itself (shown again while
-            // editing it or picking profiles).
-            // Shown: while editing it, while picking extrude profiles, or when
-            // its visibility is on. Sketch lines draw over bodies, so a visible
-            // sketch shows through the part it's on.
-            if !active && self.profile_pick().is_none() && !self.sketch_visible(j) {
+            // Like Fusion: a sketch used by a feature hides itself. Shown: while
+            // editing it, when its visibility is on, or when it's the one an
+            // extrude being edited uses. Hidden sketches can't be picked from.
+            // Sketch lines draw over bodies, so a visible sketch shows through
+            // the part it's on.
+            if !active && !self.pickable_sketch(j) {
                 continue;
             }
             let base = if !active {
