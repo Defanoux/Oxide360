@@ -13,7 +13,16 @@ impl OpenCad {
             let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
             self.measure_pick_at(view, px, &ray)
         });
+        let model = self.caches[Slot::Committed as usize].as_ref().map(|c| &c.model);
         let Some(m) = self.measure.as_mut() else { return };
+        m.keep_valid(|p| {
+            let b = |i: usize| model?.bodies.get(i);
+            match *p {
+                measure::Pick::Point(q) => Some(measure::Geom::Point(q)),
+                measure::Pick::Edge { body, edge } => b(body)?.edges.get(edge).map(|e| e.geom.clone()),
+                measure::Pick::Face { body, face } => b(body)?.faces.get(face).cloned(),
+            }
+        });
         m.hover = hover;
         if response.clicked() {
             if let Some(p) = m.hover.clone() {

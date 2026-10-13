@@ -94,6 +94,16 @@ impl Measure {
         self.update();
     }
 
+    /// Drop picks that aren't there any more (the model was rebuilt): `now`
+    /// says what a pick is in the current model.
+    pub fn keep_valid(&mut self, now: impl Fn(&Pick) -> Option<Geom>) {
+        let before = self.picks.len();
+        self.picks.retain(|p| now(&p.pick).as_ref() == Some(&p.geom));
+        if self.picks.len() != before {
+            self.update();
+        }
+    }
+
     pub fn clear(&mut self) {
         self.picks.clear();
         self.update();
@@ -456,6 +466,16 @@ mod tests {
         // Clicking it again drops it.
         m.click(point(DVec3::ZERO));
         assert!(m.picks.is_empty() && m.rows.is_empty());
+    }
+
+    #[test]
+    fn picks_that_changed_are_dropped() {
+        let mut m = Measure::default();
+        m.click(square(0.0, 0));
+        m.click(square(5.0, 1));
+        m.keep_valid(|p| matches!(p, Pick::Face { face: 0, .. }).then(|| square(0.0, 0).geom));
+        assert_eq!(m.picks.len(), 1);
+        assert_eq!(m.rows[0].label, "Area");
     }
 
     #[test]
