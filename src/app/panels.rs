@@ -368,7 +368,9 @@ impl OpenCad {
                 self.browser_open = false;
             }
         });
-        egui::ScrollArea::vertical().max_height(ui.ctx().content_rect().height() * 0.7).show(ui, |ui| {
+        // As tall as the view allows; it only scrolls when there's more than that.
+        let room = (self.view_rect.height() - 60.0).max(120.0);
+        egui::ScrollArea::vertical().max_height(room).auto_shrink([true, true]).show(ui, |ui| {
             // The design itself (a single part for now; assemblies come later).
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), egui::Id::new("browser_root"), true)
                 .show_header(ui, |ui| {

@@ -1693,94 +1693,6 @@ impl OpenCad {
             }
         }
 
-        // --- draw: measure ---
-        if let Some(m) = &self.measure {
-            use measure::{Geom, Pick, Show};
-            let model = &self.model(Slot::Committed);
-            let show = |p: &measure::Picked, col: Color32, width: f32| match p.pick {
-                Pick::Point(_) | Pick::SketchPoint { .. } => {
-                    if let Geom::Point(q) = &p.geom {
-                        if let Some(px) = view.project(q.as_vec3()) {
-                            painter.circle_filled(to_pos(px), width + 2.0, col);
-                        }
-                    }
-                }
-                Pick::Edge { .. } | Pick::SketchCurve { .. } => {
-                    for s in &p.samples.segments {
-                        view.line(s[0].as_vec3(), s[1].as_vec3(), Stroke::new(width, col));
-                    }
-                }
-                Pick::Face { body, face } => {
-                    if let Some(b) = model.bodies.get(body) {
-                        view.fill_tris(b.face_tris(face).map(|t| t.map(|q| q.as_vec3())), col.gamma_multiply(0.35));
-                    }
-                }
-                Pick::Body { .. } | Pick::Profile { .. } => {
-                    view.fill_tris(p.samples.triangles.iter().map(|t| t.map(|q| q.as_vec3())), col.gamma_multiply(0.3));
-                }
-            };
-            let hot = m.hover_row;
-            for (i, p) in m.picks.iter().enumerate() {
-                let lit = matches!(hot, Some(Show::Pick(k)) if k == i) || hot == Some(Show::Angle);
-                show(p, if lit { COL_HOVER } else { COL_SELECT }, if lit { 5.0 } else { 3.5 });
-            }
-            if let Some(h) = m.hover.as_ref().filter(|h| !m.picks.iter().any(|p| p.pick == h.pick)) {
-                show(h, COL_HOVER, 3.5);
-            }
-            for q in &m.snaps {
-                if let Some(px) = view.project(q.as_vec3()) {
-                    painter.circle_stroke(to_pos(px), 4.0, Stroke::new(1.5, COL_SNAP));
-                }
-            }
-            // A circle's radius, diameter or centre, while its row is hovered.
-            if let Some(Show::Radius(i) | Show::Diameter(i) | Show::Centre(i)) = hot {
-                if let Some(Geom::Circle { center, normal, radius, .. }) = m.picks.get(i).map(|p| &p.geom) {
-                    let out = normal.any_orthonormal_vector() * *radius;
-                    let stroke = Stroke::new(2.5, COL_HOVER);
-                    match hot {
-                        Some(Show::Radius(_)) => view.line(center.as_vec3(), (*center + out).as_vec3(), stroke),
-                        Some(Show::Diameter(_)) => view.line((*center - out).as_vec3(), (*center + out).as_vec3(), stroke),
-                        _ => {}
-                    }
-                    if let Some(px) = view.project(center.as_vec3()) {
-                        painter.circle_filled(to_pos(px), 4.0, COL_HOVER);
-                    }
-                }
-                if let Some(Geom::Plane { center: Some(c), .. }) = m.picks.get(i).map(|p| &p.geom) {
-                    if let Some(px) = view.project(c.as_vec3()) {
-                        painter.circle_filled(to_pos(px), 4.0, COL_HOVER);
-                    }
-                }
-            }
-            if let Some((a, b)) = m.closest {
-                let lit = hot == Some(Show::Distance);
-                view.dashed(a.as_vec3(), b.as_vec3(), Stroke::new(if lit { 3.5 } else { 2.0 }, if lit { COL_HOVER } else { COL_PREVIEW }));
-                for q in [a, b] {
-                    if let Some(px) = view.project(q.as_vec3()) {
-                        painter.circle_filled(to_pos(px), 3.5, COL_PREVIEW);
-                    }
-                }
-            }
-            // X, Y and Z legs between two corners (XYZ Delta).
-            if let (true, [p, q]) = (self.measure_xyz, &m.picks[..]) {
-                if let (Geom::Point(a), Geom::Point(b)) = (&p.geom, &q.geom) {
-                    let corners = [*a, DVec3::new(b.x, a.y, a.z), DVec3::new(b.x, b.y, a.z), *b];
-                    for k in 0..3 {
-                        let lit = hot == Some(Show::Delta(k));
-                        let col = axis_color(Vec3::AXES[k]);
-                        view.line(corners[k].as_vec3(), corners[k + 1].as_vec3(), Stroke::new(if lit { 4.0 } else { 1.5 }, col));
-                    }
-                }
-            }
-            painter.text(
-                rect.center_top() + egui::vec2(0.0, 40.0),
-                egui::Align2::CENTER_TOP,
-                "Click one or two things   (Ctrl: lock to snap points, Shift: hide them, Esc: leave)",
-                egui::FontId::proportional(13.0),
-                COL_PREVIEW,
-            );
-        }
-
         // --- draw: sketches ---
         self.dim_labels.clear();
         for (j, sk) in self.sketches.iter().enumerate() {
@@ -2032,6 +1944,94 @@ impl OpenCad {
                     view.label(px + Vec2::new(14.0, 18.0), egui::Align2::LEFT_TOP, tip, Color32::from_gray(225));
                 }
             }
+        }
+
+        // --- draw: measure (over the sketches, so a picked sketch line shows) ---
+        if let Some(m) = &self.measure {
+            use measure::{Geom, Pick, Show};
+            let model = &self.model(Slot::Committed);
+            let show = |p: &measure::Picked, col: Color32, width: f32| match p.pick {
+                Pick::Point(_) | Pick::SketchPoint { .. } => {
+                    if let Geom::Point(q) = &p.geom {
+                        if let Some(px) = view.project(q.as_vec3()) {
+                            painter.circle_filled(to_pos(px), width + 2.0, col);
+                        }
+                    }
+                }
+                Pick::Edge { .. } | Pick::SketchCurve { .. } => {
+                    for s in &p.samples.segments {
+                        view.line(s[0].as_vec3(), s[1].as_vec3(), Stroke::new(width, col));
+                    }
+                }
+                Pick::Face { body, face } => {
+                    if let Some(b) = model.bodies.get(body) {
+                        view.fill_tris(b.face_tris(face).map(|t| t.map(|q| q.as_vec3())), col.gamma_multiply(0.35));
+                    }
+                }
+                Pick::Body { .. } | Pick::Profile { .. } => {
+                    view.fill_tris(p.samples.triangles.iter().map(|t| t.map(|q| q.as_vec3())), col.gamma_multiply(0.3));
+                }
+            };
+            let hot = m.hover_row;
+            for (i, p) in m.picks.iter().enumerate() {
+                let lit = matches!(hot, Some(Show::Pick(k)) if k == i) || hot == Some(Show::Angle);
+                show(p, if lit { COL_HOVER } else { COL_SELECT }, if lit { 5.0 } else { 3.5 });
+            }
+            if let Some(h) = m.hover.as_ref().filter(|h| !m.picks.iter().any(|p| p.pick == h.pick)) {
+                show(h, COL_HOVER, 3.5);
+            }
+            for q in &m.snaps {
+                if let Some(px) = view.project(q.as_vec3()) {
+                    painter.circle_stroke(to_pos(px), 4.0, Stroke::new(1.5, COL_SNAP));
+                }
+            }
+            // A circle's radius, diameter or centre, while its row is hovered.
+            if let Some(Show::Radius(i) | Show::Diameter(i) | Show::Centre(i)) = hot {
+                if let Some(Geom::Circle { center, normal, radius, .. }) = m.picks.get(i).map(|p| &p.geom) {
+                    let out = normal.any_orthonormal_vector() * *radius;
+                    let stroke = Stroke::new(2.5, COL_HOVER);
+                    match hot {
+                        Some(Show::Radius(_)) => view.line(center.as_vec3(), (*center + out).as_vec3(), stroke),
+                        Some(Show::Diameter(_)) => view.line((*center - out).as_vec3(), (*center + out).as_vec3(), stroke),
+                        _ => {}
+                    }
+                    if let Some(px) = view.project(center.as_vec3()) {
+                        painter.circle_filled(to_pos(px), 4.0, COL_HOVER);
+                    }
+                }
+                if let Some(Geom::Plane { center: Some(c), .. }) = m.picks.get(i).map(|p| &p.geom) {
+                    if let Some(px) = view.project(c.as_vec3()) {
+                        painter.circle_filled(to_pos(px), 4.0, COL_HOVER);
+                    }
+                }
+            }
+            if let Some((a, b)) = m.closest {
+                let lit = hot == Some(Show::Distance);
+                view.dashed(a.as_vec3(), b.as_vec3(), Stroke::new(if lit { 3.5 } else { 2.0 }, if lit { COL_HOVER } else { COL_PREVIEW }));
+                for q in [a, b] {
+                    if let Some(px) = view.project(q.as_vec3()) {
+                        painter.circle_filled(to_pos(px), 3.5, COL_PREVIEW);
+                    }
+                }
+            }
+            // X, Y and Z legs between two corners (XYZ Delta).
+            if let (true, [p, q]) = (self.measure_xyz, &m.picks[..]) {
+                if let (Geom::Point(a), Geom::Point(b)) = (&p.geom, &q.geom) {
+                    let corners = [*a, DVec3::new(b.x, a.y, a.z), DVec3::new(b.x, b.y, a.z), *b];
+                    for k in 0..3 {
+                        let lit = hot == Some(Show::Delta(k));
+                        let col = axis_color(Vec3::AXES[k]);
+                        view.line(corners[k].as_vec3(), corners[k + 1].as_vec3(), Stroke::new(if lit { 4.0 } else { 1.5 }, col));
+                    }
+                }
+            }
+            painter.text(
+                rect.center_top() + egui::vec2(0.0, 40.0),
+                egui::Align2::CENTER_TOP,
+                "Click one or two things   (Ctrl: lock to snap points, Shift: hide them, Esc: leave)",
+                egui::FontId::proportional(13.0),
+                COL_PREVIEW,
+            );
         }
 
         // --- right-click menu: a sketch's selection, or an origin plane ---

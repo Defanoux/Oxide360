@@ -1142,13 +1142,25 @@ impl Sketch {
     /// horizontally (within `tol`) with the middle of a line or the centre
     /// of a circle / arc. Returns `p` moved onto the line-up(s), and the
     /// points it lines up with: (straight above/below, straight beside).
+    ///
+    /// Only from inside: a line's middle counts when `p` is inside a closed
+    /// shape that line is part of, a centre when `p` is inside its circle.
     pub fn line_up(&self, p: DVec2, tol: f64) -> (DVec2, Option<DVec2>, Option<DVec2>) {
+        let around: Vec<crate::profile::Region> = crate::profile::find_regions(self).into_iter().filter(|r| r.contains(p)).collect();
+        let on_outline = |m: DVec2| {
+            around.iter().any(|r| {
+                r.loops().iter().any(|l| (0..l.len()).any(|k| dist_to_segment(m, l[k], l[(k + 1) % l.len()]) < 1e-6))
+            })
+        };
         let refs: Vec<DVec2> = self
             .entities
             .iter()
-            .filter_map(|e| match *e {
-                Entity::Line { a, b } => Some(self.points[a].midpoint(self.points[b])),
-                Entity::Circle { center, .. } | Entity::Arc { center, .. } => Some(self.points[center]),
+            .enumerate()
+            .filter(|&(e, _)| !self.is_construction(e))
+            .filter_map(|(e, ent)| match *ent {
+                Entity::Line { a, b } => Some(self.points[a].midpoint(self.points[b])).filter(|&m| on_outline(m)),
+                Entity::Circle { center, radius } => Some(self.points[center]).filter(|c| c.distance(p) < radius),
+                Entity::Arc { center, .. } => self.arc_geometry(e).and_then(|(_, r, _, _)| Some(self.points[center]).filter(|c| c.distance(p) < r)),
                 Entity::Point { .. } => None,
             })
             .filter(|r| r.distance(p) > tol) // not when already on it
@@ -3690,9 +3702,12 @@ mod trim_tests {
         assert_eq!(q, DVec2::new(20.0, 10.0));
         assert!(above.is_some_and(|r| r.x == 20.0) && beside.is_some_and(|r| r.y == 10.0));
         // Lined up one way only.
-        let (q, above, beside) = sk.line_up(DVec2::new(20.2, 30.0), 0.5);
-        assert_eq!((q, beside), (DVec2::new(20.0, 30.0), None));
+        let (q, above, beside) = sk.line_up(DVec2::new(20.2, 5.0), 0.5);
+        assert_eq!((q, beside), (DVec2::new(20.0, 5.0), None));
         assert!(above.is_some());
+        // Outside the rectangle: no lining up with its sides' middles.
+        assert_eq!(sk.line_up(DVec2::new(20.2, 30.0), 0.5), (DVec2::new(20.2, 30.0), None, None));
+        assert_eq!(sk.line_up(DVec2::new(40.2, 50.0), 0.5), (DVec2::new(40.2, 50.0), None, None));
         // Nowhere near: unchanged.
         assert_eq!(sk.line_up(DVec2::new(13.0, 4.0), 0.5), (DVec2::new(13.0, 4.0), None, None));
     }
