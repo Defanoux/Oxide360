@@ -1925,17 +1925,10 @@ impl OpenCad {
                         .map(|turn| Handle::Turn { turn, value: d.angle, target: HandleTarget::SketchAngle })
                         .into_iter()
                         .collect();
-                    // The distance arrow stands just outside the selection, along the way out from the centre.
-                    if let Some(out) = d.out_dir() {
-                        let reach = d.reach();
-                        let from = plane.to_world(d.centroid() + out * reach).as_dvec3();
-                        let dir = (plane.u * out.x as f32 + plane.v * out.y as f32).as_dvec3();
-                        v.push(Handle::Line {
-                            line: LineHandle { origin: from, dir },
-                            value: d.radial,
-                            target: HandleTarget::SketchRadial,
-                        });
-                    }
+                    // The distance arrow runs from the selection to the centre it turns about.
+                    let out = d.toward_center();
+                    let dir = (plane.u * out.x as f32 + plane.v * out.y as f32).as_dvec3();
+                    v.push(Handle::Line { line: LineHandle { origin: at, dir }, value: d.radius(), target: HandleTarget::SketchRadial });
                     v
                 }
             };
@@ -2083,7 +2076,7 @@ impl OpenCad {
                     match target {
                         HandleTarget::SketchSpacing1 => d.spacing = v,
                         HandleTarget::SketchSpacing2 => d.spacing2 = v,
-                        HandleTarget::SketchRadial => d.radial = v,
+                        HandleTarget::SketchRadial => d.set_radius(v),
                         _ => d.angle = v.clamp(-360.0, 360.0),
                     }
                 }

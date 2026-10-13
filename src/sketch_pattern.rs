@@ -27,13 +27,13 @@ pub struct SketchPattern {
     pub picking_center: bool,
     pub count_round: u32,
     pub angle: f64,
-    /// Extra distance of the copies from the centre, mm.
-    pub radial: f64,
 }
 
 impl SketchPattern {
     pub fn new(mode: Mode, base: Sketch, objects: Vec<Sel>) -> Self {
         let size = base_size(&base, &objects).max(1.0);
+        let radius = (size * 1.5 * 100.0).round() / 100.0;
+        let middle = selection_centre(&base, &objects);
         SketchPattern {
             mode,
             base,
@@ -42,18 +42,17 @@ impl SketchPattern {
             spacing: (size * 1.5 * 100.0).round() / 100.0,
             count2: 1,
             spacing2: (size * 1.5 * 100.0).round() / 100.0,
-            center: DVec2::ZERO,
+            center: middle + DVec2::new(radius, 0.0),
             picking_center: false,
             count_round: 4,
             angle: 360.0,
-            radial: 0.0,
         }
     }
 
     pub fn layout(&self) -> Layout {
         match self.mode {
             Mode::Rectangular => Layout::Rectangular { count: self.count, spacing: self.spacing, count2: self.count2, spacing2: self.spacing2 },
-            Mode::Circular => Layout::Circular { center: self.center, count: self.count_round, angle: self.angle, shift: self.out_dir().unwrap_or(DVec2::ZERO) * self.radial },
+            Mode::Circular => Layout::Circular { center: self.center, count: self.count_round, angle: self.angle },
         }
     }
 
@@ -83,15 +82,19 @@ impl SketchPattern {
         selection_centre(&self.base, &self.objects)
     }
 
-    /// Which way the selection lies from the centre.
-    pub fn out_dir(&self) -> Option<DVec2> {
-        (self.centroid() - self.center).try_normalize()
+    /// Distance from the middle of the selection to the pattern's centre.
+    pub fn radius(&self) -> f64 {
+        (self.center - self.centroid()).length()
     }
 
-    /// How far the selection reaches outward past its middle.
-    pub fn reach(&self) -> f64 {
-        let (Some(out), c) = (self.out_dir(), self.centroid()) else { return 0.0 };
-        selection_points(&self.base, &self.objects).iter().map(|p| (*p - c).dot(out)).fold(0.0, f64::max)
+    /// Which way the centre lies from the selection.
+    pub fn toward_center(&self) -> DVec2 {
+        (self.center - self.centroid()).try_normalize().unwrap_or(DVec2::X)
+    }
+
+    /// Move the centre so it is `r` from the selection, keeping its direction.
+    pub fn set_radius(&mut self, r: f64) {
+        self.center = self.centroid() + self.toward_center() * r.max(0.0);
     }
 
     pub fn panel(&mut self, ui: &mut egui::Ui, error: Option<&str>) -> Action {
@@ -139,7 +142,10 @@ impl SketchPattern {
                 count_box(ui, &mut self.count_round);
                 ui.horizontal(|ui| {
                     ui.label("Distance");
-                    ui.add(egui::DragValue::new(&mut self.radial).speed(0.5).suffix(" mm"));
+                    let mut r = self.radius();
+                    if ui.add(egui::DragValue::new(&mut r).speed(0.5).range(0.0..=f64::MAX).suffix(" mm")).changed() {
+                        self.set_radius(r);
+                    }
                 });
                 ui.horizontal(|ui| {
                     ui.label("Angle");
@@ -254,5 +260,16 @@ mod tests {
         d.count_round = 6;
         d.center = DVec2::new(4.0, 4.0);
         assert!(d.preview().is_ok());
+    }
+
+    #[test]
+    fn centre_starts_one_distance_from_the_selection_and_follows_it() {
+        let sk = square();
+        let mut d = SketchPattern::new(Mode::Circular, sk, vec![Sel::Entity(0), Sel::Entity(1), Sel::Entity(2), Sel::Entity(3)]);
+        assert!(d.center != DVec2::ZERO || d.centroid() != DVec2::ZERO);
+        assert!((d.radius() - d.spacing).abs() < 1e-9);
+        d.set_radius(40.0);
+        assert!((d.radius() - 40.0).abs() < 1e-9);
+        assert!((d.center - d.centroid()).normalize().distance(DVec2::X) < 1e-9);
     }
 }
