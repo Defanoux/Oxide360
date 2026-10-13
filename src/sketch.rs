@@ -1135,6 +1135,32 @@ impl Sketch {
     }
 }
 
+// ---------- Inference (lining up with existing geometry) ----------
+
+impl Sketch {
+    /// Fusion's inference while drawing: `p` lines up vertically or
+    /// horizontally (within `tol`) with the middle of a line or the centre
+    /// of a circle / arc. Returns `p` moved onto the line-up(s), and the
+    /// points it lines up with: (straight above/below, straight beside).
+    pub fn line_up(&self, p: DVec2, tol: f64) -> (DVec2, Option<DVec2>, Option<DVec2>) {
+        let refs: Vec<DVec2> = self
+            .entities
+            .iter()
+            .filter_map(|e| match *e {
+                Entity::Line { a, b } => Some(self.points[a].midpoint(self.points[b])),
+                Entity::Circle { center, .. } | Entity::Arc { center, .. } => Some(self.points[center]),
+                Entity::Point { .. } => None,
+            })
+            .filter(|r| r.distance(p) > tol) // not when already on it
+            .collect();
+        let best = |d: &dyn Fn(DVec2) -> f64| refs.iter().copied().filter(|&r| d(r) <= tol).min_by(|a, b| d(*a).total_cmp(&d(*b)));
+        let above = best(&|r: DVec2| (r.x - p.x).abs());
+        let beside = best(&|r: DVec2| (r.y - p.y).abs());
+        let q = DVec2::new(above.map_or(p.x, |r| r.x), beside.map_or(p.y, |r| r.y));
+        (q, above, beside)
+    }
+}
+
 // ---------- Selection details ----------
 
 /// What a figure in the selection details measures.
@@ -3650,6 +3676,25 @@ mod trim_tests {
         assert_eq!((sk.dim_unit(0), sk.dim_unit(1)), (Some(Unit::In), None));
         sk.set_dim_unit(0, None);
         assert!(sk.dim_units.is_empty(), "nothing stored when every dimension follows the design");
+    }
+
+    #[test]
+    fn the_cursor_lines_up_with_middles_and_centres() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Rectangle);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(0.0, 0.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(40.0, 20.0)));
+        // Near the middle of the rectangle: both middles (x 20 from top/bottom, y 10 from the sides).
+        let (q, above, beside) = sk.line_up(DVec2::new(20.3, 9.8), 0.5);
+        assert_eq!(q, DVec2::new(20.0, 10.0));
+        assert!(above.is_some_and(|r| r.x == 20.0) && beside.is_some_and(|r| r.y == 10.0));
+        // Lined up one way only.
+        let (q, above, beside) = sk.line_up(DVec2::new(20.2, 30.0), 0.5);
+        assert_eq!((q, beside), (DVec2::new(20.0, 30.0), None));
+        assert!(above.is_some());
+        // Nowhere near: unchanged.
+        assert_eq!(sk.line_up(DVec2::new(13.0, 4.0), 0.5), (DVec2::new(13.0, 4.0), None, None));
     }
 
     #[test]

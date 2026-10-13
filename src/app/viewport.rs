@@ -599,6 +599,7 @@ impl OpenCad {
                     }
                 }
                 // …drawing tools a snapped cursor.
+                self.line_up = None;
                 if matches!(tool, Tool::Select | Tool::Constrain(_) | Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Extend | Tool::Offset | Tool::Mirror | Tool::Project) {
                 } else if let Some(px) = hover_px {
                     let nearest = sk
@@ -675,6 +676,16 @@ impl OpenCad {
                     if let (true, Some(Anchor::Free(p))) = (arc3_third, cursor) {
                         let g = self.grid_snap.then_some(grid);
                         cursor = Some(Anchor::Free(self.editor.arc3_snap(sk, p, g, tol_px(mm_per_px)).0));
+                    }
+                    // Inference: lined up with a line's middle or a circle's centre
+                    // (dashed lines show it; both at once lands where they cross).
+                    if let (false, Some(Anchor::Free(g)), Some(raw)) = (tool.tangent_lines() > 0 || arc3_third, cursor, raw_hover) {
+                        let (q, above, beside) = sk.line_up(raw, SNAP_PX as f64 * mm_per_px);
+                        if above.is_some() || beside.is_some() {
+                            let q = DVec2::new(if above.is_some() { q.x } else { g.x }, if beside.is_some() { q.y } else { g.y });
+                            cursor = Some(Anchor::Free(q));
+                            self.line_up = Some((above, beside, q));
+                        }
                     }
                 }
             }
@@ -1820,6 +1831,14 @@ impl OpenCad {
                                 view.arc(&plane, c, r, a0, sweep, stroke);
                             }
                         }
+                    }
+                }
+            }
+            if let (true, Some((above, beside, q))) = (active, self.line_up) {
+                for r in [above, beside].into_iter().flatten() {
+                    view.dashed(plane.to_world(r), plane.to_world(q), Stroke::new(1.5, COL_SNAP));
+                    if let Some(px) = view.project(plane.to_world(r)) {
+                        painter.circle_stroke(to_pos(px), 4.0, Stroke::new(1.5, COL_SNAP));
                     }
                 }
             }
