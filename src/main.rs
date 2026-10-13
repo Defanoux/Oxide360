@@ -554,7 +554,7 @@ struct OpenCad {
     selected_plane: Option<OriginPlane>,     // the origin plane clicked in the 3D view
     ctx_plane: Option<OriginPlane>,          // the origin plane a right-click landed on
     ctx_face: Option<(usize, FacePlane)>,    // the body face a right-click landed on
-    drag_line: Option<(usize, DVec2, DVec2, [DVec2; 2])>, // a line being slid sideways: entity, its normal, where the drag began, its ends then
+    drag_line: Option<(usize, DVec2, [DVec2; 2])>, // a line being dragged: entity, where the drag began, its ends then
     marquee: Option<(DVec2, DVec2)>,         // sketch drag-select: where it started and the cursor now
     face_hover: Option<(usize, FacePlane)>, // body index + the face plane under the mouse
     turn: Option<CameraTurn>,

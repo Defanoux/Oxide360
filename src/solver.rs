@@ -465,8 +465,10 @@ fn collapsed(before: &Sketch, after: &Sketch) -> bool {
 
 /// Drag a whole line by `shift`: both ends move together to where `shift`
 /// puts them from `from` (their positions when the drag started), keeping every
-/// constraint. If the constraints won't allow the full move it goes as far as it
-/// can (a half, a quarter … of it); never an error for that, the line just stays.
+/// constraint (a horizontal line stays horizontal, a collinear one collinear).
+/// If the constraints won't allow the full move, only the part across the line
+/// or only the part along it is tried, each as far as it can go (a half, a
+/// quarter … of it); never an error for that, the line just stays.
 pub fn drag_line(sk: &mut Sketch, e: usize, from: [DVec2; 2], shift: DVec2) -> Result<Solved, SolveError> {
     let Some(&Entity::Line { a, b }) = sk.entities.get(e) else { return Err(SolveError::Invalid) };
     // A line with a fixed end stays put (as a fixed point does when dragged).
@@ -474,16 +476,20 @@ pub fn drag_line(sk: &mut Sketch, e: usize, from: [DVec2; 2], shift: DVec2) -> R
         return solve(&mut sk.clone(), &[]);
     }
     let stiff = stiffness(sk, a);
-    let mut scale = 1.0;
-    for _ in 0..8 {
-        let mut trial = sk.clone();
-        trial.points[a] = from[0] + shift * scale;
-        trial.points[b] = from[1] + shift * scale;
-        if let Ok(s) = solve_with(&mut trial, &[a, b], None, Some(&stiff)) {
-            *sk = trial;
-            return Ok(s);
+    let along = (from[1] - from[0]).normalize_or_zero();
+    let parts = [shift, along.perp() * shift.dot(along.perp()), along * shift.dot(along)];
+    for part in parts {
+        let mut scale = 1.0;
+        for _ in 0..8 {
+            let mut trial = sk.clone();
+            trial.points[a] = from[0] + part * scale;
+            trial.points[b] = from[1] + part * scale;
+            if let Ok(s) = solve_with(&mut trial, &[a, b], None, Some(&stiff)) {
+                *sk = trial;
+                return Ok(s);
+            }
+            scale *= 0.5;
         }
-        scale *= 0.5;
     }
     solve(&mut sk.clone(), &[])
 }
@@ -1063,6 +1069,44 @@ mod tests {
         let ends = [before[a], before[b]];
         drag_line(&mut tied, top, ends, DVec2::new(0.0, 20.0)).unwrap();
         assert!(tied.points.iter().zip(&before).all(|(x, y)| x.distance(*y) < 1e-6), "a fixed corner holds the line");
+    }
+
+    #[test]
+    fn a_dragged_line_follows_the_cursor_both_ways_and_keeps_its_constraints() {
+        // A lone horizontal line: it can go left as well as up.
+        let mut sk = loose();
+        add_constraints(&mut sk, &[Horizontal(0)]).unwrap();
+        let from = [sk.points[1], sk.points[2]];
+        drag_line(&mut sk, 0, from, DVec2::new(-7.0, 3.0)).unwrap();
+        assert!((sk.points[1] - (from[0] + DVec2::new(-7.0, 3.0))).length() < 1e-6, "{:?}", sk.points[1]);
+        assert!(close(sk.points[1].y, sk.points[2].y), "still horizontal");
+        // Collinear lines: dragging one along keeps the other on its line.
+        let mut c = loose();
+        add_constraints(&mut c, &[Collinear(0, 1)]).unwrap();
+        let from = [c.points[3], c.points[4]];
+        let dir = (from[1] - from[0]).normalize();
+        drag_line(&mut c, 1, from, dir * 4.0 + dir.perp() * 2.0).unwrap();
+        let (a, b) = (c.points[1], c.points[2]);
+        for q in [c.points[3], c.points[4]] {
+            assert!((b - a).perp_dot(q - a).abs() / (b - a).length() < 1e-6, "collinear kept");
+        }
+        // A rectangle's top dragged left and up: it rises, and the rectangle goes
+        // left with it (the sides stay vertical, the bottom stays horizontal).
+        let mut r = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Rectangle);
+        ed.click(&mut r, free(10.0, 10.0));
+        for k in ed.click(&mut r, free(60.0, 40.0)) {
+            add_constraints(&mut r, &[k]).unwrap();
+        }
+        let top = (0..r.entities.len())
+            .find(|&e| matches!(r.entities[e], Entity::Line { a, b } if close(r.points[a].y, 40.0) && close(r.points[b].y, 40.0)))
+            .unwrap();
+        let Entity::Line { a, b } = r.entities[top] else { unreachable!() };
+        let from = [r.points[a], r.points[b]];
+        drag_line(&mut r, top, from, DVec2::new(-5.0, 2.0)).unwrap();
+        assert!(close(r.points[a].y, 42.0) && close(r.points[a].y, r.points[b].y));
+        assert!(close(r.points[a].x, from[0].x - 5.0) && close(r.points[b].x, from[1].x - 5.0));
     }
 
     #[test]

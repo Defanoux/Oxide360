@@ -829,12 +829,11 @@ impl OpenCad {
                                 self.drag = Some(p);
                             }
                         } else if let (Some(Sel::Entity(e)), Some(q)) = (raw_press.and_then(|q| sk.hit(q, SNAP_PX as f64 * mm_per_px)), raw_press) {
-                            // Dragging a line slides it sideways (only along its normal).
+                            // Dragging a line moves it with the cursor, keeping its constraints.
                             if let Some(&Entity::Line { a, b }) = sk.entities.get(e) {
-                                let d = sk.points[b] - sk.points[a];
-                                if let Some(n) = d.perp().try_normalize() {
+                                if sk.points[a].distance(sk.points[b]) > 0.0 {
                                     self.undo.push(sk.clone());
-                                    self.drag_line = Some((e, n, q, [sk.points[a], sk.points[b]]));
+                                    self.drag_line = Some((e, q, [sk.points[a], sk.points[b]]));
                                 }
                             }
                         } else if let Some(q) = raw_press.filter(|q| sk.hit(*q, SNAP_PX as f64 * mm_per_px).is_none()) {
@@ -878,15 +877,14 @@ impl OpenCad {
                             let _ = solver::drag(&mut self.sketches[i], p, target);
                         }
                     }
-                    if let (Some((e, n, start, from)), Some(now)) = (self.drag_line, raw_hover) {
+                    if let (Some((e, start, from)), Some(now)) = (self.drag_line, raw_hover) {
                         if response.dragged_by(egui::PointerButton::Primary) && e < self.sketches[i].entities.len() {
-                            let mut along = (now - start).dot(n);
+                            let mut shift = now - start;
                             if self.grid_snap {
-                                // The line itself lands on a grid line (the grid follows the zoom).
-                                let at = from[0].dot(n);
-                                along = ((at + along) / grid.step).round() * grid.step - at;
+                                // The line's first end lands on the grid (the grid follows the zoom).
+                                shift = grid.snap(from[0] + shift) - from[0];
                             }
-                            let _ = solver::drag_line(&mut self.sketches[i], e, from, n * along);
+                            let _ = solver::drag_line(&mut self.sketches[i], e, from, shift);
                         }
                     }
                     if self.drag_line.is_some() && response.drag_stopped() {
@@ -2004,7 +2002,7 @@ impl OpenCad {
             // Over a glyph: what it is and what clicking does.
             if let (Some(ci), Some(px)) = (self.dim_hover, hover_px) {
                 if let Some(c) = sk.constraints.get(ci).filter(|c| c.value().is_none()) {
-                    let tip = format!("{} constraint — click to select (Shift adds), then Delete to remove it", c.name());
+                    let tip = format!("{} constraint — click to select it (clicking more adds them), then Delete removes", c.name());
                     view.label(px + Vec2::new(14.0, 18.0), egui::Align2::LEFT_TOP, tip, Color32::from_gray(225));
                 }
             }
