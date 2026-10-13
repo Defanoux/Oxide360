@@ -255,6 +255,24 @@ impl Eval<'_> {
                 // Round: radii that far apart (the centre is shared).
                 _ => self.circle(c)?.1 - self.circle(o)?.1 - d,
             },
+            Coincident(p, q) => {
+                if p.max(q) >= self.sk.points.len() {
+                    return None;
+                }
+                let d = self.pt(p) - self.pt(q);
+                if k == 0 { d.x } else { d.y }
+            }
+            // Each end of the second line (equation k) on the first's line.
+            Collinear(l1, l2) => {
+                let (a, b) = self.line(l1)?;
+                let (p, q) = self.line(l2)?;
+                let n = b - a;
+                n.perp_dot(if k == 0 { p } else { q } - a) / n.length().max(1e-12)
+            }
+            Concentric(c1, c2) => {
+                let d = self.circle(c1)?.0 - self.circle(c2)?.0;
+                if k == 0 { d.x } else { d.y }
+            }
             Fix(_) => return None, // handled by freezing the point, not an equation
         })
     }
@@ -276,7 +294,7 @@ fn equations(sk: &Sketch) -> Vec<(Constraint, u8)> {
         .filter(|&(ci, _)| !sk.is_driven(ci))
         .flat_map(|(_, &c)| match c {
             Constraint::Fix(_) | Constraint::ArcEnds(_) => vec![],
-            Constraint::Midpoint(..) => vec![(c, 0), (c, 1)],
+            Constraint::Midpoint(..) | Constraint::Coincident(..) | Constraint::Collinear(..) | Constraint::Concentric(..) => vec![(c, 0), (c, 1)],
             Constraint::Offset(o, _, _) if sk.is_line(o) => vec![(c, 0), (c, 1)],
             _ => vec![(c, 0)],
         })
@@ -494,7 +512,22 @@ fn stiffness(sk: &Sketch, p: PointId) -> Vec<f64> {
             continue;
         }
         match *c {
-            Constraint::Distance(a, b, _) => join(a, b),
+            Constraint::Distance(a, b, _) | Constraint::Coincident(a, b) => join(a, b),
+            Constraint::Collinear(l1, l2) => {
+                if let (Some(Entity::Line { a, b }), Some(Entity::Line { a: p, b: q })) = (sk.entities.get(l1), sk.entities.get(l2)) {
+                    join(*a, *p);
+                    join(*b, *q);
+                }
+            }
+            Constraint::Concentric(c1, c2) => {
+                let centre = |e: usize| match sk.entities.get(e) {
+                    Some(Entity::Circle { center, .. } | Entity::Arc { center, .. }) => Some(*center),
+                    _ => None,
+                };
+                if let (Some(a), Some(b)) = (centre(c1), centre(c2)) {
+                    join(a, b);
+                }
+            }
             // An offset copy moves with its original.
             Constraint::Offset(o, c, _) => {
                 if let (Some(Entity::Line { a, b }), Some(Entity::Line { a: p, b: q })) = (sk.entities.get(o), sk.entities.get(c)) {
@@ -762,11 +795,68 @@ fn set_value(c: &mut Constraint, v: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sketch::{Anchor, Editor, OriginPlane, Tool};
+    use crate::sketch::{Anchor, Editor, OriginPlane, Sel, Tool};
     use Constraint::*;
 
     fn free(x: f64, y: f64) -> Anchor {
         Anchor::Free(DVec2::new(x, y))
+    }
+
+    /// Two free lines and two free circles, nothing joined.
+    fn loose() -> Sketch {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        sk.points.extend([
+            DVec2::new(1.0, 1.0), DVec2::new(6.0, 2.0), // line 0: points 1, 2
+            DVec2::new(8.0, 5.0), DVec2::new(12.0, 9.0), // line 1: points 3, 4
+            DVec2::new(20.0, 3.0), DVec2::new(26.0, 4.0), // circle centres: 5, 6
+        ]);
+        sk.entities.extend([
+            Entity::Line { a: 1, b: 2 },
+            Entity::Line { a: 3, b: 4 },
+            Entity::Circle { center: 5, radius: 2.0 },
+            Entity::Circle { center: 6, radius: 3.0 },
+        ]);
+        sk
+    }
+
+    #[test]
+    fn coincident_collinear_and_concentric_hold_and_take_freedom() {
+        let mut sk = loose();
+        let dof0 = solve(&mut sk.clone(), &[]).unwrap().dof;
+        add_constraints(&mut sk, &[Coincident(2, 3)]).unwrap();
+        assert!(sk.points[2].distance(sk.points[3]) < 1e-9);
+        add_constraints(&mut sk, &[Concentric(2, 3)]).unwrap();
+        assert!(sk.points[5].distance(sk.points[6]) < 1e-9);
+        let mut sk2 = loose();
+        add_constraints(&mut sk2, &[Collinear(0, 1)]).unwrap();
+        let (a, b) = (sk2.points[1], sk2.points[2]);
+        for q in [sk2.points[3], sk2.points[4]] {
+            assert!((b - a).perp_dot(q - a).abs() / (b - a).length() < 1e-9, "{q}");
+        }
+        assert_eq!(solve(&mut sk.clone(), &[]).unwrap().dof, dof0 - 4, "two each");
+        // Coincident twice is redundant.
+        assert!(add_constraints(&mut sk, &[Coincident(3, 2)]).is_err());
+    }
+
+    #[test]
+    fn the_sketch_axes_can_be_picked_for_constraints() {
+        let mut sk = loose();
+        // Near the X axis, away from geometry: the axis.
+        assert_eq!(sk.hit(DVec2::new(40.0, 0.05), 0.1), Some(Sel::Axis(0)));
+        assert_eq!(sk.hit(DVec2::new(-0.05, 40.0), 0.1), Some(Sel::Axis(1)));
+        let opts = |sk: &Sketch, sel: &[Sel]| sk.constraint_options(sel);
+        let pick = |o: Vec<(&'static str, Vec<Constraint>)>, l: &str| o.into_iter().find(|(x, _)| *x == l).map(|(_, c)| c);
+        assert_eq!(pick(opts(&sk, &[Sel::Point(1), Sel::Axis(0)]), "Coincident"), Some(vec![OnAxis(1, 0)]));
+        assert_eq!(pick(opts(&sk, &[Sel::Entity(0), Sel::Axis(0)]), "Parallel"), Some(vec![Horizontal(0)]));
+        assert_eq!(pick(opts(&sk, &[Sel::Entity(0), Sel::Axis(0)]), "Perpendicular"), Some(vec![Vertical(0)]));
+        let along = pick(opts(&sk, &[Sel::Entity(0), Sel::Axis(1)]), "Collinear").unwrap();
+        add_constraints(&mut sk, &along).unwrap();
+        assert!(sk.points[1].x.abs() < 1e-9 && sk.points[2].x.abs() < 1e-9);
+        // Circle centre onto an axis.
+        assert_eq!(pick(opts(&sk, &[Sel::Entity(2), Sel::Axis(0)]), "Coincident"), Some(vec![OnAxis(5, 0)]));
+        // Two points: coincident; point and circle: onto it.
+        assert_eq!(pick(opts(&sk, &[Sel::Point(3), Sel::Point(4)]), "Coincident"), Some(vec![Coincident(3, 4)]));
+        assert_eq!(pick(opts(&sk, &[Sel::Point(3), Sel::Entity(2)]), "Coincident"), Some(vec![OnCircle(3, 2)]));
     }
 
     /// Rough rectangle from origin: lines 0..3, points 0(origin),1,2,3.

@@ -154,6 +154,7 @@ fn chosen_entities(sk: &Sketch, objects: &[Sel]) -> Vec<EntityId> {
         let found = match *s {
             Sel::Entity(e) => Some(e),
             Sel::Point(p) => sk.entities.iter().position(|e| matches!(e, Entity::Point { p: q } if *q == p)),
+            Sel::Axis(_) => None,
         };
         if let Some(e) = found.filter(|&e| e < sk.entities.len() && !chosen.contains(&e)) {
             chosen.push(e);

@@ -245,6 +245,12 @@ pub enum Constraint {
     Offset(EntityId, EntityId, f64),
     /// Point locked where it is.
     Fix(PointId),
+    /// Two points in the same place (Fusion's Coincident on two points).
+    Coincident(PointId, PointId),
+    /// Two lines on one straight line.
+    Collinear(EntityId, EntityId),
+    /// Two circles / arcs round one centre.
+    Concentric(EntityId, EntityId),
 }
 
 impl Constraint {
@@ -272,9 +278,9 @@ impl Constraint {
         use Constraint::*;
         match *self {
             Horizontal(e) | Vertical(e) | Length(e, _) | Diameter(e, _) => vec![e],
-            Parallel(a, b) | Perpendicular(a, b) | Equal(a, b) | Tangent(a, b) | Angle(a, b, _) | Offset(a, b, _) => vec![a, b],
+            Parallel(a, b) | Perpendicular(a, b) | Equal(a, b) | Tangent(a, b) | Angle(a, b, _) | Offset(a, b, _) | Collinear(a, b) | Concentric(a, b) => vec![a, b],
             OnCircle(_, c) | OnLine(_, c) | Radius(c, _) | ArcEnds(c) => vec![c],
-            Fix(_) | Distance(..) | Midpoint(..) | OnAxis(..) => vec![],
+            Fix(_) | Distance(..) | Midpoint(..) | OnAxis(..) | Coincident(..) => vec![],
         }
     }
 
@@ -282,7 +288,7 @@ impl Constraint {
     pub fn points(&self) -> Vec<PointId> {
         match *self {
             Constraint::Fix(p) => vec![p],
-            Constraint::Distance(p, q, _) => vec![p, q],
+            Constraint::Distance(p, q, _) | Constraint::Coincident(p, q) => vec![p, q],
             Constraint::OnCircle(p, _) | Constraint::OnLine(p, _) => vec![p],
             Constraint::Midpoint(p, a, b) => vec![p, a, b],
             Constraint::OnAxis(p, _) => vec![p],
@@ -305,6 +311,9 @@ impl Constraint {
             Angle(..) => "Angle",
             Distance(..) => "Distance",
             Offset(..) => "Offset",
+            Coincident(..) => "Coin",
+            Collinear(..) => "Coll",
+            Concentric(..) => "Conc",
             OnCircle(..) | OnLine(..) => "On",
             Midpoint(..) => "Mid",
             Radius(..) => "R",
@@ -620,6 +629,8 @@ pub enum Anchor {
 pub enum Sel {
     Point(PointId),
     Entity(EntityId),
+    /// The sketch's X (0) or Y (1) axis, for constraints.
+    Axis(u8),
 }
 
 /// `at` turned onto the nearest quarter turn (0°, 90°, 180°, 270°) around
@@ -718,6 +729,7 @@ impl Sketch {
         match s {
             Sel::Point(p) => p < self.points.len(),
             Sel::Entity(e) => e < self.entities.len(),
+            Sel::Axis(k) => k < 2,
         }
     }
 
@@ -851,6 +863,11 @@ impl Sketch {
             .filter(|&(_, d)| d <= tol)
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(id, _)| Sel::Entity(id))
+            // Last, the sketch's own axes (through its origin).
+            .or_else(|| {
+                let (dx, dy) = (p.y.abs(), p.x.abs());
+                (dx.min(dy) <= tol).then_some(Sel::Axis(if dx <= dy { 0 } else { 1 }))
+            })
     }
 
     /// Drag-select: what the rectangle `a`–`b` takes in. `crossing` (dragging
@@ -1065,6 +1082,9 @@ impl Sketch {
                 Angle(a, b, d) => Angle(ent_map[a], ent_map[b], d),
                 Distance(p, q, d) => Distance(pt_map[p], pt_map[q], d),
                 Offset(a, b, d) => Offset(ent_map[a], ent_map[b], d),
+                Coincident(p, q) => Coincident(pt_map[p], pt_map[q]),
+                Collinear(a, b) => Collinear(ent_map[a], ent_map[b]),
+                Concentric(a, b) => Concentric(ent_map[a], ent_map[b]),
                 OnCircle(p, c) => OnCircle(pt_map[p], ent_map[c]),
                 OnLine(p, c) => OnLine(pt_map[p], ent_map[c]),
                 Midpoint(p, a, b) => Midpoint(pt_map[p], pt_map[a], pt_map[b]),
@@ -1080,8 +1100,9 @@ impl Sketch {
 // ---------- Constraint actions ----------
 
 /// Constraint buttons, in toolbar order.
-pub const CONSTRAINT_ACTIONS: [&str; 9] =
-    ["Dimension", "Horizontal", "Vertical", "Parallel", "Perpendicular", "Equal", "Tangent", "Midpoint", "Fix"];
+pub const CONSTRAINT_ACTIONS: [&str; 12] = [
+    "Dimension", "Coincident", "Collinear", "Concentric", "Horizontal", "Vertical", "Parallel", "Perpendicular", "Equal", "Tangent", "Midpoint", "Fix",
+];
 
 impl Sketch {
     /// Keep the constraints `keep` says yes to (and their label positions
@@ -1659,7 +1680,10 @@ impl Sketch {
             }
             (Parallel(a, b), Parallel(c, d))
             | (Perpendicular(a, b), Perpendicular(c, d))
-            | (Equal(a, b), Equal(c, d)) => (a, b) == (c, d) || (a, b) == (d, c),
+            | (Equal(a, b), Equal(c, d))
+            | (Coincident(a, b), Coincident(c, d))
+            | (Collinear(a, b), Collinear(c, d))
+            | (Concentric(a, b), Concentric(c, d)) => (a, b) == (c, d) || (a, b) == (d, c),
             (x, c) => x == c,
         })
     }
@@ -1667,17 +1691,47 @@ impl Sketch {
     /// Which constraint actions apply to a selection and what each would add.
     pub fn constraint_options(&self, sel: &[Sel]) -> Vec<(&'static str, Vec<Constraint>)> {
         use Constraint::*;
-        let (mut lines, mut circles, mut points) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut lines, mut circles, mut points, mut axes) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for s in sel {
             match *s {
                 Sel::Point(p) => points.push(p),
                 Sel::Entity(e) if self.is_line(e) => lines.push(e),
                 Sel::Entity(e) if self.is_round(e) => circles.push(e),
                 Sel::Entity(_) => {}
+                Sel::Axis(k) => axes.push(k),
             }
         }
-        let only_lines = !lines.is_empty() && circles.is_empty() && points.is_empty();
         let mut out: Vec<(&'static str, Vec<Constraint>)> = Vec::new();
+        // With one of the sketch's axes: a point onto it, a line along it,
+        // parallel or square to it.
+        if let [k] = axes[..] {
+            match (lines.as_slice(), circles.as_slice(), points.as_slice()) {
+                ([], [], [p]) if *p != Self::ORIGIN => out.push(("Coincident", vec![OnAxis(*p, k)])),
+                ([l], [], []) => {
+                    if let Some(&Entity::Line { a, b }) = self.entities.get(*l) {
+                        out.push(("Collinear", vec![OnAxis(a, k), OnAxis(b, k)]));
+                    }
+                    let (along, across) = if k == 0 { (Horizontal(*l), Vertical(*l)) } else { (Vertical(*l), Horizontal(*l)) };
+                    out.push(("Parallel", vec![along]));
+                    out.push(("Perpendicular", vec![across]));
+                }
+                ([], [c], []) => {
+                    if let Some(&Entity::Circle { center, .. } | &Entity::Arc { center, .. }) = self.entities.get(*c) {
+                        out.push(("Coincident", vec![OnAxis(center, k)]));
+                    }
+                }
+                _ => {}
+            }
+            for (_, cs) in &mut out {
+                cs.retain(|c| !self.has_similar(c));
+            }
+            out.retain(|(_, cs)| !cs.is_empty());
+            return out;
+        }
+        if !axes.is_empty() {
+            return out;
+        }
+        let only_lines = !lines.is_empty() && circles.is_empty() && points.is_empty();
         match (lines.as_slice(), circles.as_slice(), points.as_slice()) {
             ([l], [], []) => out.push(("Dimension", vec![Length(*l, self.line_length(*l).unwrap_or(0.0))])),
             ([], [c], []) => {
@@ -1697,20 +1751,28 @@ impl Sketch {
                 out.push(("Parallel", vec![Parallel(*a, *b)]));
                 out.push(("Perpendicular", vec![Perpendicular(*a, *b)]));
                 out.push(("Equal", vec![Equal(*a, *b)]));
+                out.push(("Collinear", vec![Collinear(*a, *b)]));
             }
-            ([], [a, b], []) => out.push(("Equal", vec![Equal(*a, *b)])),
+            ([], [a, b], []) => {
+                out.push(("Equal", vec![Equal(*a, *b)]));
+                out.push(("Concentric", vec![Concentric(*a, *b)]));
+            }
+            // A point onto a circle or arc.
+            ([], [c], [p]) => out.push(("Coincident", vec![OnCircle(*p, *c)])),
             ([l], [c], []) => out.push(("Tangent", vec![Tangent(*l, *c)])),
             // A point and a line: the point sits at the line's middle.
             ([l], [], [p]) => {
                 if let Some(&Entity::Line { a, b }) = self.entities.get(*l) {
                     if *p != a && *p != b {
                         out.push(("Midpoint", vec![Midpoint(*p, a, b)]));
+                        out.push(("Coincident", vec![OnLine(*p, *l)]));
                     }
                 }
             }
             // Two points: the distance between them.
             ([], [], [p, q]) if p != q => {
                 out.push(("Dimension", vec![Distance(*p, *q, self.points[*p].distance(self.points[*q]))]));
+                out.push(("Coincident", vec![Coincident(*p, *q)]));
             }
             _ => {}
         }
@@ -3151,9 +3213,9 @@ mod tests {
         assert!(matches!(one[0].1[0], Constraint::Length(0, l) if (l - 101f64.sqrt()).abs() < 1e-9));
 
         let two = sk.constraint_options(&[Sel::Entity(0), Sel::Entity(1)]);
-        assert_eq!(labels(&two), vec!["Dimension", "Parallel", "Perpendicular", "Equal", "Horizontal", "Vertical"]);
+        assert_eq!(labels(&two), vec!["Dimension", "Parallel", "Perpendicular", "Equal", "Collinear", "Horizontal", "Vertical"]);
         assert!(matches!(two[0].1[0], Constraint::Angle(0, 1, _)), "dimensioning two lines gives their angle");
-        assert_eq!(two[4].1, vec![Constraint::Horizontal(0), Constraint::Horizontal(1)]);
+        assert_eq!(two[5].1, vec![Constraint::Horizontal(0), Constraint::Horizontal(1)]);
 
         let circ = sk.constraint_options(&[Sel::Entity(2)]);
         assert_eq!(circ[0].1, vec![Constraint::Diameter(2, 10.0)]);
@@ -3162,9 +3224,9 @@ mod tests {
         assert_eq!(labels(&tan), vec!["Tangent"]);
 
         let pts = sk.constraint_options(&[Sel::Point(0), Sel::Point(2)]);
-        assert_eq!(labels(&pts), vec!["Dimension", "Fix"], "two points: their distance, or fix them");
+        assert_eq!(labels(&pts), vec!["Dimension", "Coincident", "Fix"], "two points: their distance, together, or fix them");
         assert!(matches!(pts[0].1[0], Constraint::Distance(0, 2, _)));
-        assert_eq!(pts[1].1, vec![Constraint::Fix(2)], "origin is already fixed");
+        assert_eq!(pts[2].1, vec![Constraint::Fix(2)], "origin is already fixed");
 
         // Existing constraints are not offered again.
         sk.constraints.push(Constraint::Horizontal(0));

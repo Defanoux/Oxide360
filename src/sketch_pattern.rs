@@ -181,6 +181,7 @@ fn selection_points(sk: &Sketch, objects: &[Sel]) -> Vec<DVec2> {
     let mut pts = Vec::new();
     for s in objects {
         match *s {
+            Sel::Axis(_) => {}
             Sel::Point(p) => pts.extend(sk.points.get(p).copied()),
             Sel::Entity(e) => match sk.entities.get(e) {
                 Some(&Entity::Line { a, b }) => pts.extend([sk.points[a], sk.points[b]]),

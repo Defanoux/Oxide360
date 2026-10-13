@@ -54,6 +54,9 @@ pub enum Icon {
     Fix,
     Grid,
     Remove,
+    Coincident,
+    Collinear,
+    Concentric,
 }
 
 const BLUE: Color32 = Color32::from_rgb(70, 145, 230);
@@ -460,6 +463,25 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             let red = Stroke::new(thin.width * 1.6, if enabled { Color32::from_rgb(230, 80, 80) } else { ink });
             line((0.5, 0.5), (0.92, 0.92), red);
             line((0.92, 0.5), (0.5, 0.92), red);
+        }
+        Icon::Coincident => {
+            // Two lines whose ends meet at one (orange) point.
+            line((0.12, 0.82), (0.5, 0.45), Stroke::new(thin.width * 1.2, ink));
+            line((0.5, 0.45), (0.9, 0.62), Stroke::new(thin.width * 1.2, ink));
+            painter.circle_filled(p(0.5, 0.45), w * 0.1, orange);
+        }
+        Icon::Collinear => {
+            // Two segments on one straight line, with a gap.
+            line((0.1, 0.85), (0.42, 0.53), Stroke::new(thin.width * 1.4, ink));
+            line((0.58, 0.42), (0.9, 0.12), Stroke::new(thin.width * 1.4, orange));
+            dot(0.1, 0.85, ink);
+            dot(0.9, 0.12, orange);
+        }
+        Icon::Concentric => {
+            // Two circles round one centre.
+            painter.circle_stroke(p(0.5, 0.5), w * 0.38, Stroke::new(thin.width * 1.2, ink));
+            painter.circle_stroke(p(0.5, 0.5), w * 0.2, Stroke::new(thin.width * 1.2, orange));
+            dot(0.5, 0.5, ink);
         }
         Icon::Grid => {
             for t in [0.2, 0.5, 0.8] {

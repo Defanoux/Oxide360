@@ -514,6 +514,10 @@ impl OpenCad {
                     if matches!(tool, Tool::Trim | Tool::Extend | Tool::Mirror) {
                         hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e)));
                     }
+                    // Only Select and the constraint tools pick the sketch's axes.
+                    if !matches!(tool, Tool::Select | Tool::Constrain(_)) {
+                        hovered = hovered.filter(|h| !matches!(h, Sel::Axis(_)));
+                    }
                     if tool == Tool::Offset {
                         hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if !matches!(sk.entities.get(*e), Some(Entity::Point { .. }))));
                     }
@@ -523,6 +527,7 @@ impl OpenCad {
                             Sel::Point(p) => sk.corner_lines(*p).is_some(),
                             // Or a line: pick two lines instead of their corner.
                             Sel::Entity(e) => sk.is_line(*e),
+                            Sel::Axis(_) => false,
                         });
                     }
                 }
@@ -1213,6 +1218,24 @@ impl OpenCad {
             }
             for &(a, b, axis) in &axes {
                 view.line(a, b, Stroke::new(2.0, axis_color(axis)));
+            }
+        }
+
+        // The sketch's axes light up when hovered or picked (for constraints).
+        if let Some(i) = self.active {
+            let plane = self.plane_of(i);
+            let ext = extent as f64;
+            for k in 0..2u8 {
+                let sel = Sel::Axis(k);
+                let col = if self.editor.selection.contains(&sel) {
+                    COL_SELECT
+                } else if hovered == Some(sel) {
+                    COL_HOVER
+                } else {
+                    continue;
+                };
+                let dir = if k == 0 { DVec2::X } else { DVec2::Y };
+                view.line(plane.to_world(-dir * ext), plane.to_world(dir * ext), Stroke::new(3.0, col));
             }
         }
 

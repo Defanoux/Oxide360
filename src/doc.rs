@@ -291,6 +291,9 @@ pub fn validate(doc: &Document) -> Result<(), String> {
                 Offset(a, b, d) => a != b && ((line(a) && line(b)) || (circle(a) && circle(b))) && finite(d) && d != 0.0,
                 ArcEnds(_) => false, // internal to the solver, never saved
                 Midpoint(p, a, b) => p < np && a < np && b < np && p != a && p != b && a != b,
+                Coincident(p, q) => p < np && q < np && p != q,
+                Collinear(a, b) => line(a) && line(b) && a != b,
+                Concentric(a, b) => circle(a) && circle(b) && a != b,
                 Fix(p) => p < np,
             };
             if !ok {
