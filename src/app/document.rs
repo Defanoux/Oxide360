@@ -289,7 +289,7 @@ impl OpenCad {
         self.axes = doc.axes.clone();
         self.planes = doc.planes.clone();
         self.plane_hidden.clear();
-        self.plane_dialog = None;
+        self.close_plane_dialog();
         self.plane_pick = false;
         self.axis_hidden.clear();
         self.axis_pick = false;
@@ -357,7 +357,7 @@ impl OpenCad {
         self.axes = doc.axes;
         self.planes = doc.planes;
         self.plane_hidden.retain(|&k| k < self.planes.len());
-        self.plane_dialog = None;
+        self.close_plane_dialog();
         self.plane_pick = false;
         self.axis_hidden.retain(|&k| k < self.axes.len());
         self.axis_pick = false;

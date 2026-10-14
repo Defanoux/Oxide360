@@ -66,6 +66,8 @@ impl OpenCad {
             self.message = Some(format!("Can't extrude: {e}"));
             return;
         }
+        // A plane it ran up to has done its job: hide it, as Fusion does.
+        self.plane_hidden.extend(ex.plane_used());
         match self.dialog.as_ref().and_then(|d| d.editing) {
             Some(k) => self.extrudes[k] = ex,
             None => {
@@ -90,7 +92,7 @@ impl OpenCad {
     /// Put the cursor back in the number box with its text selected.
     pub(crate) fn focus_distance(&mut self) {
         if let Some(fe) = self.float.as_mut() {
-            if matches!(fe.target, EditTarget::ExtrudeDistance | EditTarget::EdgeSize | EditTarget::RevolveAngle | EditTarget::Corner(_)) {
+            if matches!(fe.target, EditTarget::ExtrudeDistance | EditTarget::EdgeSize | EditTarget::RevolveAngle | EditTarget::PlaneOffset | EditTarget::Corner(_)) {
                 fe.focus = true;
             }
         }
@@ -493,6 +495,7 @@ impl OpenCad {
             self.message = Some(format!("Can't do this: {e}"));
             return;
         }
+        self.plane_hidden.extend(c.kind.plane_used());
         match self.copy_dialog.as_ref().and_then(|d| d.editing) {
             Some(k) => self.copies[k] = c,
             None => {
@@ -528,10 +531,23 @@ impl OpenCad {
         self.cancel_revolve();
         self.cancel_edge_dialog();
         self.cancel_copy();
-        self.plane_dialog = None;
+        self.close_plane_dialog();
         self.plane_pick = false;
         self.axis_pick = false;
         self.face_pick = false;
+    }
+
+    /// Open the Offset Plane box with the distance ready to type into.
+    pub(crate) fn open_plane_dialog(&mut self, d: PlaneDialog) {
+        self.float = Some(FloatEdit { target: EditTarget::PlaneOffset, text: self.units.plain(d.distance), focus: true, keep_text: false });
+        self.plane_dialog = Some(d);
+    }
+
+    pub(crate) fn close_plane_dialog(&mut self) {
+        self.plane_dialog = None;
+        if self.float.as_ref().is_some_and(|f| f.target == EditTarget::PlaneOffset) {
+            self.float = None;
+        }
     }
 
     pub(crate) fn commit_plane(&mut self) {
@@ -552,7 +568,7 @@ impl OpenCad {
                 self.timeline_insert(Feature::Plane(self.planes.len() - 1));
             }
         }
-        self.plane_dialog = None;
+        self.close_plane_dialog();
     }
 
     pub(crate) fn delete_plane(&mut self, k: usize) {
@@ -613,7 +629,7 @@ impl OpenCad {
                 }
             }
         }
-        self.plane_dialog = None;
+        self.close_plane_dialog();
     }
 
     pub(crate) fn start_sketch_on_plane(&mut self, k: usize) {
@@ -625,6 +641,7 @@ impl OpenCad {
         self.finish_sketch();
         let name = format!("Sketch{}", self.sketches.len() + 1);
         self.sketches.push(Sketch::on_plane(name, frame, k));
+        self.plane_hidden.insert(k); // used up: hidden, as in Fusion
         let i = self.sketches.len() - 1;
         self.timeline_insert(Feature::Sketch(i));
         self.enter_sketch(i);
@@ -988,6 +1005,11 @@ impl OpenCad {
             EditTarget::RevolveAngle => {
                 if let Some(d) = self.revolve_dialog.as_ref() {
                     fe.text = format!("{:.1}", d.angle);
+                }
+            }
+            EditTarget::PlaneOffset => {
+                if let Some(d) = self.plane_dialog.as_ref() {
+                    fe.text = unit.plain(d.distance);
                 }
             }
             _ => {}

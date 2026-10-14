@@ -1480,7 +1480,7 @@ impl OpenCad {
                                     close = true; // Esc or clicking away cancels
                                 }
                             }
-                            EditTarget::ExtrudeDistance | EditTarget::EdgeSize | EditTarget::RevolveAngle => {
+                            EditTarget::ExtrudeDistance | EditTarget::EdgeSize | EditTarget::RevolveAngle | EditTarget::PlaneOffset => {
                                 if changed {
                                     live = parsed;
                                 }
@@ -1576,6 +1576,19 @@ impl OpenCad {
                     self.commit_extrude();
                     if self.dialog.is_some() {
                         self.focus_distance(); // not valid yet (e.g. no profile): stay in the box
+                    }
+                }
+            }
+            EditTarget::PlaneOffset => {
+                if let (Some(v), Some(d)) = (live, self.plane_dialog.as_mut()) {
+                    d.distance = v;
+                }
+                if extrude_cancel {
+                    self.close_plane_dialog();
+                } else if extrude_ok {
+                    self.commit_plane();
+                    if self.plane_dialog.is_some() {
+                        self.focus_distance();
                     }
                 }
             }

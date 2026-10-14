@@ -171,6 +171,14 @@ impl Extent {
 }
 
 impl Extrude {
+    /// The construction plane it runs up to, if any (used up: Fusion hides it).
+    pub fn plane_used(&self) -> Option<usize> {
+        match (self.extent, self.target) {
+            (Extent::ToObject, Some(ExtrudeTarget::Plane(k))) => Some(k),
+            _ => None,
+        }
+    }
+
     /// Where the solid starts and ends along the sketch normal: (from, to), signed.
     pub fn span(&self) -> (f64, f64) {
         let n = if self.distance < 0.0 { -1.0 } else { 1.0 };
@@ -369,6 +377,14 @@ pub struct PlaneFeature {
 pub const MAX_COPIES: u32 = 200;
 
 impl CopyKind {
+    /// The construction plane it mirrors in, if any.
+    pub fn plane_used(&self) -> Option<usize> {
+        match *self {
+            CopyKind::MirrorPlane(k) => Some(k),
+            _ => None,
+        }
+    }
+
     /// One placement per new copy (the original isn't one).
     /// `axes` are the construction axes as built: (point on it, direction);
     /// `planes` the construction planes as built.
@@ -620,6 +636,17 @@ mod tests {
     use super::*;
     use crate::sketch::{Anchor, Editor, OriginPlane, Tool};
     use glam::DVec2;
+
+    #[test]
+    fn a_plane_is_used_up_only_by_what_runs_to_or_mirrors_in_it() {
+        let mut e = Extrude { op: Operation::NewBody, name: "E".into(), sketch: 0, profiles: vec![0], distance: 5.0, extent: Extent::OneSide, distance2: 0.0, taper: 0.0, target: Some(ExtrudeTarget::Plane(2)) };
+        assert_eq!(e.plane_used(), None, "a leftover target with a distance extent doesn't count");
+        e.extent = Extent::ToObject;
+        assert_eq!(e.plane_used(), Some(2));
+        e.target = Some(ExtrudeTarget::Origin(OriginPlane::XY));
+        assert_eq!(e.plane_used(), None);
+        assert_eq!(CopyKind::MirrorPlane(1).plane_used(), Some(1));
+    }
 
     fn rect_sketch(plane: OriginPlane) -> Sketch {
         let mut sk = Sketch::new("S".into(), plane);

@@ -376,6 +376,7 @@ enum EditTarget {
     NewCircle,    // diameter typed for the circle being drawn
     Corner(PointId), // sketch fillet radius / chamfer distance for this corner
     PolygonSides,    // number of sides, asked after the polygon's first click
+    PlaneOffset,     // Offset Plane distance
 }
 
 struct FloatEdit {
@@ -922,9 +923,14 @@ impl OpenCad {
             float("plane").show(&ctx, |ui| {
                 let error = self.dialog_error.clone();
                 if let Some(d) = self.plane_dialog.as_mut() {
-                    match d.panel(ui, design_units, error.as_deref()) {
+                    let before = d.distance;
+                    let action = d.panel(ui, design_units, error.as_deref());
+                    if d.distance != before {
+                        self.set_distance_text();
+                    }
+                    match action {
                         copy_dialog::Action::Ok => self.commit_plane(),
-                        copy_dialog::Action::Cancel => self.plane_dialog = None,
+                        copy_dialog::Action::Cancel => self.close_plane_dialog(),
                         copy_dialog::Action::None => {}
                     }
                 }

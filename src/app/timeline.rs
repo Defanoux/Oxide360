@@ -639,7 +639,7 @@ impl OpenCad {
             Some(Feature::Axis(_) | Feature::Remove(_)) => {}
             Some(Feature::Plane(k)) => {
                 self.cancel_all_dialogs();
-                self.plane_dialog = Some(PlaneDialog::from_feature(k, &self.planes[k]));
+                self.open_plane_dialog(PlaneDialog::from_feature(k, &self.planes[k]));
             }
             Some(Feature::Copy(k)) => {
                 let mode = match self.copies[k].kind {

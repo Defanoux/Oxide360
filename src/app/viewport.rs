@@ -265,7 +265,7 @@ impl OpenCad {
                     };
                     if let Some((base, on_origin, anchor, extent)) = base {
                         self.cancel_all_dialogs();
-                        self.plane_dialog = Some(PlaneDialog::new(base, on_origin, anchor, extent));
+                        self.open_plane_dialog(PlaneDialog::new(base, on_origin, anchor, extent));
                     }
                 } else if let Some(op) = self.origin_hover {
                     self.start_sketch(op);
@@ -1503,19 +1503,21 @@ impl OpenCad {
                 let at = |x: f64, y: f64| (f.origin + f.u * x + f.v * y).as_vec3();
                 let q = [at(lo.x, lo.y), at(hi.x, lo.y), at(hi.x, hi.y), at(lo.x, hi.y)];
                 if self.gpu {
-                    let c = [0.55, 0.78, 1.0, alpha];
+                    // Orange like the origin planes.
+                    let hot = alpha >= 0.45;
+                    let c = [1.0, 0.667, 0.235, alpha];
                     origin_glass.push(([q[0], q[1], q[2]], c));
                     origin_glass.push(([q[0], q[2], q[3]], c));
                     for k in 0..4 {
-                        origin_outlines.push((q[k], q[(k + 1) % 4], [0.65, 0.85, 1.0, 0.8]));
+                        origin_outlines.push((q[k], q[(k + 1) % 4], [1.0, 0.745, 0.353, if hot { 1.0 } else { 0.55 }]));
                     }
                 } else {
                     let pts: Vec<Option<Vec2>> = q.iter().map(|&v| view.project(v)).collect();
                     if let [Some(a), Some(b), Some(c), Some(d)] = pts[..] {
                         painter.add(egui::Shape::convex_polygon(
                             vec![to_pos(a), to_pos(b), to_pos(c), to_pos(d)],
-                            Color32::from_rgba_unmultiplied(140, 200, 255, (alpha * 255.0) as u8),
-                            Stroke::new(1.0, Color32::from_rgb(165, 215, 255)),
+                            Color32::from_rgba_unmultiplied(255, 170, 60, (alpha * 255.0) as u8),
+                            Stroke::new(if alpha >= 0.45 { 2.0 } else { 1.0 }, Color32::from_rgba_unmultiplied(255, 190, 90, if alpha >= 0.45 { 255 } else { 140 })),
                         ));
                     }
                 }
@@ -2277,7 +2279,14 @@ impl OpenCad {
                 let r = d.edges.first()?;
                 view.project(r.mid.as_vec3()).map(|p| self.off_arrow(to_pos(p) + egui::vec2(18.0, -22.0)))
             }),
-            Some(EditTarget::ExtrudeDistance) => self.dialog.as_ref().and_then(|d| {
+            Some(EditTarget::PlaneOffset) => self.plane_dialog.as_ref().and_then(|d| {
+                // By the arrow's tip.
+                let (lo, hi) = self.plane_rect(d.extent, &d.base, d.on_origin, origin::size_for(self.camera.distance));
+                let c = (lo + hi) * 0.5;
+                let tip = d.base.origin + d.base.u * c.x + d.base.v * c.y + d.base.normal() * d.distance;
+                view.project(tip.as_vec3()).map(|p| self.off_arrow(to_pos(p) + egui::vec2(16.0, -16.0)))
+            }),
+            Some(EditTarget::ExtrudeDistance) => self.dialog.as_ref().filter(|d| d.extent != model::Extent::ToObject).and_then(|d| {
                 let s = d.sketch?;
                 let r = regions.get(s)?.get(*d.profiles.first()?)?;
                 let plane = self.plane_of(s);

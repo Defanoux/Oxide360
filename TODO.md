@@ -4,7 +4,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Next
 
-(empty — pick the next thing from Polish or ask Gavin.)
+12. **Plane at Angle** (Fusion's own tool: a plane through an edge/axis at an angle), so To Object can be tried on slanted planes.
 
 ## Polish (do when nearby code is touched)
 
@@ -17,6 +17,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Offset Plane: the distance box opens focused next to the arrow (type straight away, Enter = OK); construction planes drawn orange like the origin planes; a plane gets hidden once a sketch, a To Object extrude or a mirror uses it.
 - Extrude To Object (`Extent::ToObject`, `Extrude.target: ExtrudeTarget` = origin plane / construction plane / body face kept as picked and found again every build): the prism is cut by the target plane, so a slanted plane slants the end; errors for planes alongside or not reached; no taper or drag arrow. Splines close smoothly (periodic) when the first point is clicked again.
 - Fit-point splines (`Entity::Spline` → `Sketch.splines`, fit points are ordinary sketch points; the curve is OpenCASCADE's own interpolated B-spline, sampled via new exception-safe wrappers `GeomAPI_Interpolate_try_curve` / `Geom_BSplineCurve_try_sample`, cached in `spline.rs`; profiles take spline runs as `Curve::Spline`, rebuilt by the kernel; deleting a fit point shortens it; lines trim at spline crossings). Not yet: trim / extend / offset of splines, tangent handles, (closed splines done). Trim works on circles (→ the arc left) and arcs (shortened or split, red arc preview). Tools drag into another order within their toolbar group; changed keybinds orange with a per-key reset.
 - Keybinds (`keys.rs`, Settings → Set keybinds…: click a key, press the new one, Esc for none, reset to defaults; a taken key moves; Trim = X, Construction = K, Measure = I). Group ▾ lists show only tools not on the toolbar, full-width rows, ⋯ → Pin to toolbar; the ribbon's scrollbar is solid under the group names. Measure doesn't snap to edge middles. Tab rename selects the whole name.
