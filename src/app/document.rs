@@ -611,7 +611,8 @@ impl OpenCad {
             return;
         }
         let ext = format.extension();
-        let stem = self.file_name().trim_end_matches(".ocad").to_string();
+        // Named with the version ("bracket v3.step"), so several exports say which is which.
+        let stem = self.tab_title();
         let picked = self
             .file_dialog()
             .set_title(format!("Export {}", ext.to_uppercase()))

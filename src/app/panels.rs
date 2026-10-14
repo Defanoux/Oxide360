@@ -802,6 +802,22 @@ impl OpenCad {
                 app.default_units = app.units;
             }
             ui.weak("Values are kept exactly; only how they're shown and typed changes. Type \"22 mm\" or \"1 in\" in any box.");
+            // Threads: model them all (say, for an export to print) or show them all.
+            let (on, all) = model::thread_count(&app.holes, &app.thread_features);
+            if all > 0 {
+                ui.separator();
+                browser_row(ui, |ui| {
+                    ui.label(format!("Threads: {on} of {all} modeled"));
+                });
+                browser_row(ui, |ui| {
+                    if ui.add_enabled(on < all, egui::Button::new("Model all")).on_hover_text("Cut every thread into the part (slow to rebuild)").clicked() {
+                        model::set_all_modeled(&mut app.holes, &mut app.thread_features, true);
+                    }
+                    if ui.add_enabled(on > 0, egui::Button::new("All cosmetic")).on_hover_text("Only draw the threads (fast)").clicked() {
+                        model::set_all_modeled(&mut app.holes, &mut app.thread_features, false);
+                    }
+                });
+            }
         });
     }
 

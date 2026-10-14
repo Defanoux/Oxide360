@@ -570,6 +570,27 @@ impl ThreadFeature {
     }
 }
 
+/// Every thread in the design that can be modeled: Tapped holes' threads and
+/// Thread features (taper tapped holes are only ever shown, as in Fusion).
+/// Returns (modeled, all).
+pub fn thread_count(holes: &[HoleFeature], threads: &[ThreadFeature]) -> (usize, usize) {
+    let tapped = holes.iter().filter(|h| h.tap == TapType::Tapped);
+    let all = tapped.clone().count() + threads.len();
+    let on = tapped.filter(|h| h.thread.modeled).count() + threads.iter().filter(|t| t.spec.modeled).count();
+    (on, all)
+}
+
+/// Model every thread, or show them all cosmetically (e.g. model them all
+/// just for an export, then switch back).
+pub fn set_all_modeled(holes: &mut [HoleFeature], threads: &mut [ThreadFeature], on: bool) {
+    for h in holes.iter_mut().filter(|h| h.tap == TapType::Tapped) {
+        h.thread.modeled = on;
+    }
+    for t in threads {
+        t.spec.modeled = on;
+    }
+}
+
 /// Fusion's Hole: drilled holes (simple, counterbore, countersink; plain,
 /// clearance or tapped) at one or more places. A timeline feature that cuts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1033,6 +1054,21 @@ mod tests {
         assert_eq!(s, Hinge::SketchLine { sketch: 1, line: 4 });
         s.axis_deleted(0);
         assert_eq!(s, Hinge::SketchLine { sketch: 1, line: 4 });
+    }
+
+    #[test]
+    fn all_threads_switch_together_but_taper_threads_stay_shown() {
+        let tapped = HoleFeature { tap: TapType::Tapped, ..Default::default() };
+        let taper = HoleFeature { tap: TapType::TaperTapped, ..Default::default() };
+        let plain = HoleFeature::default();
+        let mut holes = vec![tapped, taper, plain];
+        let mut threads = vec![ThreadFeature { name: "T".into(), faces: Vec::new(), spec: ThreadSpec::default(), full_length: true, offset: 0.0, length: 1.0 }];
+        assert_eq!(thread_count(&holes, &threads), (0, 2));
+        set_all_modeled(&mut holes, &mut threads, true);
+        assert_eq!(thread_count(&holes, &threads), (2, 2));
+        assert!(!holes[1].thread.modeled, "taper tapped: only shown");
+        set_all_modeled(&mut holes, &mut threads, false);
+        assert_eq!(thread_count(&holes, &threads), (0, 2));
     }
 
     #[test]
