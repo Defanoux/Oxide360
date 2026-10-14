@@ -36,7 +36,7 @@ Suggested crates: `wgpu`, `winit`, `egui`/`eframe` (UI), `glam` or `nalgebra` (m
 - [ ] Cargo workspace with the crates above
 - [x] Window + wgpu surface + egui panels on Fedora (Wayland and X11)
 - [x] Document struct, command trait, undo/redo stack — whole-document undo
-- [ ] Unit system (mm default, switchable to cm/m/in)
+- [x] Unit system (mm default, switchable to cm/m/in) — per design, default in Settings
 - [x] Kernel chosen and a box can be created and tessellated — OpenCASCADE
 
 **Done when:** app opens, shows a lit box, undo/redo works on a dummy command.
@@ -55,13 +55,13 @@ Suggested crates: `wgpu`, `winit`, `egui`/`eframe` (UI), `glam` or `nalgebra` (m
 
 ## Phase 2 — Sketching (the core of everything)
 **Entities**
-- [ ] Line, polyline, rectangle (2-point, 3-point, centre), circle (centre, 2-pt, 3-pt, tangent), arc (3-pt, centre, tangent), ellipse — all but ellipse; polyline not separate
-- [ ] Polygon, slot (centre-to-centre, overall), spline (fit point, control point), conic, point — polygon and point done; slot/spline/conic not yet
+- [ ] Line, polyline, rectangle (2-point, 3-point, centre), circle (centre, 2-pt, 3-pt, tangent), arc (3-pt, centre, tangent), ellipse — all but tangent arc and ellipse; rectangles take typed width/height
+- [ ] Polygon, slot (centre-to-centre, overall), spline (fit point, control point), conic, point — polygon, point, centre-to-centre slot, fit-point spline (open/closed) done; overall slot, control-point spline, conic not yet
 - [ ] Text, construction geometry toggle, mirror, circular/rectangular pattern — construction toggle, mirror and rectangular/circular pattern done
-- [ ] Fillet and chamfer (2D), trim, extend, break, offset, project/include (from 3D edges), intersect — fillet, chamfer, trim (lines) done; extend/break/offset/project/intersect not yet
+- [ ] Fillet and chamfer (2D), trim, extend, break, offset, project/include (from 3D edges), intersect — fillet, chamfer, trim (lines/circles/arcs), extend, offset, project done; break, intersect, spline trim/offset not yet
 
 **Constraints**
-- [ ] Coincident, collinear, concentric, midpoint, fix/unfix, parallel, perpendicular, horizontal/vertical, tangent, equal, symmetric, curvature (smooth) — most done; collinear/concentric/symmetric/curvature not yet
+- [ ] Coincident, collinear, concentric, midpoint, fix/unfix, parallel, perpendicular, horizontal/vertical, tangent, equal, symmetric, curvature (smooth) — all but symmetric and curvature
 - [x] Dimensions: distance, angle, radius, diameter; driven (reference) vs driving
 - [ ] Dimensions accept expressions and named parameters (`width * 2 + 5`)
 - [x] Constraint solver (Newton–Raphson / Levenberg–Marquardt on a sparse system); degrees-of-freedom count; fully-constrained colour feedback
@@ -69,14 +69,14 @@ Suggested crates: `wgpu`, `winit`, `egui`/`eframe` (UI), `glam` or `nalgebra` (m
 - [x] Drag under-constrained geometry live
 
 **Sketch plane**
-- [ ] Sketch on origin planes, planar faces, and construction planes — origin planes and faces done; construction planes not yet
+- [x] Sketch on origin planes, planar faces, and construction planes
 - [x] Profile detection: closed loops → regions, with nested holes
 - [ ] Sketch visibility, edit sketch, re-attach sketch to different plane/face — visibility done; re-attach not yet
 
 **Done when:** you can draw a dimensioned, fully-constrained bracket outline with holes, change a dimension, and the sketch updates correctly.
 
 ## Phase 3 — Core solid features
-- [ ] **Extrude** — distance, to object, to face, symmetric, two-sided, taper angle; new body / join / cut / intersect — distance + new/join/cut/intersect; symmetric/two-sided/taper/to-object not yet
+- [x] **Extrude** — distance, to object, to face, symmetric, two-sided, taper angle; new body / join / cut / intersect — taper is One Side only; To Object has no taper
 - [ ] **Revolve** — full or partial angle, around axis/edge — partial angle + axis done
 - [ ] **Hole** — simple, counterbore, countersink; tapped (cosmetic thread); depth, tip angle; place by sketch points or face
 - [ ] **Fillet** — constant radius, variable radius, chain/tangent edges, rolling-ball setback — constant radius done
@@ -90,18 +90,18 @@ Suggested crates: `wgpu`, `winit`, `egui`/`eframe` (UI), `glam` or `nalgebra` (m
 - [ ] **Press/Pull**, **Offset face**, **Replace face**
 - [ ] **Thicken**, **Stitch/Unstitch**, **Boundary fill**
 - [ ] **Rib** and **Web**, **Emboss** (text on face), **Thread** (modeled)
-- [ ] **Rule fillet**, **Remove** (delete feature without breaking history)
+- [ ] **Rule fillet**, **Remove** (delete feature without breaking history) — Remove done
 
 **Done when:** you can model a bracket with holes, fillets, a shell, and a pattern, and each step appears in the timeline.
 
 ## Phase 4 — Construction geometry
-- [ ] Offset plane (done: from origin planes and faces), plane at angle, tangent plane, midplane, plane through 3 points, plane along path
+- [ ] Offset plane, plane at angle, tangent plane, midplane, plane through 3 points, plane along path — offset and at-angle done
 - [ ] Axis through two points, along edge, perpendicular to face, through cylinder/cone/torus — along a straight edge done
 - [ ] Point at vertex, at edge/plane intersection, centre of circle/sphere, along path
-- [ ] Visibility toggles in the browser
+- [x] Visibility toggles in the browser
 
 ## Phase 5 — Parametric history & parameters
-- [ ] **Timeline** bar: roll back/forward, drag to reorder (with validity check), suspend, delete, edit feature — rollback + edit + delete done; reorder/suspend not yet
+- [x] **Timeline** bar: roll back/forward, drag to reorder (with validity check), suspend, delete, edit feature
 - [ ] **Browser tree**: bodies, sketches, planes, origin; rename, show/hide, isolate — bodies, sketches, origin, rename, show/hide, colours done
 - [ ] **User parameters** table (name, expression, unit, comment); favourites
 - [ ] Parameter expressions with units and functions (`sin`, `sqrt`, `min`, `max`, `if`)
@@ -123,7 +123,7 @@ Suggested crates: `wgpu`, `winit`, `egui`/`eframe` (UI), `glam` or `nalgebra` (m
 - [ ] Bill of materials, measure between components
 
 ## Phase 7 — Inspect & analyze
-- [ ] **Measure**: distance, angle, area, volume, centre of mass, bounding box
+- [ ] **Measure**: distance, angle, area, volume, centre of mass, bounding box — distance/angle/area/length/volume done (Fusion's Measure); centre of mass, bounding box not yet
 - [ ] Interference, section analysis, curvature comb, zebra analysis, draft analysis, accessibility analysis
 - [ ] Physical **materials** (density) and appearance (colour, metallic, roughness) — body colours only
 - [ ] Mass properties report
@@ -177,12 +177,12 @@ Suggested crates: `wgpu`, `winit`, `egui`/`eframe` (UI), `glam` or `nalgebra` (m
 - [ ] Plugin system
 
 ## Phase 14 — Polish & app-level
-- [ ] Keyboard shortcuts (Fusion-compatible defaults: `L` line, `C` circle, `R` rectangle, `E` extrude, `F` fillet, `D` dimension, `M` move, `Q` press/pull) and remapping — several Fusion defaults present; no remapping
+- [ ] Keyboard shortcuts (Fusion-compatible defaults: `L` line, `C` circle, `R` rectangle, `E` extrude, `F` fillet, `D` dimension, `M` move, `Q` press/pull) and remapping — defaults + remapping done; M/Q wait for Move and Press/Pull
 - [ ] Marking menu / right-click radial menu, search-to-run command palette
 - [ ] Context-sensitive toolbar tabs: Solid, Surface, Sheet Metal, Plastic, Utilities
 - [ ] Sheet metal: rules, flange, bend, unfold/flat pattern, export DXF
 - [ ] Theme (light/dark), HiDPI, KDE integration (file picker, notifications)
-- [ ] Preferences: units, default material, grid, navigation style (Fusion / Blender / SolidWorks-like)
+- [ ] Preferences: units, default material, grid, navigation style (Fusion / Blender / SolidWorks-like) — Settings window: input device, units, camera, view cube, Measure; tabs for several designs
 - [ ] Packaging: Flatpak or RPM for Fedora
 
 ---

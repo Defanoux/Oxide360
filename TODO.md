@@ -4,7 +4,60 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Next
 
-(empty — pick the next thing from Polish or ask Gavin.)
+Ordered by how much each makes opencad a usable part modeller (FEATURES.md
+has the full Fusion list; this is the slice to do now). Fusion's behaviour is
+the spec for each.
+
+**Core solid tools (the gaps you hit modelling a real part)**
+1. **Hole** — click a face point (or sketch points): simple / counterbore /
+   countersink, depth or through-all, drill tip angle. Timeline feature.
+2. **Shell** — pick faces to remove, inside thickness. Timeline feature.
+3. **Fillet / Chamfer upgrades** — tangent-chain edge selection (one click
+   picks the run), chamfer distance + angle, fillet a whole face's loop.
+4. **Press/Pull (Q)** and **Offset Face** — drag a face; on a fillet face it
+   changes the radius, on a flat face it offsets.
+5. **Combine** — join / cut / intersect bodies, keep tools.
+6. **Move/Copy (M)** — bodies: free drag (arrows + rings), typed X/Y/Z and
+   angles; as a timeline feature.
+
+**Parameters (Fusion's other core idea)**
+7. **User parameters** — a Change Parameters window (name, expression, unit,
+   comment); dimensions and feature values accept expressions
+   (`width * 2 + 5`, `sin`, `sqrt`, units), renaming keeps them working.
+
+**Sketch gaps**
+8. **Symmetric** constraint (two points/lines about a line).
+9. **Tangent arc** (from a line end, Fusion's drag-off-the-end arc too) and
+   **Ellipse**.
+10. **Break**, and Trim/Extend/Offset for splines.
+11. **Re-attach a sketch** to another plane/face (Redefine Sketch Plane).
+12. **Sketch Text** (font outlines → profiles, extrudable).
+
+**Viewing / selection**
+13. **Zoom to fit** (F6 / double-middle-click) and named views (Front, Top,
+    Right, Home) on the view cube's menu.
+14. **Display modes** — shaded, shaded + edges, wireframe; **Section
+    Analysis** (a clipping plane).
+15. **Vertex picking** in 3D and **box select** of bodies/faces.
+
+**Construction geometry**
+16. **Midplane**, **Plane through 3 points**, **Tangent plane**; **Axis
+    through 2 points / through a cylinder**; **Construction point**.
+
+**Shapes Extrude/Revolve can't make**
+17. **Sweep** (profile along a path) and **Loft** (between profiles, rails).
+18. **Coil** / **Pipe**.
+
+**Files**
+19. **Autosave + crash recovery**.
+20. **Import** STEP and STL (as bodies), **DXF/SVG export** of a sketch.
+
+**Inspect**
+21. Centre of mass, bounding box, **physical materials** (density → mass),
+    **Interference**.
+
+Later (big, after the above): components + joints (assemblies), 2D drawings,
+sheet metal, surfaces, CAM.
 
 ## Polish (do when nearby code is touched)
 
