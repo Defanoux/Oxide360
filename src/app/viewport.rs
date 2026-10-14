@@ -1773,6 +1773,10 @@ impl OpenCad {
             let mut scene = gpu::Scene::build(&list, &self.camera, aspect);
             scene.add_lines(&grid_segments, &self.camera);
             scene.add_lines(&origin_outlines, &self.camera);
+            // Shown threads on the bodies: hidden where the part is in front.
+            if self.hole_dialog.is_none() && self.thread_dialog.is_none() {
+                scene.add_lines(&self.thread_helices(slot), &self.camera);
+            }
             scene.add_glass(&origin_glass, &self.camera);
             painter.add(egui::Shape::Callback(eframe::egui_wgpu::Callback::new_paint_callback(
                 rect,
@@ -1782,23 +1786,12 @@ impl OpenCad {
             view.solids(&meshes, &self.camera);
         }
 
-        // --- draw: threads that are only shown (a helix at the major diameter) ---
-        {
-            let model = &self.caches[slot as usize].as_ref().expect("built above").model;
+        // --- draw: threads that are only shown, while a Hole or Thread window
+        // is open: on top (the rest of the time they're drawn with the bodies) ---
+        if !self.gpu || self.hole_dialog.is_some() || self.thread_dialog.is_some() {
             let stroke = Stroke::new(1.2, Color32::from_rgb(230, 190, 90));
-            for th in &model.threads {
-                let u = model::zero_normal(th.axis, DVec3::Z);
-                let v = th.axis.cross(u);
-                let turns = (th.length / th.pitch).min(200.0);
-                let steps = (turns * 24.0).ceil().max(2.0) as usize;
-                let at = |k: usize| {
-                    let s = k as f64 / steps as f64;
-                    let a = s * turns * std::f64::consts::TAU;
-                    (th.origin + th.axis * (s * turns * th.pitch) + (u * a.cos() + v * a.sin()) * th.radius).as_vec3()
-                };
-                for k in 0..steps {
-                    view.line(at(k), at(k + 1), stroke);
-                }
+            for (a, b, _) in self.thread_helices(slot) {
+                view.line(a, b, stroke);
             }
         }
 

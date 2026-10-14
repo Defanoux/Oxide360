@@ -1104,7 +1104,8 @@ pub struct CosmeticThread {
     /// Where it starts (on the face) and which way it runs.
     pub origin: DVec3,
     pub axis: DVec3,
-    /// Its major radius.
+    /// Drawn on the surface it's on: just inside a hole's wall, just
+    /// outside a shaft (so the part hides it from the far side).
     pub radius: f64,
     pub pitch: f64,
     pub length: f64,
@@ -1308,7 +1309,8 @@ fn apply_threads(current: Tagged, tf: &ThreadFeature, made_by: Feature, shown: &
         let (start, dir) = if (r.at - c.axis_point).dot(c.axis) <= c.length / 2.0 { (c.axis_point, c.axis) } else { (c.axis_point + c.axis * c.length, -c.axis) };
         let (from, to) = tf.span(0.0, c.length)?;
         if !tf.spec.modeled {
-            shown.push(CosmeticThread { origin: start + dir * from, axis: dir, radius: c.radius, pitch: t.pitch, length: to - from });
+            let radius = c.radius * if c.internal { 0.99 } else { 1.01 };
+            shown.push(CosmeticThread { origin: start + dir * from, axis: dir, radius, pitch: t.pitch, length: to - from });
             continue;
         }
         let ((r_in, r_out), widths) = thread_profile(c.radius, c.internal, t.pitch);
@@ -1421,7 +1423,7 @@ fn hole_tools(
                 }
                 groove = Some(thread_groove(&t, p, dir, start, end, h.thread.right_hand)?);
             } else {
-                threads.push(CosmeticThread { origin: p, axis: dir.normalize(), radius: t.major / 2.0, pitch: t.pitch, length: h.thread_depth(depth) });
+                threads.push(CosmeticThread { origin: p, axis: dir.normalize(), radius: bore / 2.0 * 0.99, pitch: t.pitch, length: h.thread_depth(depth) });
             }
         }
         tools.push((tool, groove));
@@ -2991,7 +2993,7 @@ mod tests {
         let minor = crate::threads::Thread::find("M6x1").unwrap().minor() / 2.0;
         assert!(close(total(&m), 15000.0 - PI * minor * minor * 10.0));
         assert_eq!(m.threads.len(), 1);
-        assert!((m.threads[0].radius - 3.0).abs() < 1e-12 && m.threads[0].axis.distance(DVec3::NEG_Z) < 1e-12);
+        assert!((m.threads[0].radius - minor * 0.99).abs() < 1e-12 && m.threads[0].axis.distance(DVec3::NEG_Z) < 1e-12, "drawn on the bore's wall");
     }
 
     #[test]

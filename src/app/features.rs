@@ -764,6 +764,25 @@ impl OpenCad {
         Some((c, ray.at(t).as_dvec3()))
     }
 
+    /// The shown (cosmetic) threads of the model in `slot`, as helix segments.
+    pub(crate) fn thread_helices(&self, slot: Slot) -> Vec<(Vec3, Vec3, [f32; 4])> {
+        let Some(cache) = self.caches[slot as usize].as_ref() else { return Vec::new() };
+        let mut out = Vec::new();
+        for th in &cache.model.threads {
+            let u = model::zero_normal(th.axis, DVec3::Z);
+            let v = th.axis.cross(u);
+            let turns = (th.length / th.pitch).min(200.0);
+            let steps = (turns * 24.0).ceil().max(2.0) as usize;
+            let at = |k: usize| {
+                let s = k as f64 / steps as f64;
+                let a = s * turns * std::f64::consts::TAU;
+                (th.origin + th.axis * (s * turns * th.pitch) + (u * a.cos() + v * a.sin()) * th.radius).as_vec3()
+            };
+            out.extend((0..steps).map(|k| (at(k), at(k + 1), [0.9, 0.75, 0.35, 1.0])));
+        }
+        out
+    }
+
     pub(crate) fn delete_hole(&mut self, k: usize) {
         if k >= self.holes.len() {
             return;
