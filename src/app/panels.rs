@@ -169,7 +169,7 @@ impl OpenCad {
             let file = icons::button(ui, Icon::File, "File: new, open, save, export", true, false);
             egui::Popup::menu(&file).show(|ui| {
                 for (cmd, label) in [
-                    (Cmd::New, "New                Ctrl+N"),
+                    (Cmd::New, "New Design         Ctrl+N"),
                     (Cmd::Open, "Open…             Ctrl+O"),
                     (Cmd::Save, "Save                Ctrl+S"),
                     (Cmd::SaveAs, "Save As…  Ctrl+Shift+S"),

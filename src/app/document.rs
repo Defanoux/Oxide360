@@ -609,7 +609,6 @@ impl OpenCad {
 
     pub(crate) fn run(&mut self, action: Pending, ctx: &egui::Context) {
         match action {
-            Pending::New => self.reset_with(Document { units: self.default_units, ..Document::default() }, None),
             Pending::Open => self.open_dialog(),
             Pending::Quit => {
                 self.allow_close = true;
@@ -621,7 +620,8 @@ impl OpenCad {
 
     pub(crate) fn run_cmd(&mut self, cmd: Cmd, ctx: &egui::Context) {
         match cmd {
-            Cmd::New => self.request(Pending::New, ctx),
+            // Like Fusion: a new design opens in a tab of its own.
+            Cmd::New => self.tab_request = Some(TabRequest::New),
             Cmd::Open => self.request(Pending::Open, ctx),
             Cmd::Save => {
                 self.save();

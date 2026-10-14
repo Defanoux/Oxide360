@@ -356,7 +356,6 @@ enum Cmd {
 /// What to do once the user has answered "save changes?".
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Pending {
-    New,
     Open,
     Quit,
     /// Close this tab (asked by the tab strip's ×).
