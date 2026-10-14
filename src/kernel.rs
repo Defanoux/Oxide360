@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::measure::{self, Geom};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
@@ -85,6 +85,7 @@ impl Model {
             + n(&self.plane_errors)
             + n(&self.remove_errors)
             + n(&self.hole_errors)
+            + n(&self.thread_errors)
     }
 }
 
@@ -116,6 +117,8 @@ pub struct Model {
     pub plane_errors: Vec<Option<String>>,
     /// One entry per hole.
     pub hole_errors: Vec<Option<String>>,
+    /// One entry per Thread feature.
+    pub thread_errors: Vec<Option<String>>,
     /// Threads shown on holes (not cut): drawn as a helix.
     pub threads: Vec<CosmeticThread>,
     /// Far-end faces of the extrudes/revolves, to tag what's picked there.
@@ -1166,31 +1169,159 @@ fn hole_places(h: &HoleFeature, sketches: &[Sketch], frames: &[Option<FacePlane>
 fn thread_groove(t: &crate::threads::Thread, p: DVec3, dir: DVec3, start: f64, end: f64, right_hand: bool) -> Result<Shape, String> {
     let pitch = t.pitch;
     let length = end - start;
-    let tan30 = 30f64.to_radians().tan();
-    let into = 0.1 * pitch;
-    let taper = if t.standard == crate::threads::Standard::Npt { -crate::threads::NPT_TAPER / 2.0 } else { 0.0 };
-    let (r_minor, r_major) = match t.standard {
-        // NPT: a sharp-V 0.8 P deep, its size at the face.
-        crate::threads::Standard::Npt => {
-            // At the sweep's start: wider than the small end by the taper (radius: half of 1:16).
-            let e = t.npt_small_pitch_diameter() / 2.0 + length * crate::threads::NPT_TAPER / 2.0;
-            (e - 0.4 * pitch, e + 0.4 * pitch)
-        }
-        _ => (t.minor() / 2.0, t.major / 2.0),
+    let (taper, (radii, widths)) = if t.standard == crate::threads::Standard::Npt {
+        // A sharp V 0.8 P deep; at the sweep's start wider than the small end
+        // by the taper (radius: half of 1:16).
+        let e = t.npt_small_pitch_diameter() / 2.0 + length * crate::threads::NPT_TAPER / 2.0;
+        let (r_in, r_out) = (e - 0.4 * pitch - 0.1 * pitch, e + 0.4 * pitch);
+        let w_out = pitch / 8.0;
+        (-crate::threads::NPT_TAPER / 2.0, ((r_in, r_out), (w_out + 2.0 * (r_out - r_in) * 30f64.to_radians().tan(), w_out)))
+    } else {
+        (0.0, thread_profile(t.minor() / 2.0, true, pitch))
     };
-    let (r_in, r_out) = (r_minor - into, r_major);
-    let w_out = pitch / 8.0;
-    let w_in = w_out + 2.0 * (r_out - r_in) * tan30;
+    let ((r_in, r_out), (w_in, w_out)) = (radii, widths);
     let dir = dir.normalize();
     let x = crate::model::zero_normal(dir, DVec3::Z);
     Shape::try_thread(kv(p + dir * start), kv(dir), kv(x), (r_in, r_out), (w_in, w_out), pitch, length, right_hand, taper)
         .ok_or_else(|| "the kernel couldn't model this thread — try it cosmetic (Modeled off)".into())
 }
 
-/// What a hole cuts, in order: per place, a modeled thread's groove (before
-/// the bore: OCCT can't cut the groove into an already drilled bore), then
-/// the bore. Each with whether it's a thread groove.
-type HoleCuts = Vec<(Shape, bool)>;
+/// A whole cylindrical face of a body: the centre of one end, the axis
+/// (toward the other end), its radius and length, and whether it's the
+/// inside of a hole (material outside it) or a shaft.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cylinder {
+    pub axis_point: DVec3,
+    pub axis: DVec3,
+    pub radius: f64,
+    pub length: f64,
+    pub internal: bool,
+}
+
+impl Cylinder {
+    pub fn as_ref(&self, at: DVec3) -> CylinderRef {
+        CylinderRef { axis_point: self.axis_point, axis: self.axis, radius: self.radius, at }
+    }
+}
+
+/// The face as a whole cylinder (both ends full circles), if it is one.
+fn face_cylinder(face: &Face) -> Option<Cylinder> {
+    let mut circles: Vec<(DVec3, DVec3, f64, DVec3)> = Vec::new();
+    for e in face.edges() {
+        let pts: Vec<DVec3> = e.approximation_segments().map(|p| DVec3::new(p.x, p.y, p.z)).collect();
+        match edge_geom(&e, &pts) {
+            Geom::Circle { center, normal, radius, sweep } if sweep > std::f64::consts::TAU - 1e-6 => circles.push((center, normal, radius, pts[0])),
+            Geom::Line { .. } => {} // the seam
+            _ => return None,
+        }
+    }
+    let [(c0, n0, r0, p0), (c1, n1, r1, _)] = circles[..] else { return None };
+    let along = c1 - c0;
+    if along.length() < 1e-9 || (r0 - r1).abs() > 1e-7 * r0.max(1.0) || n0.dot(n1).abs() < 1.0 - 1e-9 || along.normalize().dot(n0).abs() < 1.0 - 1e-9 {
+        return None;
+    }
+    let axis = along.normalize();
+    let n = face.normal_at(kv(p0));
+    let radial = p0 - c0 - axis * (p0 - c0).dot(axis);
+    let internal = DVec3::new(n.x, n.y, n.z).dot(radial) < 0.0;
+    Some(Cylinder { axis_point: c0, axis, radius: r0, length: along.length(), internal })
+}
+
+/// Face `index` of a body (in the kernel's order, as `Body::faces`) as a cylinder.
+pub fn cylinder_face(shape: &Shape, index: usize) -> Option<Cylinder> {
+    shape.faces().nth(index).and_then(|f| face_cylinder(&f))
+}
+
+/// The cylinder a thread was put on, found again among the bodies: same
+/// axis direction, radius close, axis nearest the one picked.
+pub fn find_cylinder(bodies: &[&Shape], r: &CylinderRef) -> Option<Cylinder> {
+    let line_dist = |c: &Cylinder| {
+        let d = r.axis_point - c.axis_point;
+        (d - c.axis * d.dot(c.axis)).length()
+    };
+    bodies
+        .iter()
+        .flat_map(|s| s.faces().filter_map(|f| face_cylinder(&f)).collect::<Vec<_>>())
+        .filter(|c| c.axis.dot(r.axis).abs() > 1.0 - 1e-6 && (c.radius - r.radius).abs() < 0.5 * r.radius)
+        .min_by(|a, b| (line_dist(a) + (a.radius - r.radius).abs()).total_cmp(&(line_dist(b) + (b.radius - r.radius).abs())))
+        .filter(|c| line_dist(c) < r.radius.max(1.0))
+}
+
+/// The basic 60° thread profile cut into a cylinder of radius `r` (a hole:
+/// outward, a shaft: inward), 5H/8 deep, starting 0.1 P on the air side so
+/// it shares no face with the cylinder: (r_in, r_out, w_in, w_out).
+pub fn thread_profile(r: f64, internal: bool, pitch: f64) -> ((f64, f64), (f64, f64)) {
+    let tan30 = 30f64.to_radians().tan();
+    let depth = 0.625 * crate::threads::H_PER_PITCH * pitch;
+    if internal {
+        let (r_in, r_out) = (r - 0.1 * pitch, r + depth);
+        let w_out = pitch / 8.0;
+        ((r_in, r_out), (w_out + 2.0 * (r_out - r_in) * tan30, w_out))
+    } else {
+        let (r_in, r_out) = (r - depth, r + 0.1 * pitch);
+        let w_in = pitch / 4.0;
+        ((r_in, r_out), (w_in, w_in + 2.0 * (r_out - r_in) * tan30))
+    }
+}
+
+/// How much a thread on a cylinder of radius `r` takes out per unit length:
+/// the profile's part inside the material, screwed round.
+pub fn thread_removal_per_length(r: f64, internal: bool, pitch: f64) -> f64 {
+    let ((r_in, r_out), (w_in, w_out)) = thread_profile(r, internal, pitch);
+    let width = |x: f64| w_in + (w_out - w_in) * (x - r_in) / (r_out - r_in);
+    let (a, b) = if internal { (r, r_out) } else { (r_in, r) };
+    let (wa, wb) = (width(a), width(b));
+    let area = (wa + wb) / 2.0 * (b - a);
+    let r_c = a + (b - a) * (wa + 2.0 * wb) / (3.0 * (wa + wb));
+    area * std::f64::consts::TAU * r_c / pitch
+}
+
+/// Cut or draw a Thread feature's threads.
+fn apply_threads(current: Tagged, tf: &ThreadFeature, made_by: Feature, shown: &mut Vec<CosmeticThread>) -> Result<(Tagged, Option<BodyId>), String> {
+    let t = tf.spec.thread().ok_or_else(|| format!("unknown thread {}", tf.spec.designation))?;
+    if tf.faces.is_empty() {
+        return Err("no face picked".into());
+    }
+    let mut acc = current;
+    let mut touched = None;
+    for r in &tf.faces {
+        let bodies: Vec<&Shape> = acc.iter().map(|(s, _)| s).collect();
+        let c = find_cylinder(&bodies, r).ok_or("the face it was on is gone — edit it and pick again")?;
+        // Start from the end nearer where it was clicked.
+        let (start, dir) = if (r.at - c.axis_point).dot(c.axis) <= c.length / 2.0 { (c.axis_point, c.axis) } else { (c.axis_point + c.axis * c.length, -c.axis) };
+        let (from, to) = tf.span(0.0, c.length)?;
+        if !tf.spec.modeled {
+            shown.push(CosmeticThread { origin: start + dir * from, axis: dir, radius: c.radius, pitch: t.pitch, length: to - from });
+            continue;
+        }
+        let ((r_in, r_out), widths) = thread_profile(c.radius, c.internal, t.pitch);
+        if r_in <= 0.0 {
+            return Err("the cylinder is too thin for this thread".into());
+        }
+        // Swept past both ends, then trimmed to the span (so a shoulder isn't notched).
+        let lead = 1.5 * t.pitch;
+        let x = crate::model::zero_normal(dir, DVec3::Z);
+        let swept = Shape::try_thread(kv(start + dir * (from - lead)), kv(dir), kv(x), (r_in, r_out), widths, t.pitch, to - from + 2.0 * lead, tf.spec.right_hand, 0.0)
+            .ok_or("the kernel couldn't model this thread — try it cosmetic (Modeled off)")?;
+        let span = Shape::cylinder(kv(start + dir * from), r_out + 1.0, kv(dir), to - from);
+        let groove = swept.try_intersect(&span).ok_or("the kernel couldn't trim this thread")?;
+        let before: f64 = acc.iter().map(|(s, _)| s.volume()).sum();
+        let (next, t_id) = apply(acc, groove, Operation::Cut, made_by)?;
+        let removed = before - next.iter().map(|(s, _)| s.volume()).sum::<f64>();
+        // OCCT can fail quietly beside a helix: check it took out about what it should.
+        let want = thread_removal_per_length(c.radius, c.internal, t.pitch) * (to - from);
+        // (Less is also a thread breaking through a thin wall; much less, or
+        // more, is a cut gone wrong.)
+        if removed < want * 0.5 || removed > want * 1.02 {
+            return Err("the kernel couldn't cut this thread — try it cosmetic (Modeled off)".into());
+        }
+        (acc, touched) = (next, touched.or(t_id));
+    }
+    Ok((acc, touched))
+}
+
+/// What a hole cuts at each place: the bore, and a modeled thread's groove.
+type HoleCuts = Vec<(Shape, Option<Shape>)>;
 
 /// The cutters for a hole and the threads it only shows.
 fn hole_tools(
@@ -1254,9 +1385,11 @@ fn hole_tools(
         let tool = Face::from_wire(&wire)
             .try_revolve(kv(p), kv(dir.normalize()), std::f64::consts::TAU)
             .ok_or("the kernel couldn't make the hole's shape")?;
+        let mut groove = None;
         if matches!(h.tap, TapType::Tapped | TapType::TaperTapped) {
             let t = h.thread.thread().ok_or_else(|| format!("unknown thread {}", h.thread.designation))?;
-            if h.thread.modeled {
+            // As in Fusion, only Tapped threads can be modeled (taper tapped are shown).
+            if h.thread.modeled && h.tap == TapType::Tapped {
                 // Run in from above the face (air) so the entry is cut cleanly.
                 let start = if in_air { -1.5 * t.pitch } else { 0.0 };
                 // A blind thread stops half a pitch short of the bottom (clear of
@@ -1265,12 +1398,12 @@ fn hole_tools(
                 if end - start < t.pitch {
                     return Err("the hole is too shallow for a modeled thread".into());
                 }
-                tools.push((thread_groove(&t, p, dir, start, end, h.thread.right_hand)?, true));
+                groove = Some(thread_groove(&t, p, dir, start, end, h.thread.right_hand)?);
             } else {
                 threads.push(CosmeticThread { origin: p, axis: dir.normalize(), radius: t.major / 2.0, pitch: t.pitch, length: depth });
             }
         }
-        tools.push((tool, false));
+        tools.push((tool, groove));
     }
     Ok((tools, threads))
 }
@@ -1343,7 +1476,7 @@ pub fn build_with(
     plane_features: &[PlaneFeature],
     timeline: &[Feature],
 ) -> Model {
-    build_all(sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, &[], &[], timeline)
+    build_all(sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, &[], &[], &[], timeline)
 }
 
 /// `build_with`, plus Remove features.
@@ -1357,9 +1490,11 @@ pub fn build_all(
     plane_features: &[PlaneFeature],
     removes: &[RemoveFeature],
     holes: &[HoleFeature],
+    thread_features: &[ThreadFeature],
     timeline: &[Feature],
 ) -> Model {
     let mut hole_errors: Vec<Option<String>> = vec![None; holes.len()];
+    let mut thread_errors: Vec<Option<String>> = vec![None; thread_features.len()];
     let mut threads: Vec<CosmeticThread> = Vec::new();
     let mut remove_errors: Vec<Option<String>> = vec![None; removes.len()];
     let mut planes: Vec<Option<FacePlane>> = vec![None; plane_features.len()];
@@ -1497,37 +1632,31 @@ pub fn build_all(
                     let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
                     let (tools, th) = hole_tools(h, sketches, fr, pl, &bodies)?;
                     shown = th;
-                    // With a modeled thread, the bores must still take out at least
-                    // what they overlap (measured now, on the plain part): OCCT can
-                    // quietly fail cutting next to a helical groove.
+                    drop(bodies);
                     let volume = |t: &Tagged| t.iter().map(|(s, _)| s.volume()).sum::<f64>();
-                    let threaded = tools.iter().any(|(_, g)| *g);
-                    let must_remove: f64 = if threaded {
-                        tools
-                            .iter()
-                            .filter(|(_, g)| !*g)
-                            .map(|(tool, _)| bodies.iter().filter_map(|b| b.try_intersect(tool)).map(|c| c.volume()).sum::<f64>())
-                            .sum()
-                    } else {
-                        0.0
-                    };
-                    let before = volume(&current);
                     let mut acc = current;
                     let mut touched = None;
-                    let mut groove_cut = None;
-                    for (tool, groove) in tools {
-                        let (next, t) = apply(acc, tool, Operation::Cut, Feature::Hole(k))?;
-                        if groove {
-                            groove_cut = Some(t.is_some());
-                        } else if t.is_some() && groove_cut == Some(false) {
-                            // The bore went into material but its thread didn't: the
-                            // kernel's cut failed quietly. Say so rather than leave a plain hole.
+                    for (bore, groove) in tools {
+                        let Some(groove) = groove else {
+                            let (next, t) = apply(acc, bore, Operation::Cut, Feature::Hole(k))?;
+                            (acc, touched) = (next, touched.or(t));
+                            continue;
+                        };
+                        // A modeled thread: what the bore and groove should take out
+                        // together, measured on the part as it is (OCCT can fail quietly
+                        // beside a helix; better an error than a wrong part).
+                        let overlap = |a: &Shape| acc.iter().filter_map(|(s, _)| s.try_intersect(a)).map(|c| c.volume()).sum::<f64>();
+                        let (ob, og) = (overlap(&bore), overlap(&groove));
+                        let ogb: f64 = acc.iter().filter_map(|(s, _)| s.try_intersect(&groove)?.try_intersect(&bore)).map(|c| c.volume()).sum();
+                        let want = ob + og - ogb;
+                        let before = volume(&acc);
+                        let (next, t1) = apply(acc, groove, Operation::Cut, Feature::Hole(k))?;
+                        let (next, t2) = apply(next, bore, Operation::Cut, Feature::Hole(k))?;
+                        let removed = before - volume(&next);
+                        if (removed - want).abs() > 0.02 * want.max(1e-9) {
                             return Err("the kernel couldn't cut this thread — try it cosmetic (Modeled off)".into());
                         }
-                        (acc, touched) = (next, touched.or(t));
-                    }
-                    if threaded && before - volume(&acc) < must_remove * (1.0 - 1e-3) {
-                        return Err("the kernel couldn't cut this thread — try it cosmetic (Modeled off)".into());
+                        (acc, touched) = (next, touched.or(t1).or(t2));
                     }
                     Ok((acc, touched))
                 }));
@@ -1535,6 +1664,18 @@ pub fn build_all(
                     threads.extend(shown);
                 }
                 (r, &mut hole_errors[k])
+            }
+            Feature::Thread(k) => {
+                let Some(tf) = thread_features.get(k) else {
+                    shapes = current;
+                    continue;
+                };
+                let mut shown = Vec::new();
+                let r = catch_unwind(AssertUnwindSafe(|| apply_threads(current, tf, Feature::Thread(k), &mut shown)));
+                if matches!(r, Ok(Ok(_))) {
+                    threads.extend(shown);
+                }
+                (r, &mut thread_errors[k])
             }
             Feature::Remove(k) => {
                 // Take the bodies out; the rest carry on.
@@ -1597,7 +1738,7 @@ pub fn build_all(
         })
         .collect();
     let caps = caps_of(&extrude_ends, &revolve_ends);
-    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, threads, caps, touched: touched_by }
+    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, threads, caps, touched: touched_by }
 }
 
 /// Exact STEP export of all bodies (true planes, cylinders, arcs).
@@ -1946,7 +2087,7 @@ mod tests {
         let plane = PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None };
         let c = CopyFeature { name: "M".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: crate::model::CopyKind::MirrorPlane(0) };
         let t = [Feature::Sketch(0), Feature::Extrude(0), Feature::Plane(0), Feature::Copy(0)];
-        let m = build_all(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[], &[plane], &[], &[], &t);
+        let m = build_all(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[], &[plane], &[], &[], &[], &t);
         assert_eq!(m.copy_errors, vec![None]);
         assert_eq!(m.bodies.len(), 2);
         let copy = m.bodies.iter().find(|b| b.id.feature == Feature::Copy(0)).unwrap();
@@ -1957,7 +2098,7 @@ mod tests {
         let c2 = CopyFeature { name: "M".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: crate::model::CopyKind::MirrorPlane(0) };
         let mut sk2 = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk2, 2.0, 0.0, 6.0, 3.0);
-        let early = build_all(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c2], &[], &[PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None }], &[], &[], &[Feature::Sketch(0), Feature::Extrude(0), Feature::Copy(0), Feature::Plane(0)]);
+        let early = build_all(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c2], &[], &[PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None }], &[], &[], &[], &[Feature::Sketch(0), Feature::Extrude(0), Feature::Copy(0), Feature::Plane(0)]);
         assert!(early.copy_errors[0].is_some());
     }
 
@@ -2350,7 +2491,7 @@ mod tests {
         let mut sk = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk, 0.0, 0.0, 10.0, 10.0);
         rect(&mut sk, 20.0, 0.0, 50.0, 10.0);
-        build_all(&[sk], &[ex(0, vec![0, 1], 5.0, Operation::NewBody)], &[], &[], &[], &[], &[], removes, &[], tl)
+        build_all(&[sk], &[ex(0, vec![0, 1], 5.0, Operation::NewBody)], &[], &[], &[], &[], &[], removes, &[], &[], tl)
     }
 
     #[test]
@@ -2450,7 +2591,7 @@ mod tests {
         (e.extent, e.target) = (Extent::ToObject, Some(target));
         extrudes.push(e);
         tl.extend([Feature::Sketch(s), Feature::Extrude(extrudes.len() - 1)]);
-        build_all(&sketches, &extrudes, &[], &[], &[], &[], planes, &[], &[], &tl)
+        build_all(&sketches, &extrudes, &[], &[], &[], &[], planes, &[], &[], &[], &tl)
     }
 
     fn offset_plane(z: f64) -> crate::model::PlaneFeature {
@@ -2499,7 +2640,7 @@ mod tests {
         let mut e = ex(0, vec![0], 1.0, Operation::NewBody);
         (e.extent, e.target) = (Extent::ToObject, Some(ExtrudeTarget::Plane(0)));
         let planes = [angled(Hinge::World(WorldAxis::X), 30.0)];
-        let m = build_all(&[sk], &[e], &[], &[], &[], &[], &planes, &[], &[], &[Feature::Plane(0), Feature::Sketch(0), Feature::Extrude(0)]);
+        let m = build_all(&[sk], &[e], &[], &[], &[], &[], &planes, &[], &[], &[], &[Feature::Plane(0), Feature::Sketch(0), Feature::Extrude(0)]);
         assert_eq!((m.plane_errors.clone(), m.errors.clone()), (vec![None], vec![None]));
         let n = m.planes[0].unwrap().normal();
         assert!(n.distance(DVec3::new(0.0, -0.5, 30f64.to_radians().cos())) < 1e-12, "{n}");
@@ -2517,7 +2658,7 @@ mod tests {
         sk.entities.push(crate::sketch::Entity::Line { a: n - 2, b: n - 1 });
         let line = sk.entities.len() - 1;
         let planes = [angled(Hinge::SketchLine { sketch: 0, line }, 90.0)];
-        let m = build_all(&[sk], &[], &[], &[], &[], &[], &planes, &[], &[], &[Feature::Sketch(0), Feature::Plane(0)]);
+        let m = build_all(&[sk], &[], &[], &[], &[], &[], &planes, &[], &[], &[], &[Feature::Sketch(0), Feature::Plane(0)]);
         assert_eq!(m.plane_errors, vec![None]);
         let f = m.planes[0].unwrap();
         assert!(f.normal().cross(DVec3::X).length() < 1e-12 && (f.origin - DVec3::new(4.0, 5.0, 0.0)).length() < 1e-9, "{f:?}");
@@ -2531,7 +2672,7 @@ mod tests {
             let mut b = Sketch::new("B".into(), OriginPlane::XY);
             rect(&mut b, 0.0, 0.0, 50.0, 30.0);
             let t = [Feature::Sketch(0), Feature::Extrude(0), Feature::Axis(0), Feature::Plane(0), Feature::Plane(1)];
-            let m = build_all(&[b], &[ex(0, vec![0], h, Operation::NewBody)], &[], &[], &[], &axes, &planes, &[], &[], &t);
+            let m = build_all(&[b], &[ex(0, vec![0], h, Operation::NewBody)], &[], &[], &[], &axes, &planes, &[], &[], &[], &t);
             assert_eq!(m.plane_errors, vec![None, None], "h {h}");
             let (lean, flat) = (m.planes[0].unwrap(), m.planes[1].unwrap());
             let s = 0.5f64.sqrt();
@@ -2542,7 +2683,7 @@ mod tests {
             }
         }
         // A line that's gone is an error, not a crash.
-        let m = build_all(&[Sketch::new("E".into(), OriginPlane::XY)], &[], &[], &[], &[], &[], &[angled(Hinge::SketchLine { sketch: 0, line: 0 }, 10.0)], &[], &[], &[Feature::Sketch(0), Feature::Plane(0)]);
+        let m = build_all(&[Sketch::new("E".into(), OriginPlane::XY)], &[], &[], &[], &[], &[], &[angled(Hinge::SketchLine { sketch: 0, line: 0 }, 10.0)], &[], &[], &[], &[Feature::Sketch(0), Feature::Plane(0)]);
         assert!(m.plane_errors[0].is_some() && m.planes[0].is_none());
     }
 
@@ -2572,7 +2713,7 @@ mod tests {
             tl.push(Feature::Sketch(1));
         }
         tl.extend((0..holes.len()).map(Feature::Hole));
-        build_all(&sketches, &[ex(0, vec![0], h, Operation::NewBody)], &[], &[], &[], &[], planes, &[], holes, &tl)
+        build_all(&sketches, &[ex(0, vec![0], h, Operation::NewBody)], &[], &[], &[], &[], planes, &[], holes, &[], &tl)
     }
 
     /// On the plate's top face at (x, y), as picked at thickness `h`.
@@ -2702,9 +2843,101 @@ mod tests {
             thread: ThreadSpec { standard: crate::threads::Standard::Npt, designation: "1/8-27 NPT".into(), modeled: true, ..Default::default() },
             ..through
         };
+        // Taper tapped is shown, not modeled (as in Fusion): a 1:16 tapered bore,
+        // the stated size's minor diameter at the bottom.
         let m = drilled(10.0, None, &[npt], &[]);
         assert_eq!(m.hole_errors, vec![None]);
-        assert!(total(&m) < 15000.0 - PI * 4.0 * 4.0 * 8.0, "an 1/8 NPT hole is over Ø8 ({})", 15000.0 - total(&m));
+        assert_eq!(m.threads.len(), 1);
+        let small = crate::threads::Thread::find("1/8-27 NPT").unwrap().minor() / 2.0;
+        let large = small + 8.0 * crate::threads::NPT_TAPER / 2.0;
+        let frustum = PI * 8.0 * (large * large + large * small + small * small) / 3.0;
+        assert!(close(15000.0 - total(&m), frustum), "{} vs {frustum}", 15000.0 - total(&m));
+    }
+
+    /// An Ø`2r` × `len` shaft standing on XY (sketch 0, extrude 0), threaded by `t`.
+    fn threaded_shaft(r: f64, len: f64, t: Option<ThreadFeature>) -> Model {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        circle(&mut sk, 0.0, 0.0, r);
+        let mut tl = vec![Feature::Sketch(0), Feature::Extrude(0)];
+        let tf: Vec<ThreadFeature> = t.into_iter().collect();
+        tl.extend((0..tf.len()).map(Feature::Thread));
+        build_all(&[sk], &[ex(0, vec![0], len, Operation::NewBody)], &[], &[], &[], &[], &[], &[], &[], &tf, &tl)
+    }
+
+    /// The round face of the first body, as a thread would pick it (clicked near z = `z`).
+    fn round_face(m: &Model, z: f64) -> CylinderRef {
+        let b = &m.bodies[0];
+        let c = (0..b.faces.len()).find_map(|i| cylinder_face(&b.shape, i)).expect("a round face");
+        c.as_ref(DVec3::new(c.radius, 0.0, z))
+    }
+
+    fn thread_on(face: CylinderRef, designation: &str, modeled: bool) -> ThreadFeature {
+        let spec = crate::model::ThreadSpec { designation: designation.into(), modeled, ..Default::default() };
+        ThreadFeature { name: "T".into(), faces: vec![face], spec, full_length: true, offset: 0.0, length: 10.0 }
+    }
+
+    #[test]
+    fn a_thread_on_a_shaft_cuts_its_profile_along_the_face() {
+        let plain = threaded_shaft(4.0, 20.0, None);
+        let face = round_face(&plain, 1.0);
+        assert!(!cylinder_face(&plain.bodies[0].shape, 0).is_some_and(|c| c.internal), "a shaft is external");
+        let full = PI * 16.0 * 20.0;
+        // Cosmetic: drawn, not cut.
+        let m = threaded_shaft(4.0, 20.0, Some(thread_on(face, "M8x1.25", false)));
+        assert_eq!(m.thread_errors, vec![None]);
+        assert!(close(total(&m), full) && m.threads.len() == 1);
+        assert!((m.threads[0].length - 20.0).abs() < 1e-9 && m.threads[0].origin.z.abs() < 1e-9, "from the end nearer the click");
+        // Modeled, full length: exactly the profile's part in the material, screwed along 20 mm.
+        let m = threaded_shaft(4.0, 20.0, Some(thread_on(face, "M8x1.25", true)));
+        assert_eq!(m.thread_errors, vec![None]);
+        let want = thread_removal_per_length(4.0, false, 1.25) * 20.0;
+        assert!(near(full - total(&m), want), "{} vs {want}", full - total(&m));
+        // 8 mm of it, 5 mm in from the end nearer the click (the top here).
+        let mut part = thread_on(round_face(&plain, 19.0), "M8x1.25", true);
+        (part.full_length, part.offset, part.length) = (false, 5.0, 8.0);
+        let m = threaded_shaft(4.0, 20.0, Some(part));
+        assert!(near(full - total(&m), thread_removal_per_length(4.0, false, 1.25) * 8.0));
+        // The shaft grows to 30: the full-length thread follows.
+        let m = threaded_shaft(4.0, 30.0, Some(thread_on(face, "M8x1.25", true)));
+        assert!(near(PI * 16.0 * 30.0 - total(&m), thread_removal_per_length(4.0, false, 1.25) * 30.0));
+    }
+
+    #[test]
+    fn a_thread_in_a_hole_cuts_outward() {
+        // A Ø5 hole through the 10 mm plate, then an M6 thread in it.
+        let hole = HoleFeature { places: vec![on_top(25.0, 15.0, 10.0, false)], extent: HoleExtent::All, diameter: 5.0, tip_angle: None, ..Default::default() };
+        let plate = drilled(10.0, None, &[hole.clone()], &[]);
+        let b = &plate.bodies[0];
+        let c = (0..b.faces.len()).find_map(|i| cylinder_face(&b.shape, i)).expect("the bore");
+        assert!(c.internal && (c.radius - 2.5).abs() < 1e-9);
+        let face = c.as_ref(DVec3::new(27.5, 15.0, 9.0));
+        let mut sk = Sketch::new("B".into(), OriginPlane::XY);
+        rect(&mut sk, 0.0, 0.0, 50.0, 30.0);
+        let tl = [Feature::Sketch(0), Feature::Extrude(0), Feature::Hole(0), Feature::Thread(0)];
+        let m = build_all(&[sk], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[], &[], &[], &[], &[], &[], &[hole], &[thread_on(face, "M6x1", true)], &tl);
+        assert_eq!(m.thread_errors, vec![None]);
+        let want = thread_removal_per_length(2.5, true, 1.0) * 10.0;
+        assert!(near(total(&plate) - total(&m), want), "{} vs {want}", total(&plate) - total(&m));
+    }
+
+    #[test]
+    fn thread_grooves_cut_reliably_into_shafts_and_bores() {
+        // Each row: a 20 mm cylinder (a shaft, or a bore in a block) and a groove
+        // swept past both ends; it must take out exactly its profile's part in
+        // the material, screwed along 20 mm, whichever way it's swept.
+        for (internal, r, p) in [(true, 2.4587, 1.0), (false, 4.0, 1.25), (false, 3.0, 1.0), (true, 4.0, 1.25)] {
+            for dir in [DVec3::Z, DVec3::NEG_Z] {
+                let ((r_in, r_out), widths) = thread_profile(r, internal, p);
+                let start = DVec3::new(0.0, 0.0, 10.0) - dir * 11.5;
+                let g = Shape::try_thread(kv(start), kv(dir), kv(DVec3::X), (r_in, r_out), widths, p, 23.0, true, 0.0).unwrap();
+                let cyl = Shape::cylinder(kv(DVec3::ZERO), r, kv(DVec3::Z), 20.0);
+                let block = Shape::box_from_corners(kv(DVec3::new(-10.0, -10.0, 0.0)), kv(DVec3::new(10.0, 10.0, 20.0)));
+                let obj = if internal { block.try_subtract(&cyl).unwrap() } else { cyl };
+                let removed = obj.volume() - obj.try_subtract(&g).unwrap().volume();
+                let want = thread_removal_per_length(r, internal, p) * 20.0;
+                assert!(near(removed, want), "internal {internal} r {r} p {p} dir {dir}: {removed} vs {want}");
+            }
+        }
     }
 
     #[test]

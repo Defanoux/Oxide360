@@ -78,7 +78,7 @@ Suggested crates: `wgpu`, `winit`, `egui`/`eframe` (UI), `glam` or `nalgebra` (m
 ## Phase 3 — Core solid features
 - [x] **Extrude** — distance, to object, to face, symmetric, two-sided, taper angle; new body / join / cut / intersect — taper is One Side only; To Object has no taper
 - [ ] **Revolve** — full or partial angle, around axis/edge — partial angle + axis done
-- [ ] **Hole** — simple, counterbore, countersink; tapped (cosmetic thread); depth, tip angle; place by sketch points or face
+- [x] **Hole** — simple, counterbore, countersink; tapped (cosmetic thread); depth, tip angle; place by sketch points or face — plus clearance, taper tapped, modeled threads, To/All; no edge References / Objects to Cut
 - [ ] **Fillet** — constant radius, variable radius, chain/tangent edges, rolling-ball setback — constant radius done
 - [ ] **Chamfer** — equal distance, two distances, distance + angle — equal and two distances done; distance+angle not yet
 - [ ] **Shell** — inside/outside, remove faces, uniform thickness
@@ -89,7 +89,7 @@ Suggested crates: `wgpu`, `winit`, `egui`/`eframe` (UI), `glam` or `nalgebra` (m
 - [ ] **Split body**, **Split face**, **Delete face** (heal)
 - [ ] **Press/Pull**, **Offset face**, **Replace face**
 - [ ] **Thicken**, **Stitch/Unstitch**, **Boundary fill**
-- [ ] **Rib** and **Web**, **Emboss** (text on face), **Thread** (modeled)
+- [ ] **Rib** and **Web**, **Emboss** (text on face), **Thread** (modeled) — Thread done (cosmetic and modeled)
 - [ ] **Rule fillet**, **Remove** (delete feature without breaking history) — Remove done
 
 **Done when:** you can model a bracket with holes, fillets, a shell, and a pattern, and each step appears in the timeline.

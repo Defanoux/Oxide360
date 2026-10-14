@@ -386,6 +386,7 @@ impl OpenCad {
             Feature::Plane(k) => &mut self.planes.get_mut(k)?.name,
             Feature::Remove(k) => &mut self.removes.get_mut(k)?.name,
             Feature::Hole(k) => &mut self.holes.get_mut(k)?.name,
+            Feature::Thread(k) => &mut self.thread_features.get_mut(k)?.name,
         })
     }
 
@@ -422,11 +423,11 @@ impl OpenCad {
         let Some(new) = doc::moved(&self.timeline, from, gap) else { return };
         self.ensure_model(Slot::Committed);
         let before = self.model(Slot::Committed).error_count();
-        let (extrudes, revolves, edge_features, copies, axes, planes, holes, _) = self.inputs(Slot::Committed);
+        let (extrudes, revolves, edge_features, copies, axes, planes, holes, thread_features, _) = self.inputs(Slot::Committed);
         let mut tl = new.clone();
         tl.truncate(self.applied());
         tl.retain(|f| !self.suppressed.contains(f));
-        let after = kernel::build_all(&self.sketches, &extrudes, &revolves, &edge_features, &copies, &axes, &planes, &self.removes, &holes, &tl).error_count();
+        let after = kernel::build_all(&self.sketches, &extrudes, &revolves, &edge_features, &copies, &axes, &planes, &self.removes, &holes, &thread_features, &tl).error_count();
         if after > before {
             self.notify("Can't move it there: something in the timeline would stop building".into());
             return;
@@ -493,6 +494,7 @@ impl OpenCad {
                     ),
                     Feature::Remove(k) => (self.removes[k].name.clone(), false),
                     Feature::Hole(k) => (self.holes[k].name.clone(), self.hole_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
+                    Feature::Thread(k) => (self.thread_features[k].name.clone(), self.thread_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
                 };
                 let error = match *f {
                     Feature::Extrude(k) => self.feature_errors.get(k).cloned().flatten(),
@@ -504,6 +506,7 @@ impl OpenCad {
                     Feature::Sketch(k) => self.sketch_errors.get(k).cloned().flatten(),
                     Feature::Remove(k) => self.remove_errors.get(k).cloned().flatten(),
                     Feature::Hole(k) => self.hole_errors.get(k).cloned().flatten(),
+                    Feature::Thread(k) => self.thread_errors.get(k).cloned().flatten(),
                 };
                 let icon = match *f {
                     Feature::Sketch(_) => Icon::Sketch,
@@ -513,6 +516,7 @@ impl OpenCad {
                     Feature::Plane(_) => Icon::Plane,
                     Feature::Remove(_) => Icon::Remove,
                     Feature::Hole(_) => Icon::Hole,
+                    Feature::Thread(_) => Icon::Thread,
                     Feature::Copy(k) => match self.copies[k].kind {
                         model::CopyKind::Mirror(_) | model::CopyKind::MirrorPlane(_) => Icon::Mirror,
                         model::CopyKind::Rectangular { .. } => Icon::RectPattern,
@@ -632,6 +636,7 @@ impl OpenCad {
             Some(Feature::Plane(k)) => self.delete_plane(k),
             Some(Feature::Remove(k)) => self.delete_remove(k),
             Some(Feature::Hole(k)) => self.delete_hole(k),
+            Some(Feature::Thread(k)) => self.delete_thread(k),
             None => {}
         }
         if delete.is_some() {
@@ -642,6 +647,7 @@ impl OpenCad {
             Some(Feature::Extrude(k)) => self.open_extrude(Some(k)),
             Some(Feature::Revolve(k)) => self.open_revolve(Some(k)),
             Some(Feature::Hole(k)) => self.open_hole(Some(k)),
+            Some(Feature::Thread(k)) => self.open_thread(Some(k)),
             Some(Feature::Axis(_) | Feature::Remove(_)) => {}
             Some(Feature::Plane(k)) => {
                 self.cancel_all_dialogs();

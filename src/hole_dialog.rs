@@ -296,9 +296,12 @@ impl HoleDialog {
                     ui.selectable_value(&mut t.right_hand, false, "Left hand");
                 });
                 ui.end_row();
-                ui.label("Modeled");
-                ui.checkbox(&mut t.modeled, "").on_hover_text("Cut the thread into the part (for 3D printing); off, it's only drawn");
-                ui.end_row();
+                // Fusion models Tapped threads only; taper tapped ones are shown.
+                if tap == crate::model::TapType::Tapped {
+                    ui.label("Modeled");
+                    ui.checkbox(&mut t.modeled, "").on_hover_text("Cut the thread into the part (for 3D printing); off, it's only drawn");
+                    ui.end_row();
+                }
             } else {
                 ui.label("Fit");
                 ui.horizontal(|ui| {

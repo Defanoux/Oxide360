@@ -7,6 +7,7 @@ impl OpenCad {
         self.axis_pick = false;
         self.angle_pick = false;
         self.hole_dialog = None;
+        self.thread_dialog = None;
         self.finish_sketch();
         self.cancel_edge_dialog();
         self.cancel_revolve();
@@ -395,6 +396,7 @@ impl OpenCad {
         self.axis_pick = false;
         self.angle_pick = false;
         self.hole_dialog = None;
+        self.thread_dialog = None;
         self.finish_sketch();
         self.cancel_extrude();
         self.cancel_edge_dialog();
@@ -478,6 +480,7 @@ impl OpenCad {
         self.axis_pick = false;
         self.angle_pick = false;
         self.hole_dialog = None;
+        self.thread_dialog = None;
         self.cancel_extrude();
         self.cancel_revolve();
         self.cancel_edge_dialog();
@@ -588,6 +591,7 @@ impl OpenCad {
 
     pub(crate) fn cancel_hole(&mut self) {
         self.hole_dialog = None;
+        self.thread_dialog = None;
         self.hole_hover = None;
         self.arrows.clear();
     }
@@ -680,6 +684,81 @@ impl OpenCad {
         }
     }
 
+    /// Open the Thread dialog (a new Thread, or Thread `editing`).
+    pub(crate) fn open_thread(&mut self, editing: Option<usize>) {
+        self.finish_sketch();
+        self.cancel_all_dialogs();
+        self.message = None;
+        self.ensure_model(Slot::Committed);
+        self.thread_dialog = Some(match editing.and_then(|k| self.thread_features.get(k).map(|t| (k, t))) {
+            Some((k, t)) => {
+                let bodies: Vec<&opencascade::primitives::Shape> = self.model(Slot::Committed).bodies.iter().map(|b| &b.shape).collect();
+                let internal = t.faces.first().and_then(|f| kernel::find_cylinder(&bodies, f)).is_some_and(|c| c.internal);
+                ThreadDialog::from_feature(k, t, internal)
+            }
+            None => ThreadDialog::new(format!("Thread{}", self.thread_features.len() + 1), self.last_thread.clone()),
+        });
+    }
+
+    pub(crate) fn commit_thread(&mut self) {
+        let Some(d) = self.thread_dialog.as_ref() else { return };
+        if d.thread.faces.is_empty() {
+            self.message = Some("Pick a cylindrical face to thread".into());
+            return;
+        }
+        if let Some(e) = self.dialog_error.clone() {
+            self.message = Some(format!("Can't make the thread: {e}"));
+            return;
+        }
+        self.last_thread = d.remember.then(|| d.thread.spec.clone());
+        let t = d.thread.clone();
+        match d.editing {
+            Some(k) => self.thread_features[k] = t,
+            None => {
+                self.thread_features.push(t);
+                self.timeline_insert(Feature::Thread(self.thread_features.len() - 1));
+            }
+        }
+        self.cancel_thread();
+    }
+
+    pub(crate) fn cancel_thread(&mut self) {
+        self.thread_dialog = None;
+        self.thread_hover = None;
+    }
+
+    pub(crate) fn delete_thread(&mut self, k: usize) {
+        if k >= self.thread_features.len() {
+            return;
+        }
+        self.thread_features.remove(k);
+        self.timeline_remove(Feature::Thread(k));
+        for f in &mut self.timeline {
+            if let Feature::Thread(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+        self.cancel_thread();
+    }
+
+    /// The whole cylindrical face under the cursor (a shaft or a hole) and the point hit.
+    pub(crate) fn cylinder_under(&mut self, ray: &Ray) -> Option<(kernel::Cylinder, DVec3)> {
+        self.ensure_model(Slot::Committed);
+        let m = self.model(Slot::Committed);
+        let (t, tri, b) = m
+            .bodies
+            .iter()
+            .enumerate()
+            .filter(|(_, body)| !self.hidden_bodies.contains(&body.id))
+            .filter_map(|(b, body)| model::ray_hit_tri(&body.mesh, ray.origin, ray.dir).map(|(t, tri)| (t, tri, b)))
+            .min_by(|x, y| x.0.total_cmp(&y.0))?;
+        let body = &m.bodies[b];
+        let c = kernel::cylinder_face(&body.shape, *body.tri_face.get(tri)? as usize)?;
+        Some((c, ray.at(t).as_dvec3()))
+    }
+
     pub(crate) fn delete_hole(&mut self, k: usize) {
         if k >= self.holes.len() {
             return;
@@ -699,6 +778,7 @@ impl OpenCad {
     /// Close whichever tool dialog or pick mode is open.
     pub(crate) fn cancel_all_dialogs(&mut self) {
         self.cancel_hole();
+        self.cancel_thread();
         self.cancel_extrude();
         self.cancel_revolve();
         self.cancel_edge_dialog();
@@ -708,6 +788,7 @@ impl OpenCad {
         self.axis_pick = false;
         self.angle_pick = false;
         self.hole_dialog = None;
+        self.thread_dialog = None;
         self.face_pick = false;
     }
 
@@ -940,6 +1021,7 @@ impl OpenCad {
         self.axis_pick = false;
         self.angle_pick = false;
         self.hole_dialog = None;
+        self.thread_dialog = None;
     }
 
     /// The straight body edge nearest the cursor (within snapping reach) that
@@ -1116,6 +1198,7 @@ impl OpenCad {
         self.axis_pick = false;
         self.angle_pick = false;
         self.hole_dialog = None;
+        self.thread_dialog = None;
         self.finish_sketch();
         self.cancel_extrude();
         self.cancel_revolve();

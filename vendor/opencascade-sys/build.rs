@@ -120,6 +120,8 @@ fn main() {
     for bridge in rust_bridges {
         println!("cargo:rerun-if-changed={bridge}");
     }
+    // opencad patch: the C++ wrappers live in the headers; rebuild when they change.
+    println!("cargo:rerun-if-changed=include");
 }
 
 struct OcctConfig {

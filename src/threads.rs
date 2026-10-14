@@ -263,6 +263,17 @@ impl Thread {
     }
 }
 
+/// The thread that fits a cylinder of `diameter`: a shaft (external) by
+/// its major diameter, a hole (internal) by its tap-drill (minor) diameter.
+pub fn nearest(standard: Standard, diameter: f64, internal: bool) -> Option<Thread> {
+    let size = |t: &Thread| if internal { t.minor() } else { t.major };
+    THREADS
+        .iter()
+        .copied()
+        .filter(|t| t.standard == standard)
+        .min_by(|a, b| (size(a) - diameter).abs().total_cmp(&(size(b) - diameter).abs()))
+}
+
 /// The sizes of a standard, each once, in table order.
 pub fn sizes(standard: Standard) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
@@ -296,6 +307,13 @@ mod tests {
         // 1/8 NPT: E0 = 0.36351 in.
         let n = Thread::find("1/8-27 NPT").unwrap();
         assert!((n.npt_small_pitch_diameter() / IN - 0.36351).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_cylinder_gets_the_thread_that_fits_it() {
+        assert_eq!(nearest(Standard::IsoMetric, 8.0, false).unwrap().designation, "M8x1.25", "an Ø8 shaft");
+        assert_eq!(nearest(Standard::IsoMetric, 5.0, true).unwrap().size, "M6", "an Ø5 hole taps M6");
+        assert_eq!(nearest(Standard::Unified, 6.35, false).unwrap().designation, "1/4-20 UNC");
     }
 
     #[test]

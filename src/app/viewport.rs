@@ -345,7 +345,8 @@ impl OpenCad {
                 && self.revolve_dialog.is_none()
                 && self.copy_dialog.is_none()
                 && self.plane_dialog.is_none()
-                && self.hole_dialog.is_none();
+                && self.hole_dialog.is_none()
+                && self.thread_dialog.is_none();
             if let (Some(px), true) = (hover_px, free_view) {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 let face = self.pick_face(&ray);
@@ -415,6 +416,23 @@ impl OpenCad {
             }
             if esc && !typing {
                 if let Some(d) = self.hole_dialog.as_mut() {
+                    d.picking = false;
+                }
+            }
+        }
+
+        // --- Thread: click cylindrical faces (shafts or holes) ---
+        self.thread_hover = None;
+        if self.thread_dialog.as_ref().is_some_and(|d| d.picking) && self.active.is_none() {
+            if let Some(px) = hover_px {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                self.thread_hover = self.cylinder_under(&ray);
+            }
+            if let (true, Some((c, at)), Some(d)) = (response.clicked(), self.thread_hover, self.thread_dialog.as_mut()) {
+                d.toggle(c.as_ref(at), c.internal);
+            }
+            if esc && !typing {
+                if let Some(d) = self.thread_dialog.as_mut() {
                     d.picking = false;
                 }
             }
@@ -1669,7 +1687,7 @@ impl OpenCad {
         }
 
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
-        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some();
+        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
         self.ensure_model(Slot::Committed);
         self.feature_errors = self.model(Slot::Committed).errors.clone();
@@ -1681,6 +1699,7 @@ impl OpenCad {
         self.axis_errors = self.model(Slot::Committed).axis_errors.clone();
         self.plane_errors = self.model(Slot::Committed).plane_errors.clone();
         self.hole_errors = self.model(Slot::Committed).hole_errors.clone();
+        self.thread_errors = self.model(Slot::Committed).thread_errors.clone();
         self.body_count = self.model(Slot::Committed).bodies.len();
         // With a body in the scene the origin gets out of the way (Create Sketch
         // and the browser's Origin box bring it back).
@@ -1692,7 +1711,10 @@ impl OpenCad {
         let slot = if previewing { Slot::Preview } else { Slot::Committed };
         self.ensure_model(slot);
         let model = &self.caches[slot as usize].as_ref().expect("built above").model;
-        self.dialog_error = if let Some(d) = &self.hole_dialog {
+        self.dialog_error = if let Some(d) = &self.thread_dialog {
+            let k = d.editing.unwrap_or(self.thread_features.len());
+            if d.thread.faces.is_empty() { None } else { model.thread_errors.get(k).cloned().flatten() }
+        } else if let Some(d) = &self.hole_dialog {
             let k = d.editing.unwrap_or(self.holes.len());
             if d.hole.places.is_empty() { None } else { model.hole_errors.get(k).cloned().flatten() }
         } else if let Some(d) = &self.dialog {
@@ -1773,6 +1795,43 @@ impl OpenCad {
                 for k in 0..steps {
                     view.line(at(k), at(k + 1), stroke);
                 }
+            }
+        }
+
+        // --- draw: the cylinder a Thread would go on, and those picked ---
+        if let Some(d) = &self.thread_dialog {
+            let ring = |c: &model::CylinderRef, len: f64, stroke: Stroke| {
+                let u = model::zero_normal(c.axis, DVec3::Z);
+                let v = c.axis.cross(u);
+                for z in [0.0, len] {
+                    let pts: Vec<Vec3> = (0..=48)
+                        .map(|k| {
+                            let a = k as f64 / 48.0 * std::f64::consts::TAU;
+                            (c.axis_point + c.axis * z + (u * a.cos() + v * a.sin()) * c.radius).as_vec3()
+                        })
+                        .collect();
+                    for w in pts.windows(2) {
+                        view.line(w[0], w[1], stroke);
+                    }
+                }
+            };
+            if let Some((c, at)) = self.thread_hover {
+                ring(&c.as_ref(at), c.length, Stroke::new(3.0, COL_HOVER));
+            }
+            let bodies: Vec<&opencascade::primitives::Shape> = self.model(Slot::Committed).bodies.iter().map(|b| &b.shape).collect();
+            for f in &d.thread.faces {
+                if let Some(c) = kernel::find_cylinder(&bodies, f) {
+                    ring(&c.as_ref(f.at), c.length, Stroke::new(2.5, COL_SELECT));
+                }
+            }
+            if d.picking {
+                painter.text(
+                    rect.center_top() + egui::vec2(0.0, 40.0),
+                    egui::Align2::CENTER_TOP,
+                    "Click a shaft or the inside of a hole to thread it   (Esc when done)",
+                    egui::FontId::proportional(15.0),
+                    Color32::from_gray(220),
+                );
             }
         }
 

@@ -23,10 +23,14 @@
 #include <BRepLib.hxx>
 #include <GProp_GProps.hxx>
 #include <Geom2d_Line.hxx>
+#include <Geom2d_TrimmedCurve.hxx>
+#include <GCE2d_MakeSegment.hxx>
+#include <Geom_Surface.hxx>
 #include <Geom_ConicalSurface.hxx>
 #include <Geom_CylindricalSurface.hxx>
 #include <gp_Ax3.hxx>
 #include <cmath>
+#include <algorithm>
 
 inline std::unique_ptr<TopoDS_Shape> opencad_try_thread(double ox, double oy, double oz, double dx, double dy, double dz, double xx, double xy, double xz,
                                                         double r_in, double r_out, double w_in, double w_out, double pitch, double length,
@@ -40,26 +44,36 @@ inline std::unique_ptr<TopoDS_Shape> opencad_try_thread(double ox, double oy, do
     double r_mid = 0.5 * (r_in + r_out);
     double turns = length / pitch;
     double sign = right_hand ? 1.0 : -1.0;
-    TopoDS_Edge helix;
+    // The helix in pieces of at most `piece` turns: the sweep makes a face per
+    // piece, and a face that winds round many times meets a cylinder along a
+    // long helix OCCT's booleans can't follow; short pieces they can.
+    const double piece = 0.5;
+    Handle(Geom_Surface) surface;
+    double dv = pitch; // how far along the surface's v one turn climbs
     if (std::fabs(taper) < 1e-12) {
-      Handle(Geom_CylindricalSurface) surface = new Geom_CylindricalSurface(frame, r_mid);
-      // On the surface (u: angle, v: along the axis) a helix is a straight line.
-      gp_Dir2d dir2(sign * 2.0 * M_PI, pitch);
-      Handle(Geom2d_Line) line = new Geom2d_Line(gp_Pnt2d(0.0, 0.0), dir2);
-      double span = turns * std::sqrt(4.0 * M_PI * M_PI + pitch * pitch);
-      helix = BRepBuilderAPI_MakeEdge(line, surface, 0.0, span).Edge();
+      surface = new Geom_CylindricalSurface(frame, r_mid);
     } else {
-      // A cone: v runs along its slant, so a turn climbs pitch / cos(angle) in v.
       double angle = std::atan(taper);
-      Handle(Geom_ConicalSurface) surface = new Geom_ConicalSurface(frame, angle, r_mid);
-      double dv = pitch / std::cos(angle);
-      gp_Dir2d dir2(sign * 2.0 * M_PI, dv);
-      Handle(Geom2d_Line) line = new Geom2d_Line(gp_Pnt2d(0.0, 0.0), dir2);
-      double span = turns * std::sqrt(4.0 * M_PI * M_PI + dv * dv);
-      helix = BRepBuilderAPI_MakeEdge(line, surface, 0.0, span).Edge();
+      surface = new Geom_ConicalSurface(frame, angle, r_mid);
+      dv = pitch / std::cos(angle);
     }
-    BRepLib::BuildCurves3d(helix);
-    TopoDS_Wire spine = BRepBuilderAPI_MakeWire(helix).Wire();
+    // On the surface (u: angle, v: along the axis or slant) a helix is a straight line.
+    gp_Dir2d dir2(sign * 2.0 * M_PI, dv);
+    Handle(Geom2d_Line) line = new Geom2d_Line(gp_Pnt2d(0.0, 0.0), dir2);
+    double per_turn = std::sqrt(4.0 * M_PI * M_PI + dv * dv);
+    BRepBuilderAPI_MakeWire spine_maker;
+    int count = std::max(1, int(std::ceil(turns / piece - 1e-9)));
+    for (int i = 0; i < count; i++) {
+      double t0 = per_turn * turns * double(i) / double(count);
+      double t1 = per_turn * turns * double(i + 1) / double(count);
+      TopoDS_Edge e = BRepBuilderAPI_MakeEdge(line, surface, t0, t1).Edge();
+      BRepLib::BuildCurves3d(e, 1.0e-7, GeomAbs_C1, 14, 200);
+      spine_maker.Add(e);
+    }
+    if (!spine_maker.IsDone()) {
+      return nullptr;
+    }
+    TopoDS_Wire spine = spine_maker.Wire();
     // The profile, in the plane through the axis and the helix's start.
     gp_Vec x(frame.XDirection()), z(frame.Direction());
     gp_Pnt o = frame.Location();
@@ -70,6 +84,10 @@ inline std::unique_ptr<TopoDS_Shape> opencad_try_thread(double ox, double oy, do
     }
     BRepOffsetAPI_MakePipeShell sweep(spine);
     sweep.SetMode(true); // Frenet: on a helix that's a rigid screw motion
+    // Tight surfaces (the default 1e-4 leaves faces booleans can't intersect reliably).
+    sweep.SetTolerance(1.0e-6, 1.0e-6, 1.0e-3);
+    sweep.SetMaxDegree(14);
+    sweep.SetMaxSegments(500);
     sweep.Add(poly.Wire(), false, false);
     sweep.Build();
     if (!sweep.IsDone() || !sweep.MakeSolid()) {

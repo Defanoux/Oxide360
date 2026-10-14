@@ -31,6 +31,8 @@ pub enum Feature {
     Remove(usize),
     /// Drilled holes (index into `holes`).
     Hole(usize),
+    /// Threads on cylinders (index into `thread_features`).
+    Thread(usize),
 }
 
 /// Put `f` into the timeline at the rollback marker (the end when there is
@@ -65,6 +67,7 @@ pub fn forget_feature(list: &mut Vec<Feature>, gone: Feature) {
             (Feature::Plane(i), Feature::Plane(k)) if i > k => Feature::Plane(i - 1),
             (Feature::Remove(i), Feature::Remove(k)) if i > k => Feature::Remove(i - 1),
             (Feature::Hole(i), Feature::Hole(k)) if i > k => Feature::Hole(i - 1),
+            (Feature::Thread(i), Feature::Thread(k)) if i > k => Feature::Thread(i - 1),
             (f, _) => f,
         };
     }
@@ -152,6 +155,9 @@ pub struct Document {
     /// Holes. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub holes: Vec<HoleFeature>,
+    /// Threads on cylinders. Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thread_features: Vec<crate::model::ThreadFeature>,
     /// The units the design is shown and typed in (Fusion's Document Settings
     /// → Units). Values are always *stored* in mm (see the file header);
     /// older files are mm.
@@ -396,6 +402,15 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             return Err(format!("{}: invalid place, size or target", h.name));
         }
     }
+    for t in &doc.thread_features {
+        let ok = !t.faces.is_empty()
+            && t.faces.iter().all(|c| c.axis_point.is_finite() && c.axis.is_finite() && c.at.is_finite() && c.radius.is_finite() && c.radius > 0.0)
+            && t.offset.is_finite()
+            && t.length.is_finite();
+        if !ok {
+            return Err(format!("{}: invalid face or length", t.name));
+        }
+    }
     for p in &doc.planes {
         let f = p.base;
         if !(p.offset.is_finite() && f.origin.is_finite() && f.u.is_finite() && f.v.is_finite() && f.normal().length() > 0.5) {
@@ -443,6 +458,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     let mut seen_p = vec![false; doc.planes.len()];
     let mut seen_x = vec![false; doc.removes.len()];
     let mut seen_h = vec![false; doc.holes.len()];
+    let mut seen_t = vec![false; doc.thread_features.len()];
     for f in &doc.timeline {
         let slot = match *f {
             Feature::Sketch(i) => seen_s.get_mut(i),
@@ -454,6 +470,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Feature::Plane(i) => seen_p.get_mut(i),
             Feature::Remove(i) => seen_x.get_mut(i),
             Feature::Hole(i) => seen_h.get_mut(i),
+            Feature::Thread(i) => seen_t.get_mut(i),
         };
         match slot {
             Some(s) if !*s => *s = true,
@@ -463,7 +480,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     if doc.suppressed.iter().any(|f| !doc.timeline.contains(f)) {
         return Err("a suppressed feature isn't in the timeline".into());
     }
-    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).any(|s| !s) {
+    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).any(|s| !s) {
         return Err("timeline is missing a feature".into());
     }
     Ok(())
@@ -586,6 +603,7 @@ mod tests {
             planes: Vec::new(),
             removes: Vec::new(),
             holes: Vec::new(),
+            thread_features: Vec::new(),
             units: crate::units::Unit::Mm,
             version: Version(0),
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],

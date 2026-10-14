@@ -671,6 +671,14 @@ impl OpenCad {
                             self.open_hole(None);
                         }
                     }
+                    let tip = "Thread: click a shaft or the inside of a hole; shown or modeled, ISO and Unified sizes";
+                    if icons::button(ui, Icon::Thread, tip, has_bodies, self.thread_dialog.is_some()).clicked() {
+                        if self.thread_dialog.is_some() {
+                            self.cancel_thread();
+                        } else {
+                            self.open_thread(None);
+                        }
+                    }
                 });
                 group(ui, "CONSTRUCT", |ui| {
                     let tip = "Offset Plane: click an origin plane or a face, then set the distance";

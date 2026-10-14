@@ -28,6 +28,7 @@ pub enum Icon {
     Plane,
     PlaneAngle,
     Hole,
+    Thread,
     Project,
     Axis,
     RectPattern,
@@ -292,6 +293,16 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
                 line(p, q, Stroke::new(thin.width * 1.2, orange));
             }
             line((0.3, 0.6), (1.0, 0.6), Stroke::new(thin.width * 1.4, ink));
+        }
+        Icon::Thread => {
+            // A bolt shank with slanted thread lines.
+            line((0.3, 0.1), (0.3, 0.9), thin);
+            line((0.7, 0.1), (0.7, 0.9), thin);
+            let t = Stroke::new(thin.width * 1.2, orange);
+            for k in 0..5 {
+                let y = 0.2 + 0.15 * k as f32;
+                line((0.3, y + 0.06), (0.7, y - 0.06), t);
+            }
         }
         Icon::Hole => {
             // A block seen from the front with a drilled hole: two walls and a pointed tip.

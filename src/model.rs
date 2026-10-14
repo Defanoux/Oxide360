@@ -525,6 +525,45 @@ impl ThreadSpec {
     }
 }
 
+/// A cylindrical face as picked: a point on its axis, the axis, its radius,
+/// and where it was clicked (the thread starts at the end nearer that).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CylinderRef {
+    pub axis_point: DVec3,
+    pub axis: DVec3,
+    pub radius: f64,
+    pub at: DVec3,
+}
+
+/// Fusion's Thread: threads on cylindrical faces (shafts or holes), drawn or
+/// modeled. A timeline feature.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ThreadFeature {
+    pub name: String,
+    pub faces: Vec<CylinderRef>,
+    pub spec: ThreadSpec,
+    /// The whole face; else `length` from `offset` (from the end nearer the click).
+    pub full_length: bool,
+    pub offset: f64,
+    pub length: f64,
+}
+
+impl ThreadFeature {
+    /// Where the thread runs along a face whose ends are at `z0` and `z1`
+    /// along its axis, the click being nearer `z0`: (from, to).
+    pub fn span(&self, z0: f64, z1: f64) -> Result<(f64, f64), String> {
+        let s = if z1 >= z0 { 1.0 } else { -1.0 };
+        let full = (z1 - z0).abs();
+        if self.full_length {
+            return Ok((z0, z1));
+        }
+        if !(self.offset >= 0.0 && self.length > 0.0 && self.offset < full) {
+            return Err("the offset and length must fit on the face".into());
+        }
+        Ok((z0 + s * self.offset, z0 + s * (self.offset + self.length).min(full)))
+    }
+}
+
 /// Fusion's Hole: drilled holes (simple, counterbore, countersink; plain,
 /// clearance or tapped) at one or more places. A timeline feature that cuts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
