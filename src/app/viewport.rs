@@ -534,7 +534,7 @@ impl OpenCad {
             if esc && !typing {
                 self.axis_pick = false;
             }
-        } else if self.angle_pick {
+        } else if self.angle_pick || self.plane_dialog.as_ref().is_some_and(|d| d.picking_line()) {
             // --- Plane at Angle: click a sketch line, an axis or a straight edge ---
             self.ensure_model(Slot::Committed);
             self.edge_hover = None;
@@ -588,13 +588,25 @@ impl OpenCad {
                 // through the origin, anything else at its middle.
                 let o = if matches!(hinge, model::Hinge::World(_)) { DVec3::ZERO } else { (p + q) * 0.5 };
                 let size = p.distance(q).max(reach * 0.5);
-                self.cancel_all_dialogs();
-                self.open_plane_dialog(PlaneDialog::at_angle(hinge, o, q - p, n0, size));
+                match self.plane_dialog.as_mut().filter(|d| d.picking_line()) {
+                    // The dialog's Line field: swap the line, keep the angle.
+                    Some(d) => {
+                        d.set_line(hinge, o, q - p, n0, size);
+                        self.set_distance_text();
+                    }
+                    None => {
+                        self.cancel_all_dialogs();
+                        self.open_plane_dialog(PlaneDialog::at_angle(hinge, o, q - p, n0, size));
+                    }
+                }
                 self.hinge_hover = None;
             }
             if esc && !typing {
                 self.angle_pick = false;
                 self.hinge_hover = None;
+                if let Some(a) = self.plane_dialog.as_mut().and_then(|d| d.angle.as_mut()) {
+                    a.picking_line = false;
+                }
             }
         } else if self.edge_dialog.is_some() {
             // --- fillet / chamfer input: pick edges on the model before this feature ---
@@ -1423,7 +1435,8 @@ impl OpenCad {
         // Picking an axis or a mirror plane shows the whole origin too.
         let picking_axis = self.copy_dialog.as_ref().is_some_and(|d| d.picking_axis || d.mode == CopyMode::Mirror)
             || self.dialog.as_ref().is_some_and(|d| d.picking_target || d.extent == model::Extent::ToObject)
-            || self.angle_pick;
+            || self.angle_pick
+            || self.plane_dialog.as_ref().is_some_and(|d| d.picking_line());
         let shown = if self.face_pick || picking_axis { origin::Shown::default() } else { self.origin_shown };
         let show_origin = !sketching && (shown.all || self.face_pick || picking_axis);
         let mirror_plane = self.copy_dialog.as_ref().filter(|d| d.mode == CopyMode::Mirror && d.plane_set).map(|d| (d.mirror_custom, d.plane));
@@ -1756,7 +1769,7 @@ impl OpenCad {
         }
 
         // --- draw: the line a Plane at Angle would turn about ---
-        if self.angle_pick {
+        if self.angle_pick || self.plane_dialog.as_ref().is_some_and(|d| d.picking_line()) {
             if let Some((_, p, q, _)) = self.hinge_hover {
                 view.line(p.as_vec3(), q.as_vec3(), Stroke::new(4.0, COL_HOVER));
             }

@@ -14,6 +14,8 @@ pub struct AngleSetup {
     /// A point on the line (the plane's origin), its direction, the 0° normal.
     pub line: (DVec3, DVec3, DVec3),
     pub degrees: f64,
+    /// The Line field is waiting for a click on another line.
+    pub picking_line: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -38,10 +40,25 @@ impl PlaneDialog {
     /// drawn `size` across.
     pub fn at_angle(hinge: Hinge, o: DVec3, d: DVec3, n0: DVec3, size: f64) -> Self {
         let h = size / 2.0;
-        let angle = Some(AngleSetup { hinge, line: (o, d, n0), degrees: 0.0 });
+        let angle = Some(AngleSetup { hinge, line: (o, d, n0), degrees: 0.0, picking_line: false });
         let mut dialog = PlaneDialog { editing: None, base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: false, distance: 0.0, anchor: [0.0; 2], extent: [-h, -h, h, h], angle };
         dialog.base = dialog.frame();
         dialog
+    }
+
+    /// Turn about another line instead (picked wrong), keeping the angle.
+    pub fn set_line(&mut self, hinge: Hinge, o: DVec3, d: DVec3, n0: DVec3, size: f64) {
+        if let Some(a) = self.angle.as_mut() {
+            (a.hinge, a.line, a.picking_line) = (hinge, (o, d, n0), false);
+            let h = size / 2.0;
+            self.extent = [-h, -h, h, h];
+            self.base = self.frame();
+        }
+    }
+
+    /// Picking a new line in the view?
+    pub fn picking_line(&self) -> bool {
+        self.angle.is_some_and(|a| a.picking_line)
     }
 
     /// Edit a plane; `built` is where it is now (a Plane at Angle's line is
@@ -52,7 +69,7 @@ impl PlaneDialog {
             let (d, n) = (now.u, now.normal());
             // Turn the normal back to 0°.
             let back = (-a.degrees).to_radians();
-            AngleSetup { hinge: a.hinge, line: (now.origin, d, n * back.cos() + d.cross(n) * back.sin()), degrees: a.degrees }
+            AngleSetup { hinge: a.hinge, line: (now.origin, d, n * back.cos() + d.cross(n) * back.sin()), degrees: a.degrees, picking_line: false }
         });
         PlaneDialog { editing: Some(k), base: f.base, on_origin: f.on_origin, distance: f.offset, anchor: f.anchor, extent: f.extent, angle }
     }
@@ -80,12 +97,21 @@ impl PlaneDialog {
             ui.heading(if self.editing.is_some() { "Edit Plane at Angle" } else { "Plane at Angle" });
             ui.horizontal(|ui| {
                 ui.label("Line");
-                ui.label(match a.hinge {
-                    Hinge::World(w) => format!("{} axis", w.name()),
-                    Hinge::Axis(k) => format!("Axis{}", k + 1),
-                    Hinge::Edge(_) => "a body edge".into(),
-                    Hinge::SketchLine { .. } => "a sketch line".into(),
-                });
+                // Like Fusion's selection field: click it, then click another line.
+                let name = if a.picking_line {
+                    "Click a line, edge or axis…".to_string()
+                } else {
+                    match a.hinge {
+                        Hinge::World(w) => format!("{} axis", w.name()),
+                        Hinge::Axis(k) => format!("Axis{}", k + 1),
+                        Hinge::Edge(_) => "a body edge".into(),
+                        Hinge::SketchLine { .. } => "a sketch line".into(),
+                    }
+                };
+                let text = if a.picking_line { egui::RichText::new(name).strong() } else { egui::RichText::new(name) };
+                if ui.add(egui::Button::selectable(a.picking_line, text).min_size(egui::vec2(150.0, 0.0))).on_hover_text("Click, then click another line to turn the plane about").clicked() {
+                    a.picking_line = !a.picking_line;
+                }
             });
             ui.horizontal(|ui| {
                 ui.label("Angle");
@@ -156,5 +182,22 @@ mod tests {
         assert!(bo.distance(o) < 1e-12 && bd.distance(DVec3::X) < 1e-12 && bn.distance(DVec3::Z) < 1e-12, "{bn}");
         assert!(back.frame().normal().distance(d.frame().normal()) < 1e-12);
         assert_eq!(back.feature("Plane1".into()), f);
+    }
+
+    #[test]
+    fn picking_another_line_keeps_the_angle() {
+        use crate::model::WorldAxis;
+        let mut d = PlaneDialog::at_angle(Hinge::World(WorldAxis::X), DVec3::ZERO, DVec3::X, DVec3::Z, 40.0);
+        d.angle.as_mut().unwrap().degrees = 90.0;
+        d.angle.as_mut().unwrap().picking_line = true;
+        assert!(d.picking_line());
+        d.set_line(Hinge::World(WorldAxis::Y), DVec3::ZERO, DVec3::Y, DVec3::Z, 20.0);
+        assert!(!d.picking_line());
+        let a = d.angle.unwrap();
+        assert_eq!((a.hinge, a.degrees), (Hinge::World(WorldAxis::Y), 90.0));
+        // 90° about Y from XY stands up as the YZ plane.
+        assert!(d.frame().normal().cross(DVec3::X).length() < 1e-12, "{}", d.frame().normal());
+        assert_eq!(d.extent, [-10.0, -10.0, 10.0, 10.0]);
+        assert_eq!(d.feature("P".into()).angle.unwrap().hinge, Hinge::World(WorldAxis::Y));
     }
 }
