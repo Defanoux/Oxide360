@@ -17,6 +17,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
+- Rectangle sizes typed while drawing (2-point and centre, `rect_input.rs`): after the first corner, typing fills the width box, Tab the height; typed sizes hold while the cursor picks the side, the click (or Enter) places it and each typed size becomes a dimension; nothing typed = free size, no dimensions; Esc drops what was typed.
 - Plane at Angle (CONSTRUCT): click a sketch line, a straight body edge, a construction axis or an origin axis, then type or drag the round arrow; `PlaneFeature.angle = PlaneAngle { hinge, degrees }`, the kernel finds the line again every build (edges/sketches move it), 0° lies in the sketch plane / the edge's first face / XY (XZ for Z). Axes and sketches a plane turns about can't be deleted first. The dialog's Line field re-picks the line (angle kept).
 - Offset Plane: the distance box opens focused next to the arrow (type straight away, Enter = OK); construction planes drawn orange like the origin planes; a plane gets hidden once a sketch, a To Object extrude or a mirror uses it.
 - Extrude To Object (`Extent::ToObject`, `Extrude.target: ExtrudeTarget` = origin plane / construction plane / body face kept as picked and found again every build): the prism is cut by the target plane, so a slanted plane slants the end; errors for planes alongside or not reached; no taper or drag arrow. Splines close smoothly (periodic) when the first point is clicked again.

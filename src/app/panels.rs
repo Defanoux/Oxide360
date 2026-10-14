@@ -1391,6 +1391,61 @@ impl OpenCad {
         });
     }
 
+    /// The width and height boxes beside a rectangle being drawn. Empty boxes
+    /// show the size the cursor makes; Tab swaps boxes, Enter places it, Esc
+    /// lets go of what was typed.
+    pub(crate) fn rect_size_boxes(&mut self, ctx: &egui::Context) {
+        let sizing = self.active.is_some() && matches!(self.editor.tool, Tool::Rectangle | Tool::RectangleCenter) && self.editor.start.is_some();
+        let Some((at, live)) = self.rect_boxes.filter(|_| sizing) else { return };
+        let unit = self.units;
+        let ids = [egui::Id::new("rect_width"), egui::Id::new("rect_height")];
+        let (tab, enter, esc) = ctx.input(|i| (i.key_pressed(egui::Key::Tab), i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+        let ours = ctx.memory(|m| m.focused()).and_then(|f| ids.iter().position(|&id| id == f));
+        let mut input = self.rect_input.clone().unwrap_or_default();
+        if let (Some(k), true) = (ours, tab) {
+            input.field = k;
+            input.tab();
+        }
+        let mut place = false;
+        let mut drop = false;
+        for k in 0..2 {
+            egui::Area::new(ids[k].with("area")).order(egui::Order::Foreground).fixed_pos(at[k]).pivot(egui::Align2::CENTER_CENTER).show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(4, 2)).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let mut out = egui::TextEdit::singleline(&mut input.text[k])
+                            .id(ids[k])
+                            .desired_width(56.0)
+                            .lock_focus(true)
+                            .hint_text(unit.plain(live[k]))
+                            .show(ui);
+                        ui.label(unit.name());
+                        if input.focus && input.field == k {
+                            // Focus with the cursor after what was typed.
+                            out.response.request_focus();
+                            let end = egui::text::CCursor::new(input.text[k].chars().count());
+                            out.state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+                            out.state.store(ui.ctx(), ids[k]);
+                            input.focus = false;
+                        }
+                        if out.response.lost_focus() {
+                            place |= enter;
+                            drop |= esc;
+                        }
+                    });
+                });
+            });
+        }
+        if drop {
+            self.rect_input = None; // free size again; another Esc leaves the tool
+        } else {
+            let any = input.text.iter().any(|t| !t.is_empty()) || ours.is_some() || input.focus;
+            self.rect_input = any.then_some(input);
+            if place {
+                self.rect_place = true;
+            }
+        }
+    }
+
     /// The floating number box (dimension values, extrude distance).
     pub(crate) fn float_editor(&mut self, ctx: &egui::Context) {
         let (Some(anchor), Some(fe)) = (self.float_anchor, self.float.as_mut()) else { return };

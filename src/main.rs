@@ -38,6 +38,7 @@ mod origin;
 mod plane_dialog;
 mod pattern;
 mod profile;
+mod rect_input;
 mod project;
 mod settings;
 mod sketch;
@@ -604,6 +605,9 @@ struct OpenCad {
     cut_preview: Option<(Tool, sketch::TrimPiece)>, // what Trim would cut / Extend would add, under the cursor
     line_up: Option<(Option<DVec2>, Option<DVec2>, DVec2)>, // inference: lined up above/beside these, at this point
     line_length: Option<f64>,               // Line tool: a typed length the next segment keeps (the click sets its angle)
+    rect_input: Option<rect_input::RectInput>, // 2-point / centre rectangle: typed width and height
+    rect_boxes: Option<([egui::Pos2; 2], [f64; 2])>, // where the width / height boxes go, and the sizes shown now
+    rect_place: bool,                        // Enter in a size box: place the rectangle as a click would
     sp_applied: Option<pattern::Layout>,     // the layout the sketch is showing now
     project_body_hover: Option<usize>,       // the body under the mouse when no edge is (Project tool: takes all its edges)
     project_hover: Option<EdgeRef>,          // the body edge under the mouse (Project tool)
@@ -753,6 +757,9 @@ impl Default for OpenCad {
             cut_preview: None,
             line_up: None,
             line_length: None,
+            rect_input: None,
+            rect_boxes: None,
+            rect_place: false,
             sp_applied: None,
             project_body_hover: None,
             project_hover: None,
@@ -953,6 +960,7 @@ impl OpenCad {
         self.timeline_height = egui::Panel::bottom("timeline").show(ui, |ui| self.timeline_bar(ui)).response.rect.height();
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui));
         self.float_editor(&ctx);
+        self.rect_size_boxes(&ctx);
         self.copy_quantity_boxes(&ctx);
 
         if let Some(cmd) = self.cmd.take() {

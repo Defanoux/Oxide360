@@ -824,6 +824,21 @@ impl OpenCad {
                             cursor = Some(Anchor::Free(a + dir * l));
                         }
                     }
+                    // Rectangle with typed sizes: the far corner stays that size from
+                    // the start, on the cursor's side of it.
+                    let sizing = matches!(self.editor.tool, Tool::Rectangle | Tool::RectangleCenter) && self.editor.start.is_some_and(|a| sk.is_valid_anchor(a));
+                    self.rect_boxes = None; // set again where the preview is drawn
+                    if !sizing {
+                        self.rect_input = None;
+                        self.rect_place = false;
+                    }
+                    if let (Some(r), Some(start), Some(c)) = (&self.rect_input, self.editor.start.filter(|_| sizing), cursor) {
+                        let sizes = r.sizes(self.units);
+                        if sizes.iter().any(|s| s.is_some()) {
+                            let centered = self.editor.tool == Tool::RectangleCenter;
+                            cursor = Some(Anchor::Free(rect_input::sized_corner(sk.pos(start), sk.pos(c), centered, sizes)));
+                        }
+                    }
                     // Spline: near its first point (three or more placed), the cursor
                     // snaps onto it — a click there closes the shape.
                     if let (Tool::Spline, Some(&first), Some(px)) = (tool, self.editor.spline.first(), hover_px) {
@@ -1375,6 +1390,16 @@ impl OpenCad {
                     // typing a number sets the diameter / length / width.
                     let wants_number = (matches!(self.editor.tool, Tool::Circle | Tool::Line) && self.editor.start.is_some())
                         || (self.editor.tool == Tool::Slot && self.editor.second.is_some());
+                    // Rectangle: typing (or Tab) after the first corner fills the width
+                    // box (Tab: the height box).
+                    let rect_sizing = matches!(self.editor.tool, Tool::Rectangle | Tool::RectangleCenter) && self.editor.start.is_some();
+                    if rect_sizing && !typing && self.float.is_none() {
+                        if let Some(typed) = typed_number(ui) {
+                            self.rect_input.get_or_insert_with(Default::default).type_text(typed);
+                        } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
+                            self.rect_input.get_or_insert_with(Default::default).tab();
+                        }
+                    }
                     if wants_number && !typing && self.float.is_none() {
                         if let Some(typed) = typed_number(ui) {
                             if self.editor.tool == Tool::Line {
@@ -1384,10 +1409,11 @@ impl OpenCad {
                             self.float = Some(FloatEdit { target: EditTarget::NewCircle, text: typed, focus: true, keep_text: true });
                         }
                     }
-                    if response.clicked() {
+                    if response.clicked() || std::mem::take(&mut self.rect_place) {
                         if let Some(at) = cursor {
                             let ed = &mut self.editor;
                             let length = self.line_length.filter(|_| ed.tool == Tool::Line && ed.start.is_some());
+                            let rect_sizes = self.rect_input.take().filter(|_| matches!(ed.tool, Tool::Rectangle | Tool::RectangleCenter) && ed.start.is_some()).map(|r| r.sizes(self.units));
                             let r = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
                                 let before = sk.entities.len();
                                 // A line drawn nearly horizontal/vertical gets that constraint,
@@ -1396,6 +1422,15 @@ impl OpenCad {
                                     let mut t = sk.clone();
                                     if solver::add_constraints(&mut t, &[c]).is_ok() {
                                         *sk = t;
+                                    }
+                                }
+                                // Typed rectangle sizes: kept as its width / height dimensions.
+                                if let (Some(sizes), Some(first)) = (rect_sizes, (before..sk.entities.len()).find(|&e| sk.is_line(e))) {
+                                    for c in rect_input::size_dimensions(first, sizes) {
+                                        let mut t = sk.clone();
+                                        if solver::add_constraints(&mut t, &[c]).is_ok() {
+                                            *sk = t;
+                                        }
                                     }
                                 }
                                 // A typed length: the new line keeps it as a dimension.
@@ -2464,7 +2499,22 @@ impl OpenCad {
                                     for k in 0..4 {
                                         view.line(plane.to_world(c[k]), plane.to_world(c[(k + 1) % 4]), preview);
                                     }
-                                    format!("{} × {}", u.show(c[0].distance(c[1])), u.show(c[1].distance(c[2])))
+                                    let sizes = [c[0].distance(c[1]), c[1].distance(c[2])];
+                                    if matches!(self.editor.tool, Tool::Rectangle | Tool::RectangleCenter) {
+                                        // The width box by a horizontal side, the height box by a
+                                        // vertical one, both just outside the rectangle.
+                                        let mid = (c[0] + c[2]) * 0.5;
+                                        let place = |a: DVec2, b: DVec2| {
+                                            let m = (a + b) * 0.5;
+                                            let (pm, pc) = (view.project(plane.to_world(m))?, view.project(plane.to_world(mid))?);
+                                            let out = (pm - pc).try_normalize().unwrap_or(Vec2::Y);
+                                            Some(to_pos(pm + out * 22.0))
+                                        };
+                                        self.rect_boxes = place(c[0], c[1]).zip(place(c[1], c[2])).map(|(w, h)| ([w, h], sizes));
+                                        format!("{} × {}   (type the width, Tab for the height)", u.show(sizes[0]), u.show(sizes[1]))
+                                    } else {
+                                        format!("{} × {}", u.show(sizes[0]), u.show(sizes[1]))
+                                    }
                                 }
                                 None => {
                                     // 3-point, first side: just that side so far.
