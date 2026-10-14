@@ -1200,7 +1200,7 @@ pub struct Cylinder {
 
 impl Cylinder {
     pub fn as_ref(&self, at: DVec3) -> CylinderRef {
-        CylinderRef { axis_point: self.axis_point, axis: self.axis, radius: self.radius, at }
+        CylinderRef { axis_point: self.axis_point, axis: self.axis, radius: self.radius, at, internal: self.internal, length: self.length }
     }
 }
 

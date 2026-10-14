@@ -691,11 +691,8 @@ impl OpenCad {
         self.message = None;
         self.ensure_model(Slot::Committed);
         self.thread_dialog = Some(match editing.and_then(|k| self.thread_features.get(k).map(|t| (k, t))) {
-            Some((k, t)) => {
-                let bodies: Vec<&opencascade::primitives::Shape> = self.model(Slot::Committed).bodies.iter().map(|b| &b.shape).collect();
-                let internal = t.faces.first().and_then(|f| kernel::find_cylinder(&bodies, f)).is_some_and(|c| c.internal);
-                ThreadDialog::from_feature(k, t, internal)
-            }
+            // (Already threaded, the face isn't a plain cylinder any more: use what was picked.)
+            Some((k, t)) => ThreadDialog::from_feature(k, t, t.faces.first().is_some_and(|f| f.internal)),
             None => ThreadDialog::new(format!("Thread{}", self.thread_features.len() + 1), self.last_thread.clone()),
         });
     }

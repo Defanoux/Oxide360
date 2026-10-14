@@ -533,6 +533,12 @@ pub struct CylinderRef {
     pub axis: DVec3,
     pub radius: f64,
     pub at: DVec3,
+    /// As picked: the inside of a hole (else a shaft), and the face's length
+    /// (for drawing it; the kernel finds the face again every build).
+    #[serde(default)]
+    pub internal: bool,
+    #[serde(default)]
+    pub length: f64,
 }
 
 /// Fusion's Thread: threads on cylindrical faces (shafts or holes), drawn or

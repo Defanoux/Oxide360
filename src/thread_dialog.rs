@@ -34,6 +34,11 @@ impl ThreadDialog {
         ThreadDialog { editing: Some(k), thread: t.clone(), picking: false, remember: false, internal }
     }
 
+    /// Picking faces in the view (Esc stops that first).
+    pub fn picking_any(&self) -> bool {
+        self.picking
+    }
+
     /// Click on a face: added (the first one sets the size to fit it, unless
     /// a size is remembered), or dropped if it's already picked.
     pub fn toggle(&mut self, face: CylinderRef, internal: bool) {
@@ -180,7 +185,7 @@ mod tests {
     use glam::DVec3;
 
     fn shaft(r: f64) -> CylinderRef {
-        CylinderRef { axis_point: DVec3::ZERO, axis: DVec3::Z, radius: r, at: DVec3::new(r, 0.0, 1.0) }
+        CylinderRef { axis_point: DVec3::ZERO, axis: DVec3::Z, radius: r, at: DVec3::new(r, 0.0, 1.0), internal: false, length: 10.0 }
     }
 
     #[test]

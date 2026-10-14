@@ -419,6 +419,8 @@ impl OpenCad {
                     d.picking = false;
                 }
             }
+        } else if self.hole_dialog.as_ref().is_some_and(|d| !d.picking_target) && esc && !typing {
+            self.cancel_hole(); // Esc ends the command, as in Fusion
         }
 
         // --- Thread: click cylindrical faces (shafts or holes) ---
@@ -436,6 +438,8 @@ impl OpenCad {
                     d.picking = false;
                 }
             }
+        } else if self.thread_dialog.as_ref().is_some_and(|d| !d.picking_any()) && esc && !typing {
+            self.cancel_thread(); // Esc ends the command, as in Fusion
         }
 
         // --- Extrude To Object / Hole To: click the plane or flat face it runs up to ---
@@ -1818,11 +1822,8 @@ impl OpenCad {
             if let Some((c, at)) = self.thread_hover {
                 ring(&c.as_ref(at), c.length, Stroke::new(3.0, COL_HOVER));
             }
-            let bodies: Vec<&opencascade::primitives::Shape> = self.model(Slot::Committed).bodies.iter().map(|b| &b.shape).collect();
             for f in &d.thread.faces {
-                if let Some(c) = kernel::find_cylinder(&bodies, f) {
-                    ring(&c.as_ref(f.at), c.length, Stroke::new(2.5, COL_SELECT));
-                }
+                ring(f, f.length, Stroke::new(2.5, COL_SELECT));
             }
             if d.picking {
                 painter.text(
