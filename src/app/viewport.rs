@@ -2098,7 +2098,7 @@ impl OpenCad {
                     }
                     return;
                 }
-                if self.editor.selection.iter().any(|s| matches!(s, Sel::Entity(_))) && ui.button("Construction (X)").clicked() {
+                if self.editor.selection.iter().any(|s| matches!(s, Sel::Entity(_))) && ui.button("Construction").clicked() {
                     self.toggle_construction();
                     ui.close();
                 }

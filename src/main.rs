@@ -649,6 +649,7 @@ struct OpenCad {
     path: Option<PathBuf>,              // where this design is saved
     name: Option<String>,               // a name given before the first save
     renaming_design: Option<String>,    // the tab's name being edited
+    rename_select_all: bool,            // select the whole name when the box opens
     saved: Document,                    // what's on disk, to detect unsaved changes
     cmd: Option<Cmd>,
     confirm: Option<Pending>,
@@ -704,6 +705,7 @@ impl Default for OpenCad {
             tab_request: None,
             name: None,
             renaming_design: None,
+            rename_select_all: false,
             close_me: false,
             toolbar_hidden: settings::Settings::default().toolbar_hidden,
             keymap: keys::Keymap::default(),
@@ -861,7 +863,11 @@ impl OpenCad {
             let dt = ui.input(|i| i.stable_dt);
             let glide = self.toolbar_inertia.step(self.toolbar_user_delta, dt);
             let offset_in = (self.toolbar_x + glide.unwrap_or(0.0)).max(0.0);
+            // A solid scrollbar in its own strip under the group names (a
+            // floating one sat over them and caught clicks meant for the ▾s).
+            ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
             let out = egui::ScrollArea::horizontal()
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                 .auto_shrink([false, true])
                 .horizontal_scroll_offset(offset_in)
                 .show(ui, |ui| self.toolbar(ui));

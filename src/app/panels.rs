@@ -57,28 +57,51 @@ fn tool_group(ui: &mut egui::Ui, label: &str, items: &[ToolItem], hidden: &mut V
         ui.painter().galley_with_override_text_color(text_at, galley.clone(), ink);
         let c = egui::pos2(text_at.x + galley.size().x + 8.0, rect.center().y);
         ui.painter().add(egui::Shape::convex_polygon(vec![c + egui::vec2(-4.0, -2.0), c + egui::vec2(4.0, -2.0), c + egui::vec2(0.0, 3.0)], ink, Stroke::NONE));
-        let r = r.on_hover_text("All the tools in this group (right-click one to add it to the toolbar or take it off)");
-        egui::Popup::menu(&r).show(|ui| {
-            for it in items {
-                let shown = !hidden.iter().any(|h| h == it.name);
-                let row = ui.add_enabled_ui(it.enabled, |ui| {
-                    ui.horizontal(|ui| {
-                        icons::small(ui, it.icon);
-                        ui.selectable_label(it.on, format!("{}{}", it.name, if shown { "" } else { "   (not on the toolbar)" }))
-                    })
-                    .inner
-                });
-                let entry = row.inner.on_hover_text(it.tip);
-                if entry.clicked() {
+        let r = r.on_hover_text("More tools in this group (right-click a tool on the toolbar to take it off)");
+        egui::Popup::menu(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            ui.set_min_width(230.0);
+            let tucked: Vec<&ToolItem> = items.iter().filter(|it| hidden.iter().any(|h| h == it.name)).collect();
+            if tucked.is_empty() {
+                ui.weak("Every tool here is on the toolbar.");
+            }
+            for it in tucked {
+                // The whole row is the button; ⋯ at its end pins it to the toolbar.
+                let (row, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), if it.enabled { egui::Sense::click() } else { egui::Sense::hover() });
+                let more = egui::Rect::from_min_size(row.right_top() - egui::vec2(26.0, 0.0), egui::vec2(24.0, 24.0));
+                let over_more = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| more.contains(p));
+                if (resp.hovered() && !over_more) || it.on {
+                    ui.painter().rect_filled(row, 4.0, Color32::from_gray(if it.on { 70 } else { 55 }));
+                }
+                icons::paint(ui.painter(), egui::Rect::from_min_size(row.min + egui::vec2(4.0, 4.0), egui::vec2(16.0, 16.0)), it.icon, it.enabled);
+                let ink = if it.enabled { Color32::from_gray(225) } else { Color32::from_gray(110) };
+                ui.painter().text(row.left_center() + egui::vec2(28.0, 0.0), egui::Align2::LEFT_CENTER, it.name, egui::FontId::proportional(14.0), ink);
+                if resp.clicked() && !over_more {
                     chosen = Some(it.name);
                     ui.close();
                 }
-                entry.context_menu(|ui| {
-                    if ui.button(if shown { "Remove from toolbar" } else { "Add to toolbar" }).clicked() {
-                        toggle = Some(it.name);
-                        ui.close();
-                    }
-                });
+                let dots = ui.put(more, egui::Button::new("").frame(over_more)).on_hover_text("More");
+                for k in -1..=1 {
+                    ui.painter().circle_filled(more.center() + egui::vec2(k as f32 * 5.0, 0.0), 1.6, Color32::from_gray(200));
+                }
+                // ⋯ opens this row's options just under it (in the same list).
+                let open_id = egui::Id::new(("tool_more", label));
+                let open: Option<&'static str> = ui.ctx().data(|d| d.get_temp(open_id)).flatten();
+                if dots.clicked() {
+                    let next = if open == Some(it.name) { None } else { Some(it.name) };
+                    ui.ctx().data_mut(|d| d.insert_temp(open_id, next));
+                }
+                if open == Some(it.name) {
+                    ui.horizontal(|ui| {
+                        ui.add_space(26.0);
+                        if ui.button("Pin to toolbar").clicked() {
+                            toggle = Some(it.name);
+                            ui.ctx().data_mut(|d| d.insert_temp(open_id, None::<&'static str>));
+                        }
+                    });
+                }
+                if !over_more {
+                    resp.on_hover_text(it.tip);
+                }
             }
         });
     });
@@ -171,8 +194,14 @@ impl OpenCad {
                         ui.horizontal(|ui| {
                             // Right-click → Rename (this tab's name is edited in place).
                             if let (true, Some(t)) = (current, self.renaming_design.as_mut()) {
-                                let edit = ui.add(egui::TextEdit::singleline(t).desired_width(140.0));
+                                let mut out = egui::TextEdit::singleline(t).desired_width(140.0).show(ui);
+                                let edit = out.response.clone();
                                 edit.request_focus();
+                                // The whole name selected at first, so typing replaces it.
+                                if std::mem::take(&mut self.rename_select_all) {
+                                    out.state.cursor.set_char_range(Some(egui::text::CCursorRange::select_all(&out.galley)));
+                                    out.state.store(ui.ctx(), edit.id);
+                                }
                                 let (enter, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
                                 if enter {
                                     rename_done = Some(Some(t.clone()));
@@ -189,6 +218,7 @@ impl OpenCad {
                                     r.context_menu(|ui| {
                                         if ui.button("Rename…").clicked() {
                                             self.renaming_design = Some(self.file_name().trim_end_matches(".ocad").to_string());
+                                            self.rename_select_all = true;
                                             ui.close();
                                         }
                                     });
@@ -483,7 +513,7 @@ impl OpenCad {
                     ToolItem { name: "Circular Pattern", icon: Icon::CircPattern, tip: "Circular Pattern: select geometry first, then click this", enabled: true, on: pattern_on(SpMode::Circular) },
                     ToolItem { name: "Mirror", icon: Icon::Mirror, tip: "Mirror: select geometry first, then click this and the mirror line", enabled: true, on: t == Tool::Mirror },
                     ToolItem { name: "Project", icon: Icon::Project, tip: "Project: click a body edge to bring it into the sketch (as locked construction geometry)", enabled: self.body_count > 0, on: t == Tool::Project },
-                    ToolItem { name: "Construction", icon: Icon::Construction, tip: "Construction (X): toggle the selected geometry, or what you draw next", enabled: true, on: self.editor.construction },
+                    ToolItem { name: "Construction", icon: Icon::Construction, tip: "Construction: toggle the selected geometry, or what you draw next", enabled: true, on: self.editor.construction },
                 ];
                 match tool_group(ui, "MODIFY", &items, &mut self.toolbar_hidden) {
                     Some("Fillet") => self.editor.set_tool(Tool::SketchFillet),

@@ -114,16 +114,15 @@ impl OpenCad {
         Some(Picked { pick, geom, samples })
     }
 
-    /// Snap points on a pick (beyond its corners): an edge's middle, a circle's centre.
+    /// Snap points on a pick: an edge's ends, a circle's or round face's centre
+    /// (not middles — they got in the way).
     fn measure_snaps(p: &measure::Picked) -> Vec<DVec3> {
         use measure::Geom;
         let mut out = Vec::new();
         if let (Some(first), Some(last)) = (p.samples.segments.first(), p.samples.segments.last()) {
-            let pts: Vec<DVec3> = std::iter::once(first[0]).chain(p.samples.segments.iter().map(|s| s[1])).collect();
-            // (A whole circle has no ends, and its "middle" would be anywhere.)
+            // (A whole circle has no ends.)
             if first[0].distance(last[1]) > 1e-9 {
                 out.extend([first[0], last[1]]);
-                out.extend(measure::middle(&pts));
             }
         }
         match p.geom {

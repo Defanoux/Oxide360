@@ -468,20 +468,6 @@ fn segment_segment([p1, q1]: [DVec3; 2], [p2, q2]: [DVec3; 2]) -> (DVec3, DVec3)
     (p1 + d1 * s, p2 + d2 * t)
 }
 
-/// The point halfway along a polyline (by length).
-pub fn middle(pts: &[DVec3]) -> Option<DVec3> {
-    let total: f64 = pts.windows(2).map(|w| w[0].distance(w[1])).sum();
-    let mut left = total / 2.0;
-    for w in pts.windows(2) {
-        let l = w[0].distance(w[1]);
-        if l >= left && l > 0.0 {
-            return Some(w[0].lerp(w[1], left / l));
-        }
-        left -= l;
-    }
-    pts.last().copied()
-}
-
 /// The circle through three points (centre, unit normal, radius); None if they're in a line.
 pub fn circle_through(a: DVec3, b: DVec3, c: DVec3) -> Option<(DVec3, DVec3, f64)> {
     let (u, v) = (b - a, c - a);
@@ -687,13 +673,6 @@ mod tests {
         let (p, q) = closest(&grid(0.0), &grid(3.0)).unwrap();
         assert!((p.distance(q) - 3.0).abs() < 1e-12);
         assert!(start.elapsed().as_secs_f64() < 5.0, "{:?}", start.elapsed());
-    }
-
-    #[test]
-    fn middle_is_halfway_by_length() {
-        let pts = [DVec3::ZERO, DVec3::new(2.0, 0.0, 0.0), DVec3::new(2.0, 6.0, 0.0)];
-        assert_eq!(middle(&pts), Some(DVec3::new(2.0, 2.0, 0.0)));
-        assert_eq!(middle(&[]), None);
     }
 
     #[test]
