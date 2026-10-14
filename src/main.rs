@@ -580,6 +580,9 @@ struct OpenCad {
     removes: Vec<model::RemoveFeature>,     // Remove features (bodies taken out)
     holes: Vec<model::HoleFeature>,         // Hole features
     hole_dialog: Option<hole_dialog::HoleDialog>,
+    last_build_ms: f64,                      // how long the last kernel rebuild took
+    frame_no: u64,                           // frames drawn (for the busy cursor)
+    wait_from: Option<u64>,                  // a slow rebuild is waiting a frame so the busy cursor shows first
     hole_errors: Vec<Option<String>>,
     hole_hover: Option<(model::HolePlace, DVec3)>, // what a click would add, and where its centre is
     thread_features: Vec<model::ThreadFeature>, // Thread features
@@ -738,6 +741,9 @@ impl Default for OpenCad {
             removes: Vec::new(),
             holes: Vec::new(),
             hole_dialog: None,
+            last_build_ms: 0.0,
+            frame_no: 0,
+            wait_from: None,
             hole_errors: Vec::new(),
             hole_hover: None,
             thread_features: Vec::new(),
@@ -877,6 +883,15 @@ impl OpenCad {
         // OPENCAD_TIMING=1: report frames slow enough to feel (and the kernel prints its steps).
         let frame_start = std::time::Instant::now();
         let _slow = SlowFrame(frame_start);
+        self.frame_no += 1;
+        // Previews of modeled threads wait until a value is finished.
+        let busy = ui.ctx().text_edit_focused() || ui.ctx().egui_is_using_pointer() || self.arrow_drag.is_some();
+        if let Some(d) = self.hole_dialog.as_mut() {
+            d.catch_up(busy);
+        }
+        if let Some(d) = self.thread_dialog.as_mut() {
+            d.catch_up(busy);
+        }
         let ctx = ui.ctx().clone();
         // Enter finishes the open tool window (OK) when nothing else takes it:
         // no text box focused and no number box open (that has its own Enter).
@@ -1035,6 +1050,11 @@ impl OpenCad {
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui));
         self.float_editor(&ctx);
         self.rect_size_boxes(&ctx);
+        // A slow rebuild waits for the next frame: show the busy cursor meanwhile.
+        if self.wait_from.is_some() {
+            ctx.set_cursor_icon(egui::CursorIcon::Progress);
+            ctx.request_repaint();
+        }
         self.copy_quantity_boxes(&ctx);
 
         if let Some(cmd) = self.cmd.take() {

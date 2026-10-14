@@ -21,7 +21,24 @@ impl AsRef<Face> for Face {
     }
 }
 
+/// opencad patch: copies share the same underlying face.
+impl Clone for Face {
+    fn clone(&self) -> Self {
+        Self::from_face(&self.inner)
+    }
+}
+
 impl Face {
+    /// opencad patch: OCCT's hash of the face (same face, same hash).
+    pub fn hash_code(&self) -> u64 {
+        ffi::topo_ds::opencad_shape_hash(ffi::topo_ds::cast_face_to_shape(&self.inner))
+    }
+
+    /// opencad patch: the very same face (not just an equal-looking one).
+    pub fn is_same(&self, other: &Face) -> bool {
+        ffi::topo_ds::cast_face_to_shape(&self.inner).IsEqual(ffi::topo_ds::cast_face_to_shape(&other.inner))
+    }
+
     pub(crate) fn from_face(face: &ffi::topo_ds::TopoDS_Face) -> Self {
         let inner = ffi::topo_ds::TopoDS_Face_to_owned(face);
 

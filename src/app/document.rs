@@ -525,20 +525,20 @@ impl OpenCad {
                         }
                     }
                 }
-                if let Some(d) = self.thread_dialog.as_ref().filter(|d| !d.thread.faces.is_empty()) {
+                if let Some(d) = self.thread_dialog.as_ref().filter(|d| !d.shown.faces.is_empty()) {
                     match d.editing {
-                        Some(k) => thread_features[k] = d.thread.clone(),
+                        Some(k) => thread_features[k] = d.shown.clone(),
                         None => {
-                            thread_features.push(d.thread.clone());
+                            thread_features.push(d.shown.clone());
                             timeline.push(Feature::Thread(thread_features.len() - 1));
                         }
                     }
                 }
-                if let Some(d) = self.hole_dialog.as_ref().filter(|d| !d.hole.places.is_empty()) {
+                if let Some(d) = self.hole_dialog.as_ref().filter(|d| !d.shown.places.is_empty()) {
                     match d.editing {
-                        Some(k) => holes[k] = d.hole.clone(),
+                        Some(k) => holes[k] = d.shown.clone(),
                         None => {
-                            holes.push(d.hole.clone());
+                            holes.push(d.shown.clone());
                             timeline.push(Feature::Hole(holes.len() - 1));
                         }
                     }
@@ -584,10 +584,19 @@ impl OpenCad {
                 && c.timeline == timeline
         });
         if !fresh {
+            // A slow rebuild freezes the window: show the busy cursor for a
+            // frame first (the system keeps it up while we work).
+            if self.caches[slot as usize].is_some() && self.last_build_ms > 150.0 && self.wait_from.is_none_or(|f| f >= self.frame_no) {
+                self.wait_from.get_or_insert(self.frame_no);
+                return;
+            }
+            self.wait_from = None;
+            let started = std::time::Instant::now();
             let removes = self.removes.clone();
             let model = kernel::build_all(&self.sketches, &extrudes, &revolves, &edge_features, &copies, &axes, &planes, &removes, &holes, &thread_features, &timeline);
             self.caches[slot as usize] =
                 Some(KernelCache { sketches: self.sketches.clone(), extrudes, revolves, edge_features, copies, axes, planes, removes, holes, thread_features, timeline, model });
+            self.last_build_ms = started.elapsed().as_secs_f64() * 1e3;
         }
     }
 

@@ -46,7 +46,24 @@ impl AsRef<Edge> for Edge {
     }
 }
 
+/// opencad patch: copies share the same underlying edge.
+impl Clone for Edge {
+    fn clone(&self) -> Self {
+        Self::from_edge(&self.inner)
+    }
+}
+
 impl Edge {
+    /// opencad patch: OCCT's hash of the edge (same edge, same hash).
+    pub fn hash_code(&self) -> u64 {
+        ffi::topo_ds::opencad_shape_hash(ffi::topo_ds::cast_edge_to_shape(&self.inner))
+    }
+
+    /// opencad patch: the very same edge.
+    pub fn is_same(&self, other: &Edge) -> bool {
+        ffi::topo_ds::cast_edge_to_shape(&self.inner).IsEqual(ffi::topo_ds::cast_edge_to_shape(&other.inner))
+    }
+
     pub(crate) fn from_edge(edge: &ffi::topo_ds::TopoDS_Edge) -> Self {
         let inner = ffi::topo_ds::TopoDS_Edge_to_owned(edge);
 

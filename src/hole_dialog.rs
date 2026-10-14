@@ -15,16 +15,30 @@ pub struct HoleDialog {
     pub picking: bool,
     /// The Extents "To" field takes a click on a plane or face.
     pub picking_target: bool,
+    /// What the preview shows: with a modeled thread (slow to rebuild) it
+    /// catches up only once a value is finished, not on every keystroke or
+    /// step of a drag.
+    pub shown: HoleFeature,
 }
 
 impl HoleDialog {
     /// A new hole, waiting for its places.
     pub fn new(name: String) -> Self {
-        HoleDialog { editing: None, hole: HoleFeature { name, ..Default::default() }, picking: true, picking_target: false }
+        let hole = HoleFeature { name, ..Default::default() };
+        HoleDialog { editing: None, shown: hole.clone(), hole, picking: true, picking_target: false }
     }
 
     pub fn from_feature(k: usize, h: &HoleFeature) -> Self {
-        HoleDialog { editing: Some(k), hole: h.clone(), picking: false, picking_target: false }
+        HoleDialog { editing: Some(k), hole: h.clone(), shown: h.clone(), picking: false, picking_target: false }
+    }
+
+    /// Bring the preview up to date, unless the hole has a modeled thread and
+    /// a value is still being typed or dragged (`busy`).
+    pub fn catch_up(&mut self, busy: bool) {
+        let slow = self.hole.thread.modeled && self.hole.tap == TapType::Tapped;
+        if !(slow && busy) {
+            self.shown = self.hole.clone();
+        }
     }
 
     /// Click on a place: added, or taken away if it's already there.

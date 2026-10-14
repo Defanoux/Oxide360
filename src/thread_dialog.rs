@@ -19,6 +19,8 @@ pub struct ThreadDialog {
     pub remember: bool,
     /// The faces picked so far are holes (internal threads).
     pub internal: bool,
+    /// What the preview shows (a modeled thread catches up once a value is finished).
+    pub shown: ThreadFeature,
 }
 
 impl ThreadDialog {
@@ -27,11 +29,18 @@ impl ThreadDialog {
         let remember = last.is_some();
         let spec = last.unwrap_or_else(|| ThreadSpec { class: "6g".into(), ..Default::default() });
         let thread = ThreadFeature { name, faces: Vec::new(), spec, full_length: true, offset: 0.0, length: 10.0 };
-        ThreadDialog { editing: None, thread, picking: true, remember, internal: false }
+        ThreadDialog { editing: None, shown: thread.clone(), thread, picking: true, remember, internal: false }
     }
 
     pub fn from_feature(k: usize, t: &ThreadFeature, internal: bool) -> Self {
-        ThreadDialog { editing: Some(k), thread: t.clone(), picking: false, remember: false, internal }
+        ThreadDialog { editing: Some(k), thread: t.clone(), shown: t.clone(), picking: false, remember: false, internal }
+    }
+
+    /// Bring the preview up to date unless a modeled thread's value is still being edited.
+    pub fn catch_up(&mut self, busy: bool) {
+        if !(self.thread.spec.modeled && busy) {
+            self.shown = self.thread.clone();
+        }
     }
 
     /// Picking faces in the view (Esc stops that first).

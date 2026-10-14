@@ -673,25 +673,26 @@ fn polyline_mid(points: &[DVec3]) -> Option<EdgeRef> {
 /// direction there, and the normals of the two faces that meet at it.
 fn shape_edges(shape: &Shape) -> Vec<(Edge, EdgeRef, Vec<DVec3>)> {
     let mut out: Vec<(Edge, EdgeRef, Vec<DVec3>)> = Vec::new();
+    // Edges by their middle point (to 1e-9), to find each one fast.
+    let key = |p: DVec3| ((p.x * 1e9).round() as i64, (p.y * 1e9).round() as i64, (p.z * 1e9).round() as i64);
+    let mut by_mid: HashMap<(i64, i64, i64), usize> = HashMap::new();
     for e in shape.edges() {
-        let pts: Vec<DVec3> = e.approximation_segments().map(|p| DVec3::new(p.x, p.y, p.z)).collect();
+        let pts = edge_points(&e);
         let Some(r) = polyline_mid(&pts) else { continue };
         // The explorer visits shared edges once per face; keep the first.
-        if out.iter().any(|(_, o, _)| o.mid.distance(r.mid) < 1e-9) {
+        if by_mid.contains_key(&key(r.mid)) || out.iter().rev().take(8).any(|(_, o, _)| o.mid.distance(r.mid) < 1e-9) {
             continue;
         }
+        by_mid.insert(key(r.mid), out.len());
         out.push((e, r, pts));
     }
     // Which faces each edge belongs to: walk every face's edges and match
     // them to the list above by their middle point.
     let mut normals: Vec<Vec<DVec3>> = vec![Vec::new(); out.len()];
     for face in shape.faces() {
-        for e in face.edges() {
-            let pts: Vec<DVec3> = e.approximation_segments().map(|p| DVec3::new(p.x, p.y, p.z)).collect();
-            let Some(r) = polyline_mid(&pts) else { continue };
-            if let Some(i) = out.iter().position(|(_, o, _)| o.mid.distance(r.mid) < 1e-9) {
-                let n = face.normal_at(kv(r.mid));
-                let n = DVec3::new(n.x, n.y, n.z).normalize();
+        for (mid, n) in face_edge_normals(&face) {
+            let found = by_mid.get(&key(mid)).copied().or_else(|| out.iter().position(|(_, o, _)| o.mid.distance(mid) < 1e-9));
+            if let Some(i) = found {
                 if n.is_finite() && normals[i].len() < 2 {
                     normals[i].push(n);
                 }
@@ -706,6 +707,57 @@ fn shape_edges(shape: &Shape) -> Vec<(Edge, EdgeRef, Vec<DVec3>)> {
         }
     }
     out
+}
+
+thread_local! {
+    static FACE_EDGE_NORMALS: std::cell::RefCell<HashMap<u64, Vec<(Face, Vec<(DVec3, DVec3)>)>>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// A face's edges, each as (its middle, the face's normal there) — remembered
+/// per face (finding a normal on a curved face is slow).
+fn face_edge_normals(face: &Face) -> Vec<(DVec3, DVec3)> {
+    let h = face.hash_code();
+    if let Some(v) = FACE_EDGE_NORMALS.with(|c| c.borrow().get(&h).and_then(|v| v.iter().find(|(f, _)| f.is_same(face)).map(|(_, n)| n.clone()))) {
+        return v;
+    }
+    let v: Vec<(DVec3, DVec3)> = face
+        .edges()
+        .filter_map(|e| {
+            let r = polyline_mid(&edge_points(&e))?;
+            let n = face.normal_at(kv(r.mid));
+            Some((r.mid, DVec3::new(n.x, n.y, n.z).normalize()))
+        })
+        .collect();
+    FACE_EDGE_NORMALS.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.values().map(Vec::len).sum::<usize>() > 50_000 {
+            c.clear();
+        }
+        c.entry(h).or_default().push((face.clone(), v.clone()));
+    });
+    v
+}
+
+thread_local! {
+    static EDGE_POINTS: std::cell::RefCell<HashMap<u64, Vec<(Edge, Vec<DVec3>)>>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// Points along an edge (remembered per edge: a thread's helical edges are
+/// slow to sample, and a boolean keeps the edges it doesn't touch).
+fn edge_points(e: &Edge) -> Vec<DVec3> {
+    let h = e.hash_code();
+    if let Some(p) = EDGE_POINTS.with(|c| c.borrow().get(&h).and_then(|v| v.iter().find(|(x, _)| x.is_same(e)).map(|(_, p)| p.clone()))) {
+        return p;
+    }
+    let pts: Vec<DVec3> = e.approximation_segments().map(|p| DVec3::new(p.x, p.y, p.z)).collect();
+    EDGE_POINTS.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.values().map(Vec::len).sum::<usize>() > 100_000 {
+            c.clear();
+        }
+        c.entry(h).or_default().push((e.clone(), pts.clone()));
+    });
+    pts
 }
 
 /// Do two edges sit between faces pointing the same ways (in either order)?
@@ -724,12 +776,36 @@ fn pickable_edges(shape: &Shape, mesh: &Mesh) -> Vec<BodyEdge> {
         .collect();
     let bb = opencascade::bounding_box::aabb(shape);
     let tol = (bb.max() - bb.min()).length() * 1e-3 + 1e-6;
+    // The sharp segments in a grid, so each test looks only nearby (a part
+    // with a thread has thousands of edges and of sharp segments).
+    let mean = sharp.iter().map(|(a, b)| a.distance(*b)).sum::<f64>() / sharp.len().max(1) as f64;
+    let cell = mean.max(tol * 4.0).max(1e-9);
+    let at = |p: DVec3| ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64, (p.z / cell).floor() as i64);
+    let mut grid: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
+    let mut everywhere: Vec<usize> = Vec::new(); // too long to bin
+    for (i, &(a, b)) in sharp.iter().enumerate() {
+        let (lo, hi) = (at(a.min(b) - DVec3::splat(tol)), at(a.max(b) + DVec3::splat(tol)));
+        let cells = (hi.0 - lo.0 + 1) * (hi.1 - lo.1 + 1) * (hi.2 - lo.2 + 1);
+        if cells > 512 {
+            everywhere.push(i);
+            continue;
+        }
+        for x in lo.0..=hi.0 {
+            for y in lo.1..=hi.1 {
+                for z in lo.2..=hi.2 {
+                    grid.entry((x, y, z)).or_default().push(i);
+                }
+            }
+        }
+    }
     let near_sharp = |p: DVec3| {
-        sharp.iter().any(|&(a, b)| {
+        let close = |&i: &usize| {
+            let (a, b) = sharp[i];
             let ab = b - a;
             let t = ((p - a).dot(ab) / ab.length_squared().max(1e-30)).clamp(0.0, 1.0);
             p.distance(a + ab * t) < tol
-        })
+        };
+        grid.get(&at(p)).is_some_and(|v| v.iter().any(close)) || everywhere.iter().any(close)
     };
     shape_edges(shape)
         .into_iter()
@@ -900,9 +976,40 @@ fn geom_length(g: &Geom) -> f64 {
 /// its radius, or just a surface with its area.
 fn face_geoms(shape: &Shape) -> Vec<Geom> {
     let tol = shape_tol(shape);
-    shape
-        .faces()
-        .map(|face| {
+    shape.faces().map(|face| face_info(&face, tol).1).collect()
+}
+
+/// What's known about one face: (flat: outward normal, a point, its outline;
+/// what it is). Faces a boolean left alone are the same faces as before, so
+/// this is remembered per face (a part with a modeled thread has hundreds).
+type FaceInfo = (Option<(DVec3, DVec3, Vec<DVec3>)>, Geom);
+
+thread_local! {
+    static FACE_INFO: std::cell::RefCell<HashMap<u64, Vec<(Face, FaceInfo)>>> = std::cell::RefCell::new(HashMap::new());
+}
+
+fn face_info(face: &Face, tol: f64) -> FaceInfo {
+    let h = face.hash_code();
+    if let Some(known) = FACE_INFO.with(|c| c.borrow().get(&h).and_then(|v| v.iter().find(|(f, _)| f.is_same(face)).map(|(_, i)| i.clone()))) {
+        return known;
+    }
+    let flat = face_flat(face, tol);
+    let info = (flat.clone(), face_geom(face, tol, flat.map(|(n, _, _)| n)));
+    FACE_INFO.with(|c| {
+        let mut c = c.borrow_mut();
+        // (Kept faces stay alive, so a hash can't be reused by another face.)
+        if c.values().map(Vec::len).sum::<usize>() > 50_000 {
+            c.clear();
+        }
+        c.entry(h).or_default().push((face.clone(), info.clone()));
+    });
+    info
+}
+
+/// What a face is, for Measure (`flat`: its normal, if it's flat).
+fn face_geom(face: &Face, tol: f64, flat: Option<DVec3>) -> Geom {
+    {
+        {
             let area = face.surface_area();
             let edges: Vec<(Vec<DVec3>, Geom)> = face
                 .edges()
@@ -921,7 +1028,7 @@ fn face_geoms(shape: &Shape) -> Vec<Geom> {
                 .map(|(_, e)| e)
                 .collect();
             let loop_length = boundary.iter().map(|(_, g)| geom_length(g)).sum();
-            if let Some((normal, _, _)) = face_flat(&face, tol) {
+            if let Some(normal) = flat {
                 // Round (a disc, or a ring round one centre): its centre too.
                 let centres: Vec<DVec3> = boundary.iter().filter_map(|(_, g)| if let Geom::Circle { center, .. } = g { Some(*center) } else { None }).collect();
                 let center = (!centres.is_empty() && centres.len() == boundary.len() && centres.iter().all(|c| c.distance(centres[0]) < tol * 10.0)).then(|| centres[0]);
@@ -949,8 +1056,8 @@ fn face_geoms(shape: &Shape) -> Vec<Geom> {
                 }
             }
             Geom::Surface { area, loop_length }
-        })
-        .collect()
+        }
+    }
 }
 
 /// The flat faces of a shape as (outward normal, point on it).
@@ -967,7 +1074,7 @@ fn shape_tol(shape: &Shape) -> f64 {
 /// The flat faces of a shape, with points around each face's boundary.
 fn flat_faces_with_outline(shape: &Shape) -> Vec<(DVec3, DVec3, Vec<DVec3>)> {
     let tol = shape_tol(shape);
-    shape.faces().filter_map(|face| face_flat(&face, tol)).collect()
+    shape.faces().filter_map(|face| face_info(&face, tol).0).collect()
 }
 
 /// A flat face's (outward normal, a point on it, points round its boundary).

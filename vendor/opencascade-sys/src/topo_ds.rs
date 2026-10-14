@@ -88,6 +88,8 @@ mod inner {
         );
         pub fn IsNull(self: &TopoDS_Shape) -> bool;
         pub fn IsEqual(self: &TopoDS_Shape, other: &TopoDS_Shape) -> bool;
+        /// opencad patch: OCCT's hash of a shape (for caches).
+        pub fn opencad_shape_hash(shape: &TopoDS_Shape) -> u64;
         pub fn ShapeType(self: &TopoDS_Shape) -> TopAbs_ShapeEnum;
         pub fn Orientation(self: &TopoDS_Shape) -> TopAbs_Orientation;
 

@@ -23,3 +23,14 @@ struct TopoDS_Cast {
 #include <TopoDS_Solid.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <bindings_common.hxx>
+
+// opencad patch: OCCT's hash of a shape (its underlying shape and placement),
+// for caching per-face work. Never throws.
+#include <functional>
+inline uint64_t opencad_shape_hash(const TopoDS_Shape &shape) {
+  try {
+    return uint64_t(std::hash<TopoDS_Shape>{}(shape));
+  } catch (...) {
+    return 0;
+  }
+}
