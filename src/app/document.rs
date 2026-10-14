@@ -13,6 +13,7 @@ impl OpenCad {
             axes: self.axes.clone(),
             planes: self.planes.clone(),
             removes: self.removes.clone(),
+            holes: self.holes.clone(),
             units: self.units,
             version: doc::Version(self.version),
             timeline: self.timeline.clone(),
@@ -221,6 +222,7 @@ impl OpenCad {
             || self.revolves != self.saved.revolves
             || self.copies != self.saved.copies
             || self.removes != self.saved.removes
+            || self.holes != self.saved.holes
             || self.units != self.saved.units
             || self.axes != self.saved.axes
             || self.planes != self.saved.planes
@@ -282,6 +284,8 @@ impl OpenCad {
         self.revolves = doc.revolves.clone();
         self.copies = doc.copies.clone();
         self.removes = doc.removes.clone();
+        self.holes = doc.holes.clone();
+        self.hole_dialog = None;
         self.units = doc.units;
         self.version = doc.version.0;
         self.name = None;
@@ -353,6 +357,8 @@ impl OpenCad {
         self.revolves = doc.revolves;
         self.copies = doc.copies;
         self.removes = doc.removes;
+        self.holes = doc.holes;
+        self.hole_dialog = None;
         self.units = doc.units;
         self.selected_bodies.clear();
         self.axes = doc.axes;
@@ -461,11 +467,12 @@ impl OpenCad {
     }
 
     /// The feature lists a slot is built from.
-    pub(crate) fn inputs(&self, slot: Slot) -> (Vec<Extrude>, Vec<Revolve>, Vec<EdgeFeature>, Vec<CopyFeature>, Vec<AxisFeature>, Vec<PlaneFeature>, Vec<Feature>) {
+    pub(crate) fn inputs(&self, slot: Slot) -> (Vec<Extrude>, Vec<Revolve>, Vec<EdgeFeature>, Vec<CopyFeature>, Vec<AxisFeature>, Vec<PlaneFeature>, Vec<model::HoleFeature>, Vec<Feature>) {
         let (mut extrudes, mut revolves, mut edge_features, mut copies, mut timeline) =
             (self.extrudes.clone(), self.revolves.clone(), self.edge_features.clone(), self.copies.clone(), self.timeline.clone());
         let axes = self.axes.clone();
         let mut planes = self.planes.clone();
+        let mut holes = self.holes.clone();
         timeline.truncate(self.applied()); // features after the marker aren't built
         timeline.retain(|f| !self.suppressed.contains(f));
         match slot {
@@ -511,6 +518,15 @@ impl OpenCad {
                         }
                     }
                 }
+                if let Some(d) = self.hole_dialog.as_ref().filter(|d| !d.hole.places.is_empty()) {
+                    match d.editing {
+                        Some(k) => holes[k] = d.hole.clone(),
+                        None => {
+                            holes.push(d.hole.clone());
+                            timeline.push(Feature::Hole(holes.len() - 1));
+                        }
+                    }
+                }
                 if let (Some(f), Some(d)) = (self.dialog_edge_feature(), self.edge_dialog.as_ref()) {
                     match d.editing {
                         Some(k) => edge_features[k] = f,
@@ -530,13 +546,13 @@ impl OpenCad {
                 }
             }
         }
-        (extrudes, revolves, edge_features, copies, axes, planes, timeline)
+        (extrudes, revolves, edge_features, copies, axes, planes, holes, timeline)
     }
 
     /// Make sure the kernel model for `slot` matches the current design.
     /// Rebuilds only when its inputs changed.
     pub(crate) fn ensure_model(&mut self, slot: Slot) {
-        let (extrudes, revolves, edge_features, copies, axes, planes, timeline) = self.inputs(slot);
+        let (extrudes, revolves, edge_features, copies, axes, planes, holes, timeline) = self.inputs(slot);
         let fresh = self.caches[slot as usize].as_ref().is_some_and(|c| {
             c.sketches.len() == self.sketches.len()
                 && c.sketches.iter().zip(&self.sketches).all(|(a, b)| a.same_shape(b))
@@ -547,13 +563,14 @@ impl OpenCad {
                 && c.axes == axes
                 && c.planes == planes
                 && c.removes == self.removes
+                && c.holes == holes
                 && c.timeline == timeline
         });
         if !fresh {
             let removes = self.removes.clone();
-            let model = kernel::build_all(&self.sketches, &extrudes, &revolves, &edge_features, &copies, &axes, &planes, &removes, &timeline);
+            let model = kernel::build_all(&self.sketches, &extrudes, &revolves, &edge_features, &copies, &axes, &planes, &removes, &holes, &timeline);
             self.caches[slot as usize] =
-                Some(KernelCache { sketches: self.sketches.clone(), extrudes, revolves, edge_features, copies, axes, planes, removes, timeline, model });
+                Some(KernelCache { sketches: self.sketches.clone(), extrudes, revolves, edge_features, copies, axes, planes, removes, holes, timeline, model });
         }
     }
 

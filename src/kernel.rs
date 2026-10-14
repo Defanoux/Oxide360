@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::measure::{self, Geom};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
@@ -59,6 +59,17 @@ impl Body {
             .filter(move |(f, _)| **f as usize == face)
             .map(|(_, t)| t.map(|i| self.mesh.positions[i as usize].as_dvec3()))
     }
+
+    /// The middle of one of its faces (area-weighted over its triangles).
+    pub fn face_centroid(&self, face: usize) -> Option<DVec3> {
+        let (mut sum, mut area) = (DVec3::ZERO, 0.0);
+        for [a, b, c] in self.face_tris(face) {
+            let w = (b - a).cross(c - a).length() / 2.0;
+            sum += (a + b + c) / 3.0 * w;
+            area += w;
+        }
+        (area > 0.0).then(|| sum / area)
+    }
 }
 
 impl Model {
@@ -73,6 +84,7 @@ impl Model {
             + n(&self.axis_errors)
             + n(&self.plane_errors)
             + n(&self.remove_errors)
+            + n(&self.hole_errors)
     }
 }
 
@@ -102,6 +114,10 @@ pub struct Model {
     pub planes: Vec<Option<FacePlane>>,
     /// One entry per construction plane.
     pub plane_errors: Vec<Option<String>>,
+    /// One entry per hole.
+    pub hole_errors: Vec<Option<String>>,
+    /// Threads shown on holes (not cut): drawn as a helix.
+    pub threads: Vec<CosmeticThread>,
     /// Far-end faces of the extrudes/revolves, to tag what's picked there.
     pub caps: Vec<Cap>,
     /// For each extrude / revolve / fillet that was built: the body it made or
@@ -1062,6 +1078,155 @@ fn hinge_line(
     }
 }
 
+/// A thread that is only drawn (Fusion's cosmetic thread).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CosmeticThread {
+    /// Where it starts (on the face) and which way it runs.
+    pub origin: DVec3,
+    pub axis: DVec3,
+    /// Its major radius.
+    pub radius: f64,
+    pub pitch: f64,
+    pub length: f64,
+}
+
+/// The middle of the flat face found for (`face`, `anchor`) (its area centroid).
+fn face_centre(bodies: &[&Shape], face: &FacePlane, anchor: DVec2) -> Option<DVec3> {
+    let n = face.normal();
+    let mut best: Option<(f64, DVec3)> = None;
+    for s in bodies {
+        let tol = shape_tol(s);
+        for f in s.faces() {
+            let Some((fnormal, q, outline)) = face_flat(&f, tol) else { continue };
+            if fnormal.dot(n) <= 0.9999 || (q - face.origin).dot(n).abs() > tol.max(1e-6) {
+                continue;
+            }
+            let (mut a, mut b) = (DVec2::splat(f64::MAX), DVec2::splat(f64::MIN));
+            for p in &outline {
+                let w = DVec2::new(p.dot(face.u), p.dot(face.v));
+                (a, b) = (a.min(w), b.max(w));
+            }
+            // The face under the anchor; else the nearest one.
+            let d = if anchor.cmpge(a).all() && anchor.cmple(b).all() { 0.0 } else { ((a + b) * 0.5).distance(anchor) };
+            if best.is_none_or(|(bd, _)| d < bd) {
+                let c = f.center_of_mass();
+                best = Some((d, DVec3::new(c.x, c.y, c.z)));
+            }
+        }
+    }
+    best.map(|(_, c)| c)
+}
+
+/// Where each place of a hole is now: the point on its face, the way it
+/// drills, and the diameter of the circle it sits on (if it does).
+fn hole_places(h: &HoleFeature, sketches: &[Sketch], frames: &[Option<FacePlane>], bodies: &[&Shape]) -> Result<Vec<(DVec3, DVec3, Option<f64>)>, String> {
+    let sketch_at = |s: usize| -> Result<(&Sketch, Frame), String> {
+        let sk = sketches.get(s).ok_or("its sketch was deleted")?;
+        Ok((sk, frame_for(sk, frames.get(s).copied().flatten())?))
+    };
+    let mut out = Vec::new();
+    for place in &h.places {
+        let (p, inward, circle) = match *place {
+            HolePlace::SketchPoint { sketch, point } => {
+                let (sk, plane) = sketch_at(sketch)?;
+                let q = sk.points.get(point).ok_or("a point it was on is gone — edit it and pick again")?;
+                (world(&plane, *q), -plane.normal(), None)
+            }
+            HolePlace::SketchCircle { sketch, entity } => {
+                let (sk, plane) = sketch_at(sketch)?;
+                match sk.entities.get(entity) {
+                    Some(&crate::sketch::Entity::Circle { center, radius }) => (world(&plane, sk.points[center]), -plane.normal(), Some(radius * 2.0)),
+                    Some(&crate::sketch::Entity::Arc { center, a, .. }) => {
+                        (world(&plane, sk.points[center]), -plane.normal(), Some(sk.points[center].distance(sk.points[a]) * 2.0))
+                    }
+                    _ => return Err("a circle it was on is gone — edit it and pick again".into()),
+                }
+            }
+            HolePlace::Face { face, anchor, centre } => {
+                let a = DVec2::from(anchor);
+                let now = resolve_face(bodies, &face, a).ok_or("the face it was on is gone — edit it and pick again")?;
+                let p = if centre {
+                    face_centre(bodies, &now, a).ok_or("the face it was on is gone — edit it and pick again")?
+                } else {
+                    now.origin + now.u * a.x + now.v * a.y
+                };
+                (p, -now.normal(), None)
+            }
+        };
+        out.push((p, if h.flip { -inward } else { inward }, circle));
+    }
+    Ok(out)
+}
+
+/// The cutters for a hole (one per place) and the threads it shows.
+fn hole_tools(
+    h: &HoleFeature,
+    sketches: &[Sketch],
+    frames: &[Option<FacePlane>],
+    planes: &[Option<FacePlane>],
+    bodies: &[&Shape],
+) -> Result<(Vec<Shape>, Vec<CosmeticThread>), String> {
+    if h.places.is_empty() {
+        return Err("no place picked".into());
+    }
+    if h.tap == TapType::TaperTapped && h.kind == crate::model::HoleKind::Counterbore {
+        return Err("a taper tapped hole can't have a counterbore".into());
+    }
+    // How far "All" has to go: past every body.
+    let (mut lo, mut hi) = (DVec3::splat(f64::MAX), DVec3::splat(f64::MIN));
+    for s in bodies {
+        let bb = opencascade::bounding_box::aabb(s);
+        lo = lo.min(DVec3::new(bb.min().x, bb.min().y, bb.min().z));
+        hi = hi.max(DVec3::new(bb.max().x, bb.max().y, bb.max().z));
+    }
+    let mut tools = Vec::new();
+    let mut threads = Vec::new();
+    for ((p, dir, circle), place) in hole_places(h, sketches, frames, bodies)?.into_iter().zip(&h.places) {
+        let depth = match h.extent {
+            HoleExtent::Distance => h.depth,
+            HoleExtent::All => {
+                if bodies.is_empty() {
+                    return Err("there's nothing to drill through".into());
+                }
+                (p - (lo + hi) * 0.5).length() + (hi - lo).length() + 1.0
+            }
+            HoleExtent::To => {
+                let t = h.target.as_ref().ok_or("pick what it runs to")?;
+                let (q, n) = target_plane(t, planes, bodies)?;
+                let slant = dir.dot(n);
+                if slant.abs() < 1e-6 {
+                    return Err("the hole runs alongside that plane and never reaches it".into());
+                }
+                let d = (q - p).dot(n) / slant;
+                if d <= 1e-6 {
+                    return Err("that plane is behind the hole — flip it".into());
+                }
+                d
+            }
+        };
+        let bore = h.bore(circle)?;
+        // Start the cutter a little above the face where that's surely air
+        // (a body face drilled inward), so it shares no face with the part;
+        // a sketch plane can be anywhere, so its hole starts right on it.
+        let in_air = matches!(place, HolePlace::Face { .. }) && !h.flip;
+        let lead = if in_air { bore.max(1.0) } else { 0.0 };
+        let pts = h.profile(bore, depth, lead)?;
+        let radial = crate::model::zero_normal(dir, DVec3::Z);
+        let frame = Frame { origin: p, u: radial, v: dir.normalize() };
+        let wire = loop_wire(&frame, &pts, &vec![Curve::Line; pts.len()])?;
+        let tool = Face::from_wire(&wire)
+            .try_revolve(kv(p), kv(dir.normalize()), std::f64::consts::TAU)
+            .ok_or("the kernel couldn't make the hole's shape")?;
+        tools.push(tool);
+        if matches!(h.tap, TapType::Tapped | TapType::TaperTapped) {
+            if let Some(t) = h.thread.thread() {
+                threads.push(CosmeticThread { origin: p, axis: dir.normalize(), radius: t.major / 2.0, pitch: t.pitch, length: depth });
+            }
+        }
+    }
+    Ok((tools, threads))
+}
+
 /// Is a polyline a straight run (all points on the line through its ends)?
 pub fn is_straight(pts: &[DVec3]) -> bool {
     let (Some(&a), Some(&b)) = (pts.first(), pts.last()) else { return false };
@@ -1130,7 +1295,7 @@ pub fn build_with(
     plane_features: &[PlaneFeature],
     timeline: &[Feature],
 ) -> Model {
-    build_all(sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, &[], timeline)
+    build_all(sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, &[], &[], timeline)
 }
 
 /// `build_with`, plus Remove features.
@@ -1143,8 +1308,11 @@ pub fn build_all(
     axis_features: &[AxisFeature],
     plane_features: &[PlaneFeature],
     removes: &[RemoveFeature],
+    holes: &[HoleFeature],
     timeline: &[Feature],
 ) -> Model {
+    let mut hole_errors: Vec<Option<String>> = vec![None; holes.len()];
+    let mut threads: Vec<CosmeticThread> = Vec::new();
     let mut remove_errors: Vec<Option<String>> = vec![None; removes.len()];
     let mut planes: Vec<Option<FacePlane>> = vec![None; plane_features.len()];
     let mut plane_errors: Vec<Option<String>> = vec![None; plane_features.len()];
@@ -1270,6 +1438,30 @@ pub fn build_all(
                 shapes = current;
                 continue;
             }
+            Feature::Hole(k) => {
+                let Some(h) = holes.get(k) else {
+                    shapes = current;
+                    continue;
+                };
+                let (fr, pl) = (&frames, &planes);
+                let mut shown = Vec::new();
+                let r = catch_unwind(AssertUnwindSafe(|| -> Result<(Tagged, Option<BodyId>), String> {
+                    let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
+                    let (tools, th) = hole_tools(h, sketches, fr, pl, &bodies)?;
+                    shown = th;
+                    let mut acc = current;
+                    let mut touched = None;
+                    for tool in tools {
+                        let (next, t) = apply(acc, tool, Operation::Cut, Feature::Hole(k))?;
+                        (acc, touched) = (next, touched.or(t));
+                    }
+                    Ok((acc, touched))
+                }));
+                if matches!(r, Ok(Ok(_))) {
+                    threads.extend(shown);
+                }
+                (r, &mut hole_errors[k])
+            }
             Feature::Remove(k) => {
                 // Take the bodies out; the rest carry on.
                 if let Some(rf) = removes.get(k) {
@@ -1331,7 +1523,7 @@ pub fn build_all(
         })
         .collect();
     let caps = caps_of(&extrude_ends, &revolve_ends);
-    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, caps, touched: touched_by }
+    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, threads, caps, touched: touched_by }
 }
 
 /// Exact STEP export of all bodies (true planes, cylinders, arcs).
@@ -1680,7 +1872,7 @@ mod tests {
         let plane = PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None };
         let c = CopyFeature { name: "M".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: crate::model::CopyKind::MirrorPlane(0) };
         let t = [Feature::Sketch(0), Feature::Extrude(0), Feature::Plane(0), Feature::Copy(0)];
-        let m = build_all(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[], &[plane], &[], &t);
+        let m = build_all(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[], &[plane], &[], &[], &t);
         assert_eq!(m.copy_errors, vec![None]);
         assert_eq!(m.bodies.len(), 2);
         let copy = m.bodies.iter().find(|b| b.id.feature == Feature::Copy(0)).unwrap();
@@ -1691,7 +1883,7 @@ mod tests {
         let c2 = CopyFeature { name: "M".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: crate::model::CopyKind::MirrorPlane(0) };
         let mut sk2 = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk2, 2.0, 0.0, 6.0, 3.0);
-        let early = build_all(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c2], &[], &[PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None }], &[], &[Feature::Sketch(0), Feature::Extrude(0), Feature::Copy(0), Feature::Plane(0)]);
+        let early = build_all(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c2], &[], &[PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None }], &[], &[], &[Feature::Sketch(0), Feature::Extrude(0), Feature::Copy(0), Feature::Plane(0)]);
         assert!(early.copy_errors[0].is_some());
     }
 
@@ -2084,7 +2276,7 @@ mod tests {
         let mut sk = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk, 0.0, 0.0, 10.0, 10.0);
         rect(&mut sk, 20.0, 0.0, 50.0, 10.0);
-        build_all(&[sk], &[ex(0, vec![0, 1], 5.0, Operation::NewBody)], &[], &[], &[], &[], &[], removes, tl)
+        build_all(&[sk], &[ex(0, vec![0, 1], 5.0, Operation::NewBody)], &[], &[], &[], &[], &[], removes, &[], tl)
     }
 
     #[test]
@@ -2184,7 +2376,7 @@ mod tests {
         (e.extent, e.target) = (Extent::ToObject, Some(target));
         extrudes.push(e);
         tl.extend([Feature::Sketch(s), Feature::Extrude(extrudes.len() - 1)]);
-        build_all(&sketches, &extrudes, &[], &[], &[], &[], planes, &[], &tl)
+        build_all(&sketches, &extrudes, &[], &[], &[], &[], planes, &[], &[], &tl)
     }
 
     fn offset_plane(z: f64) -> crate::model::PlaneFeature {
@@ -2233,7 +2425,7 @@ mod tests {
         let mut e = ex(0, vec![0], 1.0, Operation::NewBody);
         (e.extent, e.target) = (Extent::ToObject, Some(ExtrudeTarget::Plane(0)));
         let planes = [angled(Hinge::World(WorldAxis::X), 30.0)];
-        let m = build_all(&[sk], &[e], &[], &[], &[], &[], &planes, &[], &[Feature::Plane(0), Feature::Sketch(0), Feature::Extrude(0)]);
+        let m = build_all(&[sk], &[e], &[], &[], &[], &[], &planes, &[], &[], &[Feature::Plane(0), Feature::Sketch(0), Feature::Extrude(0)]);
         assert_eq!((m.plane_errors.clone(), m.errors.clone()), (vec![None], vec![None]));
         let n = m.planes[0].unwrap().normal();
         assert!(n.distance(DVec3::new(0.0, -0.5, 30f64.to_radians().cos())) < 1e-12, "{n}");
@@ -2251,7 +2443,7 @@ mod tests {
         sk.entities.push(crate::sketch::Entity::Line { a: n - 2, b: n - 1 });
         let line = sk.entities.len() - 1;
         let planes = [angled(Hinge::SketchLine { sketch: 0, line }, 90.0)];
-        let m = build_all(&[sk], &[], &[], &[], &[], &[], &planes, &[], &[Feature::Sketch(0), Feature::Plane(0)]);
+        let m = build_all(&[sk], &[], &[], &[], &[], &[], &planes, &[], &[], &[Feature::Sketch(0), Feature::Plane(0)]);
         assert_eq!(m.plane_errors, vec![None]);
         let f = m.planes[0].unwrap();
         assert!(f.normal().cross(DVec3::X).length() < 1e-12 && (f.origin - DVec3::new(4.0, 5.0, 0.0)).length() < 1e-9, "{f:?}");
@@ -2265,7 +2457,7 @@ mod tests {
             let mut b = Sketch::new("B".into(), OriginPlane::XY);
             rect(&mut b, 0.0, 0.0, 50.0, 30.0);
             let t = [Feature::Sketch(0), Feature::Extrude(0), Feature::Axis(0), Feature::Plane(0), Feature::Plane(1)];
-            let m = build_all(&[b], &[ex(0, vec![0], h, Operation::NewBody)], &[], &[], &[], &axes, &planes, &[], &t);
+            let m = build_all(&[b], &[ex(0, vec![0], h, Operation::NewBody)], &[], &[], &[], &axes, &planes, &[], &[], &t);
             assert_eq!(m.plane_errors, vec![None, None], "h {h}");
             let (lean, flat) = (m.planes[0].unwrap(), m.planes[1].unwrap());
             let s = 0.5f64.sqrt();
@@ -2276,7 +2468,7 @@ mod tests {
             }
         }
         // A line that's gone is an error, not a crash.
-        let m = build_all(&[Sketch::new("E".into(), OriginPlane::XY)], &[], &[], &[], &[], &[], &[angled(Hinge::SketchLine { sketch: 0, line: 0 }, 10.0)], &[], &[Feature::Sketch(0), Feature::Plane(0)]);
+        let m = build_all(&[Sketch::new("E".into(), OriginPlane::XY)], &[], &[], &[], &[], &[], &[angled(Hinge::SketchLine { sketch: 0, line: 0 }, 10.0)], &[], &[], &[Feature::Sketch(0), Feature::Plane(0)]);
         assert!(m.plane_errors[0].is_some() && m.planes[0].is_none());
     }
 
@@ -2291,6 +2483,122 @@ mod tests {
         let n = DVec3::new(0.0, -0.5, 1.0).normalize();
         let (shape, _) = tool(&[sk], &[None], &e, Some((DVec3::new(0.0, 0.0, 10.0), n))).unwrap();
         assert!(close(shape.volume(), 1250.0), "{}", shape.volume());
+    }
+
+    /// A 50 × 30 × `h` plate (sketch 0, extrude 0), then sketch 1 (if given)
+    /// and the holes, in that order.
+    fn drilled(h: f64, sk: Option<Sketch>, holes: &[HoleFeature], planes: &[PlaneFeature]) -> Model {
+        let mut b = Sketch::new("B".into(), OriginPlane::XY);
+        rect(&mut b, 0.0, 0.0, 50.0, 30.0);
+        let mut sketches = vec![b];
+        let mut tl = vec![Feature::Sketch(0), Feature::Extrude(0)];
+        tl.extend((0..planes.len()).map(Feature::Plane));
+        if let Some(s) = sk {
+            sketches.push(s);
+            tl.push(Feature::Sketch(1));
+        }
+        tl.extend((0..holes.len()).map(Feature::Hole));
+        build_all(&sketches, &[ex(0, vec![0], h, Operation::NewBody)], &[], &[], &[], &[], planes, &[], holes, &tl)
+    }
+
+    /// On the plate's top face at (x, y), as picked at thickness `h`.
+    fn on_top(x: f64, y: f64, h: f64, centre: bool) -> HolePlace {
+        let face = FacePlane::from_face(DVec3::Z, DVec3::new(x, y, h));
+        let q = DVec3::new(x, y, h);
+        HolePlace::Face { face, anchor: [q.dot(face.u), q.dot(face.v)], centre }
+    }
+
+    #[test]
+    fn holes_remove_exactly_their_bore_tip_counterbore_and_countersink() {
+        use crate::model::HoleKind;
+        let plate = 15000.0;
+        let r: f64 = 2.5;
+        // Flat, 4 deep, on the top face.
+        let flat = HoleFeature { places: vec![on_top(10.0, 10.0, 10.0, false)], depth: 4.0, diameter: 5.0, tip_angle: None, ..Default::default() };
+        let m = drilled(10.0, None, &[flat.clone()], &[]);
+        assert_eq!(m.hole_errors, vec![None]);
+        assert!(close(total(&m), plate - PI * r * r * 4.0), "{}", total(&m));
+        // A 118° drill tip adds a cone r / tan 59° deep.
+        let tipped = HoleFeature { tip_angle: Some(118.0), ..flat.clone() };
+        let cone = PI * r * r * (r / 59f64.to_radians().tan()) / 3.0;
+        assert!(close(total(&drilled(10.0, None, &[tipped], &[])), plate - PI * r * r * 4.0 - cone));
+        // Counterbore Ø10 × 3, right through.
+        let cb = HoleFeature { kind: HoleKind::Counterbore, cbore_diameter: 10.0, cbore_depth: 3.0, extent: HoleExtent::All, ..flat.clone() };
+        assert!(close(total(&drilled(10.0, None, &[cb], &[])), plate - PI * 25.0 * 3.0 - PI * r * r * 7.0));
+        // Countersink Ø10 at 90°: a frustum 2.5 deep, then the bore to 8.
+        let cs = HoleFeature { kind: HoleKind::Countersink, csink_diameter: 10.0, csink_angle: 90.0, depth: 8.0, ..flat.clone() };
+        let frustum = PI * 2.5 * (25.0 + 5.0 * r + r * r) / 3.0;
+        assert!(close(total(&drilled(10.0, None, &[cs], &[])), plate - frustum - PI * r * r * 5.5));
+        // Two places: twice the flat hole.
+        let two = HoleFeature { places: vec![on_top(10.0, 10.0, 10.0, false), on_top(30.0, 20.0, 10.0, false)], ..flat.clone() };
+        assert!(close(total(&drilled(10.0, None, &[two], &[])), plate - 2.0 * PI * r * r * 4.0));
+    }
+
+    #[test]
+    fn holes_follow_their_face_sketch_points_and_circles() {
+        let r: f64 = 2.5;
+        // Picked on the top at 10 mm; the plate grows to 20 and the hole rides up.
+        let h = HoleFeature { places: vec![on_top(10.0, 10.0, 10.0, false)], depth: 4.0, tip_angle: None, ..Default::default() };
+        let m = drilled(20.0, None, &[h], &[]);
+        assert_eq!(m.hole_errors, vec![None]);
+        assert!(close(total(&m), 30000.0 - PI * r * r * 4.0));
+        let mesh = &m.bodies[0].mesh;
+        assert!(!crate::model::inside(mesh, Vec3::new(10.0, 10.0, 18.0)) && crate::model::inside(mesh, Vec3::new(10.0, 10.0, 15.0)));
+        // The centre of the top face, right through.
+        let mid = HoleFeature { places: vec![on_top(5.0, 5.0, 10.0, true)], extent: HoleExtent::All, diameter: 4.0, tip_angle: None, ..Default::default() };
+        let m = drilled(10.0, None, &[mid], &[]);
+        assert!(close(total(&m), 15000.0 - PI * 4.0 * 10.0), "{}", total(&m));
+        assert!(!crate::model::inside(&m.bodies[0].mesh, Vec3::new(25.0, 15.0, 5.0)), "drilled at the middle");
+        // A sketch on XY under the plate: a point and a Ø6 circle, drilled up (flipped).
+        let mut sk = Sketch::new("H".into(), OriginPlane::XY);
+        sk.points.push(DVec2::new(40.0, 10.0));
+        let point = sk.points.len() - 1;
+        circle(&mut sk, 25.0, 15.0, 3.0);
+        let entity = sk.entities.len() - 1;
+        let up = HoleFeature {
+            places: vec![HolePlace::SketchPoint { sketch: 1, point }, HolePlace::SketchCircle { sketch: 1, entity }],
+            extent: HoleExtent::All,
+            diameter: 2.0,
+            tip_angle: None,
+            flip: true,
+            ..Default::default()
+        };
+        let m = drilled(10.0, Some(sk.clone()), &[up.clone()], &[]);
+        assert_eq!(m.hole_errors, vec![None]);
+        assert!(close(total(&m), 15000.0 - PI * 1.0 * 10.0 - PI * 9.0 * 10.0), "{}", total(&m));
+        // Not flipped it drills down, away from the plate: an error-free no-op.
+        let m = drilled(10.0, Some(sk), &[HoleFeature { flip: false, extent: HoleExtent::Distance, ..up }], &[]);
+        assert!(close(total(&m), 15000.0));
+    }
+
+    #[test]
+    fn a_face_knows_its_middle() {
+        let m = plate_with(10.0, None);
+        let b = &m.bodies[0];
+        let top = (0..b.faces.len()).find(|&f| b.face_tris(f).all(|t| t.iter().all(|p| (p.z - 10.0).abs() < 1e-9))).unwrap();
+        assert!(b.face_centroid(top).unwrap().distance(DVec3::new(25.0, 15.0, 10.0)) < 1e-9);
+    }
+
+    #[test]
+    fn holes_run_to_a_plane_and_take_screw_sizes() {
+        // From the top (z 10) down to a plane at z 6: 4 deep.
+        let plane = PlaneFeature { name: "P".into(), base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: true, offset: 6.0, anchor: [0.0; 2], extent: [0.0; 4], angle: None };
+        let to = HoleFeature { places: vec![on_top(10.0, 10.0, 10.0, false)], extent: HoleExtent::To, target: Some(ExtrudeTarget::Plane(0)), tip_angle: None, diameter: 5.0, ..Default::default() };
+        let m = drilled(10.0, None, &[to.clone()], &[plane.clone()]);
+        assert_eq!(m.hole_errors, vec![None]);
+        assert!(close(total(&m), 15000.0 - PI * 6.25 * 4.0));
+        // A plane above the face is behind the hole.
+        let up = PlaneFeature { offset: 14.0, ..plane };
+        assert!(drilled(10.0, None, &[to.clone()], &[up]).hole_errors[0].as_deref().is_some_and(|e| e.contains("behind")));
+        // Clearance M6 (normal fit, Ø6.6) right through; tapped M6: drilled at the minor Ø, thread shown.
+        let clear = HoleFeature { tap: TapType::Clearance, extent: HoleExtent::All, target: None, ..to.clone() };
+        assert!(close(total(&drilled(10.0, None, &[clear], &[])), 15000.0 - PI * 3.3 * 3.3 * 10.0));
+        let tapped = HoleFeature { tap: TapType::Tapped, extent: HoleExtent::All, target: None, ..to };
+        let m = drilled(10.0, None, &[tapped], &[]);
+        let minor = crate::threads::Thread::find("M6x1").unwrap().minor() / 2.0;
+        assert!(close(total(&m), 15000.0 - PI * minor * minor * 10.0));
+        assert_eq!(m.threads.len(), 1);
+        assert!((m.threads[0].radius - 3.0).abs() < 1e-12 && m.threads[0].axis.distance(DVec3::NEG_Z) < 1e-12);
     }
 
     #[test]

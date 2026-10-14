@@ -164,6 +164,7 @@ impl OpenCad {
             (pressed(A::Line), pressed(A::Rectangle), pressed(A::Circle), pressed(A::GridSnap), pressed(A::Dimension), pressed(A::Construction), pressed(A::Project));
         let (key_trim, key_extend, key_offset) = (pressed(A::Trim), pressed(A::Extend), pressed(A::Offset));
         let (key_n, key_e, key_f, key_i) = (pressed(A::NewSketch), pressed(A::Extrude), pressed(A::Fillet), pressed(A::Measure));
+        let key_h = pressed(A::Hole);
         let (esc, del, undo) = ui.input(|i| {
             (
                 i.key_pressed(egui::Key::Escape),
@@ -343,7 +344,8 @@ impl OpenCad {
                 && self.edge_dialog.is_none()
                 && self.revolve_dialog.is_none()
                 && self.copy_dialog.is_none()
-                && self.plane_dialog.is_none();
+                && self.plane_dialog.is_none()
+                && self.hole_dialog.is_none();
             if let (Some(px), true) = (hover_px, free_view) {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 let face = self.pick_face(&ray);
@@ -395,8 +397,31 @@ impl OpenCad {
             self.selected_cplane = None;
         }
 
-        // --- Extrude To Object: click the plane or flat face it runs up to ---
-        let picking_target = self.dialog.as_ref().is_some_and(|d| d.picking_target);
+        // --- Hole: click sketch points, sketch circles or faces (the face's
+        // middle snaps) to add places; click one again to drop it ---
+        self.hole_hover = None;
+        let picking_holes = self.hole_dialog.as_ref().is_some_and(|d| d.picking) && self.active.is_none();
+        if picking_holes {
+            self.ensure_model(Slot::Committed);
+            if let Some(px) = hover_px {
+                self.hole_hover = self.hole_place_under(&view, px, aspect, min, size);
+            }
+            if let (true, Some((place, _))) = (response.clicked(), self.hole_hover) {
+                if let Some(d) = self.hole_dialog.as_mut() {
+                    d.toggle(place);
+                }
+                // Drilled into the body: flip a sketch hole that would drill away from it.
+                self.aim_hole();
+            }
+            if esc && !typing {
+                if let Some(d) = self.hole_dialog.as_mut() {
+                    d.picking = false;
+                }
+            }
+        }
+
+        // --- Extrude To Object / Hole To: click the plane or flat face it runs up to ---
+        let picking_target = self.dialog.as_ref().is_some_and(|d| d.picking_target) || self.hole_dialog.as_ref().is_some_and(|d| d.picking_target);
         if picking_target {
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
@@ -429,9 +454,15 @@ impl OpenCad {
                 if let (Some(t), Some(d)) = (target, self.dialog.as_mut()) {
                     (d.target, d.picking_target) = (Some(t), false);
                 }
+                if let (Some(t), Some(d)) = (target, self.hole_dialog.as_mut()) {
+                    (d.hole.target, d.picking_target) = (Some(t), false);
+                }
             }
             if esc && !typing {
                 if let Some(d) = self.dialog.as_mut() {
+                    d.picking_target = false;
+                }
+                if let Some(d) = self.hole_dialog.as_mut() {
                     d.picking_target = false;
                 }
             }
@@ -641,6 +672,8 @@ impl OpenCad {
             self.new_sketch_tool();
         } else if !sketching && key_f && !typing && self.body_count > 0 {
             self.open_edge_dialog(None, EdgeKind::Fillet);
+        } else if !sketching && key_h && !typing && self.body_count > 0 {
+            self.open_hole(None);
         } else if !sketching && key_i && !typing {
             self.measure = if self.measure.is_some() { None } else { Some(measure::Measure::default()) };
         }
@@ -1636,7 +1669,7 @@ impl OpenCad {
         }
 
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
-        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some();
+        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
         self.ensure_model(Slot::Committed);
         self.feature_errors = self.model(Slot::Committed).errors.clone();
@@ -1647,6 +1680,7 @@ impl OpenCad {
         self.remove_errors = self.model(Slot::Committed).remove_errors.clone();
         self.axis_errors = self.model(Slot::Committed).axis_errors.clone();
         self.plane_errors = self.model(Slot::Committed).plane_errors.clone();
+        self.hole_errors = self.model(Slot::Committed).hole_errors.clone();
         self.body_count = self.model(Slot::Committed).bodies.len();
         // With a body in the scene the origin gets out of the way (Create Sketch
         // and the browser's Origin box bring it back).
@@ -1658,7 +1692,10 @@ impl OpenCad {
         let slot = if previewing { Slot::Preview } else { Slot::Committed };
         self.ensure_model(slot);
         let model = &self.caches[slot as usize].as_ref().expect("built above").model;
-        self.dialog_error = if let Some(d) = &self.dialog {
+        self.dialog_error = if let Some(d) = &self.hole_dialog {
+            let k = d.editing.unwrap_or(self.holes.len());
+            if d.hole.places.is_empty() { None } else { model.hole_errors.get(k).cloned().flatten() }
+        } else if let Some(d) = &self.dialog {
             let k = d.editing.unwrap_or(self.extrudes.len());
             model.errors.get(k).cloned().flatten()
         } else if let Some(d) = &self.edge_dialog {
@@ -1717,6 +1754,57 @@ impl OpenCad {
             )));
         } else {
             view.solids(&meshes, &self.camera);
+        }
+
+        // --- draw: threads that are only shown (a helix at the major diameter) ---
+        {
+            let model = &self.caches[slot as usize].as_ref().expect("built above").model;
+            let stroke = Stroke::new(1.2, Color32::from_rgb(230, 190, 90));
+            for th in &model.threads {
+                let u = model::zero_normal(th.axis, DVec3::Z);
+                let v = th.axis.cross(u);
+                let turns = (th.length / th.pitch).min(200.0);
+                let steps = (turns * 24.0).ceil().max(2.0) as usize;
+                let at = |k: usize| {
+                    let s = k as f64 / steps as f64;
+                    let a = s * turns * std::f64::consts::TAU;
+                    (th.origin + th.axis * (s * turns * th.pitch) + (u * a.cos() + v * a.sin()) * th.radius).as_vec3()
+                };
+                for k in 0..steps {
+                    view.line(at(k), at(k + 1), stroke);
+                }
+            }
+        }
+
+        // --- draw: hole places (the one under the cursor, and those picked) ---
+        if let Some(d) = &self.hole_dialog {
+            for place in &d.hole.places {
+                if let Some(q) = self.hole_place_world(place).and_then(|(p, _)| view.project(p.as_vec3())) {
+                    painter.circle_stroke(to_pos(q), 5.0, Stroke::new(2.0, COL_SELECT));
+                }
+            }
+            if let Some((place, at)) = self.hole_hover {
+                if let Some(q) = view.project(at.as_vec3()) {
+                    let picked = d.hole.places.contains(&place);
+                    painter.circle_stroke(to_pos(q), 7.0, Stroke::new(2.0, if picked { COL_SELECT } else { COL_HOVER }));
+                    let label = match place {
+                        model::HolePlace::SketchCircle { .. } => "circle (its size)",
+                        model::HolePlace::SketchPoint { .. } => "point",
+                        model::HolePlace::Face { centre: true, .. } => "centre of face",
+                        model::HolePlace::Face { .. } => "on face",
+                    };
+                    painter.text(to_pos(q) + egui::vec2(10.0, -10.0), egui::Align2::LEFT_BOTTOM, label, egui::FontId::proportional(13.0), Color32::from_gray(225));
+                }
+            }
+            if d.picking {
+                painter.text(
+                    rect.center_top() + egui::vec2(0.0, 40.0),
+                    egui::Align2::CENTER_TOP,
+                    "Click sketch points, circles or faces for the holes (click again to drop one)   (Esc when done)",
+                    egui::FontId::proportional(15.0),
+                    Color32::from_gray(220),
+                );
+            }
         }
 
         // --- draw: the face a sketch would start on ---

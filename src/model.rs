@@ -454,6 +454,202 @@ pub fn angle_frame(o: DVec3, d: DVec3, n0: DVec3, degrees: f64) -> Option<crate:
     Some(crate::sketch::FacePlane { origin: o, u, v: n.cross(u), follow: None })
 }
 
+/// Where a hole goes.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum HolePlace {
+    /// A sketch point (a line end, a point, an arc or circle centre).
+    SketchPoint { sketch: usize, point: usize },
+    /// A sketch circle's centre; a Simple hole takes the circle's diameter.
+    SketchCircle { sketch: usize, entity: usize },
+    /// A point on a flat body face, kept as picked (found again every build,
+    /// like a face sketch). `centre`: the middle of the face instead.
+    Face { face: FacePlane, anchor: [f64; 2], centre: bool },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HoleKind {
+    #[default]
+    Simple,
+    Counterbore,
+    Countersink,
+}
+
+/// Fusion's "Hole Tap Type".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TapType {
+    /// The diameter as typed.
+    #[default]
+    Simple,
+    /// The clearance diameter for a screw size and fit.
+    Clearance,
+    /// Drilled at the tap size for a thread (modeled, or shown cosmetically).
+    Tapped,
+    /// NPT: a 1:16 tapered tapped hole.
+    TaperTapped,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HoleExtent {
+    #[default]
+    Distance,
+    /// Up to a plane or face (`HoleFeature.target`).
+    To,
+    /// Right through everything.
+    All,
+}
+
+/// A thread's choice from the library (holes; the Thread tool later).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ThreadSpec {
+    pub standard: crate::threads::Standard,
+    /// e.g. "M6x1", "1/4-20 UNC".
+    pub designation: String,
+    pub class: String,
+    pub right_hand: bool,
+    /// Cut the thread into the part (else only drawn).
+    pub modeled: bool,
+    /// Clearance holes: how snug.
+    #[serde(default)]
+    pub fit: crate::threads::Fit,
+}
+
+impl Default for ThreadSpec {
+    fn default() -> Self {
+        ThreadSpec { standard: Default::default(), designation: "M6x1".into(), class: "6H".into(), right_hand: true, modeled: false, fit: Default::default() }
+    }
+}
+
+impl ThreadSpec {
+    pub fn thread(&self) -> Option<crate::threads::Thread> {
+        crate::threads::Thread::find(&self.designation)
+    }
+}
+
+/// Fusion's Hole: drilled holes (simple, counterbore, countersink; plain,
+/// clearance or tapped) at one or more places. A timeline feature that cuts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HoleFeature {
+    pub name: String,
+    pub places: Vec<HolePlace>,
+    pub kind: HoleKind,
+    pub tap: TapType,
+    pub extent: HoleExtent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<ExtrudeTarget>,
+    /// From the face to the end of the full diameter (the drill tip is extra).
+    pub depth: f64,
+    /// Simple holes (circle places use the circle's own).
+    pub diameter: f64,
+    /// Drill point: None flat, else the tip's included angle in degrees.
+    pub tip_angle: Option<f64>,
+    pub cbore_diameter: f64,
+    pub cbore_depth: f64,
+    pub csink_diameter: f64,
+    /// Included angle in degrees.
+    pub csink_angle: f64,
+    /// Drill out of the face instead of into it.
+    pub flip: bool,
+    #[serde(default)]
+    pub thread: ThreadSpec,
+}
+
+impl Default for HoleFeature {
+    fn default() -> Self {
+        HoleFeature {
+            name: "Hole1".into(),
+            places: Vec::new(),
+            kind: HoleKind::Simple,
+            tap: TapType::Simple,
+            extent: HoleExtent::Distance,
+            target: None,
+            depth: 10.0,
+            diameter: 5.0,
+            tip_angle: Some(118.0),
+            cbore_diameter: 10.0,
+            cbore_depth: 5.0,
+            csink_diameter: 10.0,
+            csink_angle: 90.0,
+            flip: false,
+            thread: ThreadSpec::default(),
+        }
+    }
+}
+
+impl HoleFeature {
+    /// The drilled diameter at a place (None: the circle it was put on, which
+    /// only the sketch knows). Tapped holes are drilled at the thread's minor
+    /// (tap-drill) diameter, the thread cut beyond it.
+    pub fn bore(&self, circle: Option<f64>) -> Result<f64, String> {
+        let thread = || self.thread.thread().ok_or_else(|| format!("unknown thread {}", self.thread.designation));
+        let d = match self.tap {
+            TapType::Simple => circle.unwrap_or(self.diameter),
+            TapType::Clearance => thread()?.clearance(self.thread.fit),
+            TapType::Tapped | TapType::TaperTapped => thread()?.minor(),
+        };
+        if !(d.is_finite() && d > 0.0) {
+            return Err("the diameter must be more than zero".into());
+        }
+        Ok(d)
+    }
+
+    /// The hole's half cross-section as (radius, depth) points, depth growing
+    /// into the material, starting `lead` above the face (so the cut doesn't
+    /// share a face with the part) and running `depth` (plus the drill tip).
+    /// Closed along the axis (radius 0) at both ends.
+    pub fn profile(&self, bore: f64, depth: f64, lead: f64) -> Result<Vec<glam::DVec2>, String> {
+        use glam::DVec2;
+        let r = bore / 2.0;
+        if !(depth.is_finite() && depth > 0.0) {
+            return Err("the depth must be more than zero".into());
+        }
+        let taper = if self.tap == TapType::TaperTapped { crate::threads::NPT_TAPER / 2.0 } else { 0.0 };
+        // The bore's radius at depth z (a taper narrows it going in).
+        let at = |z: f64| r - taper * z;
+        let mut pts = vec![DVec2::new(0.0, -lead)];
+        match self.kind {
+            HoleKind::Simple => pts.push(DVec2::new(at(-lead), -lead)),
+            HoleKind::Counterbore => {
+                let (rc, dc) = (self.cbore_diameter / 2.0, self.cbore_depth);
+                if rc <= r + 1e-9 {
+                    return Err("the counterbore must be wider than the hole".into());
+                }
+                if !(dc > 0.0 && dc < depth) {
+                    return Err("the counterbore must be shallower than the hole".into());
+                }
+                pts.extend([DVec2::new(rc, -lead), DVec2::new(rc, dc), DVec2::new(at(dc), dc)]);
+            }
+            HoleKind::Countersink => {
+                let (rs, half) = (self.csink_diameter / 2.0, (self.csink_angle / 2.0).to_radians());
+                if rs <= r + 1e-9 {
+                    return Err("the countersink must be wider than the hole".into());
+                }
+                if !(half > 0.0 && half < std::f64::consts::FRAC_PI_2) {
+                    return Err("the countersink angle must be between 0° and 180°".into());
+                }
+                // The cone meets the bore this deep (a taper's bore, near enough
+                // in one step: solve rs − z tan = r − taper z).
+                let hs = (rs - r) / (half.tan() - taper);
+                if hs >= depth {
+                    return Err("the countersink is deeper than the hole".into());
+                }
+                pts.extend([DVec2::new(rs + lead * half.tan(), -lead), DVec2::new(at(hs), hs)]);
+            }
+        }
+        let end = at(depth);
+        pts.push(DVec2::new(end, depth));
+        if let Some(tip) = self.tip_angle {
+            let half = (tip / 2.0).to_radians();
+            if !(half > 0.0 && half < std::f64::consts::FRAC_PI_2) {
+                return Err("the tip angle must be between 0° and 180°".into());
+            }
+            pts.push(DVec2::new(0.0, depth + end / half.tan()));
+        } else {
+            pts.push(DVec2::new(0.0, depth));
+        }
+        Ok(pts)
+    }
+}
+
 /// Most copies one feature may make (keeps a typo from hanging the app).
 pub const MAX_COPIES: u32 = 200;
 
@@ -717,6 +913,33 @@ mod tests {
     use super::*;
     use crate::sketch::{Anchor, Editor, OriginPlane, Tool};
     use glam::DVec2;
+
+    #[test]
+    fn a_hole_profile_has_its_bore_counterbore_countersink_and_tip() {
+        use glam::DVec2;
+        let mut h = HoleFeature { tip_angle: None, ..Default::default() };
+        assert_eq!(h.profile(6.0, 10.0, 1.0).unwrap(), vec![DVec2::new(0.0, -1.0), DVec2::new(3.0, -1.0), DVec2::new(3.0, 10.0), DVec2::new(0.0, 10.0)]);
+        h.tip_angle = Some(90.0);
+        let p = h.profile(6.0, 10.0, 1.0).unwrap();
+        assert!(p.last().unwrap().distance(DVec2::new(0.0, 13.0)) < 1e-12, "a 90° tip is as deep as the radius");
+        h.kind = HoleKind::Counterbore;
+        (h.cbore_diameter, h.cbore_depth) = (11.0, 4.0);
+        assert_eq!(h.profile(6.0, 10.0, 1.0).unwrap()[1..4], [DVec2::new(5.5, -1.0), DVec2::new(5.5, 4.0), DVec2::new(3.0, 4.0)]);
+        h.cbore_diameter = 5.0;
+        assert!(h.profile(6.0, 10.0, 1.0).is_err(), "a counterbore narrower than the hole");
+        h.kind = HoleKind::Countersink;
+        (h.csink_diameter, h.csink_angle) = (12.0, 90.0);
+        let p = h.profile(6.0, 10.0, 1.0).unwrap();
+        assert!(p[1].distance(DVec2::new(7.0, -1.0)) < 1e-12 && p[2].distance(DVec2::new(3.0, 3.0)) < 1e-12, "{p:?}");
+        // The drilled size by tap type.
+        h.tap = TapType::Clearance;
+        assert_eq!(h.bore(None).unwrap(), 6.6);
+        h.tap = TapType::Tapped;
+        assert!((h.bore(None).unwrap() - 4.917).abs() < 1e-3);
+        h.tap = TapType::Simple;
+        assert_eq!(h.bore(Some(8.0)).unwrap(), 8.0, "a circle place keeps its circle's size");
+        assert_eq!(h.bore(None).unwrap(), 5.0);
+    }
 
     #[test]
     fn a_plane_at_angle_turns_about_its_line() {

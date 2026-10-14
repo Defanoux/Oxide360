@@ -6,6 +6,7 @@ impl OpenCad {
     pub(crate) fn open_extrude(&mut self, editing: Option<usize>) {
         self.axis_pick = false;
         self.angle_pick = false;
+        self.hole_dialog = None;
         self.finish_sketch();
         self.cancel_edge_dialog();
         self.cancel_revolve();
@@ -123,6 +124,12 @@ impl OpenCad {
                     v
                 }
             };
+        }
+        if let Some(d) = self.hole_dialog.as_ref().filter(|d| d.hole.extent == model::HoleExtent::Distance) {
+            // The depth arrow, from the first place into the material.
+            let Some((p, inward)) = d.hole.places.first().and_then(|pl| self.hole_place_world(pl)) else { return Vec::new() };
+            let dir = if d.hole.flip { -inward } else { inward };
+            return vec![Handle::Line { line: LineHandle { origin: p, dir }, value: d.hole.depth, target: HandleTarget::HoleDepth }];
         }
         if let Some((d, a)) = self.plane_dialog.as_ref().and_then(|d| Some((d, d.angle?))) {
             // A round arrow that swings the plane about its line.
@@ -292,6 +299,11 @@ impl OpenCad {
                     d.distance = v;
                 }
             }
+            HandleTarget::HoleDepth => {
+                if let Some(d) = self.hole_dialog.as_mut() {
+                    d.hole.depth = v.max(0.01);
+                }
+            }
             HandleTarget::PlaneAngle => {
                 if let Some(a) = self.plane_dialog.as_mut().and_then(|d| d.angle.as_mut()) {
                     a.degrees = v.clamp(-360.0, 360.0);
@@ -382,6 +394,7 @@ impl OpenCad {
     pub(crate) fn open_revolve(&mut self, editing: Option<usize>) {
         self.axis_pick = false;
         self.angle_pick = false;
+        self.hole_dialog = None;
         self.finish_sketch();
         self.cancel_extrude();
         self.cancel_edge_dialog();
@@ -464,6 +477,7 @@ impl OpenCad {
     pub(crate) fn open_copy(&mut self, mode: CopyMode, editing: Option<usize>) {
         self.axis_pick = false;
         self.angle_pick = false;
+        self.hole_dialog = None;
         self.cancel_extrude();
         self.cancel_revolve();
         self.cancel_edge_dialog();
@@ -540,8 +554,151 @@ impl OpenCad {
         self.cancel_copy();
     }
 
+    /// Open the Hole dialog (a new hole, or hole `editing`).
+    pub(crate) fn open_hole(&mut self, editing: Option<usize>) {
+        self.finish_sketch();
+        self.cancel_all_dialogs();
+        self.message = None;
+        self.hole_dialog = Some(match editing.and_then(|k| self.holes.get(k).map(|h| (k, h))) {
+            Some((k, h)) => HoleDialog::from_feature(k, h),
+            None => HoleDialog::new(format!("Hole{}", self.holes.len() + 1)),
+        });
+    }
+
+    pub(crate) fn commit_hole(&mut self) {
+        let Some(d) = self.hole_dialog.as_ref() else { return };
+        if d.hole.places.is_empty() {
+            self.message = Some("Pick where the hole goes".into());
+            return;
+        }
+        if let Some(e) = self.dialog_error.clone() {
+            self.message = Some(format!("Can't make the hole: {e}"));
+            return;
+        }
+        let h = d.hole.clone();
+        match d.editing {
+            Some(k) => self.holes[k] = h,
+            None => {
+                self.holes.push(h);
+                self.timeline_insert(Feature::Hole(self.holes.len() - 1));
+            }
+        }
+        self.cancel_hole();
+    }
+
+    pub(crate) fn cancel_hole(&mut self) {
+        self.hole_dialog = None;
+        self.hole_hover = None;
+        self.arrows.clear();
+    }
+
+    /// What a click in the view would add to the hole: a sketch circle (on
+    /// it or its centre), a sketch point, the middle of a flat face (near it)
+    /// or a point on the face. With where its centre is.
+    pub(crate) fn hole_place_under(&mut self, view: &View, px: Vec2, aspect: f32, min: Vec2, size: Vec2) -> Option<(model::HolePlace, DVec3)> {
+        let mut best: Option<(f32, model::HolePlace, DVec3)> = None;
+        let mut offer = |d: f32, place: model::HolePlace, at: DVec3| {
+            if d < SNAP_PX && best.as_ref().is_none_or(|b| d < b.0) {
+                best = Some((d, place, at));
+            }
+        };
+        for s in (0..self.sketches.len()).filter(|&s| self.sketch_visible(s)) {
+            let (sk, plane) = (&self.sketches[s], self.plane_of(s));
+            let screen = |p: DVec2| view.project(plane.to_world(p));
+            let mut used = vec![false; sk.points.len()];
+            for (e, ent) in sk.entities.iter().enumerate() {
+                let (c, r) = match *ent {
+                    Entity::Circle { center, radius } => (center, radius),
+                    Entity::Arc { center, a, .. } => (center, sk.points[center].distance(sk.points[a])),
+                    _ => {
+                        for p in sk.entity_points(e) {
+                            used[p] = true;
+                        }
+                        continue;
+                    }
+                };
+                used[c] = true;
+                // On the circle or at its centre (a little ahead of a plain point there).
+                let ring: Vec<Vec2> = (0..=48).filter_map(|k| screen(sk.points[c] + DVec2::from_angle(k as f64 / 48.0 * std::f64::consts::TAU) * r)).collect();
+                let on_ring = ring.windows(2).map(|w| dist_to_segment_px(px, w[0], w[1])).fold(f32::MAX, f32::min);
+                let at_centre = screen(sk.points[c]).map_or(f32::MAX, |q| q.distance(px));
+                offer(on_ring.min(at_centre) - 0.5, model::HolePlace::SketchCircle { sketch: s, entity: e }, plane.to_world(sk.points[c]).as_dvec3());
+            }
+            for (p, _) in used.iter().enumerate().filter(|(_, u)| **u) {
+                if let Some(q) = screen(sk.points[p]) {
+                    offer(q.distance(px), model::HolePlace::SketchPoint { sketch: s, point: p }, plane.to_world(sk.points[p]).as_dvec3());
+                }
+            }
+        }
+        if let Some((_, place, at)) = best {
+            return Some((place, at));
+        }
+        // A flat face: its middle when the cursor is near it, else the point under the cursor.
+        let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+        let (t, b, face) = self.pick_face(&ray)?;
+        let hit = (ray.origin + ray.dir * t).as_dvec3();
+        let body = &self.model(Slot::Committed).bodies[b];
+        let middle = model::ray_hit_tri(&body.mesh, ray.origin, ray.dir).and_then(|(_, tri)| body.face_centroid(*body.tri_face.get(tri)? as usize));
+        let face = sketch::FacePlane { follow: None, ..face };
+        let anchor = [hit.dot(face.u), hit.dot(face.v)];
+        match middle.filter(|m| view.project(m.as_vec3()).is_some_and(|q| q.distance(px) < SNAP_PX * 1.5)) {
+            Some(m) => Some((model::HolePlace::Face { face, anchor, centre: true }, m)),
+            None => Some((model::HolePlace::Face { face, anchor, centre: false }, hit)),
+        }
+    }
+
+    /// Where a hole place is now (as far as the app knows) and the way it drills (unflipped).
+    pub(crate) fn hole_place_world(&self, place: &model::HolePlace) -> Option<(DVec3, DVec3)> {
+        match *place {
+            model::HolePlace::SketchPoint { sketch, point } => {
+                let plane = self.plane_of(sketch);
+                Some((plane.to_world(*self.sketches.get(sketch)?.points.get(point)?).as_dvec3(), -plane.normal().as_dvec3()))
+            }
+            model::HolePlace::SketchCircle { sketch, entity } => {
+                let sk = self.sketches.get(sketch)?;
+                let c = match *sk.entities.get(entity)? {
+                    Entity::Circle { center, .. } | Entity::Arc { center, .. } => center,
+                    _ => return None,
+                };
+                let plane = self.plane_of(sketch);
+                Some((plane.to_world(sk.points[c]).as_dvec3(), -plane.normal().as_dvec3()))
+            }
+            model::HolePlace::Face { face, anchor, .. } => Some((face.origin + face.u * anchor[0] + face.v * anchor[1], -face.normal())),
+        }
+    }
+
+    /// On the first place picked: a sketch hole that would drill away from
+    /// every body (but toward one the other way) is flipped, like Cut aims.
+    pub(crate) fn aim_hole(&mut self) {
+        let Some(place) = self.hole_dialog.as_ref().filter(|d| d.editing.is_none() && d.hole.places.len() == 1).map(|d| d.hole.places[0]) else { return };
+        let Some((p, inward)) = self.hole_place_world(&place) else { return };
+        let model = self.model(Slot::Committed);
+        let hits = |dir: DVec3| model.bodies.iter().any(|b| model::ray_hit(&b.mesh, (p - dir * 1e-3).as_vec3(), dir.as_vec3()).is_some());
+        let flip = !hits(inward) && hits(-inward);
+        if let Some(d) = self.hole_dialog.as_mut() {
+            d.hole.flip = flip;
+        }
+    }
+
+    pub(crate) fn delete_hole(&mut self, k: usize) {
+        if k >= self.holes.len() {
+            return;
+        }
+        self.holes.remove(k);
+        self.timeline_remove(Feature::Hole(k));
+        for f in &mut self.timeline {
+            if let Feature::Hole(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+        self.cancel_hole();
+    }
+
     /// Close whichever tool dialog or pick mode is open.
     pub(crate) fn cancel_all_dialogs(&mut self) {
+        self.cancel_hole();
         self.cancel_extrude();
         self.cancel_revolve();
         self.cancel_edge_dialog();
@@ -550,6 +707,7 @@ impl OpenCad {
         self.plane_pick = false;
         self.axis_pick = false;
         self.angle_pick = false;
+        self.hole_dialog = None;
         self.face_pick = false;
     }
 
@@ -598,6 +756,17 @@ impl OpenCad {
         if self.copies.iter().any(|c| c.kind == model::CopyKind::MirrorPlane(k)) {
             self.notify("A mirror uses that plane — delete it or pick another plane first".into());
             return;
+        }
+        if self.holes.iter().any(|h| h.target == Some(model::ExtrudeTarget::Plane(k))) {
+            self.notify("A hole runs to that plane — delete it or pick another object first".into());
+            return;
+        }
+        for h in &mut self.holes {
+            if let Some(model::ExtrudeTarget::Plane(j)) = &mut h.target {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
         }
         if self.extrudes.iter().any(|e| e.target == Some(model::ExtrudeTarget::Plane(k))) {
             self.notify("An extrude runs up to that plane — delete it or pick another object first".into());
@@ -770,6 +939,7 @@ impl OpenCad {
         self.timeline_insert(Feature::Axis(self.axes.len() - 1));
         self.axis_pick = false;
         self.angle_pick = false;
+        self.hole_dialog = None;
     }
 
     /// The straight body edge nearest the cursor (within snapping reach) that
@@ -945,6 +1115,7 @@ impl OpenCad {
     pub(crate) fn open_edge_dialog(&mut self, editing: Option<usize>, kind: EdgeKind) {
         self.axis_pick = false;
         self.angle_pick = false;
+        self.hole_dialog = None;
         self.finish_sketch();
         self.cancel_extrude();
         self.cancel_revolve();

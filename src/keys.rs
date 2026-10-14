@@ -21,11 +21,12 @@ pub enum Action {
     NewSketch,
     Extrude,
     Fillet,
+    Hole,
     Measure,
 }
 
 impl Action {
-    pub const ALL: [Action; 14] = [
+    pub const ALL: [Action; 15] = [
         Action::Line,
         Action::Rectangle,
         Action::Circle,
@@ -39,6 +40,7 @@ impl Action {
         Action::NewSketch,
         Action::Extrude,
         Action::Fillet,
+        Action::Hole,
         Action::Measure,
     ];
 
@@ -58,6 +60,7 @@ impl Action {
             Action::NewSketch => "New sketch",
             Action::Extrude => "Extrude",
             Action::Fillet => "Fillet",
+            Action::Hole => "Hole",
             Action::Measure => "Measure",
         }
     }
@@ -78,13 +81,14 @@ impl Action {
             Action::NewSketch => "Start a sketch (on the selected plane, or pick one)",
             Action::Extrude => "Extrude a profile",
             Action::Fillet => "Round body edges",
+            Action::Hole => "Drill holes (simple, counterbore, countersink, tapped)",
             Action::Measure => "Measure distances, sizes and angles",
         }
     }
 
     /// Does it work while sketching (else in the 3D view)?
     pub fn in_sketch(self) -> bool {
-        !matches!(self, Action::NewSketch | Action::Extrude | Action::Fillet | Action::Measure)
+        !matches!(self, Action::NewSketch | Action::Extrude | Action::Fillet | Action::Hole | Action::Measure)
     }
 
     pub fn default_key(self) -> Option<Key> {
@@ -102,6 +106,7 @@ impl Action {
             Action::NewSketch => Key::N,
             Action::Extrude => Key::E,
             Action::Fillet => Key::F,
+            Action::Hole => Key::H,
             Action::Measure => Key::I,
         })
     }

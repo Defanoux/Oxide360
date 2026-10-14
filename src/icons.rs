@@ -27,6 +27,7 @@ pub enum Icon {
     Midpoint,
     Plane,
     PlaneAngle,
+    Hole,
     Project,
     Axis,
     RectPattern,
@@ -291,6 +292,18 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
                 line(p, q, Stroke::new(thin.width * 1.2, orange));
             }
             line((0.3, 0.6), (1.0, 0.6), Stroke::new(thin.width * 1.4, ink));
+        }
+        Icon::Hole => {
+            // A block seen from the front with a drilled hole: two walls and a pointed tip.
+            for (p, q) in [((0.1, 0.25), (0.9, 0.25)), ((0.1, 0.25), (0.1, 0.9)), ((0.9, 0.25), (0.9, 0.9)), ((0.1, 0.9), (0.9, 0.9))] {
+                line(p, q, thin);
+            }
+            let wall = Stroke::new(thin.width * 1.3, orange);
+            line((0.38, 0.25), (0.38, 0.62), wall);
+            line((0.62, 0.25), (0.62, 0.62), wall);
+            line((0.38, 0.62), (0.5, 0.74), wall);
+            line((0.62, 0.62), (0.5, 0.74), wall);
+            line((0.5, 0.05), (0.5, 0.2), thin);
         }
         Icon::Midpoint => {
             // A line with a dot at its middle and two small ticks.

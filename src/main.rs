@@ -38,12 +38,14 @@ mod origin;
 mod plane_dialog;
 mod pattern;
 mod profile;
+mod hole_dialog;
 mod rect_input;
 mod project;
 mod settings;
 mod sketch;
 mod sketch_pattern;
 mod solver;
+mod threads;
 mod view;
 
 use camera::{
@@ -60,6 +62,7 @@ use egui::{Color32, Stroke};
 use glam::{DVec2, DVec3, Vec2, Vec3};
 use copy_dialog::{CopyDialog, Mode as CopyMode};
 use plane_dialog::PlaneDialog;
+use hole_dialog::HoleDialog;
 use sketch_pattern::{Mode as SpMode, SketchPattern};
 use model::{PlaneFeature, AxisFeature, CopyFeature, EdgeFeature, EdgeKind, EdgeRef, Extrude, Mesh, Operation, Revolve, RevolveAxis};
 use icons::Icon;
@@ -145,6 +148,8 @@ impl OpenCad {
                 d.kind.name()
             } else if let Some(d) = &self.copy_dialog {
                 d.mode.title()
+            } else if self.hole_dialog.is_some() {
+                "Hole"
             } else if self.plane_dialog.as_ref().is_some_and(|d| d.angle.is_some()) {
                 "Plane at Angle"
             } else if self.angle_pick {
@@ -486,6 +491,7 @@ enum HandleTarget {
     PatternRadial,
     PlaneOffset,
     PlaneAngle,
+    HoleDepth,
     /// A sketch pattern's spacing along X / Y, and its angle.
     SketchSpacing1,
     SketchSpacing2,
@@ -524,6 +530,7 @@ struct KernelCache {
     axes: Vec<AxisFeature>,
     planes: Vec<PlaneFeature>,
     removes: Vec<model::RemoveFeature>,
+    holes: Vec<model::HoleFeature>,
     timeline: Vec<Feature>,
     model: kernel::Model,
 }
@@ -564,6 +571,10 @@ struct OpenCad {
     copies: Vec<CopyFeature>,                // mirrors and patterns
     copy_errors: Vec<Option<String>>,
     removes: Vec<model::RemoveFeature>,     // Remove features (bodies taken out)
+    holes: Vec<model::HoleFeature>,         // Hole features
+    hole_dialog: Option<hole_dialog::HoleDialog>,
+    hole_errors: Vec<Option<String>>,
+    hole_hover: Option<(model::HolePlace, DVec3)>, // what a click would add, and where its centre is
     units: units::Unit,                     // the design's units (shown and typed in)
     touchpad_zoom_flip: bool,               // touchpad Ctrl+scroll: fingers up zoom in
     version: u32,                           // saves so far (shown by the name)
@@ -713,6 +724,10 @@ impl Default for OpenCad {
             copies: Vec::new(),
             copy_errors: Vec::new(),
             removes: Vec::new(),
+            holes: Vec::new(),
+            hole_dialog: None,
+            hole_errors: Vec::new(),
+            hole_hover: None,
             units: units::Unit::Mm,
             touchpad_zoom_flip: true,
             version: 0,
@@ -834,7 +849,9 @@ impl OpenCad {
         // Enter finishes the open tool window (OK) when nothing else takes it:
         // no text box focused and no number box open (that has its own Enter).
         if self.active.is_none() && self.float.is_none() && !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
-            if self.plane_dialog.is_some() {
+            if self.hole_dialog.is_some() {
+                self.commit_hole();
+            } else if self.plane_dialog.is_some() {
                 self.commit_plane();
             } else if self.copy_dialog.is_some() {
                 self.commit_copy();
@@ -935,6 +952,19 @@ impl OpenCad {
             float("edges").show(&ctx, |ui| self.edge_panel(ui));
         } else if self.copy_dialog.is_some() && self.active.is_none() {
             float("copy").show(&ctx, |ui| self.copy_panel(ui));
+        } else if self.hole_dialog.is_some() && self.active.is_none() {
+            float("hole").show(&ctx, |ui| {
+                let error = self.dialog_error.clone();
+                let plane_names: Vec<String> = self.planes.iter().map(|p| p.name.clone()).collect();
+                if let Some(d) = self.hole_dialog.as_mut() {
+                    let circles = d.hole.places.iter().filter(|p| matches!(p, model::HolePlace::SketchCircle { .. })).count();
+                    match d.panel(ui, design_units, error.as_deref(), &plane_names, circles) {
+                        copy_dialog::Action::Ok => self.commit_hole(),
+                        copy_dialog::Action::Cancel => self.cancel_hole(),
+                        copy_dialog::Action::None => {}
+                    }
+                }
+            });
         } else if self.plane_dialog.is_some() && self.active.is_none() {
             float("plane").show(&ctx, |ui| {
                 let error = self.dialog_error.clone();

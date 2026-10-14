@@ -663,6 +663,14 @@ impl OpenCad {
                     {
                         self.open_revolve(None);
                     }
+                    let tip = "Hole (H): click sketch points, circles or a face; counterbore, countersink, clearance and tapped holes";
+                    if icons::button(ui, Icon::Hole, tip, has_bodies, self.hole_dialog.is_some()).clicked() {
+                        if self.hole_dialog.is_some() {
+                            self.cancel_hole();
+                        } else {
+                            self.open_hole(None);
+                        }
+                    }
                 });
                 group(ui, "CONSTRUCT", |ui| {
                     let tip = "Offset Plane: click an origin plane or a face, then set the distance";

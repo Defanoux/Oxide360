@@ -4,7 +4,7 @@
 //! index and number so a damaged or hand-edited file gives a clear error
 //! instead of crashing the app.
 
-use crate::model::{PlaneFeature, AxisFeature, CopyFeature, EdgeFeature, Extrude, MAX_COPIES, RemoveFeature, Revolve};
+use crate::model::{HoleFeature, PlaneFeature, AxisFeature, CopyFeature, EdgeFeature, Extrude, MAX_COPIES, RemoveFeature, Revolve};
 use crate::sketch::{Constraint, Entity, Sketch};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -29,6 +29,8 @@ pub enum Feature {
     Plane(usize),
     /// Bodies taken out of the design (index into `removes`).
     Remove(usize),
+    /// Drilled holes (index into `holes`).
+    Hole(usize),
 }
 
 /// Put `f` into the timeline at the rollback marker (the end when there is
@@ -62,6 +64,7 @@ pub fn forget_feature(list: &mut Vec<Feature>, gone: Feature) {
             (Feature::Axis(i), Feature::Axis(k)) if i > k => Feature::Axis(i - 1),
             (Feature::Plane(i), Feature::Plane(k)) if i > k => Feature::Plane(i - 1),
             (Feature::Remove(i), Feature::Remove(k)) if i > k => Feature::Remove(i - 1),
+            (Feature::Hole(i), Feature::Hole(k)) if i > k => Feature::Hole(i - 1),
             (f, _) => f,
         };
     }
@@ -146,6 +149,9 @@ pub struct Document {
     /// Remove features. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removes: Vec<RemoveFeature>,
+    /// Holes. Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holes: Vec<HoleFeature>,
     /// The units the design is shown and typed in (Fusion's Document Settings
     /// → Units). Values are always *stored* in mm (see the file header);
     /// older files are mm.
@@ -372,6 +378,24 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             return Err(format!("{}: invalid body reference", r.name));
         }
     }
+    for h in &doc.holes {
+        use crate::model::HolePlace;
+        let finite = [h.depth, h.diameter, h.cbore_diameter, h.cbore_depth, h.csink_diameter, h.csink_angle].iter().all(|v| v.is_finite())
+            && h.tip_angle.is_none_or(f64::is_finite);
+        let places_ok = !h.places.is_empty()
+            && h.places.iter().all(|p| match *p {
+                HolePlace::SketchPoint { sketch, point } => doc.sketches.get(sketch).is_some_and(|sk| point < sk.points.len()),
+                HolePlace::SketchCircle { sketch, entity } => doc.sketches.get(sketch).is_some_and(|sk| sk.is_round(entity)),
+                HolePlace::Face { face, anchor, .. } => face.origin.is_finite() && face.u.is_finite() && face.v.is_finite() && anchor.iter().all(|a| a.is_finite()),
+            });
+        let target_ok = match h.target {
+            Some(crate::model::ExtrudeTarget::Plane(j)) => j < doc.planes.len(),
+            _ => true,
+        };
+        if !(finite && places_ok && target_ok) {
+            return Err(format!("{}: invalid place, size or target", h.name));
+        }
+    }
     for p in &doc.planes {
         let f = p.base;
         if !(p.offset.is_finite() && f.origin.is_finite() && f.u.is_finite() && f.v.is_finite() && f.normal().length() > 0.5) {
@@ -418,6 +442,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     let mut seen_a = vec![false; doc.axes.len()];
     let mut seen_p = vec![false; doc.planes.len()];
     let mut seen_x = vec![false; doc.removes.len()];
+    let mut seen_h = vec![false; doc.holes.len()];
     for f in &doc.timeline {
         let slot = match *f {
             Feature::Sketch(i) => seen_s.get_mut(i),
@@ -428,6 +453,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Feature::Axis(i) => seen_a.get_mut(i),
             Feature::Plane(i) => seen_p.get_mut(i),
             Feature::Remove(i) => seen_x.get_mut(i),
+            Feature::Hole(i) => seen_h.get_mut(i),
         };
         match slot {
             Some(s) if !*s => *s = true,
@@ -437,7 +463,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     if doc.suppressed.iter().any(|f| !doc.timeline.contains(f)) {
         return Err("a suppressed feature isn't in the timeline".into());
     }
-    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).any(|s| !s) {
+    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).any(|s| !s) {
         return Err("timeline is missing a feature".into());
     }
     Ok(())
@@ -559,6 +585,7 @@ mod tests {
             axes: Vec::new(),
             planes: Vec::new(),
             removes: Vec::new(),
+            holes: Vec::new(),
             units: crate::units::Unit::Mm,
             version: Version(0),
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],

@@ -59,6 +59,20 @@ impl OpenCad {
         if i >= self.sketches.len() {
             return;
         }
+        let on_sketch = |p: &model::HolePlace| matches!(*p, model::HolePlace::SketchPoint { sketch, .. } | model::HolePlace::SketchCircle { sketch, .. } if sketch == i);
+        if self.holes.iter().any(|h| h.places.iter().any(on_sketch)) {
+            self.notify("A hole is placed on that sketch — delete the hole first".into());
+            return;
+        }
+        for h in &mut self.holes {
+            for p in &mut h.places {
+                if let model::HolePlace::SketchPoint { sketch, .. } | model::HolePlace::SketchCircle { sketch, .. } = p {
+                    if *sketch > i {
+                        *sketch -= 1;
+                    }
+                }
+            }
+        }
         if self.planes.iter().any(|p| p.angle.is_some_and(|a| a.hinge.uses_sketch(i))) {
             self.notify("A plane at angle turns about a line of that sketch — delete the plane first".into());
             return;
