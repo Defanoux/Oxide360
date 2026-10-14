@@ -274,7 +274,19 @@ impl TorusBuilder {
     }
 }
 
+/// opencad patch: copies share the same underlying shape (a handle copy).
+impl Clone for Shape {
+    fn clone(&self) -> Self {
+        Self::from_shape(&self.inner)
+    }
+}
+
 impl Shape {
+    /// opencad patch: the very same shape (not just an equal-looking one).
+    pub fn is_same(&self, other: &Shape) -> bool {
+        self.inner.IsEqual(&other.inner)
+    }
+
     #[must_use]
     pub fn as_wire(&self) -> Option<Wire> {
         if self.shape_type() == ShapeType::Wire {

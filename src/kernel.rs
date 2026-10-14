@@ -27,6 +27,7 @@ const MIN_VOLUME: f64 = 1e-6;
 
 /// An edge of a body that can be filleted: its shape on screen and how it's
 /// remembered.
+#[derive(Clone)]
 pub struct BodyEdge {
     pub points: Vec<Vec3>,
     pub at: EdgeRef,
@@ -1222,18 +1223,27 @@ impl Cylinder {
     }
 }
 
-/// The face as a whole cylinder (both ends full circles), if it is one.
+/// The face as a whole cylinder (each end a full circle, though a join may
+/// have split it into arcs), if it is one.
 fn face_cylinder(face: &Face) -> Option<Cylinder> {
-    let mut circles: Vec<(DVec3, DVec3, f64, DVec3)> = Vec::new();
+    // The ends: arcs grouped by centre, (centre, normal, radius, swept so far, a point on it).
+    let mut ends: Vec<(DVec3, DVec3, f64, f64, DVec3)> = Vec::new();
     for e in face.edges() {
         let pts: Vec<DVec3> = e.approximation_segments().map(|p| DVec3::new(p.x, p.y, p.z)).collect();
         match edge_geom(&e, &pts) {
-            Geom::Circle { center, normal, radius, sweep } if sweep > std::f64::consts::TAU - 1e-6 => circles.push((center, normal, radius, pts[0])),
+            Geom::Circle { center, normal, radius, sweep } => match ends.iter_mut().find(|g| g.0.distance(center) < 1e-6 * radius.max(1.0)) {
+                Some(g) => g.3 += sweep,
+                None => ends.push((center, normal, radius, sweep, pts[0])),
+            },
             Geom::Line { .. } => {} // the seam
             _ => return None,
         }
     }
-    let [(c0, n0, r0, p0), (c1, n1, r1, _)] = circles[..] else { return None };
+    let full = |g: &(DVec3, DVec3, f64, f64, DVec3)| (g.3 - std::f64::consts::TAU).abs() < 1e-6;
+    let [(c0, n0, r0, _, p0), (c1, n1, r1, _, _)] = ends[..] else { return None };
+    if !ends.iter().all(full) {
+        return None;
+    }
     let along = c1 - c0;
     if along.length() < 1e-9 || (r0 - r1).abs() > 1e-7 * r0.max(1.0) || n0.dot(n1).abs() < 1.0 - 1e-9 || along.normalize().dot(n0).abs() < 1.0 - 1e-9 {
         return None;
@@ -1337,6 +1347,68 @@ fn apply_threads(current: Tagged, tf: &ThreadFeature, made_by: Feature, shown: &
         (acc, touched) = (next, touched.or(t_id));
     }
     Ok((acc, touched))
+}
+
+// --- Remembering slow results between rebuilds ---
+//
+// Every change rebuilds the timeline from the start, and a modeled thread's
+// cuts (and the analysis of a body with hundreds of helical faces) take a
+// second or more. A hole or thread whose inputs are unchanged gives back its
+// last result, and a body that is literally the same shape keeps its mesh and
+// faces. Inputs are recognised by a geometric fingerprint (volume, faces,
+// box), worked out once per shape.
+
+/// How many results are kept.
+const MEMO: usize = 24;
+
+type FeatureResult = (Tagged, Option<BodyId>, Vec<CosmeticThread>);
+type BodyData = (Mesh, Vec<u32>, Vec<BodyEdge>, Vec<(DVec3, DVec3)>, Vec<Geom>);
+
+thread_local! {
+    static FINGERPRINTS: std::cell::RefCell<Vec<(Shape, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+    static FEATURES: std::cell::RefCell<Vec<(String, FeatureResult)>> = const { std::cell::RefCell::new(Vec::new()) };
+    static BODIES: std::cell::RefCell<Vec<(Shape, BodyData)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Keep at most MEMO entries (dropping the oldest).
+fn bounded<T>(v: &mut Vec<T>) {
+    if v.len() > MEMO {
+        v.drain(..v.len() - MEMO);
+    }
+}
+
+/// A shape's fingerprint (the same shape's is remembered).
+fn fingerprint(s: &Shape) -> String {
+    if let Some(f) = FINGERPRINTS.with(|c| c.borrow().iter().find(|(k, _)| k.is_same(s)).map(|(_, f)| f.clone())) {
+        return f;
+    }
+    let bb = opencascade::bounding_box::aabb(s);
+    let f = format!("{:.9e}/{}/{:.6?}/{:.6?}", s.volume(), s.faces().count(), bb.min(), bb.max());
+    FINGERPRINTS.with(|c| {
+        let mut c = c.borrow_mut();
+        c.push((s.clone(), f.clone()));
+        bounded(&mut c);
+    });
+    f
+}
+
+/// The bodies going into a feature, as a key.
+fn bodies_key(bodies: &Tagged) -> String {
+    bodies.iter().map(|(s, id)| format!("{}#{id:?}", fingerprint(s))).collect::<Vec<_>>().join(";")
+}
+
+/// A feature's result from before, if its inputs (`key`) are the same.
+fn remembered(key: &str) -> Option<FeatureResult> {
+    FEATURES.with(|c| c.borrow().iter().find(|(k, _)| k == key).map(|(_, r)| r.clone()))
+}
+
+fn remember(key: String, r: &FeatureResult) {
+    FEATURES.with(|c| {
+        let mut c = c.borrow_mut();
+        c.retain(|(k, _)| *k != key);
+        c.push((key, r.clone()));
+        bounded(&mut c);
+    });
 }
 
 /// What a hole cuts at each place: the bore, and a modeled thread's groove.
@@ -1650,6 +1722,20 @@ pub fn build_all(
                     continue;
                 };
                 let (fr, pl) = (&frames, &planes);
+                // Same bodies in, same hole, same places and planes: the same result.
+                let places = {
+                    let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
+                    format!("{:?}", catch_unwind(AssertUnwindSafe(|| hole_places(h, sketches, fr, &bodies))).ok())
+                };
+                let key = format!("hole{k}|{}|{h:?}|{places}|{pl:?}", bodies_key(&current));
+                if let Some((next, touched, shown)) = remembered(&key) {
+                    if let Some(id) = touched {
+                        touched_by.insert(*f, id);
+                    }
+                    threads.extend(shown);
+                    shapes = next;
+                    continue;
+                }
                 let mut shown = Vec::new();
                 let r = catch_unwind(AssertUnwindSafe(|| -> Result<(Tagged, Option<BodyId>), String> {
                     let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
@@ -1683,7 +1769,8 @@ pub fn build_all(
                     }
                     Ok((acc, touched))
                 }));
-                if matches!(r, Ok(Ok(_))) {
+                if let Ok(Ok((next, touched))) = &r {
+                    remember(key, &(next.clone(), *touched, shown.clone()));
                     threads.extend(shown);
                 }
                 (r, &mut hole_errors[k])
@@ -1693,9 +1780,19 @@ pub fn build_all(
                     shapes = current;
                     continue;
                 };
+                let key = format!("thread{k}|{}|{tf:?}", bodies_key(&current));
+                if let Some((next, touched, shown)) = remembered(&key) {
+                    if let Some(id) = touched {
+                        touched_by.insert(*f, id);
+                    }
+                    threads.extend(shown);
+                    shapes = next;
+                    continue;
+                }
                 let mut shown = Vec::new();
                 let r = catch_unwind(AssertUnwindSafe(|| apply_threads(current, tf, Feature::Thread(k), &mut shown)));
-                if matches!(r, Ok(Ok(_))) {
+                if let Ok(Ok((next, touched))) = &r {
+                    remember(key, &(next.clone(), *touched, shown.clone()));
                     threads.extend(shown);
                 }
                 (r, &mut thread_errors[k])
@@ -1753,10 +1850,19 @@ pub fn build_all(
     let bodies = shapes
         .into_iter()
         .filter_map(|(shape, id)| {
+            // The very same shape as last time (a remembered hole or thread): its analysis too.
+            if let Some((mesh, tri_face, edges, flat_faces, faces)) = BODIES.with(|c| c.borrow().iter().find(|(s, _)| s.is_same(&shape)).map(|(_, d)| d.clone())) {
+                return Some(Body { id, shape, mesh, edges, flat_faces, faces, tri_face });
+            }
             let (mesh, tri_face) = catch_unwind(AssertUnwindSafe(|| mesh_tagged(&shape))).ok()?.ok()?;
             let edges = catch_unwind(AssertUnwindSafe(|| pickable_edges(&shape, &mesh))).unwrap_or_default();
             let flat_faces = catch_unwind(AssertUnwindSafe(|| flat_faces(&shape))).unwrap_or_default();
             let faces = catch_unwind(AssertUnwindSafe(|| face_geoms(&shape))).unwrap_or_default();
+            BODIES.with(|c| {
+                let mut c = c.borrow_mut();
+                c.push((shape.clone(), (mesh.clone(), tri_face.clone(), edges.clone(), flat_faces.clone(), faces.clone())));
+                bounded(&mut c);
+            });
             Some(Body { id, shape, mesh, edges, flat_faces, faces, tri_face })
         })
         .collect();
@@ -2961,6 +3067,53 @@ mod tests {
                 assert!(near(removed, want), "internal {internal} r {r} p {p} dir {dir}: {removed} vs {want}");
             }
         }
+    }
+
+    #[test]
+    fn an_unchanged_threaded_hole_is_not_cut_again() {
+        let thread = crate::model::ThreadSpec { designation: "M6x1".into(), modeled: true, ..Default::default() };
+        let h = HoleFeature { places: vec![on_top(25.0, 15.0, 10.0, false)], tap: TapType::Tapped, depth: 8.0, thread, ..Default::default() };
+        let a = drilled(10.0, None, &[h.clone()], &[]);
+        let b = drilled(10.0, None, &[h.clone()], &[]);
+        assert!(a.bodies[0].shape.is_same(&b.bodies[0].shape), "the second build reuses the first's result");
+        assert_eq!(a.bodies[0].faces, b.bodies[0].faces);
+        // Anything that changes it is built afresh.
+        let deeper = HoleFeature { depth: 9.0, ..h };
+        let c = drilled(10.0, None, &[deeper], &[]);
+        assert!(!c.bodies[0].shape.is_same(&a.bodies[0].shape));
+        assert!(c.bodies[0].shape.volume() < a.bodies[0].shape.volume());
+        let d = drilled(12.0, None, &[HoleFeature { depth: 8.0, ..c_hole() }], &[]);
+        assert_eq!(d.hole_errors, vec![None], "a different plate is a different input");
+    }
+
+    fn c_hole() -> HoleFeature {
+        HoleFeature { places: vec![on_top(25.0, 15.0, 12.0, false)], ..Default::default() }
+    }
+
+    #[test]
+    fn a_boss_on_a_plate_is_a_threadable_cylinder() {
+        // A Ø8 × 8 boss joined on the plate (its base circle comes out split in arcs).
+        let build = |t: &[ThreadFeature]| {
+            let mut b = Sketch::new("B".into(), OriginPlane::XY);
+            rect(&mut b, 0.0, 0.0, 50.0, 30.0);
+            let top = FacePlane::from_face(DVec3::Z, DVec3::new(25.0, 15.0, 10.0));
+            let mut boss = Sketch::on_face("C".into(), top);
+            circle(&mut boss, 5.0, 3.0, 4.0);
+            let mut tl = vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Sketch(1), Feature::Extrude(1)];
+            tl.extend((0..t.len()).map(Feature::Thread));
+            build_all(&[b, boss], &[ex(0, vec![0], 10.0, Operation::NewBody), ex(1, vec![0], 8.0, Operation::Join)], &[], &[], &[], &[], &[], &[], &[], t, &tl)
+        };
+        let m = build(&[]);
+        let body = &m.bodies[0];
+        let c = (0..body.faces.len()).find_map(|i| cylinder_face(&body.shape, i).filter(|c| !c.internal));
+        let c = c.expect("the boss is a whole cylinder");
+        assert!((c.radius - 4.0).abs() < 1e-9 && (c.length - 8.0).abs() < 1e-9, "{c:?}");
+        // A modeled M8 thread on it, the plate under it untouched.
+        let face = c.as_ref(c.axis_point + DVec3::X * 4.0 + c.axis * 7.0);
+        let threaded = build(&[thread_on(face, "M8x1.25", true)]);
+        assert_eq!(threaded.thread_errors, vec![None]);
+        let want = thread_removal_per_length(4.0, false, 1.25) * 8.0;
+        assert!(near(total(&m) - total(&threaded), want), "{} vs {want}", total(&m) - total(&threaded));
     }
 
     #[test]
