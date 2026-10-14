@@ -23,6 +23,13 @@ mod inner {
 
         type BRepOffset_Mode;
 
+        /// opencad patch: a thread's solid, swept along a helix (null on failure).
+        #[allow(clippy::too_many_arguments)]
+        pub fn opencad_try_thread(
+            ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64, xx: f64, xy: f64, xz: f64,
+            r_in: f64, r_out: f64, w_in: f64, w_out: f64, pitch: f64, length: f64, right_hand: bool, taper: f64,
+        ) -> UniquePtr<TopoDS_Shape>;
+
         type BRepOffsetAPI_MakeOffset;
         #[cxx_name = "construct_unique"]
         pub fn BRepOffsetAPI_MakeOffset_face_new(

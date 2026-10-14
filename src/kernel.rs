@@ -1158,14 +1158,48 @@ fn hole_places(h: &HoleFeature, sketches: &[Sketch], frames: &[Option<FacePlane>
     Ok(out)
 }
 
-/// The cutters for a hole (one per place) and the threads it shows.
+/// The groove a tapped hole's thread cuts beyond the drilled (minor) bore:
+/// the space the screw's tooth fills (basic 60° profile: 3P/4 wide at the
+/// minor diameter, P/8 at the major), starting a little inside the bore so
+/// it shares no face with it. From `start` to `end` along the axis from `p`
+/// (an NPT thread has its stated size at `end`, the hole's small end).
+fn thread_groove(t: &crate::threads::Thread, p: DVec3, dir: DVec3, start: f64, end: f64, right_hand: bool) -> Result<Shape, String> {
+    let pitch = t.pitch;
+    let length = end - start;
+    let tan30 = 30f64.to_radians().tan();
+    let into = 0.1 * pitch;
+    let taper = if t.standard == crate::threads::Standard::Npt { -crate::threads::NPT_TAPER / 2.0 } else { 0.0 };
+    let (r_minor, r_major) = match t.standard {
+        // NPT: a sharp-V 0.8 P deep, its size at the face.
+        crate::threads::Standard::Npt => {
+            // At the sweep's start: wider than the small end by the taper (radius: half of 1:16).
+            let e = t.npt_small_pitch_diameter() / 2.0 + length * crate::threads::NPT_TAPER / 2.0;
+            (e - 0.4 * pitch, e + 0.4 * pitch)
+        }
+        _ => (t.minor() / 2.0, t.major / 2.0),
+    };
+    let (r_in, r_out) = (r_minor - into, r_major);
+    let w_out = pitch / 8.0;
+    let w_in = w_out + 2.0 * (r_out - r_in) * tan30;
+    let dir = dir.normalize();
+    let x = crate::model::zero_normal(dir, DVec3::Z);
+    Shape::try_thread(kv(p + dir * start), kv(dir), kv(x), (r_in, r_out), (w_in, w_out), pitch, length, right_hand, taper)
+        .ok_or_else(|| "the kernel couldn't model this thread — try it cosmetic (Modeled off)".into())
+}
+
+/// What a hole cuts, in order: per place, a modeled thread's groove (before
+/// the bore: OCCT can't cut the groove into an already drilled bore), then
+/// the bore. Each with whether it's a thread groove.
+type HoleCuts = Vec<(Shape, bool)>;
+
+/// The cutters for a hole and the threads it only shows.
 fn hole_tools(
     h: &HoleFeature,
     sketches: &[Sketch],
     frames: &[Option<FacePlane>],
     planes: &[Option<FacePlane>],
     bodies: &[&Shape],
-) -> Result<(Vec<Shape>, Vec<CosmeticThread>), String> {
+) -> Result<(HoleCuts, Vec<CosmeticThread>), String> {
     if h.places.is_empty() {
         return Err("no place picked".into());
     }
@@ -1188,7 +1222,9 @@ fn hole_tools(
                 if bodies.is_empty() {
                     return Err("there's nothing to drill through".into());
                 }
-                (p - (lo + hi) * 0.5).length() + (hi - lo).length() + 1.0
+                // As far as the furthest corner of the bodies along the hole.
+                let corners = (0..8).map(|i| DVec3::new([lo.x, hi.x][i & 1], [lo.y, hi.y][(i >> 1) & 1], [lo.z, hi.z][(i >> 2) & 1]));
+                corners.map(|c| (c - p).dot(dir.normalize())).fold(0.0, f64::max) + 1.0
             }
             HoleExtent::To => {
                 let t = h.target.as_ref().ok_or("pick what it runs to")?;
@@ -1204,7 +1240,8 @@ fn hole_tools(
                 d
             }
         };
-        let bore = h.bore(circle)?;
+        // NPT: the stated size at the hole's small (far) end, wider toward the face.
+        let bore = h.bore(circle)? + if h.tap == TapType::TaperTapped { depth * crate::threads::NPT_TAPER } else { 0.0 };
         // Start the cutter a little above the face where that's surely air
         // (a body face drilled inward), so it shares no face with the part;
         // a sketch plane can be anywhere, so its hole starts right on it.
@@ -1217,12 +1254,23 @@ fn hole_tools(
         let tool = Face::from_wire(&wire)
             .try_revolve(kv(p), kv(dir.normalize()), std::f64::consts::TAU)
             .ok_or("the kernel couldn't make the hole's shape")?;
-        tools.push(tool);
         if matches!(h.tap, TapType::Tapped | TapType::TaperTapped) {
-            if let Some(t) = h.thread.thread() {
+            let t = h.thread.thread().ok_or_else(|| format!("unknown thread {}", h.thread.designation))?;
+            if h.thread.modeled {
+                // Run in from above the face (air) so the entry is cut cleanly.
+                let start = if in_air { -1.5 * t.pitch } else { 0.0 };
+                // A blind thread stops half a pitch short of the bottom (clear of
+                // where the bore meets its tip); "All" runs on out of the part.
+                let end = if h.extent == HoleExtent::All { depth } else { depth - 0.5 * t.pitch };
+                if end - start < t.pitch {
+                    return Err("the hole is too shallow for a modeled thread".into());
+                }
+                tools.push((thread_groove(&t, p, dir, start, end, h.thread.right_hand)?, true));
+            } else {
                 threads.push(CosmeticThread { origin: p, axis: dir.normalize(), radius: t.major / 2.0, pitch: t.pitch, length: depth });
             }
         }
+        tools.push((tool, false));
     }
     Ok((tools, threads))
 }
@@ -1449,11 +1497,37 @@ pub fn build_all(
                     let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
                     let (tools, th) = hole_tools(h, sketches, fr, pl, &bodies)?;
                     shown = th;
+                    // With a modeled thread, the bores must still take out at least
+                    // what they overlap (measured now, on the plain part): OCCT can
+                    // quietly fail cutting next to a helical groove.
+                    let volume = |t: &Tagged| t.iter().map(|(s, _)| s.volume()).sum::<f64>();
+                    let threaded = tools.iter().any(|(_, g)| *g);
+                    let must_remove: f64 = if threaded {
+                        tools
+                            .iter()
+                            .filter(|(_, g)| !*g)
+                            .map(|(tool, _)| bodies.iter().filter_map(|b| b.try_intersect(tool)).map(|c| c.volume()).sum::<f64>())
+                            .sum()
+                    } else {
+                        0.0
+                    };
+                    let before = volume(&current);
                     let mut acc = current;
                     let mut touched = None;
-                    for tool in tools {
+                    let mut groove_cut = None;
+                    for (tool, groove) in tools {
                         let (next, t) = apply(acc, tool, Operation::Cut, Feature::Hole(k))?;
+                        if groove {
+                            groove_cut = Some(t.is_some());
+                        } else if t.is_some() && groove_cut == Some(false) {
+                            // The bore went into material but its thread didn't: the
+                            // kernel's cut failed quietly. Say so rather than leave a plain hole.
+                            return Err("the kernel couldn't cut this thread — try it cosmetic (Modeled off)".into());
+                        }
                         (acc, touched) = (next, touched.or(t));
+                    }
+                    if threaded && before - volume(&acc) < must_remove * (1.0 - 1e-3) {
+                        return Err("the kernel couldn't cut this thread — try it cosmetic (Modeled off)".into());
                     }
                     Ok((acc, touched))
                 }));
@@ -2569,6 +2643,68 @@ mod tests {
         // Not flipped it drills down, away from the plate: an error-free no-op.
         let m = drilled(10.0, Some(sk), &[HoleFeature { flip: false, extent: HoleExtent::Distance, ..up }], &[]);
         assert!(close(total(&m), 15000.0));
+    }
+
+    /// Pipe-shell sweeps are B-spline approximations of the helix, so thread
+    /// volumes are checked to 1e-3 (relative), set before running, not tuned.
+    fn near(a: f64, b: f64) -> bool {
+        (a - b).abs() <= 1e-3 * b.abs()
+    }
+
+    #[test]
+    fn a_thread_solid_is_its_profile_screwed_round() {
+        // A screw motion sweeps volume = profile area × 2π × centroid radius × turns.
+        let (r_in, r_out, w_in, w_out, pitch, length) = (2.4, 3.0, 0.8, 0.125, 1.0, 6.0);
+        let shape = Shape::try_thread(kv(DVec3::ZERO), kv(DVec3::Z), kv(DVec3::X), (r_in, r_out), (w_in, w_out), pitch, length, true, 0.0).expect("a thread");
+        let h = r_out - r_in;
+        let area = (w_in + w_out) / 2.0 * h;
+        let r_c = r_in + h * (w_in + 2.0 * w_out) / (3.0 * (w_in + w_out));
+        let want = area * 2.0 * PI * r_c * (length / pitch);
+        assert!(near(shape.volume(), want), "{} vs {want}", shape.volume());
+        let left = Shape::try_thread(kv(DVec3::ZERO), kv(DVec3::Z), kv(DVec3::X), (r_in, r_out), (w_in, w_out), pitch, length, false, 0.0).unwrap();
+        assert!(near(left.volume(), want), "left hand: the same amount");
+        // Bad sizes: None, not a crash.
+        assert!(Shape::try_thread(kv(DVec3::ZERO), kv(DVec3::Z), kv(DVec3::X), (3.0, 2.0), (w_in, w_out), pitch, length, true, 0.0).is_none());
+    }
+
+    #[test]
+    fn a_modeled_tapped_hole_cuts_the_thread_beyond_its_bore() {
+        use crate::model::ThreadSpec;
+        let t = crate::threads::Thread::find("M6x1").unwrap();
+        let (p, r1, r2) = (t.pitch, t.minor() / 2.0, t.major / 2.0);
+        let thread = ThreadSpec { designation: "M6x1".into(), modeled: true, ..Default::default() };
+        let through = HoleFeature { places: vec![on_top(25.0, 15.0, 10.0, false)], tap: TapType::Tapped, extent: HoleExtent::All, tip_angle: None, thread, ..Default::default() };
+        let m = drilled(10.0, None, &[through.clone()], &[]);
+        assert_eq!(m.hole_errors, vec![None]);
+        assert!(m.threads.is_empty(), "a modeled thread isn't drawn as well");
+        // Right through 10 mm, the groove past both faces: by the helix's symmetry
+        // it removes area × 2π × centroid radius per pitch along the axis.
+        let (w_in, w_out, h) = (0.75 * p, p / 8.0, r2 - r1);
+        let area = (w_in + w_out) / 2.0 * h;
+        let r_c = r1 + h * (w_in + 2.0 * w_out) / (3.0 * (w_in + w_out));
+        let groove = area * 2.0 * PI * r_c * 10.0 / p;
+        let bore = PI * r1 * r1 * 10.0;
+        let removed = 15000.0 - total(&m);
+        assert!(near(removed - bore, groove), "groove {} vs {groove}", removed - bore);
+        assert!(removed > bore && removed < PI * r2 * r2 * 10.0, "between the minor and major bores");
+        // Left hand: the same amount; blind and NPT taper: built, within bounds.
+        let left = HoleFeature { thread: ThreadSpec { right_hand: false, ..through.thread.clone() }, ..through.clone() };
+        assert!(near(15000.0 - total(&drilled(10.0, None, &[left], &[])) - bore, groove));
+        let blind = HoleFeature { extent: HoleExtent::Distance, depth: 6.0, tip_angle: Some(118.0), ..through.clone() };
+        let m = drilled(10.0, None, &[blind], &[]);
+        assert_eq!(m.hole_errors, vec![None]);
+        let removed = 15000.0 - total(&m);
+        assert!(removed > PI * r1 * r1 * 6.0 && removed < PI * r2 * r2 * 6.0 + PI * r1 * r1 * r1, "{removed}");
+        let npt = HoleFeature {
+            tap: TapType::TaperTapped,
+            extent: HoleExtent::Distance,
+            depth: 8.0,
+            thread: ThreadSpec { standard: crate::threads::Standard::Npt, designation: "1/8-27 NPT".into(), modeled: true, ..Default::default() },
+            ..through
+        };
+        let m = drilled(10.0, None, &[npt], &[]);
+        assert_eq!(m.hole_errors, vec![None]);
+        assert!(total(&m) < 15000.0 - PI * 4.0 * 4.0 * 8.0, "an 1/8 NPT hole is over Ø8 ({})", 15000.0 - total(&m));
     }
 
     #[test]

@@ -869,6 +869,27 @@ impl Shape {
         op.IsDone().then(|| Self::from_shape(op.pin_mut().Shape()))
     }
 
+    /// opencad patch: a thread's solid (see `opencad_try_thread`): the
+    /// trapezoid (widths `w_in` at `r_in`, `w_out` at `r_out`) swept along a
+    /// helix round the axis (`origin`, `dir`), starting toward `x_dir`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_thread(
+        origin: DVec3,
+        dir: DVec3,
+        x_dir: DVec3,
+        (r_in, r_out): (f64, f64),
+        (w_in, w_out): (f64, f64),
+        pitch: f64,
+        length: f64,
+        right_hand: bool,
+        taper: f64,
+    ) -> Option<Self> {
+        let made = ffi::b_rep_offset_api::opencad_try_thread(
+            origin.x, origin.y, origin.z, dir.x, dir.y, dir.z, x_dir.x, x_dir.y, x_dir.z, r_in, r_out, w_in, w_out, pitch, length, right_hand, taper,
+        );
+        (!made.is_null()).then(|| Self::from_shape(&made))
+    }
+
     pub fn try_subtract(&self, other: &Shape) -> Option<Self> {
         let mut op = ffi::b_rep_algo_api::BRepAlgoAPI_Cut_new(&self.inner, &other.inner);
         op.IsDone().then(|| Self::from_shape(op.pin_mut().Shape()))
