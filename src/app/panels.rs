@@ -1113,7 +1113,7 @@ impl OpenCad {
         }
         let cache = self.caches[Slot::Committed as usize].as_ref()?;
         let bounds: Vec<(Vec3, Vec3)> = cache.model.bodies.iter().filter_map(|b| model::mesh_bounds(&b.mesh)).collect();
-        let ex = Extrude { op: d.op, name: String::new(), sketch: s, profiles: Vec::new(), distance: d.distance, extent: d.extent, distance2: d.distance2, taper: d.taper };
+        let ex = Extrude { op: d.op, name: String::new(), sketch: s, profiles: Vec::new(), distance: d.distance, extent: d.extent, distance2: d.distance2, taper: d.taper, target: d.target };
         let (from, to) = ex.span();
         let touches = |len: f64| model::prism_touches(&points, plane.normal(), len as f32, &bounds, 1e-3);
         Some(touches(to) || (from != 0.0 && touches(from)))
@@ -1143,35 +1143,56 @@ impl OpenCad {
             d.distance = d.distance.abs() * toward.unwrap_or(-1.0);
             self.set_distance_text_pending = true;
         }
+        let plane_names: Vec<String> = self.planes.iter().map(|p| p.name.clone()).collect();
         let Some(d) = self.dialog.as_mut() else { return };
         ui.heading(if d.editing.is_some() { "Edit Extrude" } else { "Extrude" });
         ui.label(format!("Profiles: {} selected", d.profiles.len()));
         ui.weak("Click shaded regions to add or remove them.");
         ui.separator();
         let mut changed = false;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Extent");
             for ex in model::Extent::ALL {
                 if ui.selectable_label(d.extent == ex, ex.name()).clicked() && d.extent != ex {
                     d.extent = ex;
+                    // To Object: pick what it runs up to straight away (if nothing yet).
+                    d.picking_target = ex == model::Extent::ToObject && d.target.is_none();
                     changed = true;
                 }
             }
         });
-        ui.horizontal(|ui| {
-            ui.label(match d.extent {
-                model::Extent::OneSide => "Distance",
-                model::Extent::Symmetric => "Length",
-                model::Extent::TwoSides => "Side 1",
+        if d.extent == model::Extent::ToObject {
+            // What it runs up to: click the field, then a plane or flat face in the view.
+            ui.horizontal(|ui| {
+                ui.label("Object");
+                let name = match d.target {
+                    _ if d.picking_target => "Click a plane or flat face…".to_string(),
+                    Some(model::ExtrudeTarget::Origin(op)) => format!("{} plane", op.name()),
+                    Some(model::ExtrudeTarget::Plane(k)) => plane_names.get(k).cloned().unwrap_or_else(|| "a plane".into()),
+                    Some(model::ExtrudeTarget::Face { .. }) => "a body face".into(),
+                    None => "Click to select".into(),
+                };
+                let text = if d.picking_target { egui::RichText::new(name).strong() } else { egui::RichText::new(name) };
+                if ui.add(egui::Button::selectable(d.picking_target, text).min_size(egui::vec2(150.0, 0.0))).on_hover_text("Click, then click an origin or construction plane, or a flat body face").clicked() {
+                    d.picking_target = !d.picking_target;
+                }
             });
-            changed |= ui
-                .add(units::length_drag(&mut d.distance, unit, 0.5))
-                .changed();
-            if ui.button("Flip").clicked() {
-                d.distance = -d.distance;
-                changed = true;
-            }
-        });
+        } else {
+            ui.horizontal(|ui| {
+                ui.label(match d.extent {
+                    model::Extent::OneSide => "Distance",
+                    model::Extent::Symmetric => "Length",
+                    _ => "Side 1",
+                });
+                changed |= ui
+                    .add(units::length_drag(&mut d.distance, unit, 0.5))
+                    .changed();
+                if ui.button("Flip").clicked() {
+                    d.distance = -d.distance;
+                    changed = true;
+                }
+            });
+        }
         if d.extent == model::Extent::OneSide {
             ui.horizontal(|ui| {
                 ui.label("Taper");

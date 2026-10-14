@@ -4,7 +4,7 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Next
 
-11. **Extrude options**: "to object". (Symmetric, Two Sides, Taper done; taper is One Side only.)
+(empty — pick the next thing from Polish or ask Gavin.)
 
 ## Polish (do when nearby code is touched)
 
@@ -17,7 +17,8 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Done
 
-- Fit-point splines (`Entity::Spline` → `Sketch.splines`, fit points are ordinary sketch points; the curve is OpenCASCADE's own interpolated B-spline, sampled via new exception-safe wrappers `GeomAPI_Interpolate_try_curve` / `Geom_BSplineCurve_try_sample`, cached in `spline.rs`; profiles take spline runs as `Curve::Spline`, rebuilt by the kernel; deleting a fit point shortens it; lines trim at spline crossings). Not yet: trim / extend / offset of splines, tangent handles, closed splines. Trim works on circles (→ the arc left) and arcs (shortened or split, red arc preview). Tools drag into another order within their toolbar group; changed keybinds orange with a per-key reset.
+- Extrude To Object (`Extent::ToObject`, `Extrude.target: ExtrudeTarget` = origin plane / construction plane / body face kept as picked and found again every build): the prism is cut by the target plane, so a slanted plane slants the end; errors for planes alongside or not reached; no taper or drag arrow. Splines close smoothly (periodic) when the first point is clicked again.
+- Fit-point splines (`Entity::Spline` → `Sketch.splines`, fit points are ordinary sketch points; the curve is OpenCASCADE's own interpolated B-spline, sampled via new exception-safe wrappers `GeomAPI_Interpolate_try_curve` / `Geom_BSplineCurve_try_sample`, cached in `spline.rs`; profiles take spline runs as `Curve::Spline`, rebuilt by the kernel; deleting a fit point shortens it; lines trim at spline crossings). Not yet: trim / extend / offset of splines, tangent handles, (closed splines done). Trim works on circles (→ the arc left) and arcs (shortened or split, red arc preview). Tools drag into another order within their toolbar group; changed keybinds orange with a per-key reset.
 - Keybinds (`keys.rs`, Settings → Set keybinds…: click a key, press the new one, Esc for none, reset to defaults; a taken key moves; Trim = X, Construction = K, Measure = I). Group ▾ lists show only tools not on the toolbar, full-width rows, ⋯ → Pin to toolbar; the ribbon's scrollbar is solid under the group names. Measure doesn't snap to edge middles. Tab rename selects the whole name.
 - Browser drawn in the view's left strip (full height, scrolls only past it); toolbar favourites (sketch MODIFY and CONSTRAINTS: right-click a tool to add/remove, the rest under the group name's ▾; `Settings.toolbar_hidden`); tab rename (right-click), no unsaved dot; Measure in sketches uses the on-screen size for picking and leaves bodies out; buttons that add several constraints add them one by one (line collinear with an axis); line length follows the typing.
 - Tabs: several designs in one window (`Tabs` holds an `OpenCad` per tab; × asks to save, + opens a new one, closing the window asks per unsaved tab; global settings carry across). Fixed top bar like Fusion's: File menu, Save, Undo/Redo with step lists, tabs with name + version (each save is a new version, `Document.version`, not a change), ⚙ Settings window (input device, touchpad zoom direction, units for new designs, camera, view cube, Measure precision). SOLID/SKETCH no longer scroll with the ribbon. Line: typed length kept while the cursor sets the angle. Touchpad zoom flipped (fingers up zoom in).

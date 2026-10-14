@@ -401,6 +401,9 @@ struct ExtrudeDialog {
     distance2: f64,
     taper: f64,
     op: Operation,
+    /// To Object: what it runs up to, and whether clicks in the view pick it.
+    target: Option<model::ExtrudeTarget>,
+    picking_target: bool,
 }
 
 /// A smooth camera move (view cube clicks, Home).

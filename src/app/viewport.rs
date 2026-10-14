@@ -395,6 +395,48 @@ impl OpenCad {
             self.selected_cplane = None;
         }
 
+        // --- Extrude To Object: click the plane or flat face it runs up to ---
+        let picking_target = self.dialog.as_ref().is_some_and(|d| d.picking_target);
+        if picking_target {
+            if let Some(px) = hover_px {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                let found = self.pick_face(&ray);
+                self.face_pick_point = found.map(|(t, ..)| (ray.origin + ray.dir * t).as_dvec3());
+                // As in Create Sketch: the nearer wins, a face wins a tie.
+                let psize = origin::size_for(self.camera.distance);
+                let origin_hit = origin::pick(&ray, psize, |_| true).map(|(op, t)| (Some(op), None, t));
+                let custom_hit = self.pick_cplane(&ray, psize).map(|(k, t)| (None, Some(k), t));
+                let plane = [origin_hit, custom_hit].into_iter().flatten().min_by(|a, b| a.2.total_cmp(&b.2));
+                match (plane, found) {
+                    (Some((op, k, tp)), f) if f.is_none_or(|(tf, ..)| tp < tf - origin::tie_tolerance(tf)) => {
+                        self.origin_hover = op;
+                        self.cplane_hover = k;
+                    }
+                    (_, f) => self.face_hover = f.map(|(_, b, face)| (b, face)),
+                }
+            }
+            if response.clicked() {
+                let target = match (self.origin_hover, self.cplane_hover, self.face_hover) {
+                    (Some(op), ..) => Some(model::ExtrudeTarget::Origin(op)),
+                    (_, Some(k), _) => Some(model::ExtrudeTarget::Plane(k)),
+                    (.., Some((_, face))) => {
+                        // Kept as picked; the kernel finds the face again every build.
+                        let q = self.face_pick_point.unwrap_or(face.origin);
+                        Some(model::ExtrudeTarget::Face { face: sketch::FacePlane { follow: None, ..face }, anchor: [q.dot(face.u), q.dot(face.v)] })
+                    }
+                    _ => None,
+                };
+                if let (Some(t), Some(d)) = (target, self.dialog.as_mut()) {
+                    (d.target, d.picking_target) = (Some(t), false);
+                }
+            }
+            if esc && !typing {
+                if let Some(d) = self.dialog.as_mut() {
+                    d.picking_target = false;
+                }
+            }
+        }
+
         // --- extrude / revolve input: pick profiles (and a revolve axis) ---
         let mut hover_profile: Option<(usize, usize)> = None;
         self.axis_hover = None;
@@ -436,6 +478,8 @@ impl OpenCad {
                     d.picking_axis = false;
                 }
             }
+        } else if picking_target {
+            // The object it runs up to is being picked (above).
         } else if self.profile_pick().is_some() {
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
@@ -1315,10 +1359,12 @@ impl OpenCad {
         let origin_size = origin::size_for(self.camera.distance);
         // Create Sketch shows the whole origin, whatever the browser says.
         // Picking an axis or a mirror plane shows the whole origin too.
-        let picking_axis = self.copy_dialog.as_ref().is_some_and(|d| d.picking_axis || d.mode == CopyMode::Mirror);
+        let picking_axis = self.copy_dialog.as_ref().is_some_and(|d| d.picking_axis || d.mode == CopyMode::Mirror)
+            || self.dialog.as_ref().is_some_and(|d| d.picking_target || d.extent == model::Extent::ToObject);
         let shown = if self.face_pick || picking_axis { origin::Shown::default() } else { self.origin_shown };
         let show_origin = !sketching && (shown.all || self.face_pick || picking_axis);
         let mirror_plane = self.copy_dialog.as_ref().filter(|d| d.mode == CopyMode::Mirror && d.plane_set).map(|d| (d.mirror_custom, d.plane));
+        let extrude_target = self.dialog.as_ref().filter(|d| d.extent == model::Extent::ToObject).and_then(|d| d.target);
         let mut grid_segments: Vec<(Vec3, Vec3, [f32; 4])> = if sketching {
             sketch::grid_lines(&dplane, centre, grid, GRID_HALF_LINES)
                 .into_iter()
@@ -1388,7 +1434,7 @@ impl OpenCad {
             let mut outlines: Vec<(Vec3, Vec3, [f32; 4])> = Vec::new();
             for op in OriginPlane::ALL.into_iter().filter(|&p| shown.plane(p)) {
                 let hot = self.origin_hover == Some(op);
-                let chosen = self.selected_plane == Some(op) || mirror_plane == Some((None, op));
+                let chosen = self.selected_plane == Some(op) || mirror_plane == Some((None, op)) || extrude_target == Some(model::ExtrudeTarget::Origin(op));
                 let alpha = if hot { 150 } else if chosen { 120 } else if self.face_pick { 80 } else { 55 };
                 let p = op.plane();
                 let s = origin_size;
@@ -1439,7 +1485,7 @@ impl OpenCad {
                 if let Some(f) = self.model(Slot::Committed).planes.get(k).copied().flatten() {
                     let alpha = if self.cplane_hover == Some(k) {
                         150.0
-                    } else if mirror_plane.is_some_and(|(c, _)| c == Some(k)) {
+                    } else if mirror_plane.is_some_and(|(c, _)| c == Some(k)) || extrude_target == Some(model::ExtrudeTarget::Plane(k)) {
                         120.0
                     } else if self.face_pick {
                         80.0

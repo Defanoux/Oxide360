@@ -328,6 +328,17 @@ pub fn validate(doc: &Document) -> Result<(), String> {
         if ex.sketch >= doc.sketches.len() || !finite(ex.distance) {
             return Err(format!("{}: invalid sketch reference or distance", ex.name.clone() + &format!(" (#{k})")));
         }
+        use crate::model::ExtrudeTarget;
+        let target_ok = match ex.target {
+            None | Some(ExtrudeTarget::Origin(_)) => true,
+            Some(ExtrudeTarget::Plane(j)) => j < doc.planes.len(),
+            Some(ExtrudeTarget::Face { face, anchor }) => {
+                [face.origin, face.u, face.v].iter().all(|v| v.is_finite()) && anchor.iter().all(|a| a.is_finite())
+            }
+        };
+        if !target_ok {
+            return Err(format!("{} (#{k}): invalid object to extrude up to", ex.name));
+        }
     }
     for (k, r) in doc.revolves.iter().enumerate() {
         if r.sketch >= doc.sketches.len() || !r.angle.is_finite() {
@@ -517,7 +528,7 @@ mod tests {
         solver::add_constraints(&mut sk, &[Length(0, 50.0), Length(1, 30.0), Diameter(4, 8.0)]).unwrap();
         Document {
             sketches: vec![sk],
-            extrudes: vec![Extrude { op: Default::default(), name: "Extrude1".into(), sketch: 0, profiles: vec![0], distance: 12.5, extent: Default::default(), distance2: 0.0, taper: 0.0 }],
+            extrudes: vec![Extrude { op: Default::default(), name: "Extrude1".into(), sketch: 0, profiles: vec![0], distance: 12.5, extent: Default::default(), distance2: 0.0, taper: 0.0, target: None }],
             edge_features: vec![crate::model::EdgeFeature {
                 name: "Fillet1".into(),
                 kind: crate::model::EdgeKind::Fillet,
@@ -630,6 +641,18 @@ mod tests {
         let old = to_json(&sample()).replace("\"units\": \"Mm\",", "");
         assert!(!old.contains("\"Mm\""));
         assert_eq!(from_json(&old).unwrap().units, crate::units::Unit::Mm);
+    }
+
+    #[test]
+    fn to_object_targets_save_and_a_missing_plane_is_refused() {
+        use crate::model::{Extent, ExtrudeTarget};
+        let mut doc = sample();
+        doc.extrudes[0].extent = Extent::ToObject;
+        doc.extrudes[0].target = Some(ExtrudeTarget::Origin(OriginPlane::XZ));
+        assert_eq!(from_json(&to_json(&doc)).unwrap(), doc);
+        assert!(!to_json(&sample()).contains("target"), "nothing written for an ordinary extrude");
+        doc.extrudes[0].target = Some(ExtrudeTarget::Plane(0));
+        assert!(validate(&doc).is_err(), "there is no plane 0");
     }
 
     #[test]

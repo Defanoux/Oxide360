@@ -21,6 +21,8 @@ impl OpenCad {
                 distance2: e.distance2,
                 taper: e.taper,
                 op: e.op,
+                target: e.target,
+                picking_target: false,
             },
             None => ExtrudeDialog {
                 op_chosen: false,
@@ -33,6 +35,8 @@ impl OpenCad {
                 distance2: 10.0,
                 taper: 0.0,
                 op: Operation::NewBody, // follows what the profile touches until chosen
+                target: None,
+                picking_target: false,
             },
         };
         self.float = Some(FloatEdit {
@@ -50,7 +54,7 @@ impl OpenCad {
             Some(k) => self.extrudes[k].name.clone(),
             None => format!("Extrude{}", self.extrudes.len() + 1),
         };
-        Some(Extrude { op: d.op, name, sketch: d.sketch?, profiles: d.profiles.clone(), distance: d.distance, extent: d.extent, distance2: d.distance2, taper: d.taper })
+        Some(Extrude { op: d.op, name, sketch: d.sketch?, profiles: d.profiles.clone(), distance: d.distance, extent: d.extent, distance2: d.distance2, taper: d.taper, target: d.target })
     }
 
     pub(crate) fn commit_extrude(&mut self) {
@@ -205,6 +209,9 @@ impl OpenCad {
             return Some(Handle::Line { line, value, target: HandleTarget::Corner });
         }
         if let Some(d) = &self.dialog {
+            if d.extent == model::Extent::ToObject {
+                return None; // its length comes from what it runs up to
+            }
             let (origin, normal) = self.extrude_axis(regions)?;
             let line = LineHandle { origin: origin.as_dvec3(), dir: normal.as_dvec3() };
             let value = if d.extent == model::Extent::Symmetric { d.distance / 2.0 } else { d.distance };
@@ -556,6 +563,24 @@ impl OpenCad {
         if self.copies.iter().any(|c| c.kind == model::CopyKind::MirrorPlane(k)) {
             self.notify("A mirror uses that plane — delete it or pick another plane first".into());
             return;
+        }
+        if self.extrudes.iter().any(|e| e.target == Some(model::ExtrudeTarget::Plane(k))) {
+            self.notify("An extrude runs up to that plane — delete it or pick another object first".into());
+            return;
+        }
+        for e in &mut self.extrudes {
+            if let Some(model::ExtrudeTarget::Plane(j)) = &mut e.target {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+        if let Some(d) = self.dialog.as_mut() {
+            d.target = match d.target {
+                Some(model::ExtrudeTarget::Plane(j)) if j == k => None,
+                Some(model::ExtrudeTarget::Plane(j)) if j > k => Some(model::ExtrudeTarget::Plane(j - 1)),
+                other => other,
+            };
         }
         for c in &mut self.copies {
             if let model::CopyKind::MirrorPlane(j) = &mut c.kind {

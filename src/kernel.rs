@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{PlaneFeature, AxisFeature, CopyFeature, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::measure::{self, Geom};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
@@ -342,7 +342,18 @@ fn region_face(plane: &Frame, r: &Region) -> Result<Face, String> {
 /// The solid an extrude adds/removes, before combining with other bodies.
 /// `frames`: where face sketches are now (see `resolve_face`); others use
 /// their own plane. Also returns where its far end is.
-fn tool(sketches: &[Sketch], frames: &[Option<FacePlane>], ex: &Extrude) -> Result<(Shape, End), String> {
+/// Where a To Object extrude's target is in this build: (a point on its plane, its normal).
+fn target_plane(t: &ExtrudeTarget, planes: &[Option<FacePlane>], bodies: &[&Shape]) -> Result<(DVec3, DVec3), String> {
+    match *t {
+        ExtrudeTarget::Origin(op) => Ok((DVec3::ZERO, op.plane().normal().as_dvec3())),
+        ExtrudeTarget::Plane(k) => planes.get(k).copied().flatten().map(|f| (f.origin, f.normal())).ok_or_else(|| "the plane it runs up to couldn't be built".into()),
+        ExtrudeTarget::Face { face, anchor } => resolve_face(bodies, &face, DVec2::from(anchor))
+            .map(|f| (f.origin, f.normal()))
+            .ok_or_else(|| "the face it runs up to is gone — edit it and pick again".into()),
+    }
+}
+
+fn tool(sketches: &[Sketch], frames: &[Option<FacePlane>], ex: &Extrude, target: Option<(DVec3, DVec3)>) -> Result<(Shape, End), String> {
     let sk = sketches.get(ex.sketch).ok_or("its sketch was deleted")?;
     if !ex.distance.is_finite() || ex.distance.abs() < 1e-6 {
         return Err("distance is zero".into());
@@ -357,6 +368,9 @@ fn tool(sketches: &[Sketch], frames: &[Option<FacePlane>], ex: &Extrude) -> Resu
         .map(|&p| regions.get(p).ok_or("a selected profile no longer exists — the sketch changed"))
         .collect::<Result<Vec<&Region>, _>>()?;
     let plane = frame_for(sk, frames.get(ex.sketch).copied().flatten())?;
+    if ex.extent == crate::model::Extent::ToObject {
+        return to_object(&plane, &picked, ex, target);
+    }
     let (from, to) = ex.span();
     if (to - from).abs() < 1e-6 {
         return Err("distance is zero".into());
@@ -383,6 +397,55 @@ fn tool(sketches: &[Sketch], frames: &[Option<FacePlane>], ex: &Extrude) -> Resu
     }
     let end = End::Extrude { origin: plane.origin, normal: plane.normal(), distance: to };
     out.map(|s| (s, end)).ok_or_else(|| "nothing to extrude".into())
+}
+
+/// To Object: the profiles extruded until they meet the target plane (cut
+/// along it where it's slanted). Made by extruding well past the plane and
+/// keeping the part on the sketch's side of it.
+fn to_object(plane: &Frame, picked: &[&Region], ex: &Extrude, target: Option<(DVec3, DVec3)>) -> Result<(Shape, End), String> {
+    let (q, n) = target.ok_or("pick what it runs up to")?;
+    if ex.taper != 0.0 {
+        return Err("a taper works with One Side only".into());
+    }
+    let normal = plane.normal();
+    let slant = normal.dot(n);
+    if slant.abs() < 1e-6 {
+        return Err("that plane runs alongside the extrude — it never gets there".into());
+    }
+    // Where the profiles' middle meets the plane, along the extrude.
+    let centre2 = picked.iter().map(|r| r.centroid()).sum::<DVec2>() / picked.len().max(1) as f64;
+    let centre = world(plane, centre2);
+    let t = (q - centre).dot(n) / slant;
+    if t.abs() < 1e-6 {
+        return Err("that plane is the sketch's own plane".into());
+    }
+    // How far the profiles spread out, so a slanted plane is passed everywhere.
+    let spread = picked.iter().flat_map(|r| r.loops()).flatten().map(|p| p.distance(centre2)).fold(0.0, f64::max);
+    let lean = (1.0 - slant * slant).max(0.0).sqrt() / slant.abs();
+    let reach = t.abs() + spread * lean + 1.0;
+    let dir = kv(normal * t.signum() * reach * 1.5);
+    let mut prism: Option<Shape> = None;
+    for r in union(picked) {
+        let solid: Shape = region_face(plane, &r)?.extrude(dir).into();
+        prism = Some(match prism {
+            None => solid,
+            Some(acc) => acc.try_union(&solid).ok_or("the kernel couldn't merge the profiles")?,
+        });
+    }
+    let prism = prism.ok_or("nothing to extrude")?;
+    // Everything on the sketch's side of the plane: a big slab lying on it.
+    let size = (reach + spread) * 4.0 + 100.0;
+    let toward_sketch = if (centre - q).dot(n) >= 0.0 { n } else { -n };
+    let a = n.any_orthonormal_vector();
+    let b = n.cross(a);
+    let corners = [q + (a + b) * size, q + (b - a) * size, q - (a + b) * size, q + (a - b) * size];
+    let edges: Vec<Edge> = (0..4).map(|k| Edge::segment(kv(corners[k]), kv(corners[(k + 1) % 4]))).collect();
+    let slab: Shape = Face::from_wire(&Wire::from_edges(&edges)).extrude(kv(toward_sketch * size * 2.0)).into();
+    let solid = prism.try_intersect(&slab).ok_or("the kernel couldn't stop the extrude at that plane")?;
+    if solid.volume().abs() < MIN_VOLUME {
+        return Err("it doesn't reach that plane".into());
+    }
+    Ok((solid, End::Extrude { origin: plane.origin, normal, distance: t }))
 }
 
 /// The solid a revolve adds/removes: the picked profiles spun around the axis.
@@ -1122,8 +1185,16 @@ pub fn build_all(
                     continue;
                 };
                 let ends = &mut extrude_ends;
+                let planes_now = &planes;
                 let r = catch_unwind(AssertUnwindSafe(|| {
-                    let (shape, end) = tool(sketches, &frames, ex)?;
+                    let target = match &ex.target {
+                        Some(t) if ex.extent == crate::model::Extent::ToObject => {
+                            let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
+                            Some(target_plane(t, planes_now, &bodies)?)
+                        }
+                        _ => None,
+                    };
+                    let (shape, end) = tool(sketches, &frames, ex, target)?;
                     ends[k] = Some(end);
                     apply(current, shape, ex.op, Feature::Extrude(k))
                 }));
@@ -1256,7 +1327,7 @@ mod tests {
     }
 
     fn ex(sketch: usize, profiles: Vec<usize>, distance: f64, op: Operation) -> Extrude {
-        Extrude { op, name: "E".into(), sketch, profiles, distance, extent: Default::default(), distance2: 0.0, taper: 0.0 }
+        Extrude { op, name: "E".into(), sketch, profiles, distance, extent: Default::default(), distance2: 0.0, taper: 0.0, target: None }
     }
 
     fn timeline(sketches: usize, extrudes: usize) -> Vec<Feature> {
@@ -2038,6 +2109,82 @@ mod tests {
         let m = build4(&[sk], &[ex(0, vec![0], 4.0, Operation::NewBody)], &[], &timeline(1, 1));
         assert_eq!(m.errors, vec![None]);
         assert!((total(&m) - area * 4.0).abs() < 1e-3 * area * 4.0, "{} vs {}", total(&m), area * 4.0);
+    }
+
+    /// A 10 × 10 square at x 0..10, y 0..10 extruded To Object.
+    fn square_to(target: ExtrudeTarget, sketch_plane: Option<usize>, planes: &[crate::model::PlaneFeature], base: bool) -> Model {
+        use crate::model::Extent;
+        let mut sketches = Vec::new();
+        let mut extrudes = Vec::new();
+        let mut tl = Vec::new();
+        if base {
+            // A 50 × 30 × 10 plate at the origin first.
+            let mut b = Sketch::new("B".into(), OriginPlane::XY);
+            rect(&mut b, 0.0, 0.0, 50.0, 30.0);
+            sketches.push(b);
+            extrudes.push(ex(0, vec![0], 10.0, Operation::NewBody));
+            tl.extend([Feature::Sketch(0), Feature::Extrude(0)]);
+        }
+        for k in 0..planes.len() {
+            tl.push(Feature::Plane(k));
+        }
+        let mut sk = match sketch_plane {
+            Some(k) => Sketch::on_plane("S".into(), FacePlane::from_face(DVec3::Z, DVec3::ZERO), k),
+            None => Sketch::new("S".into(), OriginPlane::XY),
+        };
+        rect(&mut sk, 0.0, 0.0, 10.0, 10.0);
+        let s = sketches.len();
+        sketches.push(sk);
+        let mut e = ex(s, vec![0], 1.0, Operation::NewBody);
+        (e.extent, e.target) = (Extent::ToObject, Some(target));
+        extrudes.push(e);
+        tl.extend([Feature::Sketch(s), Feature::Extrude(extrudes.len() - 1)]);
+        build_all(&sketches, &extrudes, &[], &[], &[], &[], planes, &[], &tl)
+    }
+
+    fn offset_plane(z: f64) -> crate::model::PlaneFeature {
+        crate::model::PlaneFeature { name: "P".into(), base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: true, offset: z, anchor: [0.0, 0.0], extent: [0.0; 4] }
+    }
+
+    #[test]
+    fn to_object_runs_up_to_a_plane_or_down_to_one() {
+        // Up from the XY plane to a construction plane at z = 25: 10 × 10 × 25.
+        let m = square_to(ExtrudeTarget::Plane(0), None, &[offset_plane(25.0)], false);
+        assert_eq!(m.errors, vec![None]);
+        assert!(close(total(&m), 2500.0), "{}", total(&m));
+        let (lo, hi) = box_of(&m.bodies[0]);
+        assert!(lo.z.abs() < 1e-6 && (hi.z - 25.0).abs() < 1e-6);
+        // Down from a sketch on a plane at z = 20 to the XY plane: 10 × 10 × 20.
+        let m = square_to(ExtrudeTarget::Origin(OriginPlane::XY), Some(0), &[offset_plane(20.0)], false);
+        assert_eq!(m.errors, vec![None]);
+        assert!(close(total(&m), 2000.0), "{}", total(&m));
+        // A plane alongside the extrude never gets reached.
+        let m = square_to(ExtrudeTarget::Origin(OriginPlane::XZ), None, &[], false);
+        assert!(m.errors[0].as_deref().is_some_and(|e| e.contains("alongside")), "{:?}", m.errors);
+    }
+
+    #[test]
+    fn to_object_stops_at_a_body_face_found_again() {
+        // From a plane at z = 30 down to the plate's top face (z = 10): 10 × 10 × 20,
+        // joined onto the plate as a separate body.
+        let top = FacePlane::from_face(DVec3::Z, DVec3::new(25.0, 15.0, 10.0));
+        let anchor = [DVec3::new(25.0, 15.0, 10.0).dot(top.u), DVec3::new(25.0, 15.0, 10.0).dot(top.v)];
+        let m = square_to(ExtrudeTarget::Face { face: top, anchor }, Some(0), &[offset_plane(30.0)], true);
+        assert_eq!(m.errors, vec![None, None]);
+        assert!(close(total(&m), 15000.0 + 2000.0), "{}", total(&m));
+    }
+
+    #[test]
+    fn to_object_cuts_the_end_along_a_slanted_plane() {
+        // The plane z = 10 + y/2: over the square (y 0..10) the top runs from
+        // z 10 to 15, so the volume is 100 × 12.5.
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk, 0.0, 0.0, 10.0, 10.0);
+        let mut e = ex(0, vec![0], 1.0, Operation::NewBody);
+        e.extent = crate::model::Extent::ToObject;
+        let n = DVec3::new(0.0, -0.5, 1.0).normalize();
+        let (shape, _) = tool(&[sk], &[None], &e, Some((DVec3::new(0.0, 0.0, 10.0), n))).unwrap();
+        assert!(close(shape.volume(), 1250.0), "{}", shape.volume());
     }
 
     #[test]
