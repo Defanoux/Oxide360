@@ -583,6 +583,31 @@ fn segment_touches_rect(p: DVec2, q: DVec2, lo: DVec2, hi: DVec2) -> bool {
     true
 }
 
+/// What a Trim click would remove: a stretch of line, or of a circle / arc
+/// (centre, radius, start angle, sweep).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TrimPiece {
+    Line(DVec2, DVec2),
+    Arc(DVec2, f64, f64, f64),
+}
+
+/// Where two circles cross (none when they don't, or only touch).
+pub(crate) fn circle_circle(c1: DVec2, r1: f64, c2: DVec2, r2: f64) -> Vec<DVec2> {
+    let d = c1.distance(c2);
+    if d < 1e-12 || d > r1 + r2 || d < (r1 - r2).abs() {
+        return Vec::new();
+    }
+    let a = (r1 * r1 - r2 * r2 + d * d) / (2.0 * d);
+    let h2 = r1 * r1 - a * a;
+    if h2 <= 1e-12 * r1 * r1 {
+        return Vec::new(); // touching: not a crossing
+    }
+    let u = (c2 - c1) / d;
+    let m = c1 + u * a;
+    let h = h2.sqrt();
+    vec![m + u.perp() * h, m - u.perp() * h]
+}
+
 /// Parameters t where `p + t·d` crosses the circle (centre `c`, radius `r`).
 pub(crate) fn line_circle(p: DVec2, d: DVec2, c: DVec2, r: f64) -> Vec<f64> {
     let f = p - c;
@@ -1841,6 +1866,185 @@ impl Sketch {
         }
         *self = trial;
         Ok(out)
+    }
+
+    /// A circle or arc as (centre, radius, start angle, sweep); a circle starts
+    /// at angle 0 and goes all the way round.
+    fn round_shape(&self, e: EntityId) -> Option<(DVec2, f64, f64, f64)> {
+        match *self.entities.get(e)? {
+            Entity::Circle { center, radius } => Some((self.points[center], radius, 0.0, std::f64::consts::TAU)),
+            Entity::Arc { .. } => self.arc_geometry(e),
+            _ => None,
+        }
+    }
+
+    /// Where other geometry crosses circle / arc `e`: (angle from its start,
+    /// the point, what crosses it, an existing point of that there). Sorted;
+    /// an arc's own ends don't count.
+    fn round_cuts(&self, e: EntityId) -> Vec<(f64, DVec2, EntityId, Option<PointId>)> {
+        let Some((c, r, a0, sweep)) = self.round_shape(e) else { return Vec::new() };
+        let whole = matches!(self.entities[e], Entity::Circle { .. });
+        let rel = |x: DVec2| ((x - c).y.atan2((x - c).x) - a0).rem_euclid(std::f64::consts::TAU);
+        let eps = 1e-7 / r.max(1e-9);
+        let near = |p: PointId, x: DVec2| (self.points[p].distance(x) < 1e-6).then_some(p);
+        let mut cuts = Vec::new();
+        let mut offer = |x: DVec2, other: EntityId, join: Option<PointId>| {
+            let t = rel(x);
+            if whole || (t > eps && t < sweep - eps) {
+                cuts.push((t, x, other, join));
+            }
+        };
+        for (i, ent) in self.entities.iter().enumerate() {
+            if i == e {
+                continue;
+            }
+            match *ent {
+                Entity::Line { a, b } => {
+                    let (pa, pb) = (self.points[a], self.points[b]);
+                    let d = pb - pa;
+                    let st = 1e-7 / d.length().max(1e-12);
+                    for t in line_circle(pa, d, c, r) {
+                        if t >= -st && t <= 1.0 + st {
+                            let x = pa + d * t;
+                            offer(x, i, near(a, x).or(near(b, x)));
+                        }
+                    }
+                }
+                Entity::Circle { center, radius } => {
+                    for x in circle_circle(c, r, self.points[center], radius) {
+                        offer(x, i, None);
+                    }
+                }
+                Entity::Arc { a, b, .. } => {
+                    let Some((c2, r2, b0, sw2)) = self.arc_geometry(i) else { continue };
+                    for x in circle_circle(c, r, c2, r2) {
+                        let on = ((x - c2).y.atan2((x - c2).x) - b0).rem_euclid(std::f64::consts::TAU) <= sw2 + 1e-9;
+                        if on {
+                            offer(x, i, near(a, x).or(near(b, x)));
+                        }
+                    }
+                }
+                Entity::Point { .. } => {}
+            }
+        }
+        cuts.sort_by(|x, y| x.0.total_cmp(&y.0));
+        cuts.dedup_by(|x, y| (x.0 - y.0).abs() * r < 1e-7);
+        cuts
+    }
+
+    /// The stretch of a circle or arc Trim takes away for a click at `at`:
+    /// (centre, radius, start angle, sweep) — the whole thing when nothing cuts it.
+    fn round_trim_span(&self, e: EntityId, at: DVec2) -> Option<(DVec2, f64, f64, f64)> {
+        let (c, r, a0, sweep) = self.round_shape(e)?;
+        let whole = matches!(self.entities[e], Entity::Circle { .. });
+        let t = ((at - c).y.atan2((at - c).x) - a0).rem_euclid(std::f64::consts::TAU).min(sweep);
+        let cuts = self.round_cuts(e);
+        if whole {
+            if cuts.len() < 2 {
+                return Some((c, r, 0.0, std::f64::consts::TAU));
+            }
+            let lo = cuts.iter().rev().find(|k| k.0 <= t).unwrap_or(cuts.last().expect("two cuts")).0;
+            let hi = cuts.iter().find(|k| k.0 > t).unwrap_or(&cuts[0]).0;
+            return Some((c, r, lo, (hi - lo).rem_euclid(std::f64::consts::TAU)));
+        }
+        let lo = cuts.iter().rev().find(|k| k.0 <= t).map_or(0.0, |k| k.0);
+        let hi = cuts.iter().find(|k| k.0 > t).map_or(sweep, |k| k.0);
+        Some((c, r, a0 + lo, hi - lo))
+    }
+
+    /// Trim a circle or arc at the click `at`, as Trim does a line: the
+    /// stretch under the click, between the nearest cuts, goes. A circle cut
+    /// in two or more places becomes the arc that's left (a Diameter becomes
+    /// a Radius); an arc end piece shortens it, a middle piece splits it in
+    /// two (the second kept equal to the first); nothing crossing deletes it.
+    /// New ends are tied onto what cut them. Constraints for the caller to add.
+    pub fn trim_round(&mut self, e: EntityId, at: DVec2) -> Result<Vec<Constraint>, String> {
+        let Some((c, _, a0, sweep)) = self.round_shape(e) else { return Err("Trim works on lines, circles and arcs".into()) };
+        let whole = matches!(self.entities[e], Entity::Circle { .. });
+        let center = match self.entities[e] {
+            Entity::Circle { center, .. } | Entity::Arc { center, .. } => center,
+            _ => unreachable!("round"),
+        };
+        let cuts = self.round_cuts(e);
+        let t = ((at - c).y.atan2((at - c).x) - a0).rem_euclid(std::f64::consts::TAU).min(sweep);
+        let lo = cuts.iter().rev().find(|k| k.0 <= t).copied();
+        let hi = cuts.iter().find(|k| k.0 > t).copied();
+        if (whole && cuts.len() < 2) || (!whole && lo.is_none() && hi.is_none()) {
+            self.delete(&[Sel::Entity(e)]);
+            return Ok(Vec::new());
+        }
+        let mut trial = self.clone();
+        let mut ties: Vec<(DVec2, EntityId)> = Vec::new();
+        let mut cut_point = |sk: &mut Sketch, k: (f64, DVec2, EntityId, Option<PointId>)| match k.3 {
+            Some(p) => p,
+            None => {
+                sk.points.push(k.1);
+                ties.push((k.1, k.2));
+                sk.points.len() - 1
+            }
+        };
+        let mut extra: Vec<Constraint> = Vec::new();
+        if whole {
+            // The part left runs from the cut after the click round to the cut before it.
+            let lo = lo.unwrap_or(*cuts.last().expect("two cuts"));
+            let hi = hi.unwrap_or(cuts[0]);
+            let (pl, ph) = (cut_point(&mut trial, lo), cut_point(&mut trial, hi));
+            trial.entities[e] = Entity::Arc { center, a: ph, b: pl };
+            // An arc takes a radius, not a diameter.
+            for k in trial.constraints.iter_mut() {
+                if let Constraint::Diameter(x, d) = *k {
+                    if x == e {
+                        *k = Constraint::Radius(e, d / 2.0);
+                    }
+                }
+            }
+        } else {
+            let Entity::Arc { a, b, .. } = self.entities[e] else { unreachable!("arc") };
+            match (lo, hi) {
+                (Some(l), None) => {
+                    let p = cut_point(&mut trial, l);
+                    trial.entities[e] = Entity::Arc { center, a, b: p };
+                }
+                (None, Some(h)) => {
+                    let p = cut_point(&mut trial, h);
+                    trial.entities[e] = Entity::Arc { center, a: p, b };
+                }
+                (Some(l), Some(h)) => {
+                    let (pl, ph) = (cut_point(&mut trial, l), cut_point(&mut trial, h));
+                    trial.entities[e] = Entity::Arc { center, a, b: pl };
+                    trial.entities.push(Entity::Arc { center, a: ph, b });
+                    let n = trial.entities.len() - 1;
+                    trial.set_construction(n, trial.is_construction(e));
+                    extra.push(Constraint::Equal(n, e));
+                }
+                (None, None) => unreachable!("handled above"),
+            }
+        }
+        trial.delete(&[]); // old end points nothing uses now
+        let mut out = extra;
+        for (x, other) in ties {
+            let Some(p) = trial.points.iter().position(|q| *q == x) else { continue };
+            out.push(match trial.entities.get(other) {
+                Some(Entity::Line { .. }) => Constraint::OnLine(p, other),
+                _ => Constraint::OnCircle(p, other),
+            });
+        }
+        *self = trial;
+        Ok(out)
+    }
+
+    /// Trim whatever `e` is (line, circle or arc) at the click `at`.
+    pub fn trim(&mut self, e: EntityId, at: DVec2) -> Result<Vec<Constraint>, String> {
+        if self.is_line(e) { self.trim_line(e, at) } else { self.trim_round(e, at) }
+    }
+
+    /// What Trim would take away for a click at `at` (for showing it first).
+    pub fn trim_piece(&self, e: EntityId, at: DVec2) -> Option<TrimPiece> {
+        if self.is_line(e) {
+            self.trim_preview(e, at).map(|(a, b)| TrimPiece::Line(a, b))
+        } else {
+            self.round_trim_span(e, at).map(|(c, r, a0, sweep)| TrimPiece::Arc(c, r, a0, sweep))
+        }
     }
 
     /// Where the perpendicular from `p` meets line `e` (extended).
@@ -3793,13 +3997,68 @@ mod trim_tests {
     }
 
     #[test]
-    fn trim_only_works_on_lines() {
+    fn a_circle_cut_twice_trims_to_the_arc_left() {
+        use std::f64::consts::PI;
         let mut sk = Sketch::new("S".into(), OriginPlane::XY);
         let mut ed = Editor::default();
         ed.set_tool(Tool::Circle);
         ed.click(&mut sk, Anchor::Free(DVec2::new(0.0, 0.0)));
         ed.click(&mut sk, Anchor::Free(DVec2::new(10.0, 0.0)));
-        assert!(sk.trim_line(0, DVec2::ZERO).is_err());
+        let c = sk.entities.len() - 1;
+        sk.constraints.push(Constraint::Diameter(c, 20.0));
+        seg(&mut sk, (-15.0, 0.0), (15.0, 0.0)); // across the middle
+        // The preview: the upper half, from (10, 0) round to (-10, 0).
+        let Some(TrimPiece::Arc(_, r, a0, sweep)) = sk.trim_piece(c, DVec2::new(0.0, 9.0)) else { panic!("an arc piece") };
+        assert!((r - 10.0).abs() < 1e-9 && a0.abs() < 1e-9 && (sweep - PI).abs() < 1e-9, "{a0} {sweep}");
+        let cs = sk.trim(c, DVec2::new(0.0, 9.0)).unwrap();
+        // What's left: the lower half, an arc, tied onto the line at both ends.
+        let (centre, r, a0, sweep) = sk.arc_geometry(c).expect("now an arc");
+        assert!(centre.length() < 1e-9 && (r - 10.0).abs() < 1e-9 && (a0 - PI).abs() < 1e-9 && (sweep - PI).abs() < 1e-9, "{a0} {sweep}");
+        assert!(sk.constraints.contains(&Constraint::Radius(c, 10.0)), "the diameter became a radius");
+        assert_eq!(cs.iter().filter(|k| matches!(k, Constraint::OnLine(..))).count(), 2);
+        // A circle nothing crosses is deleted.
+        let mut lone = Sketch::new("S".into(), OriginPlane::XY);
+        lone.points.push(DVec2::new(50.0, 50.0));
+        lone.entities.push(Entity::Circle { center: 1, radius: 3.0 });
+        lone.trim(0, DVec2::new(53.0, 50.0)).unwrap();
+        assert!(lone.entities.is_empty());
+    }
+
+    #[test]
+    fn an_arc_trims_at_an_end_or_splits_in_the_middle() {
+        use std::f64::consts::PI;
+        // A half circle over the top (radius 10), crossed by two vertical lines at x = ±5.
+        let arc = || {
+            let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+            sk.points.extend([DVec2::new(0.0, 0.0), DVec2::new(10.0, 0.0), DVec2::new(-10.0, 0.0)]);
+            sk.entities.push(Entity::Arc { center: 1, a: 2, b: 3 });
+            seg(&mut sk, (5.0, -1.0), (5.0, 20.0));
+            seg(&mut sk, (-5.0, -1.0), (-5.0, 20.0));
+            sk
+        };
+        // The right end piece (x > 5): the arc now starts at x = 5.
+        let mut sk = arc();
+        sk.trim(0, DVec2::new(9.0, 4.0)).unwrap();
+        let (_, _, a0, sweep) = sk.arc_geometry(0).unwrap();
+        assert!((a0 - PI / 3.0).abs() < 1e-9 && (sweep - 2.0 * PI / 3.0).abs() < 1e-9, "{a0} {sweep}");
+        // The middle piece: two arcs, kept equal.
+        let mut sk = arc();
+        let cs = sk.trim(0, DVec2::new(0.0, 10.0)).unwrap();
+        let arcs: Vec<usize> = (0..sk.entities.len()).filter(|&e| sk.is_arc(e)).collect();
+        assert_eq!(arcs.len(), 2);
+        let total: f64 = arcs.iter().map(|&e| sk.arc_geometry(e).unwrap().3).sum();
+        assert!((total - 2.0 * PI / 3.0).abs() < 1e-9, "two 60° arcs left: {total}");
+        assert!(cs.iter().any(|k| matches!(k, Constraint::Equal(..))));
+    }
+
+    #[test]
+    fn trim_line_only_works_on_lines() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Circle);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(0.0, 0.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(10.0, 0.0)));
+        assert!(sk.trim_line(0, DVec2::ZERO).is_err(), "(circles go through trim / trim_round)");
     }
 }
 

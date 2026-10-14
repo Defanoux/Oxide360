@@ -588,7 +588,7 @@ struct OpenCad {
     revolve_errors: Vec<Option<String>>,
     sketch_pattern: Option<SketchPattern>,   // an open Rectangular / Circular Pattern in a sketch
     offset_preview: Option<Sketch>,          // the sketch with the offset the cursor would make
-    cut_preview: Option<(Tool, DVec2, DVec2)>, // what Trim would cut / Extend would add, under the cursor
+    cut_preview: Option<(Tool, sketch::TrimPiece)>, // what Trim would cut / Extend would add, under the cursor
     line_up: Option<(Option<DVec2>, Option<DVec2>, DVec2)>, // inference: lined up above/beside these, at this point
     line_length: Option<f64>,               // Line tool: a typed length the next segment keeps (the click sets its angle)
     sp_applied: Option<pattern::Layout>,     // the layout the sketch is showing now

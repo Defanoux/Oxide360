@@ -575,7 +575,7 @@ impl OpenCad {
                 let items = [
                     ToolItem { name: "Fillet", icon: Icon::Fillet, tip: "Fillet: click a corner (or its two lines), type the radius", enabled: true, on: t == Tool::SketchFillet },
                     ToolItem { name: "Chamfer", icon: Icon::Chamfer, tip: "Chamfer: click a corner (or its two lines), type the distance — or two, like 2, 5 (first = first line)", enabled: true, on: t == Tool::SketchChamfer },
-                    ToolItem { name: "Trim", icon: Icon::Trim, tip: "Trim: click the part of a line to remove, back to the nearest crossing", enabled: true, on: t == Tool::Trim },
+                    ToolItem { name: "Trim", icon: Icon::Trim, tip: "Trim: click the part of a line, circle or arc to remove, back to the nearest crossings", enabled: true, on: t == Tool::Trim },
                     ToolItem { name: "Extend", icon: Icon::Extend, tip: "Extend: click a line near the end to run it on to the next geometry", enabled: true, on: t == Tool::Extend },
                     ToolItem { name: "Offset", icon: Icon::Offset, tip: "Offset: click a line, arc or circle (its joined run follows), then click the side and distance", enabled: true, on: t == Tool::Offset },
                     ToolItem { name: "Rectangular Pattern", icon: Icon::RectPattern, tip: "Rectangular Pattern: select geometry first, then click this", enabled: true, on: pattern_on(SpMode::Rectangular) },

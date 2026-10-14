@@ -573,8 +573,12 @@ impl OpenCad {
                     if tool.tangent_lines() > 0 {
                         hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e)));
                     }
-                    if matches!(tool, Tool::Trim | Tool::Extend | Tool::Mirror) {
+                    if matches!(tool, Tool::Extend | Tool::Mirror) {
                         hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e)));
+                    }
+                    // Trim takes lines, circles and arcs.
+                    if tool == Tool::Trim {
+                        hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e) || sk.is_round(*e)));
                     }
                     // Only Select and the constraint tools pick the sketch's axes.
                     if !matches!(tool, Tool::Select | Tool::Constrain(_)) {
@@ -595,8 +599,8 @@ impl OpenCad {
                 }
                 // Trim / Extend: show what a click on the hovered line would do.
                 self.cut_preview = match (tool, hovered, raw_hover) {
-                    (Tool::Trim, Some(Sel::Entity(e)), Some(p)) => sk.trim_preview(e, p).map(|(a, b)| (tool, a, b)),
-                    (Tool::Extend, Some(Sel::Entity(e)), Some(p)) => sk.extend_preview(e, p).map(|(a, b)| (tool, a, b)),
+                    (Tool::Trim, Some(Sel::Entity(e)), Some(p)) => sk.trim_piece(e, p).map(|piece| (tool, piece)),
+                    (Tool::Extend, Some(Sel::Entity(e)), Some(p)) => sk.extend_preview(e, p).map(|(a, b)| (tool, sketch::TrimPiece::Line(a, b))),
                     _ => None,
                 };
                 // Offset: the copy follows the cursor until the second click.
@@ -1108,7 +1112,7 @@ impl OpenCad {
                     if response.clicked() {
                         match (hovered, raw_hover) {
                             (Some(Sel::Entity(e)), Some(p)) => self.trim_at(e, p),
-                            _ => self.notify("Click a line to trim it back to the nearest crossing geometry".into()),
+                            _ => self.notify("Click a line, circle or arc to trim it back to the nearest crossings".into()),
                         }
                     }
                 }
@@ -1804,16 +1808,17 @@ impl OpenCad {
             }
             if active {
                 match self.cut_preview {
-                    // The stretch Trim takes away: red over the line.
-                    Some((Tool::Trim, a, b)) => view.line(plane.to_world(a), plane.to_world(b), Stroke::new(4.0, Color32::from_rgb(230, 70, 70))),
+                    // The stretch Trim takes away: red over the line or curve.
+                    Some((Tool::Trim, sketch::TrimPiece::Line(a, b))) => view.line(plane.to_world(a), plane.to_world(b), Stroke::new(4.0, Color32::from_rgb(230, 70, 70))),
+                    Some((Tool::Trim, sketch::TrimPiece::Arc(c, r, a0, sweep))) => view.arc(&plane, c, r, a0, sweep, Stroke::new(4.0, Color32::from_rgb(230, 70, 70))),
                     // The piece Extend adds: dashed, to a dot where the end goes.
-                    Some((_, a, b)) => {
+                    Some((_, sketch::TrimPiece::Line(a, b))) => {
                         view.dashed(plane.to_world(a), plane.to_world(b), Stroke::new(2.0, COL_PREVIEW));
                         if let Some(px) = view.project(plane.to_world(b)) {
                             painter.circle_filled(to_pos(px), 4.0, COL_PREVIEW);
                         }
                     }
-                    None => {}
+                    _ => {}
                 }
                 if let Some(p) = &self.offset_preview {
                     let stroke = Stroke::new(2.0, COL_PREVIEW);

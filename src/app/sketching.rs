@@ -583,7 +583,7 @@ impl OpenCad {
 
     /// Trim tool: cut line `e` back at the click `p`.
     pub(crate) fn trim_at(&mut self, e: usize, p: DVec2) {
-        self.sketch_op("trim", move |sk| sk.trim_line(e, p));
+        self.sketch_op("trim", move |sk| sk.trim(e, p));
     }
 
     /// Extend tool: run line `e` on from the end nearest `p`.
