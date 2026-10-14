@@ -25,16 +25,33 @@ struct ToolItem {
 /// as icons, every one of them in the list under the group's name (its ▾).
 /// Right-click a tool — on the bar or in the list — to add it to the toolbar
 /// or take it off. Returns the tool clicked.
-fn tool_group(ui: &mut egui::Ui, label: &str, items: &[ToolItem], hidden: &mut Vec<String>) -> Option<&'static str> {
+///
+/// Tools on the toolbar can be dragged into another order within their group;
+/// `order` keeps the arrangement (names, earlier first).
+fn tool_group(ui: &mut egui::Ui, label: &str, items: &[ToolItem], hidden: &mut Vec<String>, order: &mut Vec<String>) -> Option<&'static str> {
     let mut chosen = None;
     let mut toggle: Option<&'static str> = None;
+    // The group's tools in the saved order (new ones where they're listed).
+    let rank = |name: &str, k: usize| order.iter().position(|o| o == name).unwrap_or(1000 + k);
+    let mut sorted: Vec<(usize, &ToolItem)> = items.iter().enumerate().collect();
+    sorted.sort_by_key(|&(k, it)| rank(it.name, k));
+    let items: Vec<&ToolItem> = sorted.into_iter().map(|(_, it)| it).collect();
+    let drag_id = egui::Id::new(("tool_drag", label));
+    let mut dragging: Option<&'static str> = ui.ctx().data(|d| d.get_temp(drag_id)).flatten();
+    let mut dropped: Option<(&'static str, usize)> = None;
     ui.vertical(|ui| {
         let row = ui
             .horizontal(|ui| {
-                for it in items.iter().filter(|it| !hidden.iter().any(|h| h == it.name)) {
+                let shown: Vec<&ToolItem> = items.iter().copied().filter(|it| !hidden.iter().any(|h| h == it.name)).collect();
+                let mut rects: Vec<egui::Rect> = Vec::new();
+                for it in &shown {
                     let r = icons::button(ui, it.icon, it.tip, it.enabled, it.on);
+                    rects.push(r.rect);
                     if r.clicked() {
                         chosen = Some(it.name);
+                    }
+                    if r.drag_started() {
+                        dragging = Some(it.name);
                     }
                     r.context_menu(|ui| {
                         if ui.button("Remove from toolbar").clicked() {
@@ -43,10 +60,36 @@ fn tool_group(ui: &mut egui::Ui, label: &str, items: &[ToolItem], hidden: &mut V
                         }
                     });
                 }
+                // Dragging a tool: a bar shows where it'll go; let go to put it there.
+                if let (Some(name), Some(p)) = (dragging, ui.input(|i| i.pointer.interact_pos())) {
+                    let gap = rects.iter().filter(|r| r.center().x < p.x).count();
+                    if let (Some(first), Some(last)) = (rects.first(), rects.last()) {
+                        let x = if gap == 0 { first.left() - 2.0 } else if gap >= rects.len() { last.right() + 2.0 } else { (rects[gap - 1].right() + rects[gap].left()) / 2.0 };
+                        ui.painter().line_segment([egui::pos2(x, first.top()), egui::pos2(x, first.bottom())], Stroke::new(3.0, Color32::from_rgb(70, 145, 230)));
+                    }
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    if ui.input(|i| i.pointer.any_released()) {
+                        dropped = Some((name, gap));
+                        dragging = None;
+                    }
+                }
+                if let Some((name, gap)) = dropped {
+                    let mut names: Vec<&'static str> = shown.iter().map(|it| it.name).collect();
+                    if let Some(from) = names.iter().position(|n| *n == name) {
+                        let to = if gap > from { gap - 1 } else { gap };
+                        let n = names.remove(from);
+                        names.insert(to.min(names.len()), n);
+                    }
+                    // The whole group's order: the tools on the toolbar as dropped, then the rest.
+                    let rest: Vec<&'static str> = items.iter().map(|it| it.name).filter(|n| !names.contains(n)).collect();
+                    order.retain(|o| !items.iter().any(|it| it.name == o));
+                    order.extend(names.into_iter().chain(rest).map(String::from));
+                }
             })
             .response
             .rect
             .width();
+        ui.ctx().data_mut(|d| d.insert_temp(drag_id, dragging));
         // The group's name with a ▾: every tool, with names.
         let font = egui::FontId::proportional(11.0);
         let galley = ui.painter().layout_no_wrap(label.to_string(), font, Color32::from_gray(150));
@@ -60,7 +103,7 @@ fn tool_group(ui: &mut egui::Ui, label: &str, items: &[ToolItem], hidden: &mut V
         let r = r.on_hover_text("More tools in this group (right-click a tool on the toolbar to take it off)");
         egui::Popup::menu(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             ui.set_min_width(230.0);
-            let tucked: Vec<&ToolItem> = items.iter().filter(|it| hidden.iter().any(|h| h == it.name)).collect();
+            let tucked: Vec<&ToolItem> = items.iter().copied().filter(|it| hidden.iter().any(|h| h == it.name)).collect();
             if tucked.is_empty() {
                 ui.weak("Every tool here is on the toolbar.");
             }
@@ -341,14 +384,40 @@ impl OpenCad {
         egui::Window::new("Keybinds").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             for (title, sketch) in [("In a sketch", true), ("In the model", false)] {
                 ui.strong(title);
-                egui::Grid::new(("keybinds", sketch)).num_columns(3).spacing([16.0, 6.0]).striped(true).show(ui, |ui| {
+                egui::Grid::new(("keybinds", sketch)).num_columns(4).spacing([16.0, 6.0]).striped(true).show(ui, |ui| {
                     for a in keys::Action::ALL.into_iter().filter(|a| a.in_sketch() == sketch) {
                         ui.label(a.name());
                         ui.weak(a.about());
                         let waiting = self.capturing_key == Some(a);
+                        let changed = self.keymap.key(a) != a.default_key();
                         let text = if waiting { "press a key…".to_string() } else { self.keymap.key(a).map_or("—".to_string(), |k| k.name().to_string()) };
+                        // A key that isn't the default shows orange.
+                        let text = if changed && !waiting { egui::RichText::new(text).color(Color32::from_rgb(240, 160, 50)).strong() } else { egui::RichText::new(text) };
                         if ui.add(egui::Button::selectable(waiting, text).min_size(egui::vec2(90.0, 0.0))).on_hover_text("Click, then press the key (Esc: no key)").clicked() {
                             self.capturing_key = if waiting { None } else { Some(a) };
+                        }
+                        // …with a reset arrow beside it to put its default back.
+                        if changed {
+                            let default = a.default_key().map_or("no key".to_string(), |k| k.name().to_string());
+                            let r = ui.add(egui::Button::new("").min_size(egui::vec2(22.0, 20.0))).on_hover_text(format!("Back to the default ({default})"));
+                            let (c, ink) = (r.rect.center(), Color32::from_gray(220));
+                            let pts: Vec<egui::Pos2> = (0..=20)
+                                .map(|i| {
+                                    let t = -0.6 + i as f32 / 20.0 * 4.9;
+                                    c + egui::vec2(t.cos(), t.sin()) * 5.5
+                                })
+                                .collect();
+                            let tip = *pts.last().expect("points");
+                            ui.painter().add(egui::Shape::line(pts, Stroke::new(1.5, ink)));
+                            ui.painter().add(egui::Shape::convex_polygon(vec![tip + egui::vec2(-3.5, -1.0), tip + egui::vec2(2.5, -3.0), tip + egui::vec2(1.0, 3.0)], ink, Stroke::NONE));
+                            if r.clicked() {
+                                if let Some(other) = self.keymap.set(a, a.default_key()) {
+                                    self.notify(format!("{} no longer has a key (it was {default})", other.name()));
+                                }
+                                self.capturing_key = None;
+                            }
+                        } else {
+                            ui.label("");
                         }
                         ui.end_row();
                     }
@@ -515,7 +584,7 @@ impl OpenCad {
                     ToolItem { name: "Project", icon: Icon::Project, tip: "Project: click a body edge to bring it into the sketch (as locked construction geometry)", enabled: self.body_count > 0, on: t == Tool::Project },
                     ToolItem { name: "Construction", icon: Icon::Construction, tip: "Construction: toggle the selected geometry, or what you draw next", enabled: true, on: self.editor.construction },
                 ];
-                match tool_group(ui, "MODIFY", &items, &mut self.toolbar_hidden) {
+                match tool_group(ui, "MODIFY", &items, &mut self.toolbar_hidden, &mut self.toolbar_order) {
                     Some("Fillet") => self.editor.set_tool(Tool::SketchFillet),
                     Some("Chamfer") => self.editor.set_tool(Tool::SketchChamfer),
                     Some("Trim") => self.editor.set_tool(Tool::Trim),
@@ -553,7 +622,7 @@ impl OpenCad {
                         ToolItem { name: label, icon, tip, enabled: true, on: self.editor.tool == Tool::Constrain(label) }
                     })
                     .collect();
-                if let Some(label) = tool_group(ui, "CONSTRAINTS", &items, &mut self.toolbar_hidden) {
+                if let Some(label) = tool_group(ui, "CONSTRAINTS", &items, &mut self.toolbar_hidden, &mut self.toolbar_order) {
                     self.constraint_button(label);
                 }
                 group(ui, "OPTIONS", |ui| {

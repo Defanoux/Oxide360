@@ -33,6 +33,8 @@ pub struct Settings {
     pub toolbar_hidden: Vec<String>,
     /// Tool keys: (action, key name or ""); see `keys::Keymap`.
     pub keybinds: Vec<(String, String)>,
+    /// Tools' order within their toolbar groups, as dragged (names; empty: as built).
+    pub toolbar_order: Vec<String>,
 }
 
 impl Default for Settings {
@@ -41,6 +43,7 @@ impl Default for Settings {
             touchpad_zoom_flip: true,
             toolbar_hidden: ["Rectangular Pattern", "Circular Pattern", "Collinear", "Concentric", "Midpoint", "Fix"].map(String::from).to_vec(),
             keybinds: crate::keys::Keymap::default().to_pairs(),
+            toolbar_order: Vec::new(),
         }
     }
 }
@@ -85,7 +88,7 @@ mod tests {
         let d = dir("roundtrip");
         let path = d.join("nested").join("settings.json");
         assert_eq!(load(&path), Settings::default(), "nothing saved yet");
-        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic, measure_unit_own: Some(Unit::In), measure_unit2: Some(Unit::Mm), measure_precision: 5, measure_snap: false, measure_xyz: false, default_units: Unit::In, touchpad_zoom_flip: false, toolbar_hidden: vec!["Trim".into()], keybinds: vec![("Trim".into(), "T".into())] };
+        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic, measure_unit_own: Some(Unit::In), measure_unit2: Some(Unit::Mm), measure_precision: 5, measure_snap: false, measure_xyz: false, default_units: Unit::In, touchpad_zoom_flip: false, toolbar_hidden: vec!["Trim".into()], keybinds: vec![("Trim".into(), "T".into())], toolbar_order: vec!["Trim".into(), "Fillet".into()] };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);
         let _ = std::fs::remove_dir_all(&d);

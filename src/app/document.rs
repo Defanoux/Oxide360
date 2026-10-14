@@ -210,6 +210,7 @@ impl OpenCad {
             touchpad_zoom_flip: self.touchpad_zoom_flip,
             toolbar_hidden: self.toolbar_hidden.clone(),
             keybinds: self.keymap.to_pairs(),
+            toolbar_order: self.toolbar_order.clone(),
         }
     }
 

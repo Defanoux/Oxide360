@@ -551,7 +551,8 @@ pub fn eye(ui: &mut egui::Ui, shown: bool, tooltip: &str) -> egui::Response {
 /// A square icon button with a tooltip. `selected` draws it pressed in.
 pub fn button(ui: &mut egui::Ui, icon: Icon, tooltip: &str, enabled: bool, selected: bool) -> egui::Response {
     let size = egui::vec2(34.0, 34.0);
-    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    // (Drag too: toolbar groups let tools be dragged into another order.)
+    let sense = if enabled { egui::Sense::click_and_drag() } else { egui::Sense::hover() };
     let (rect, response) = ui.allocate_exact_size(size, sense);
     let bg = if selected {
         Some(Color32::from_rgb(40, 80, 130))
