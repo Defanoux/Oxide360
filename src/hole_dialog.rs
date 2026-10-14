@@ -88,38 +88,54 @@ impl HoleDialog {
     }
 
     pub fn panel(&mut self, ui: &mut egui::Ui, unit: crate::units::Unit, error: Option<&str>, plane_names: &[String], circles: usize) -> Action {
+        use crate::icons::{Icon, option};
         ui.heading(if self.editing.is_some() { "Edit Hole" } else { "Hole" });
-        let h = &mut self.hole;
-        egui::Grid::new("hole_grid").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        let mut new_tap = None;
+        egui::Grid::new("hole_grid").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+            let h = &mut self.hole;
             ui.label("Position");
-            let text = if self.picking {
-                "Click points, circles or faces…".to_string()
-            } else if h.places.is_empty() {
-                "Click to select".to_string()
-            } else {
-                format!("{} selected", h.places.len())
-            };
-            let rich = if self.picking { egui::RichText::new(text).strong() } else { egui::RichText::new(text) };
-            if ui
-                .add(egui::Button::selectable(self.picking, rich).min_size(egui::vec2(170.0, 0.0)))
-                .on_hover_text("Click sketch points or circles, or a flat face (its centre snaps). Click one again to drop it.")
-                .clicked()
-            {
-                self.picking = !self.picking;
-                self.picking_target = false;
-            }
+            ui.horizontal(|ui| {
+                let text = if self.picking {
+                    "Click points, circles or faces…".to_string()
+                } else if h.places.is_empty() {
+                    "Click to select".to_string()
+                } else {
+                    format!("{} selected", h.places.len())
+                };
+                let rich = if self.picking { egui::RichText::new(text).strong() } else { egui::RichText::new(text) };
+                if ui
+                    .add(egui::Button::selectable(self.picking, rich).min_size(egui::vec2(170.0, 0.0)))
+                    .on_hover_text("Click sketch points or circles, or a flat face (its centre snaps). Click one again to drop it.")
+                    .clicked()
+                {
+                    self.picking = !self.picking;
+                    self.picking_target = false;
+                }
+                if !h.places.is_empty() && ui.small_button("×").on_hover_text("Clear the places").clicked() {
+                    h.places.clear();
+                    self.picking = true;
+                }
+            });
             ui.end_row();
 
             ui.label("Extents");
             ui.horizontal(|ui| {
-                for (e, name) in [(HoleExtent::Distance, "Distance"), (HoleExtent::To, "To"), (HoleExtent::All, "All")] {
-                    if ui.selectable_label(h.extent == e, name).clicked() {
+                for (e, icon, name, tip) in [
+                    (HoleExtent::Distance, Icon::ExtentDistance, "Distance", "Distance: as deep as set"),
+                    (HoleExtent::To, Icon::ExtentTo, "To", "To: up to a plane or face"),
+                    (HoleExtent::All, Icon::ExtentAll, "All", "All: right through"),
+                ] {
+                    if option(ui, icon, name, tip, true, h.extent == e).clicked() {
                         h.extent = e;
                         self.picking_target = e == HoleExtent::To && h.target.is_none();
                         if self.picking_target {
                             self.picking = false;
                         }
                     }
+                }
+                ui.add_space(12.0);
+                if option(ui, Icon::Flip, "Flip Direction", "Flip Direction: drill the other way", true, h.flip).clicked() {
+                    h.flip = !h.flip;
                 }
             });
             ui.end_row();
@@ -143,99 +159,64 @@ impl HoleDialog {
 
             ui.label("Hole Type");
             ui.horizontal(|ui| {
-                for (k, name) in [(HoleKind::Simple, "Simple"), (HoleKind::Counterbore, "Counterbore"), (HoleKind::Countersink, "Countersink")] {
+                for (k, icon, name) in [(HoleKind::Simple, Icon::HoleSimple, "Simple"), (HoleKind::Counterbore, Icon::HoleCounterbore, "Counterbore"), (HoleKind::Countersink, Icon::HoleCountersink, "Countersink")] {
                     // Fusion: taper tapped holes are simple or countersunk only.
                     let allowed = !(k == HoleKind::Counterbore && h.tap == TapType::TaperTapped);
-                    if ui.add_enabled(allowed, egui::Button::selectable(h.kind == k, name)).clicked() {
+                    if option(ui, icon, name, name, allowed, h.kind == k).clicked() {
                         h.kind = k;
                     }
                 }
             });
             ui.end_row();
-        });
-        // The tap type changes the thread list, so it's chosen outside the borrow above.
-        let mut new_tap = None;
-        ui.horizontal(|ui| {
-            ui.label("Tap Type");
-            for (t, name) in [(TapType::Simple, "Simple"), (TapType::Clearance, "Clearance"), (TapType::Tapped, "Tapped"), (TapType::TaperTapped, "Taper Tapped")] {
-                if ui.selectable_label(self.hole.tap == t, name).clicked() && self.hole.tap != t {
-                    new_tap = Some(t);
-                }
-            }
-        });
-        if let Some(t) = new_tap {
-            self.set_tap(t);
-        }
-        if self.hole.tap != TapType::Simple {
-            self.thread_rows(ui);
-        }
 
-        let h = &mut self.hole;
-        egui::Grid::new("hole_sizes").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+            ui.label("Hole Tap Type");
+            ui.horizontal(|ui| {
+                for (t, icon, name, tip) in [
+                    (TapType::Simple, Icon::TapSimple, "Simple tap", "Simple: the diameter you set"),
+                    (TapType::Clearance, Icon::TapClearance, "Clearance", "Clearance: room for a screw of a size"),
+                    (TapType::Tapped, Icon::TapTapped, "Tapped", "Tapped: drilled and threaded for a screw"),
+                    (TapType::TaperTapped, Icon::TapTaper, "Taper Tapped", "Taper Tapped: a tapered pipe thread (NPT)"),
+                ] {
+                    if option(ui, icon, name, tip, true, h.tap == t).clicked() && h.tap != t {
+                        new_tap = Some(t);
+                    }
+                }
+            });
+            ui.end_row();
+
+            if matches!(h.tap, TapType::Tapped | TapType::TaperTapped) {
+                ui.label("Thread Offset");
+                ui.horizontal(|ui| {
+                    if option(ui, Icon::ThreadFull, "Full", "Threaded the whole depth", true, h.thread_full).clicked() {
+                        h.thread_full = true;
+                    }
+                    if option(ui, Icon::ThreadPartial, "Thread length", "Threaded only so far in", true, !h.thread_full).clicked() {
+                        h.thread_full = false;
+                    }
+                });
+                ui.end_row();
+            }
+
             ui.label("Drill Point");
             ui.horizontal(|ui| {
-                if ui.selectable_label(h.tip_angle.is_none(), "Flat").clicked() {
+                if option(ui, Icon::DrillFlat, "Flat", "Flat bottom", true, h.tip_angle.is_none()).clicked() {
                     h.tip_angle = None;
                 }
-                if ui.selectable_label(h.tip_angle.is_some(), "Angle").clicked() && h.tip_angle.is_none() {
+                if option(ui, Icon::DrillAngle, "Angle", "Drill point (angle)", true, h.tip_angle.is_some()).clicked() && h.tip_angle.is_none() {
                     h.tip_angle = Some(118.0);
                 }
             });
             ui.end_row();
-            if h.extent == HoleExtent::Distance {
-                ui.label("Depth");
-                ui.add(crate::units::length_drag(&mut h.depth, unit, 0.2).range(0.001..=f64::MAX));
-                ui.end_row();
-            }
-            match h.tap {
-                TapType::Simple => {
-                    ui.label("Diameter");
-                    ui.add(crate::units::length_drag(&mut h.diameter, unit, 0.05).range(0.001..=f64::MAX));
-                    ui.end_row();
-                    if circles > 0 {
-                        ui.label("");
-                        ui.weak("Holes on circles take the circle's size");
-                        ui.end_row();
-                    }
-                }
-                _ => {
-                    ui.label("Diameter");
-                    let d = h.bore(None).map_or("—".into(), |d| format!("{} {}", unit.plain(d), unit.name()));
-                    ui.label(d).on_hover_text(if h.tap == TapType::Clearance { "Clearance for the screw size" } else { "Tap drill (minor diameter); the thread is cut beyond it" });
-                    ui.end_row();
-                }
-            }
-            if let Some(a) = h.tip_angle.as_mut() {
-                ui.label("Tip Angle");
-                ui.add(egui::DragValue::new(a).speed(1.0).range(1.0..=179.0).suffix("°"));
-                ui.end_row();
-            }
-            match h.kind {
-                HoleKind::Simple => {}
-                HoleKind::Counterbore => {
-                    ui.label("Counterbore Diameter");
-                    ui.add(crate::units::length_drag(&mut h.cbore_diameter, unit, 0.05).range(0.001..=f64::MAX));
-                    ui.end_row();
-                    ui.label("Counterbore Depth");
-                    ui.add(crate::units::length_drag(&mut h.cbore_depth, unit, 0.05).range(0.001..=f64::MAX));
-                    ui.end_row();
-                }
-                HoleKind::Countersink => {
-                    ui.label("Countersink Diameter");
-                    ui.add(crate::units::length_drag(&mut h.csink_diameter, unit, 0.05).range(0.001..=f64::MAX));
-                    ui.end_row();
-                    ui.label("Countersink Angle");
-                    ui.add(egui::DragValue::new(&mut h.csink_angle).speed(1.0).range(1.0..=179.0).suffix("°"));
-                    ui.end_row();
-                }
-            }
         });
-        ui.horizontal(|ui| {
-            if ui.button("Flip Direction").clicked() {
-                self.hole.flip = !self.hole.flip;
-            }
-        });
-        ui.weak("Drag the blue arrow to set the depth.");
+        if let Some(t) = new_tap {
+            self.set_tap(t);
+        }
+        ui.add_space(4.0);
+        self.diagram(ui, unit, circles);
+        if self.hole.tap != TapType::Simple {
+            ui.add_space(4.0);
+            self.thread_rows(ui);
+        }
         if let Some(e) = error {
             ui.colored_label(egui::Color32::from_rgb(230, 120, 90), e);
         }
@@ -250,6 +231,130 @@ impl HoleDialog {
             }
         });
         action
+    }
+
+    /// Fusion's picture of the hole: its section drawn to suit the settings,
+    /// each size's box beside the part it sets (depth, diameter, tip,
+    /// counterbore, countersink, thread length).
+    fn diagram(&mut self, ui: &mut egui::Ui, unit: crate::units::Unit, circles: usize) {
+        use egui::{Color32, Pos2, Rect, Stroke, pos2, vec2};
+        let (rect, _) = ui.allocate_exact_size(vec2(300.0, 222.0), egui::Sense::hover());
+        let h = &mut self.hole;
+        let painter = ui.painter_at(rect);
+        let (l, t) = (rect.left(), rect.top());
+        let cx = l + 80.0;
+        let top = t + 16.0;
+        let bottom = t + 140.0;
+        let angled = h.tip_angle.is_some();
+        let tip = if angled { bottom + 22.0 } else { bottom };
+        let taper = if h.tap == TapType::TaperTapped { 5.0 } else { 0.0 };
+        let (rb, rc, rs) = (15.0, 32.0, 34.0); // bore, counterbore, countersink half widths
+        let step = top + 42.0; // where a counterbore or countersink meets the bore
+        let wall = |y: f32| rb + taper * (1.0 - (y - top) / (bottom - top)) * 2.0 - taper;
+        let part = Color32::from_gray(150);
+        let edge = Stroke::new(1.5, Color32::from_gray(210));
+        let dim = Stroke::new(1.0, Color32::from_rgb(225, 85, 85));
+        let leader = Stroke::new(1.0, Color32::from_gray(110));
+        // The part round the hole.
+        let (x0, x1) = (l + 14.0, l + 146.0);
+        painter.line_segment([pos2(x0, top), pos2(x0, tip + 18.0)], Stroke::new(1.0, part));
+        painter.line_segment([pos2(x1, top), pos2(x1, tip + 18.0)], Stroke::new(1.0, part));
+        // The hole's outline (left side, mirrored).
+        let mut side: Vec<Pos2> = vec![pos2(x0, top)];
+        match h.kind {
+            HoleKind::Simple => side.push(pos2(cx - wall(top), top)),
+            HoleKind::Counterbore => side.extend([pos2(cx - rc, top), pos2(cx - rc, step), pos2(cx - wall(step), step)]),
+            HoleKind::Countersink => side.extend([pos2(cx - rs, top), pos2(cx - wall(step - 18.0), step - 18.0)]),
+        }
+        side.push(pos2(cx - wall(bottom), bottom));
+        side.push(pos2(cx, tip));
+        for w in side.windows(2) {
+            painter.line_segment([w[0], w[1]], edge);
+            painter.line_segment([pos2(2.0 * cx - w[0].x, w[0].y), pos2(2.0 * cx - w[1].x, w[1].y)], edge);
+        }
+        if !angled {
+            painter.line_segment([pos2(cx - wall(bottom), bottom), pos2(cx + wall(bottom), bottom)], edge);
+        }
+        // Thread: ticks on the walls as far as it goes.
+        let threaded = matches!(h.tap, TapType::Tapped | TapType::TaperTapped);
+        let from = if h.kind == HoleKind::Simple { top + 4.0 } else { step + 4.0 };
+        let thread_end = if h.thread_full || h.depth <= 0.0 { bottom - 4.0 } else { (from + (bottom - from) * (h.thread_length / h.depth).clamp(0.05, 1.0) as f32).min(bottom - 4.0) };
+        if threaded {
+            let mut y = from;
+            while y <= thread_end {
+                let x = wall(y);
+                let tick = Stroke::new(1.0, Color32::from_rgb(220, 120, 60));
+                painter.line_segment([pos2(cx - x, y), pos2(cx - x + 6.0, y + 3.0)], tick);
+                painter.line_segment([pos2(cx + x, y), pos2(cx + x - 6.0, y + 3.0)], tick);
+                y += 7.0;
+            }
+        }
+        // Boxes in a column on the right, each with a leader from its part.
+        let bx = l + 182.0;
+        let place = |y: f32| Rect::from_min_size(pos2(bx, y - 10.0), vec2(112.0, 20.0));
+        let lead = |from: Pos2, y: f32| {
+            painter.line_segment([from, pos2(bx - 4.0, y)], leader);
+        };
+        let tip_text = |ui: &mut egui::Ui, r: Rect, text: &str| {
+            ui.put(r, egui::Label::new(egui::RichText::new(text).weak()));
+        };
+        match h.kind {
+            HoleKind::Counterbore => {
+                painter.line_segment([pos2(cx - rc, top - 6.0), pos2(cx + rc, top - 6.0)], dim);
+                lead(pos2(cx + rc, top - 6.0), top - 4.0);
+                ui.put(place(top - 4.0), crate::units::length_drag(&mut h.cbore_diameter, unit, 0.05).range(0.001..=f64::MAX)).on_hover_text("Counterbore diameter");
+                painter.line_segment([pos2(cx + rc + 6.0, top), pos2(cx + rc + 6.0, step)], dim);
+                lead(pos2(cx + rc + 6.0, step), step);
+                ui.put(place(step), crate::units::length_drag(&mut h.cbore_depth, unit, 0.05).range(0.001..=f64::MAX)).on_hover_text("Counterbore depth");
+            }
+            HoleKind::Countersink => {
+                painter.line_segment([pos2(cx - rs, top - 6.0), pos2(cx + rs, top - 6.0)], dim);
+                lead(pos2(cx + rs, top - 6.0), top - 4.0);
+                ui.put(place(top - 4.0), crate::units::length_drag(&mut h.csink_diameter, unit, 0.05).range(0.001..=f64::MAX)).on_hover_text("Countersink diameter");
+                lead(pos2(cx + (rs + rb) / 2.0, step - 26.0), step);
+                ui.put(place(step), egui::DragValue::new(&mut h.csink_angle).speed(1.0).range(1.0..=179.0).suffix("°")).on_hover_text("Countersink angle");
+            }
+            HoleKind::Simple => {}
+        }
+        // Depth: a dimension down the right of the hole, clear of the head's.
+        let mid = (top + bottom) / 2.0 + 6.0;
+        let dx = cx + rs + 14.0;
+        painter.line_segment([pos2(dx, top), pos2(dx, bottom)], dim);
+        for y in [top, bottom] {
+            painter.line_segment([pos2(dx - 4.0, y), pos2(dx + 4.0, y)], dim);
+        }
+        lead(pos2(dx, mid), mid);
+        match h.extent {
+            HoleExtent::Distance => {
+                ui.put(place(mid), crate::units::length_drag(&mut h.depth, unit, 0.2).range(0.001..=f64::MAX)).on_hover_text("Depth (to the end of the full diameter)");
+            }
+            HoleExtent::To => tip_text(ui, place(mid), "up to the object"),
+            HoleExtent::All => tip_text(ui, place(mid), "right through"),
+        }
+        if threaded && !h.thread_full {
+            lead(pos2(cx + wall(thread_end) - 4.0, thread_end), mid + 26.0);
+            ui.put(place(mid + 26.0), crate::units::length_drag(&mut h.thread_length, unit, 0.2).range(0.001..=f64::MAX)).on_hover_text("Thread length");
+        }
+        if let Some(a) = h.tip_angle.as_mut() {
+            lead(pos2(cx + 6.0, tip - 6.0), tip);
+            ui.put(place(tip), egui::DragValue::new(a).speed(1.0).range(1.0..=179.0).suffix("°")).on_hover_text("Tip angle");
+        }
+        // Diameter: across the bottom.
+        let dy = tip + 14.0;
+        painter.line_segment([pos2(cx - wall(bottom), dy), pos2(cx + wall(bottom), dy)], dim);
+        let dy = dy.max(if angled { tip + 26.0 } else { 0.0 }) - 6.0;
+        lead(pos2(cx + wall(bottom), tip + 14.0), dy + 6.0);
+        match h.tap {
+            TapType::Simple => {
+                ui.put(place(dy + 6.0), crate::units::length_drag(&mut h.diameter, unit, 0.05).range(0.001..=f64::MAX))
+                    .on_hover_text(if circles > 0 { "Diameter (holes on circles take the circle's)" } else { "Diameter" });
+            }
+            _ => {
+                let d = h.bore(None).map_or("—".into(), |d| format!("{} {}", unit.plain(d), unit.name()));
+                ui.put(place(dy + 6.0), egui::Label::new(egui::RichText::new(d).weak()))
+                    .on_hover_text(if h.tap == TapType::Clearance { "Clearance for the screw size" } else { "Tap drill (minor diameter)" });
+            }
+        }
     }
 
     /// Thread Type, Size, Designation, Class / Fit, Direction, Modeled.
@@ -333,6 +438,79 @@ fn same_place(a: &HolePlace, b: &HolePlace) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Run the panel for a frame (with `events`), returning where each labelled widget is.
+    fn frame(ctx: &egui::Context, d: &mut HoleDialog, events: Vec<egui::Event>) -> Vec<(String, egui::Rect)> {
+        let input = egui::RawInput { events, screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 900.0))), ..Default::default() };
+        let out = ctx.run_ui(input, |ui| {
+            d.panel(ui, crate::units::Unit::Mm, None, &[], 0);
+        });
+        let mut out = out;
+        out.textures_delta.clear();
+        let tree = out.platform_output.accesskit_update.take().expect("accesskit on");
+        tree.nodes
+            .iter()
+            .filter_map(|(_, n)| {
+                let b = n.bounds()?;
+                Some((n.label().or(n.value())?.to_string(), egui::Rect::from_min_max(egui::pos2(b.x0 as f32, b.y0 as f32), egui::pos2(b.x1 as f32, b.y1 as f32))))
+            })
+            .collect()
+    }
+
+    fn click(ctx: &egui::Context, d: &mut HoleDialog, label: &str) {
+        let widgets = frame(ctx, d, vec![]);
+        let r = widgets.iter().find(|(l, _)| l == label).unwrap_or_else(|| panic!("no {label} in {widgets:?}")).1;
+        let at = r.center();
+        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(ctx, d, vec![egui::Event::PointerMoved(at)]);
+        frame(ctx, d, vec![press(true)]);
+        frame(ctx, d, vec![press(false)]);
+    }
+
+    #[test]
+    fn clicking_the_tap_type_shows_the_thread_choices() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut d = HoleDialog::new("Hole1".into());
+        click(&ctx, &mut d, "Clearance");
+        assert_eq!(d.hole.tap, TapType::Clearance);
+        let shown: Vec<String> = frame(&ctx, &mut d, vec![]).into_iter().map(|(l, _)| l).collect();
+        assert!(shown.iter().any(|l| l == "Fit") && shown.iter().any(|l| l.contains("M6")), "{shown:?}");
+        click(&ctx, &mut d, "Counterbore");
+        assert_eq!((d.hole.kind, d.hole.cbore_diameter), (HoleKind::Counterbore, 11.0));
+    }
+
+    /// Pictures of the dialog in a few setups (look at them in the scratch dir).
+    #[test]
+    #[ignore]
+    fn shots() {
+        let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
+        let setups: [(&str, fn(&mut HoleDialog)); 4] = [
+            ("simple", |_| {}),
+            ("cbore_clearance", |d| {
+                d.hole.kind = HoleKind::Counterbore;
+                d.set_tap(TapType::Clearance);
+            }),
+            ("csink_tapped_partial", |d| {
+                d.hole.kind = HoleKind::Countersink;
+                d.set_tap(TapType::Tapped);
+                d.hole.thread_full = false;
+            }),
+            ("taper_flat", |d| {
+                d.set_tap(TapType::TaperTapped);
+                d.hole.tip_angle = None;
+            }),
+        ];
+        for (name, setup) in setups {
+            let mut d = HoleDialog::new("Hole1".into());
+            d.hole.places.push(HolePlace::SketchPoint { sketch: 0, point: 1 });
+            d.picking = false;
+            setup(&mut d);
+            crate::ui_shot::shot(&format!("{dir}/hole_{name}.png"), [380, 760], |ui| {
+                d.panel(ui, crate::units::Unit::Mm, None, &[], 0);
+            });
+        }
+    }
 
     #[test]
     fn places_toggle_and_the_tap_type_picks_its_threads() {

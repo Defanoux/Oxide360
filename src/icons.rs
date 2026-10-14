@@ -29,6 +29,21 @@ pub enum Icon {
     PlaneAngle,
     Hole,
     Thread,
+    HoleSimple,
+    HoleCounterbore,
+    HoleCountersink,
+    TapSimple,
+    TapClearance,
+    TapTapped,
+    TapTaper,
+    DrillFlat,
+    DrillAngle,
+    ThreadFull,
+    ThreadPartial,
+    ExtentDistance,
+    ExtentTo,
+    ExtentAll,
+    Flip,
     Project,
     Axis,
     RectPattern,
@@ -293,6 +308,81 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
                 line(p, q, Stroke::new(thin.width * 1.2, orange));
             }
             line((0.3, 0.6), (1.0, 0.6), Stroke::new(thin.width * 1.4, ink));
+        }
+        Icon::HoleSimple | Icon::HoleCounterbore | Icon::HoleCountersink | Icon::TapSimple | Icon::TapClearance | Icon::TapTapped | Icon::TapTaper | Icon::DrillFlat | Icon::DrillAngle | Icon::ThreadFull | Icon::ThreadPartial => {
+            // A hole seen cut in half: the part in grey, the hole's outline in orange.
+            let top = match icon {
+                Icon::HoleCounterbore => 1,
+                Icon::HoleCountersink => 2,
+                _ => 0,
+            };
+            let taper = if icon == Icon::TapTaper { 0.05 } else { 0.0 };
+            let angled = icon != Icon::DrillFlat;
+            let (r, y0, y1) = (0.13, 0.12, 0.72);
+            // Block sides.
+            line((0.08, y0), (0.08, 0.92), thin);
+            line((0.92, y0), (0.92, 0.92), thin);
+            line((0.08, 0.92), (0.92, 0.92), thin);
+            let s = Stroke::new(thin.width * 1.2, orange);
+            let mut left: Vec<(f32, f32)> = Vec::new();
+            match top {
+                1 => left.extend([(0.08, y0), (0.5 - 0.27, y0), (0.5 - 0.27, 0.32), (0.5 - r, 0.32)]),
+                2 => left.extend([(0.08, y0), (0.5 - 0.3, y0), (0.5 - r - taper, 0.3)]),
+                _ => left.extend([(0.08, y0), (0.5 - r - taper, y0)]),
+            }
+            left.push((0.5 - r + taper, y1));
+            left.push((0.5, if angled { 0.86 } else { y1 }));
+            for w in left.windows(2) {
+                line(w[0], w[1], s);
+                line((1.0 - w[0].0, w[0].1), (1.0 - w[1].0, w[1].1), s);
+            }
+            if !angled {
+                line((0.5 - r, y1), (0.5 + r, y1), s);
+            }
+            // Thread: ticks inside the walls (on the top half only for a partial thread).
+            let threaded = matches!(icon, Icon::TapTapped | Icon::TapTaper | Icon::ThreadFull | Icon::ThreadPartial);
+            if threaded {
+                let from = if top == 0 { y0 + 0.05 } else { 0.36 };
+                let to = if icon == Icon::ThreadPartial { 0.45 } else { y1 - 0.03 };
+                let mut y = from;
+                while y <= to {
+                    let k = (y - y0) / (y1 - y0) * 2.0 * taper;
+                    line((0.5 - r - taper + k, y), (0.5 - r + 0.07 - taper + k, y + 0.03), Stroke::new(thin.width * 0.8, ink));
+                    line((0.5 + r + taper - k, y), (0.5 + r - 0.07 + taper - k, y + 0.03), Stroke::new(thin.width * 0.8, ink));
+                    y += 0.07;
+                }
+            }
+            if icon == Icon::TapClearance {
+                // The screw, with room round it.
+                let screw = Stroke::new(thin.width * 0.8, ink);
+                line((0.42, 0.04), (0.42, 0.66), screw);
+                line((0.58, 0.04), (0.58, 0.66), screw);
+            }
+        }
+        Icon::ExtentDistance => {
+            line((0.2, 0.15), (0.8, 0.15), thin);
+            line((0.2, 0.85), (0.8, 0.85), thin);
+            let s = Stroke::new(thin.width * 1.2, orange);
+            line((0.5, 0.22), (0.5, 0.78), s);
+            arrow_head((0.5, 0.2), (0.5, 0.5), orange);
+            arrow_head((0.5, 0.8), (0.5, 0.5), orange);
+        }
+        Icon::ExtentTo => {
+            line((0.15, 0.8), (0.85, 0.8), Stroke::new(thin.width * 1.4, orange));
+            line((0.5, 0.12), (0.5, 0.68), thin);
+            arrow_head((0.5, 0.76), (0.5, 0.5), ink);
+        }
+        Icon::ExtentAll => {
+            outline(&[(0.2, 0.35), (0.8, 0.35), (0.8, 0.65), (0.2, 0.65)], thin);
+            line((0.5, 0.05), (0.5, 0.82), Stroke::new(thin.width * 1.2, orange));
+            arrow_head((0.5, 0.95), (0.5, 0.6), orange);
+        }
+        Icon::Flip => {
+            let s = Stroke::new(thin.width * 1.2, ink);
+            line((0.35, 0.2), (0.35, 0.8), s);
+            arrow_head((0.35, 0.12), (0.35, 0.5), ink);
+            line((0.65, 0.2), (0.65, 0.8), s);
+            arrow_head((0.65, 0.88), (0.65, 0.5), ink);
         }
         Icon::Thread => {
             // A bolt shank with slanted thread lines.
@@ -600,6 +690,26 @@ pub fn eye(ui: &mut egui::Ui, shown: bool, tooltip: &str) -> egui::Response {
 }
 
 /// A square icon button with a tooltip. `selected` draws it pressed in.
+/// A small icon choice in a dialog row (like Fusion's), named `label` for
+/// screen readers and tests; `tooltip` says what it does.
+pub fn option(ui: &mut egui::Ui, icon: Icon, label: &str, tooltip: &str, enabled: bool, selected: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
+    let label = label.to_string();
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, label.clone()));
+    let bg = if selected {
+        Some(Color32::from_rgb(40, 80, 130))
+    } else if enabled && response.hovered() {
+        Some(Color32::from_gray(60))
+    } else {
+        None
+    };
+    if let Some(c) = bg {
+        ui.painter().rect_filled(rect, 4.0, c);
+    }
+    paint(ui.painter(), rect.shrink(3.0), icon, enabled);
+    response.on_hover_text(tooltip)
+}
+
 pub fn button(ui: &mut egui::Ui, icon: Icon, tooltip: &str, enabled: bool, selected: bool) -> egui::Response {
     let size = egui::vec2(34.0, 34.0);
     // (Drag too: toolbar groups let tools be dragged into another order.)

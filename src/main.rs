@@ -47,6 +47,8 @@ mod sketch;
 mod sketch_pattern;
 mod solver;
 mod threads;
+#[cfg(test)]
+mod ui_shot;
 mod view;
 
 use camera::{

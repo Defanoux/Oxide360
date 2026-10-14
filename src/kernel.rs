@@ -60,6 +60,23 @@ impl Body {
             .map(|(_, t)| t.map(|i| self.mesh.positions[i as usize].as_dvec3()))
     }
 
+    /// The flat face lying in `plane` that has `point` on it (its index).
+    pub fn face_at(&self, plane: &FacePlane, point: DVec3) -> Option<usize> {
+        let n = plane.normal();
+        let tol = 1e-6 * (1.0 + point.length());
+        (0..self.faces.len()).find(|&f| {
+            let mut tris = self.face_tris(f).peekable();
+            tris.peek().is_some()
+                && self.face_tris(f).all(|[a, b, c]| (b - a).cross(c - a).normalize_or_zero().dot(n) > 0.9999 && n.dot(a - plane.origin).abs() < tol.max(1e-6) * 100.0)
+                && tris.any(|[a, b, c]| {
+                    // Inside the triangle (same side of all three edges).
+                    let s = |p: DVec3, q: DVec3| (q - p).cross(point - p).dot(n);
+                    let (x, y, z) = (s(a, b), s(b, c), s(c, a));
+                    (x >= -1e-9 && y >= -1e-9 && z >= -1e-9) || (x <= 1e-9 && y <= 1e-9 && z <= 1e-9)
+                })
+        })
+    }
+
     /// The middle of one of its faces (area-weighted over its triangles).
     pub fn face_centroid(&self, face: usize) -> Option<DVec3> {
         let (mut sum, mut area) = (DVec3::ZERO, 0.0);
@@ -1394,13 +1411,17 @@ fn hole_tools(
                 let start = if in_air { -1.5 * t.pitch } else { 0.0 };
                 // A blind thread stops half a pitch short of the bottom (clear of
                 // where the bore meets its tip); "All" runs on out of the part.
-                let end = if h.extent == HoleExtent::All { depth } else { depth - 0.5 * t.pitch };
+                let end = match (h.thread_full, h.extent) {
+                    (true, HoleExtent::All) => depth,
+                    (true, _) => depth - 0.5 * t.pitch,
+                    (false, _) => h.thread_depth(depth).min(depth - 0.5 * t.pitch),
+                };
                 if end - start < t.pitch {
                     return Err("the hole is too shallow for a modeled thread".into());
                 }
                 groove = Some(thread_groove(&t, p, dir, start, end, h.thread.right_hand)?);
             } else {
-                threads.push(CosmeticThread { origin: p, axis: dir.normalize(), radius: t.major / 2.0, pitch: t.pitch, length: depth });
+                threads.push(CosmeticThread { origin: p, axis: dir.normalize(), radius: t.major / 2.0, pitch: t.pitch, length: h.thread_depth(depth) });
             }
         }
         tools.push((tool, groove));
@@ -2946,6 +2967,9 @@ mod tests {
         let b = &m.bodies[0];
         let top = (0..b.faces.len()).find(|&f| b.face_tris(f).all(|t| t.iter().all(|p| (p.z - 10.0).abs() < 1e-9))).unwrap();
         assert!(b.face_centroid(top).unwrap().distance(DVec3::new(25.0, 15.0, 10.0)) < 1e-9);
+        let plane = FacePlane::from_face(DVec3::Z, DVec3::new(0.0, 0.0, 10.0));
+        assert_eq!(b.face_at(&plane, DVec3::new(10.0, 3.0, 10.0)), Some(top), "found again from a point on it");
+        assert_eq!(b.face_at(&plane, DVec3::new(60.0, 3.0, 10.0)), None, "off the face");
     }
 
     #[test]

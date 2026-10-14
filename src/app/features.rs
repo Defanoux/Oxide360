@@ -667,7 +667,15 @@ impl OpenCad {
                 let plane = self.plane_of(sketch);
                 Some((plane.to_world(sk.points[c]).as_dvec3(), -plane.normal().as_dvec3()))
             }
-            model::HolePlace::Face { face, anchor, .. } => Some((face.origin + face.u * anchor[0] + face.v * anchor[1], -face.normal())),
+            model::HolePlace::Face { face, anchor, centre } => {
+                let q = face.origin + face.u * anchor[0] + face.v * anchor[1];
+                // At the face's middle: where the kernel puts it (the face as it is now).
+                let middle = centre
+                    .then(|| self.caches[Slot::Committed as usize].as_ref())
+                    .flatten()
+                    .and_then(|c| c.model.bodies.iter().find_map(|b| b.face_at(&face, q).and_then(|f| b.face_centroid(f))));
+                Some((middle.unwrap_or(q), -face.normal()))
+            }
         }
     }
 

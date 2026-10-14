@@ -596,6 +596,16 @@ pub struct HoleFeature {
     pub flip: bool,
     #[serde(default)]
     pub thread: ThreadSpec,
+    /// Tapped: threaded the whole depth (Fusion's Thread Offset: full), else
+    /// `thread_length` in from the face.
+    #[serde(default = "full_thread")]
+    pub thread_full: bool,
+    #[serde(default)]
+    pub thread_length: f64,
+}
+
+fn full_thread() -> bool {
+    true
 }
 
 impl Default for HoleFeature {
@@ -616,11 +626,18 @@ impl Default for HoleFeature {
             csink_angle: 90.0,
             flip: false,
             thread: ThreadSpec::default(),
+            thread_full: true,
+            thread_length: 8.0,
         }
     }
 }
 
 impl HoleFeature {
+    /// How far in the thread runs for a hole `depth` deep.
+    pub fn thread_depth(&self, depth: f64) -> f64 {
+        if self.thread_full { depth } else { self.thread_length.clamp(0.0, depth) }
+    }
+
     /// The drilled diameter at a place (None: the circle it was put on, which
     /// only the sketch knows). Tapped holes are drilled at the thread's minor
     /// (tap-drill) diameter, the thread cut beyond it.
