@@ -7,6 +7,7 @@ impl OpenCad {
         self.axis_pick = false;
         self.angle_pick = false;
         self.hole_dialog = None;
+        self.shell_dialog = None;
         self.thread_dialog = None;
         self.finish_sketch();
         self.cancel_edge_dialog();
@@ -125,6 +126,17 @@ impl OpenCad {
                     v
                 }
             };
+        }
+        if let Some(d) = &self.shell_dialog {
+            // The wall arrow, from the first face opened: into the part for an
+            // inside wall, out of it for an outside one.
+            let Some(p) = d.shell.faces.first() else { return Vec::new() };
+            let at = p.face.origin + p.face.u * p.anchor[0] + p.face.v * p.anchor[1];
+            let (dir, value) = match d.shell.direction {
+                model::ShellDirection::Outside => (p.face.normal(), d.shell.outside),
+                _ => (-p.face.normal(), d.shell.inside),
+            };
+            return vec![Handle::Line { line: LineHandle { origin: at, dir }, value, target: HandleTarget::ShellThickness }];
         }
         if let Some(d) = self.hole_dialog.as_ref().filter(|d| d.hole.extent == model::HoleExtent::Distance) {
             // The depth arrow, from the first place into the material.
@@ -300,6 +312,15 @@ impl OpenCad {
                     d.distance = v;
                 }
             }
+            HandleTarget::ShellThickness => {
+                if let Some(d) = self.shell_dialog.as_mut() {
+                    let v = v.max(0.01);
+                    match d.shell.direction {
+                        model::ShellDirection::Outside => d.shell.outside = v,
+                        _ => d.shell.inside = v,
+                    }
+                }
+            }
             HandleTarget::HoleDepth => {
                 if let Some(d) = self.hole_dialog.as_mut() {
                     d.hole.depth = v.max(0.01);
@@ -396,6 +417,7 @@ impl OpenCad {
         self.axis_pick = false;
         self.angle_pick = false;
         self.hole_dialog = None;
+        self.shell_dialog = None;
         self.thread_dialog = None;
         self.finish_sketch();
         self.cancel_extrude();
@@ -480,6 +502,7 @@ impl OpenCad {
         self.axis_pick = false;
         self.angle_pick = false;
         self.hole_dialog = None;
+        self.shell_dialog = None;
         self.thread_dialog = None;
         self.cancel_extrude();
         self.cancel_revolve();
@@ -591,6 +614,7 @@ impl OpenCad {
 
     pub(crate) fn cancel_hole(&mut self) {
         self.hole_dialog = None;
+        self.shell_dialog = None;
         self.thread_dialog = None;
         self.hole_hover = None;
         self.arrows.clear();
@@ -719,6 +743,60 @@ impl OpenCad {
         }
     }
 
+    /// Open the Shell dialog (a new shell, or shell `editing`).
+    pub(crate) fn open_shell(&mut self, editing: Option<usize>) {
+        self.finish_sketch();
+        self.cancel_all_dialogs();
+        self.message = None;
+        self.shell_dialog = Some(match editing.and_then(|k| self.shells.get(k).map(|s| (k, s))) {
+            Some((k, s)) => ShellDialog::from_feature(k, s),
+            None => ShellDialog::new(format!("Shell{}", self.shells.len() + 1)),
+        });
+    }
+
+    pub(crate) fn commit_shell(&mut self) {
+        let Some(d) = self.shell_dialog.as_ref() else { return };
+        if d.shell.faces.is_empty() && d.shell.bodies.is_empty() {
+            self.message = Some("Pick faces to open, or a body to hollow".into());
+            return;
+        }
+        if let Some(e) = self.dialog_error.clone() {
+            self.message = Some(format!("Can't shell: {e}"));
+            return;
+        }
+        let s = d.shell.clone();
+        match d.editing {
+            Some(k) => self.shells[k] = s,
+            None => {
+                self.shells.push(s);
+                self.timeline_insert(Feature::Shell(self.shells.len() - 1));
+            }
+        }
+        self.cancel_shell();
+    }
+
+    pub(crate) fn cancel_shell(&mut self) {
+        self.shell_dialog = None;
+        self.shell_hover = None;
+        self.arrows.clear();
+    }
+
+    pub(crate) fn delete_shell(&mut self, k: usize) {
+        if k >= self.shells.len() {
+            return;
+        }
+        self.shells.remove(k);
+        self.timeline_remove(Feature::Shell(k));
+        for f in &mut self.timeline {
+            if let Feature::Shell(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+        self.cancel_shell();
+    }
+
     /// Open the Thread dialog (a new Thread, or Thread `editing`).
     pub(crate) fn open_thread(&mut self, editing: Option<usize>) {
         self.finish_sketch();
@@ -828,6 +906,7 @@ impl OpenCad {
 
     /// Close whichever tool dialog or pick mode is open.
     pub(crate) fn cancel_all_dialogs(&mut self) {
+        self.cancel_shell();
         self.cancel_hole();
         self.cancel_thread();
         self.cancel_extrude();
@@ -839,6 +918,7 @@ impl OpenCad {
         self.axis_pick = false;
         self.angle_pick = false;
         self.hole_dialog = None;
+        self.shell_dialog = None;
         self.thread_dialog = None;
         self.face_pick = false;
     }
@@ -1072,6 +1152,7 @@ impl OpenCad {
         self.axis_pick = false;
         self.angle_pick = false;
         self.hole_dialog = None;
+        self.shell_dialog = None;
         self.thread_dialog = None;
     }
 
@@ -1249,6 +1330,7 @@ impl OpenCad {
         self.axis_pick = false;
         self.angle_pick = false;
         self.hole_dialog = None;
+        self.shell_dialog = None;
         self.thread_dialog = None;
         self.finish_sketch();
         self.cancel_extrude();

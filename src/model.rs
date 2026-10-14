@@ -324,6 +324,59 @@ pub struct RemoveFeature {
     pub bodies: Vec<BodyId>,
 }
 
+/// A flat face as picked: its plane and where on it (found again every build).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PickedFace {
+    pub face: FacePlane,
+    pub anchor: [f64; 2],
+}
+
+/// Which way a shell's wall goes from the part's surface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShellDirection {
+    #[default]
+    Inside,
+    Outside,
+    Both,
+}
+
+/// Fusion's Shell: hollow a body, opened at the faces picked (or, for the
+/// bodies listed, closed all round).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ShellFeature {
+    pub name: String,
+    /// Faces taken away to make the opening.
+    pub faces: Vec<PickedFace>,
+    /// Bodies hollowed with no opening.
+    pub bodies: Vec<BodyId>,
+    pub direction: ShellDirection,
+    pub inside: f64,
+    pub outside: f64,
+    /// Rounded offset corners (else sharp).
+    pub rounded: bool,
+}
+
+impl Default for ShellFeature {
+    fn default() -> Self {
+        ShellFeature { name: "Shell1".into(), faces: Vec::new(), bodies: Vec::new(), direction: ShellDirection::Inside, inside: 2.0, outside: 2.0, rounded: false }
+    }
+}
+
+impl ShellFeature {
+    /// The wall thicknesses that apply: (inside, outside).
+    pub fn walls(&self) -> Result<(f64, f64), String> {
+        let (i, o) = match self.direction {
+            ShellDirection::Inside => (self.inside, 0.0),
+            ShellDirection::Outside => (0.0, self.outside),
+            ShellDirection::Both => (self.inside, self.outside),
+        };
+        if !(i.is_finite() && o.is_finite() && i >= 0.0 && o >= 0.0 && i + o > 0.0) {
+            return Err("the wall must be thicker than zero".into());
+        }
+        Ok((i, o))
+    }
+}
+
 /// A construction axis: along a straight edge of a body.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AxisFeature {

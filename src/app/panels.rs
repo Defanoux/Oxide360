@@ -726,6 +726,13 @@ impl OpenCad {
                     {
                         self.open_edge_dialog(None, EdgeKind::Chamfer);
                     }
+                    if icons::button(ui, Icon::Shell, "Shell: hollow a body — click the faces to open, or a body to hollow closed", has_bodies, self.shell_dialog.is_some()).clicked() {
+                        if self.shell_dialog.is_some() {
+                            self.cancel_shell();
+                        } else {
+                            self.open_shell(None);
+                        }
+                    }
                 });
                 group(ui, "INSPECT", |ui| {
                     if icons::button(ui, Icon::Measure, "Measure: click a corner, edge, face, body or sketch geometry — one for its size, two for distance and angle", has_bodies || !self.sketches.is_empty(), self.measure.is_some()).clicked() {

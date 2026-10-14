@@ -15,6 +15,7 @@ impl OpenCad {
             removes: self.removes.clone(),
             holes: self.holes.clone(),
             thread_features: self.thread_features.clone(),
+            shells: self.shells.clone(),
             units: self.units,
             version: doc::Version(self.version),
             timeline: self.timeline.clone(),
@@ -104,6 +105,9 @@ impl OpenCad {
         for r in &mut self.removes {
             r.bodies = r.bodies.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
         }
+        for sh in &mut self.shells {
+            sh.bodies = sh.bodies.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
+        }
         self.selected_bodies.clear();
         self.renaming = None;
         self.prune_removes();
@@ -119,6 +123,9 @@ impl OpenCad {
         }
         for r in &mut self.removes {
             r.bodies = r.bodies.iter().filter_map(|id| id.after_copy_delete(k)).collect();
+        }
+        for sh in &mut self.shells {
+            sh.bodies = sh.bodies.iter().filter_map(|id| id.after_copy_delete(k)).collect();
         }
         self.selected_bodies.clear();
         self.renaming = None;
@@ -225,6 +232,7 @@ impl OpenCad {
             || self.removes != self.saved.removes
             || self.holes != self.saved.holes
             || self.thread_features != self.saved.thread_features
+            || self.shells != self.saved.shells
             || self.units != self.saved.units
             || self.axes != self.saved.axes
             || self.planes != self.saved.planes
@@ -288,6 +296,8 @@ impl OpenCad {
         self.removes = doc.removes.clone();
         self.holes = doc.holes.clone();
         self.thread_features = doc.thread_features.clone();
+        self.shells = doc.shells.clone();
+        self.shell_dialog = None;
         self.thread_dialog = None;
         self.hole_dialog = None;
         self.units = doc.units;
@@ -363,6 +373,8 @@ impl OpenCad {
         self.removes = doc.removes;
         self.holes = doc.holes;
         self.thread_features = doc.thread_features;
+        self.shells = doc.shells;
+        self.shell_dialog = None;
         self.thread_dialog = None;
         self.hole_dialog = None;
         self.units = doc.units;
@@ -473,13 +485,14 @@ impl OpenCad {
     }
 
     /// The feature lists a slot is built from.
-    pub(crate) fn inputs(&self, slot: Slot) -> (Vec<Extrude>, Vec<Revolve>, Vec<EdgeFeature>, Vec<CopyFeature>, Vec<AxisFeature>, Vec<PlaneFeature>, Vec<model::HoleFeature>, Vec<model::ThreadFeature>, Vec<Feature>) {
+    pub(crate) fn inputs(&self, slot: Slot) -> (Vec<Extrude>, Vec<Revolve>, Vec<EdgeFeature>, Vec<CopyFeature>, Vec<AxisFeature>, Vec<PlaneFeature>, Vec<model::HoleFeature>, Vec<model::ThreadFeature>, Vec<model::ShellFeature>, Vec<Feature>) {
         let (mut extrudes, mut revolves, mut edge_features, mut copies, mut timeline) =
             (self.extrudes.clone(), self.revolves.clone(), self.edge_features.clone(), self.copies.clone(), self.timeline.clone());
         let axes = self.axes.clone();
         let mut planes = self.planes.clone();
         let mut holes = self.holes.clone();
         let mut thread_features = self.thread_features.clone();
+        let mut shells = self.shells.clone();
         timeline.truncate(self.applied()); // features after the marker aren't built
         timeline.retain(|f| !self.suppressed.contains(f));
         match slot {
@@ -525,6 +538,15 @@ impl OpenCad {
                         }
                     }
                 }
+                if let Some(d) = self.shell_dialog.as_ref().filter(|d| !d.shell.faces.is_empty() || !d.shell.bodies.is_empty()) {
+                    match d.editing {
+                        Some(k) => shells[k] = d.shell.clone(),
+                        None => {
+                            shells.push(d.shell.clone());
+                            timeline.push(Feature::Shell(shells.len() - 1));
+                        }
+                    }
+                }
                 if let Some(d) = self.thread_dialog.as_ref().filter(|d| !d.shown.faces.is_empty()) {
                     match d.editing {
                         Some(k) => thread_features[k] = d.shown.clone(),
@@ -562,13 +584,13 @@ impl OpenCad {
                 }
             }
         }
-        (extrudes, revolves, edge_features, copies, axes, planes, holes, thread_features, timeline)
+        (extrudes, revolves, edge_features, copies, axes, planes, holes, thread_features, shells, timeline)
     }
 
     /// Make sure the kernel model for `slot` matches the current design.
     /// Rebuilds only when its inputs changed.
     pub(crate) fn ensure_model(&mut self, slot: Slot) {
-        let (extrudes, revolves, edge_features, copies, axes, planes, holes, thread_features, timeline) = self.inputs(slot);
+        let (extrudes, revolves, edge_features, copies, axes, planes, holes, thread_features, shells, timeline) = self.inputs(slot);
         let fresh = self.caches[slot as usize].as_ref().is_some_and(|c| {
             c.sketches.len() == self.sketches.len()
                 && c.sketches.iter().zip(&self.sketches).all(|(a, b)| a.same_shape(b))
@@ -581,6 +603,7 @@ impl OpenCad {
                 && c.removes == self.removes
                 && c.holes == holes
                 && c.thread_features == thread_features
+                && c.shells == shells
                 && c.timeline == timeline
         });
         let i = slot as usize;
@@ -602,6 +625,7 @@ impl OpenCad {
             removes: self.removes.clone(),
             holes,
             thread_features,
+            shells,
             timeline,
         };
         let same = |b: &kernel::Build| {
@@ -638,6 +662,7 @@ impl OpenCad {
             removes: inp.removes,
             holes: inp.holes,
             thread_features: inp.thread_features,
+            shells: inp.shells,
             timeline: inp.timeline,
             model,
             stand_in: false,
@@ -689,6 +714,7 @@ impl OpenCad {
             Feature::Remove(k) => self.removes.get(k).map(|r| r.name.clone()),
             Feature::Hole(k) => self.holes.get(k).map(|h| h.name.clone()),
             Feature::Thread(k) => self.thread_features.get(k).map(|t| t.name.clone()),
+            Feature::Shell(k) => self.shells.get(k).map(|s| s.name.clone()),
         }
         .unwrap_or_else(|| format!("{f:?}"))
     }

@@ -282,6 +282,19 @@ impl Clone for Shape {
 }
 
 impl Shape {
+    /// opencad patch: Shell — hollowed `offset` thick (negative: inward),
+    /// opened at the faces numbered `faces` (in `faces()` order).
+    pub fn try_thick_solid(&self, faces: &[i32], offset: f64, rounded: bool) -> Option<Self> {
+        let made = ffi::b_rep_offset_api::opencad_try_thick_solid(&self.inner, faces, offset, rounded);
+        (!made.is_null()).then(|| Self::from_shape(&made))
+    }
+
+    /// opencad patch: grown (or, negative, shrunk) by `offset` all round.
+    pub fn try_offset(&self, offset: f64, rounded: bool) -> Option<Self> {
+        let made = ffi::b_rep_offset_api::opencad_try_offset_shape(&self.inner, offset, rounded);
+        (!made.is_null()).then(|| Self::from_shape(&made))
+    }
+
     /// opencad patch: the very same shape (not just an equal-looking one).
     pub fn is_same(&self, other: &Shape) -> bool {
         self.inner.IsEqual(&other.inner)

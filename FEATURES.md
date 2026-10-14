@@ -81,7 +81,7 @@ Suggested crates: `wgpu`, `winit`, `egui`/`eframe` (UI), `glam` or `nalgebra` (m
 - [x] **Hole** — simple, counterbore, countersink; tapped (cosmetic thread); depth, tip angle; place by sketch points or face — plus clearance, taper tapped, modeled threads, To/All; no edge References / Objects to Cut
 - [ ] **Fillet** — constant radius, variable radius, chain/tangent edges, rolling-ball setback — constant radius done
 - [ ] **Chamfer** — equal distance, two distances, distance + angle — equal and two distances done; distance+angle not yet
-- [ ] **Shell** — inside/outside, remove faces, uniform thickness
+- [x] **Shell** — inside/outside, remove faces, uniform thickness — plus Both, closed hollow, sharp/rounded; flat faces only for the opening
 - [ ] **Draft** — pull direction, angle, by plane/parting line
 - [ ] **Combine** — join, cut, intersect, keep tools
 - [ ] **Mirror**, **Rectangular pattern**, **Circular pattern**, **Pattern along path** (features, bodies, or faces) — mirror + rectangular + circular done for bodies; path pattern, features/faces not yet

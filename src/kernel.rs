@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::measure::{self, Geom};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
@@ -122,6 +122,7 @@ impl Model {
             + n(&self.remove_errors)
             + n(&self.hole_errors)
             + n(&self.thread_errors)
+            + n(&self.shell_errors)
     }
 }
 
@@ -156,6 +157,8 @@ pub struct Model {
     pub hole_errors: Vec<Option<String>>,
     /// One entry per Thread feature.
     pub thread_errors: Vec<Option<String>>,
+    /// One entry per Shell.
+    pub shell_errors: Vec<Option<String>>,
     /// Threads shown on holes (not cut): drawn as a helix.
     pub threads: Vec<CosmeticThread>,
     /// Far-end faces of the extrudes/revolves, to tag what's picked there.
@@ -1446,6 +1449,84 @@ pub fn thread_removal_per_length(r: f64, internal: bool, pitch: f64) -> f64 {
     area * std::f64::consts::TAU * r_c / pitch
 }
 
+/// The face of `shape` (its number in `faces()` order) that a picked face
+/// means now: flat, in the same plane, with the anchor on it.
+fn face_index(shape: &Shape, face: &FacePlane, anchor: DVec2) -> Option<usize> {
+    let now = resolve_face(&[shape], face, anchor)?;
+    let n = now.normal();
+    let tol = shape_tol(shape);
+    shape.faces().enumerate().find_map(|(i, f)| {
+        let (fnormal, q, outline) = face_info(&f, tol).0?;
+        if fnormal.dot(n) <= 0.9999 || (q - now.origin).dot(n).abs() > tol.max(1e-6) * 100.0 {
+            return None;
+        }
+        let (mut a, mut b) = (DVec2::splat(f64::MAX), DVec2::splat(f64::MIN));
+        for p in &outline {
+            let w = DVec2::new(p.dot(now.u), p.dot(now.v));
+            (a, b) = (a.min(w), b.max(w));
+        }
+        let slack = 1e-6 * (b - a).length().max(1.0);
+        (anchor.cmpge(a - slack).all() && anchor.cmple(b + slack).all()).then_some(i)
+    })
+}
+
+/// Shell: each body with faces picked on it is hollowed through them; the
+/// bodies listed are hollowed closed all round.
+fn apply_shell(current: Tagged, sf: &ShellFeature) -> Result<(Tagged, Option<BodyId>), String> {
+    let (inside, outside) = sf.walls()?;
+    if sf.faces.is_empty() && sf.bodies.is_empty() {
+        return Err("pick faces to open, or a body to hollow".into());
+    }
+    let mut found = vec![false; sf.faces.len()];
+    let mut out = Vec::new();
+    let mut touched = None;
+    let failed = || "the kernel couldn't shell this — try a thinner wall".to_string();
+    for (shape, id) in current {
+        let open: Vec<i32> = sf
+            .faces
+            .iter()
+            .enumerate()
+            .filter_map(|(k, p)| {
+                let i = face_index(&shape, &p.face, DVec2::from(p.anchor))?;
+                found[k] = true;
+                Some(i as i32)
+            })
+            .collect();
+        let whole = sf.bodies.contains(&id);
+        if open.is_empty() && !whole {
+            out.push((shape, id));
+            continue;
+        }
+        let r = sf.rounded;
+        let made = if open.is_empty() {
+            // Closed all round: the space between the part shrunk and grown.
+            let outer = if outside > 0.0 { shape.try_offset(outside, r).ok_or_else(failed)? } else { shape.clone() };
+            let inner = if inside > 0.0 { shape.try_offset(-inside, r).ok_or_else(failed)? } else { shape.clone() };
+            outer.try_subtract(&inner).ok_or_else(failed)?
+        } else {
+            let thick = |t: f64| shape.try_thick_solid(&open, t, r).ok_or_else(failed);
+            match sf.direction {
+                ShellDirection::Inside => thick(-inside)?,
+                ShellDirection::Outside => thick(outside)?,
+                ShellDirection::Both => thick(-inside)?.try_union(&thick(outside)?).ok_or_else(failed)?,
+            }
+        };
+        // OCCT hands back the part unchanged when the wall is too thick for it.
+        if (made.volume() - shape.volume()).abs() <= 1e-9 * shape.volume().abs().max(1.0) || made.volume() <= MIN_VOLUME {
+            return Err("the wall is thicker than the part allows".into());
+        }
+        touched = touched.or(Some(id));
+        out.extend(made.solids().into_iter().map(|s| (s, id)));
+    }
+    if found.contains(&false) {
+        return Err("a face it opens is gone — edit it and pick again".into());
+    }
+    if sf.bodies.iter().any(|b| !out.iter().any(|(_, id)| id == b)) {
+        return Err("a body it hollows is gone".into());
+    }
+    Ok((out, touched))
+}
+
 /// Cut or draw a Thread feature's threads.
 fn apply_threads(current: Tagged, tf: &ThreadFeature, made_by: Feature, shown: &mut Vec<CosmeticThread>) -> Result<(Tagged, Option<BodyId>), String> {
     let t = tf.spec.thread().ok_or_else(|| format!("unknown thread {}", tf.spec.designation))?;
@@ -1776,7 +1857,7 @@ pub fn build_with(
     plane_features: &[PlaneFeature],
     timeline: &[Feature],
 ) -> Model {
-    build_all(sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, &[], &[], &[], timeline)
+    build_all(sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, &[], &[], &[], &[], timeline)
 }
 
 /// `build_with`, plus Remove features.
@@ -1793,6 +1874,7 @@ pub struct BuildInputs {
     pub removes: Vec<RemoveFeature>,
     pub holes: Vec<HoleFeature>,
     pub thread_features: Vec<ThreadFeature>,
+    pub shells: Vec<ShellFeature>,
     pub timeline: Vec<Feature>,
 }
 
@@ -1804,6 +1886,7 @@ pub struct Build {
     next: usize,
     hole_errors: Vec<Option<String>>,
     thread_errors: Vec<Option<String>>,
+    shell_errors: Vec<Option<String>>,
     threads: Vec<CosmeticThread>,
     remove_errors: Vec<Option<String>>,
     planes: Vec<Option<FacePlane>>,
@@ -1827,10 +1910,11 @@ pub struct Build {
 
 impl Build {
     pub fn start(inp: BuildInputs) -> Build {
-        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, timeline: _ } = &inp;
-        let _ = (extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, sketches);
+        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, timeline: _ } = &inp;
+        let _ = (extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, sketches, shells);
         let hole_errors: Vec<Option<String>> = vec![None; holes.len()];
         let thread_errors: Vec<Option<String>> = vec![None; thread_features.len()];
+        let shell_errors: Vec<Option<String>> = vec![None; shells.len()];
         let threads: Vec<CosmeticThread> = Vec::new();
         let remove_errors: Vec<Option<String>> = vec![None; removes.len()];
         let planes: Vec<Option<FacePlane>> = vec![None; plane_features.len()];
@@ -1851,7 +1935,7 @@ impl Build {
         let timing = std::env::var_os("OPENCAD_TIMING").is_some();
         let started = std::time::Instant::now();
         let step = std::time::Instant::now();
-        Build { next: 0, hole_errors, thread_errors, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, step, inp }
+        Build { next: 0, hole_errors, thread_errors, shell_errors, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, step, inp }
     }
 
     /// How far it's got: (entries built, all of them, the one being built next).
@@ -1869,8 +1953,8 @@ impl Build {
     pub fn step(&mut self, budget: std::time::Duration) -> bool {
         let began = std::time::Instant::now();
         let first = self.next;
-        let Build { inp, next, hole_errors, thread_errors, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, step } = self;
-        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, timeline } = &*inp;
+        let Build { inp, next, hole_errors, thread_errors, shell_errors, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, step } = self;
+        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, timeline } = &*inp;
         let _ = (&timing, &started);
         loop {
             if *next >= timeline.len() {
@@ -1894,6 +1978,7 @@ impl Build {
                 Feature::Revolve(k) => revolves.get(k).map(|rv| format!("{f:?}|{rv:?}|{}|{:?}|{axes:?}", sketch_geometry(sketches.get(rv.sketch)), frames.get(rv.sketch))),
                 Feature::Edge(k) => edge_features.get(k).map(|ef| format!("{f:?}|{ef:?}|{extrude_ends:?}|{revolve_ends:?}")),
                 Feature::Copy(k) => copies.get(k).map(|c| format!("{f:?}|{c:?}|{axes:?}|{planes:?}")),
+                Feature::Shell(k) => shells.get(k).map(|sf| format!("{f:?}|{sf:?}")),
                 _ => None,
             }
             .map(|inputs| key_of(&format!("{}|{inputs}", bodies_key(&current))));
@@ -2096,6 +2181,14 @@ impl Build {
                     }
                     (r, &mut thread_errors[k])
                 }
+                Feature::Shell(k) => {
+                    let Some(sf) = shells.get(k) else {
+                        *shapes = current;
+                        continue;
+                    };
+                    let r = catch_unwind(AssertUnwindSafe(|| apply_shell(current, sf)));
+                    (r, &mut shell_errors[k])
+                }
                 Feature::Remove(k) => {
                     // Take the bodies out; the rest carry on.
                     if let Some(rf) = removes.get(k) {
@@ -2158,7 +2251,7 @@ impl Build {
 
     /// The model built (bodies analysed for picking and Measure).
     pub fn finish(self) -> Model {
-        let Build { inp: _, next: _, hole_errors, thread_errors, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, mut step } = self;
+        let Build { inp: _, next: _, hole_errors, thread_errors, shell_errors, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, mut step } = self;
     if timing {
         eprintln!("  {:>8.1} ms  last feature; analysing bodies…", step.elapsed().as_secs_f64() * 1e3);
         step = std::time::Instant::now();
@@ -2186,7 +2279,7 @@ impl Build {
         eprintln!("  {:>8.1} ms  bodies; build {:.1} ms in all", step.elapsed().as_secs_f64() * 1e3, started.elapsed().as_secs_f64() * 1e3);
     }
     let caps = caps_of(&extrude_ends, &revolve_ends);
-    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, threads, caps, touched: touched_by }
+    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, shell_errors, threads, caps, touched: touched_by }
     }
 }
 
@@ -2204,6 +2297,7 @@ pub fn build_all(
     removes: &[RemoveFeature],
     holes: &[HoleFeature],
     thread_features: &[ThreadFeature],
+    shells: &[ShellFeature],
     timeline: &[Feature],
 ) -> Model {
     let mut b = Build::start(BuildInputs {
@@ -2217,6 +2311,7 @@ pub fn build_all(
         removes: removes.to_vec(),
         holes: holes.to_vec(),
         thread_features: thread_features.to_vec(),
+        shells: shells.to_vec(),
         timeline: timeline.to_vec(),
     });
     while b.step(std::time::Duration::MAX) {}
@@ -2569,7 +2664,7 @@ mod tests {
         let plane = PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None };
         let c = CopyFeature { name: "M".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: crate::model::CopyKind::MirrorPlane(0) };
         let t = [Feature::Sketch(0), Feature::Extrude(0), Feature::Plane(0), Feature::Copy(0)];
-        let m = build_all(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[], &[plane], &[], &[], &[], &t);
+        let m = build_all(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[], &[plane], &[], &[], &[], &[], &t);
         assert_eq!(m.copy_errors, vec![None]);
         assert_eq!(m.bodies.len(), 2);
         let copy = m.bodies.iter().find(|b| b.id.feature == Feature::Copy(0)).unwrap();
@@ -2580,7 +2675,7 @@ mod tests {
         let c2 = CopyFeature { name: "M".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: crate::model::CopyKind::MirrorPlane(0) };
         let mut sk2 = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk2, 2.0, 0.0, 6.0, 3.0);
-        let early = build_all(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c2], &[], &[PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None }], &[], &[], &[], &[Feature::Sketch(0), Feature::Extrude(0), Feature::Copy(0), Feature::Plane(0)]);
+        let early = build_all(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c2], &[], &[PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None }], &[], &[], &[], &[], &[Feature::Sketch(0), Feature::Extrude(0), Feature::Copy(0), Feature::Plane(0)]);
         assert!(early.copy_errors[0].is_some());
     }
 
@@ -2973,7 +3068,7 @@ mod tests {
         let mut sk = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk, 0.0, 0.0, 10.0, 10.0);
         rect(&mut sk, 20.0, 0.0, 50.0, 10.0);
-        build_all(&[sk], &[ex(0, vec![0, 1], 5.0, Operation::NewBody)], &[], &[], &[], &[], &[], removes, &[], &[], tl)
+        build_all(&[sk], &[ex(0, vec![0, 1], 5.0, Operation::NewBody)], &[], &[], &[], &[], &[], removes, &[], &[], &[], tl)
     }
 
     #[test]
@@ -3073,7 +3168,7 @@ mod tests {
         (e.extent, e.target) = (Extent::ToObject, Some(target));
         extrudes.push(e);
         tl.extend([Feature::Sketch(s), Feature::Extrude(extrudes.len() - 1)]);
-        build_all(&sketches, &extrudes, &[], &[], &[], &[], planes, &[], &[], &[], &tl)
+        build_all(&sketches, &extrudes, &[], &[], &[], &[], planes, &[], &[], &[], &[], &tl)
     }
 
     fn offset_plane(z: f64) -> crate::model::PlaneFeature {
@@ -3122,7 +3217,7 @@ mod tests {
         let mut e = ex(0, vec![0], 1.0, Operation::NewBody);
         (e.extent, e.target) = (Extent::ToObject, Some(ExtrudeTarget::Plane(0)));
         let planes = [angled(Hinge::World(WorldAxis::X), 30.0)];
-        let m = build_all(&[sk], &[e], &[], &[], &[], &[], &planes, &[], &[], &[], &[Feature::Plane(0), Feature::Sketch(0), Feature::Extrude(0)]);
+        let m = build_all(&[sk], &[e], &[], &[], &[], &[], &planes, &[], &[], &[], &[], &[Feature::Plane(0), Feature::Sketch(0), Feature::Extrude(0)]);
         assert_eq!((m.plane_errors.clone(), m.errors.clone()), (vec![None], vec![None]));
         let n = m.planes[0].unwrap().normal();
         assert!(n.distance(DVec3::new(0.0, -0.5, 30f64.to_radians().cos())) < 1e-12, "{n}");
@@ -3140,7 +3235,7 @@ mod tests {
         sk.entities.push(crate::sketch::Entity::Line { a: n - 2, b: n - 1 });
         let line = sk.entities.len() - 1;
         let planes = [angled(Hinge::SketchLine { sketch: 0, line }, 90.0)];
-        let m = build_all(&[sk], &[], &[], &[], &[], &[], &planes, &[], &[], &[], &[Feature::Sketch(0), Feature::Plane(0)]);
+        let m = build_all(&[sk], &[], &[], &[], &[], &[], &planes, &[], &[], &[], &[], &[Feature::Sketch(0), Feature::Plane(0)]);
         assert_eq!(m.plane_errors, vec![None]);
         let f = m.planes[0].unwrap();
         assert!(f.normal().cross(DVec3::X).length() < 1e-12 && (f.origin - DVec3::new(4.0, 5.0, 0.0)).length() < 1e-9, "{f:?}");
@@ -3154,7 +3249,7 @@ mod tests {
             let mut b = Sketch::new("B".into(), OriginPlane::XY);
             rect(&mut b, 0.0, 0.0, 50.0, 30.0);
             let t = [Feature::Sketch(0), Feature::Extrude(0), Feature::Axis(0), Feature::Plane(0), Feature::Plane(1)];
-            let m = build_all(&[b], &[ex(0, vec![0], h, Operation::NewBody)], &[], &[], &[], &axes, &planes, &[], &[], &[], &t);
+            let m = build_all(&[b], &[ex(0, vec![0], h, Operation::NewBody)], &[], &[], &[], &axes, &planes, &[], &[], &[], &[], &t);
             assert_eq!(m.plane_errors, vec![None, None], "h {h}");
             let (lean, flat) = (m.planes[0].unwrap(), m.planes[1].unwrap());
             let s = 0.5f64.sqrt();
@@ -3165,7 +3260,7 @@ mod tests {
             }
         }
         // A line that's gone is an error, not a crash.
-        let m = build_all(&[Sketch::new("E".into(), OriginPlane::XY)], &[], &[], &[], &[], &[], &[angled(Hinge::SketchLine { sketch: 0, line: 0 }, 10.0)], &[], &[], &[], &[Feature::Sketch(0), Feature::Plane(0)]);
+        let m = build_all(&[Sketch::new("E".into(), OriginPlane::XY)], &[], &[], &[], &[], &[], &[angled(Hinge::SketchLine { sketch: 0, line: 0 }, 10.0)], &[], &[], &[], &[], &[Feature::Sketch(0), Feature::Plane(0)]);
         assert!(m.plane_errors[0].is_some() && m.planes[0].is_none());
     }
 
@@ -3195,7 +3290,7 @@ mod tests {
             tl.push(Feature::Sketch(1));
         }
         tl.extend((0..holes.len()).map(Feature::Hole));
-        build_all(&sketches, &[ex(0, vec![0], h, Operation::NewBody)], &[], &[], &[], &[], planes, &[], holes, &[], &tl)
+        build_all(&sketches, &[ex(0, vec![0], h, Operation::NewBody)], &[], &[], &[], &[], planes, &[], holes, &[], &[], &tl)
     }
 
     /// On the plate's top face at (x, y), as picked at thickness `h`.
@@ -3343,7 +3438,7 @@ mod tests {
         let mut tl = vec![Feature::Sketch(0), Feature::Extrude(0)];
         let tf: Vec<ThreadFeature> = t.into_iter().collect();
         tl.extend((0..tf.len()).map(Feature::Thread));
-        build_all(&[sk], &[ex(0, vec![0], len, Operation::NewBody)], &[], &[], &[], &[], &[], &[], &[], &tf, &tl)
+        build_all(&[sk], &[ex(0, vec![0], len, Operation::NewBody)], &[], &[], &[], &[], &[], &[], &[], &tf, &[], &tl)
     }
 
     /// The round face of the first body, as a thread would pick it (clicked near z = `z`).
@@ -3396,7 +3491,7 @@ mod tests {
         let mut sk = Sketch::new("B".into(), OriginPlane::XY);
         rect(&mut sk, 0.0, 0.0, 50.0, 30.0);
         let tl = [Feature::Sketch(0), Feature::Extrude(0), Feature::Hole(0), Feature::Thread(0)];
-        let m = build_all(&[sk], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[], &[], &[], &[], &[], &[], &[hole], &[thread_on(face, "M6x1", true)], &tl);
+        let m = build_all(&[sk], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[], &[], &[], &[], &[], &[], &[hole], &[thread_on(face, "M6x1", true)], &[], &tl);
         assert_eq!(m.thread_errors, vec![None]);
         let want = thread_removal_per_length(2.5, true, 1.0) * 10.0;
         assert!(near(total(&plate) - total(&m), want), "{} vs {want}", total(&plate) - total(&m));
@@ -3454,7 +3549,7 @@ mod tests {
             circle(&mut boss, 5.0, 3.0, 4.0);
             let mut tl = vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Sketch(1), Feature::Extrude(1)];
             tl.extend((0..t.len()).map(Feature::Thread));
-            build_all(&[b, boss], &[ex(0, vec![0], 10.0, Operation::NewBody), ex(1, vec![0], 8.0, Operation::Join)], &[], &[], &[], &[], &[], &[], &[], t, &tl)
+            build_all(&[b, boss], &[ex(0, vec![0], 10.0, Operation::NewBody), ex(1, vec![0], 8.0, Operation::Join)], &[], &[], &[], &[], &[], &[], &[], t, &[], &tl)
         };
         let m = build(&[]);
         let body = &m.bodies[0];
@@ -3487,6 +3582,65 @@ mod tests {
         assert_eq!(m.hole_errors, vec![None], "the thread through the countersink's air isn't a failure");
         let cb = HoleFeature { kind: HoleKind::Counterbore, cbore_diameter: 11.0, cbore_depth: 6.4, ..h };
         assert_eq!(drilled(20.0, None, &[cb], &[]).hole_errors, vec![None]);
+    }
+
+    #[test]
+    fn shell_and_offset_primitives_are_exact() {
+        let m = plate_with(10.0, None);
+        let b = &m.bodies[0];
+        let top = (0..b.faces.len()).find(|&f| b.face_tris(f).all(|t| t.iter().all(|p| (p.z - 10.0).abs() < 1e-9))).unwrap() as i32;
+        let inside = b.shape.try_thick_solid(&[top], -2.0, false).expect("inside shell");
+        assert!(close(inside.volume(), 15000.0 - 46.0 * 26.0 * 8.0), "{}", inside.volume());
+        let outside = b.shape.try_thick_solid(&[top], 2.0, false).expect("outside shell");
+        assert!(close(outside.volume(), 54.0 * 34.0 * 12.0 - 15000.0), "{}", outside.volume());
+        let core = b.shape.try_offset(-2.0, false).expect("shrunk");
+        assert!(close(b.shape.volume() - core.volume(), 15000.0 - 46.0 * 26.0 * 6.0));
+        let rounded = b.shape.try_thick_solid(&[top], 2.0, true).expect("rounded");
+        assert!(rounded.volume() < outside.volume() && rounded.volume() > 50.0 * 30.0 * 2.0, "rounded corners take a little off");
+        assert!(b.shape.try_thick_solid(&[99], -2.0, false).is_none(), "a face that isn't there");
+        // Too thick: OCCT gives the part back unchanged (the Shell step reports it).
+        let same = b.shape.try_thick_solid(&[top], -20.0, false);
+        assert!(same.is_none_or(|x| close(x.volume(), 15000.0)));
+    }
+
+    /// The plate (sketch 0, extrude 0) `h` thick, then shell `sf`.
+    fn shelled(h: f64, sf: ShellFeature) -> Model {
+        let mut b = Sketch::new("B".into(), OriginPlane::XY);
+        rect(&mut b, 0.0, 0.0, 50.0, 30.0);
+        build_all(&[b], &[ex(0, vec![0], h, Operation::NewBody)], &[], &[], &[], &[], &[], &[], &[], &[], &[sf], &[Feature::Sketch(0), Feature::Extrude(0), Feature::Shell(0)])
+    }
+
+    fn top_face(h: f64) -> crate::model::PickedFace {
+        let face = FacePlane::from_face(DVec3::Z, DVec3::new(0.0, 0.0, h));
+        let q = DVec3::new(20.0, 10.0, h);
+        crate::model::PickedFace { face, anchor: [q.dot(face.u), q.dot(face.v)] }
+    }
+
+    #[test]
+    fn a_shell_hollows_exactly_inside_outside_both_and_closed() {
+        let open = ShellFeature { faces: vec![top_face(10.0)], ..Default::default() };
+        let m = shelled(10.0, open.clone());
+        assert_eq!(m.shell_errors, vec![None]);
+        assert!(close(total(&m), 15000.0 - 46.0 * 26.0 * 8.0), "{}", total(&m));
+        let out = ShellFeature { direction: ShellDirection::Outside, ..open.clone() };
+        assert!(close(total(&shelled(10.0, out)), 54.0 * 34.0 * 12.0 - 15000.0));
+        let both = ShellFeature { direction: ShellDirection::Both, inside: 1.0, outside: 1.0, ..open.clone() };
+        let m = shelled(10.0, both);
+        assert_eq!(m.shell_errors, vec![None]);
+        assert!(close(total(&m), 52.0 * 32.0 * 11.0 - 48.0 * 28.0 * 9.0), "{}", total(&m));
+        let closed = ShellFeature { faces: Vec::new(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], ..open.clone() };
+        assert!(close(total(&shelled(10.0, closed)), 15000.0 - 46.0 * 26.0 * 6.0));
+        // The plate grows to 20: the opened face is found again on the new top.
+        let m = shelled(20.0, open.clone());
+        assert_eq!(m.shell_errors, vec![None]);
+        assert!(close(total(&m), 30000.0 - 46.0 * 26.0 * 18.0), "{}", total(&m));
+        // Too thick, nothing picked, a face that's gone: errors, not crashes.
+        let thick = ShellFeature { inside: 20.0, ..open.clone() };
+        assert!(shelled(10.0, thick).shell_errors[0].as_deref().is_some_and(|e| e.contains("thicker")));
+        let nothing = ShellFeature { faces: Vec::new(), ..open.clone() };
+        assert!(shelled(10.0, nothing).shell_errors[0].is_some());
+        let away = ShellFeature { faces: vec![crate::model::PickedFace { anchor: [500.0, 500.0], ..top_face(10.0) }], ..open };
+        assert!(shelled(10.0, away).shell_errors[0].as_deref().is_some_and(|e| e.contains("gone")));
     }
 
     #[test]

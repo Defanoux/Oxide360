@@ -353,7 +353,8 @@ impl OpenCad {
                 && self.copy_dialog.is_none()
                 && self.plane_dialog.is_none()
                 && self.hole_dialog.is_none()
-                && self.thread_dialog.is_none();
+                && self.thread_dialog.is_none()
+                && self.shell_dialog.is_none();
             if let (Some(px), true) = (hover_px, free_view) {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 let face = self.pick_face(&ray);
@@ -429,6 +430,54 @@ impl OpenCad {
             }
         } else if self.hole_dialog.as_ref().is_some_and(|d| !d.picking_target) && esc && !typing {
             self.cancel_hole(); // Esc ends the command, as in Fusion
+        }
+
+        crate::mark("Shell: click faces to open or bodies");
+        // --- Shell: the Faces field takes flat faces, the Bodies field bodies ---
+        self.shell_hover = None;
+        if let (Some(field), true) = (self.shell_dialog.as_ref().and_then(|d| d.picking), self.active.is_none()) {
+            self.ensure_model(Slot::Committed);
+            if let Some(px) = hover_px {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                self.shell_hover = match field {
+                    shell_dialog::Field::Faces => self.pick_face(&ray).map(|(t, _, face)| {
+                        let q = (ray.origin + ray.dir * t).as_dvec3();
+                        let face = sketch::FacePlane { follow: None, ..face };
+                        (Some(model::PickedFace { face, anchor: [q.dot(face.u), q.dot(face.v)] }), None)
+                    }),
+                    shell_dialog::Field::Bodies => {
+                        let model = self.model(Slot::Committed);
+                        model
+                            .bodies
+                            .iter()
+                            .filter(|b| !self.hidden_bodies.contains(&b.id))
+                            .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir).map(|t| (b.id, t)))
+                            .min_by(|a, b| a.1.total_cmp(&b.1))
+                            .map(|(id, _)| (None, Some(id)))
+                    }
+                };
+            }
+            if let (true, Some((face, body)), Some(d)) = (response.clicked(), self.shell_hover, self.shell_dialog.as_mut()) {
+                if let Some(f) = face {
+                    // The same face clicked again (anywhere on it) is kept again.
+                    match d.picked_on(&f) {
+                        Some(i) => {
+                            d.shell.faces.remove(i);
+                        }
+                        None => d.toggle_face(f),
+                    }
+                }
+                if let Some(id) = body {
+                    d.toggle_body(id);
+                }
+            }
+            if esc && !typing {
+                if let Some(d) = self.shell_dialog.as_mut() {
+                    d.picking = None;
+                }
+            }
+        } else if self.shell_dialog.is_some() && esc && !typing {
+            self.cancel_shell(); // Esc ends the command, as in Fusion
         }
 
         crate::mark("Thread: click cylindrical faces (shaft");
@@ -1707,7 +1756,7 @@ impl OpenCad {
 
         crate::mark("draw: bodies (from the kernel; with an");
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
-        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some();
+        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
         self.ensure_model(Slot::Committed);
         self.feature_errors = self.model(Slot::Committed).errors.clone();
@@ -1720,6 +1769,7 @@ impl OpenCad {
         self.plane_errors = self.model(Slot::Committed).plane_errors.clone();
         self.hole_errors = self.model(Slot::Committed).hole_errors.clone();
         self.thread_errors = self.model(Slot::Committed).thread_errors.clone();
+        self.shell_errors = self.model(Slot::Committed).shell_errors.clone();
         self.body_count = self.model(Slot::Committed).bodies.len();
         // With a body in the scene the origin gets out of the way (Create Sketch
         // and the browser's Origin box bring it back).
@@ -1733,7 +1783,10 @@ impl OpenCad {
         // The preview's first build still running: show the design as it is meanwhile.
         let slot = if self.ready(slot) { slot } else { Slot::Committed };
         let model = &self.caches[slot as usize].as_ref().expect("built above").model;
-        self.dialog_error = if let Some(d) = &self.thread_dialog {
+        self.dialog_error = if let Some(d) = &self.shell_dialog {
+            let k = d.editing.unwrap_or(self.shells.len());
+            if d.shell.faces.is_empty() && d.shell.bodies.is_empty() { None } else { model.shell_errors.get(k).cloned().flatten() }
+        } else if let Some(d) = &self.thread_dialog {
             let k = d.editing.unwrap_or(self.thread_features.len());
             if d.thread.faces.is_empty() { None } else { model.thread_errors.get(k).cloned().flatten() }
         } else if let Some(d) = &self.hole_dialog {
@@ -1773,8 +1826,9 @@ impl OpenCad {
                 let c = if previewing { body_color } else { self.body_color(b.id) };
                 // Bodies selected in the browser (or picked for a mirror / pattern)
                 // are tinted with the selection colour; the one under the cursor lighter.
-                let picked = self.copy_dialog.as_ref().is_some_and(|d| d.bodies.contains(&b.id));
-                let c = if self.copy_body_hover == Some(b.id) && !picked {
+                let picked = self.copy_dialog.as_ref().is_some_and(|d| d.bodies.contains(&b.id)) || self.shell_dialog.as_ref().is_some_and(|d| d.shell.bodies.contains(&b.id));
+                let hovered = self.copy_body_hover == Some(b.id) || self.shell_hover.and_then(|h| h.1) == Some(b.id);
+                let c = if hovered && !picked {
                     let mix = |x: u8, y: u8| ((x as u16 * 3 + y as u16) / 4) as u8;
                     Color32::from_rgb(mix(c.r(), COL_HOVER.r()), mix(c.g(), COL_HOVER.g()), mix(c.b(), COL_HOVER.b()))
                 } else if self.selected_bodies.contains(&b.id) || picked {
@@ -1883,6 +1937,44 @@ impl OpenCad {
                     rect.center_top() + egui::vec2(0.0, 40.0),
                     egui::Align2::CENTER_TOP,
                     "Click sketch points, circles or faces for the holes (click again to drop one)   (Esc when done)",
+                    egui::FontId::proportional(15.0),
+                    Color32::from_gray(220),
+                );
+            }
+        }
+
+        crate::mark("draw: faces a Shell opens");
+        // --- draw: faces a Shell opens (and the one under the cursor) ---
+        if let Some(d) = &self.shell_dialog {
+            let model = self.model(Slot::Committed);
+            let hover = self.shell_hover.and_then(|h| h.0);
+            let faces = d.shell.faces.iter().map(|f| (f, Color32::from_rgba_unmultiplied(230, 90, 70, 120))).chain(hover.iter().map(|f| (f, profile_fill(110))));
+            for (f, fill) in faces {
+                let at = f.face.origin + f.face.u * f.anchor[0] + f.face.v * f.anchor[1];
+                for body in &model.bodies {
+                    // Only the face the click was on (not every face in that plane).
+                    let Some(k) = body.face_at(&f.face, at) else { continue };
+                    let mut overlay = egui::Mesh::default();
+                    for [a, b, c] in body.face_tris(k) {
+                        if let (Some(pa), Some(pb), Some(pc)) = (view.project(a.as_vec3()), view.project(b.as_vec3()), view.project(c.as_vec3())) {
+                            let base = overlay.vertices.len() as u32;
+                            for q in [pa, pb, pc] {
+                                overlay.colored_vertex(to_pos(q), fill);
+                            }
+                            overlay.add_triangle(base, base + 1, base + 2);
+                        }
+                    }
+                    painter.add(egui::Shape::mesh(overlay));
+                }
+            }
+            if let Some(field) = d.picking {
+                painter.text(
+                    rect.center_top() + egui::vec2(0.0, 40.0),
+                    egui::Align2::CENTER_TOP,
+                    match field {
+                        shell_dialog::Field::Faces => "Click the faces to take away (the opening); click one again to keep it   (Esc when done)",
+                        shell_dialog::Field::Bodies => "Click bodies to hollow with no opening   (Esc when done)",
+                    },
                     egui::FontId::proportional(15.0),
                     Color32::from_gray(220),
                 );

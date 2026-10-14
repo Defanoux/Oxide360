@@ -29,6 +29,7 @@ pub enum Icon {
     PlaneAngle,
     Hole,
     Thread,
+    Shell,
     HoleSimple,
     HoleCounterbore,
     HoleCountersink,
@@ -383,6 +384,15 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             arrow_head((0.35, 0.12), (0.35, 0.5), ink);
             line((0.65, 0.2), (0.65, 0.8), s);
             arrow_head((0.65, 0.88), (0.65, 0.5), ink);
+        }
+        Icon::Shell => {
+            // An open box seen from above at an angle: thin walls, hollow inside.
+            let outer = [(0.12, 0.38), (0.5, 0.2), (0.88, 0.38), (0.88, 0.72), (0.5, 0.9), (0.12, 0.72)];
+            outline(&outer, thin);
+            let s = Stroke::new(thin.width * 1.2, orange);
+            let inner = [(0.24, 0.4), (0.5, 0.29), (0.76, 0.4), (0.5, 0.52)];
+            outline(&inner, s);
+            line((0.5, 0.52), (0.5, 0.78), Stroke::new(thin.width * 0.8, ink));
         }
         Icon::Thread => {
             // A bolt shank with slanted thread lines.

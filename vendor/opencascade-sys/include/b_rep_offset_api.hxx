@@ -19,6 +19,8 @@
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRep_Builder.hxx>
+#include <TopoDS_Solid.hxx>
 #include <BRepGProp.hxx>
 #include <BRepLib.hxx>
 #include <GProp_GProps.hxx>
@@ -103,6 +105,79 @@ inline std::unique_ptr<TopoDS_Shape> opencad_try_thread(double ox, double oy, do
       return nullptr;
     }
     return std::unique_ptr<TopoDS_Shape>(new TopoDS_Shape(solid));
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+// opencad patch: Shell. A solid hollowed `offset` thick (negative: the wall
+// goes inside), opened at the faces numbered `faces` (in TopExp_Explorer face
+// order); corners sharp or rounded. nullptr on any failure.
+#include <BRepOffsetAPI_MakeOffsetShape.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS.hxx>
+#include <vector>
+
+inline bool opencad_good_solid(const TopoDS_Shape &s) {
+  if (s.IsNull() || !BRepCheck_Analyzer(s).IsValid()) {
+    return false;
+  }
+  GProp_GProps props;
+  BRepGProp::VolumeProperties(s, props);
+  return props.Mass() > 1e-9;
+}
+
+inline std::unique_ptr<TopoDS_Shape> opencad_try_thick_solid(const TopoDS_Shape &shape, rust::Slice<const int32_t> faces, double offset, bool rounded) {
+  try {
+    std::vector<TopoDS_Shape> all;
+    for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
+      all.push_back(ex.Current());
+    }
+    TopTools_ListOfShape closing;
+    for (int32_t i : faces) {
+      if (i < 0 || size_t(i) >= all.size()) {
+        return nullptr;
+      }
+      closing.Append(all[size_t(i)]);
+    }
+    BRepOffsetAPI_MakeThickSolid maker;
+    maker.MakeThickSolidByJoin(shape, closing, offset, 1.0e-5, BRepOffset_Skin, true, false, rounded ? GeomAbs_Arc : GeomAbs_Intersection);
+    maker.Build();
+    if (!maker.IsDone()) {
+      return nullptr;
+    }
+    TopoDS_Shape out = maker.Shape();
+    if (!opencad_good_solid(out)) {
+      return nullptr;
+    }
+    return std::unique_ptr<TopoDS_Shape>(new TopoDS_Shape(out));
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+// opencad patch: the solid grown (or, negative, shrunk) by `offset` all round;
+// corners sharp or rounded. nullptr on any failure.
+inline std::unique_ptr<TopoDS_Shape> opencad_try_offset_shape(const TopoDS_Shape &shape, double offset, bool rounded) {
+  try {
+    BRepOffsetAPI_MakeOffsetShape maker;
+    maker.PerformByJoin(shape, offset, 1.0e-5, BRepOffset_Skin, true, false, rounded ? GeomAbs_Arc : GeomAbs_Intersection);
+    if (!maker.IsDone()) {
+      return nullptr;
+    }
+    TopoDS_Shape out = maker.Shape();
+    // A solid's offset comes back as a shell sometimes: make it a solid.
+    if (out.ShapeType() == TopAbs_SHELL) {
+      BRep_Builder b;
+      TopoDS_Solid solid;
+      b.MakeSolid(solid);
+      b.Add(solid, out);
+      out = solid;
+    }
+    if (!opencad_good_solid(out)) {
+      return nullptr;
+    }
+    return std::unique_ptr<TopoDS_Shape>(new TopoDS_Shape(out));
   } catch (...) {
     return nullptr;
   }

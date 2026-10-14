@@ -9,7 +9,6 @@ has the full Fusion list; this is the slice to do now). Fusion's behaviour is
 the spec for each.
 
 **Core solid tools (the gaps you hit modelling a real part)**
-2. **Shell** — pick faces to remove, inside thickness. Timeline feature.
 3. **Fillet / Chamfer upgrades** — tangent-chain edge selection (one click
    picks the run), chamfer distance + angle, fillet a whole face's loop.
 4. **Press/Pull (Q)** and **Offset Face** — drag a face; on a fillet face it
@@ -68,6 +67,7 @@ sheet metal, surfaces, CAM.
 
 ## Done
 
+- Shell (MODIFY): click flat faces to open and/or bodies to hollow closed; Inside / Outside / Both with their thicknesses; Sharp or Rounded offset corners; wall arrow; picked faces found again every build. New exception-safe OCCT wrappers (thick solid, offset shape); a too-thick wall is an error (OCCT returns the part unchanged). Also: rebuilds run a little per frame with a green progress bar; Model all / All cosmetic threads; exports named with the version. Not done: Tangent Chain, opening curved faces.
 - Hole (H, CREATE): places = sketch points, sketch circles (hole takes the circle's Ø), face points or face centres (snap), several per hole; Simple / Counterbore / Countersink; Distance / To (plane or face) / All; Flat or Angle tip; tap type Simple / Clearance (ISO 273 / drill fits) / Tapped / Taper Tapped (NPT, 1:16) from `threads.rs` (ISO coarse+fine, UNC/UNF, NPT); counterbore/countersink follow the screw size; Flip; depth arrow. Tapped threads cosmetic (helix drawn) or modeled (cut). Thread (CREATE): cylindrical faces (shafts or holes), modeled or shown, full length or offset+length, size fits the face, class, hand, Remember Size. Modeled threads: exception-safe OCCT helical sweep in half-turn pieces (one long face made OCCT's booleans fail silently); every modeled cut is volume-checked. Not done: Fusion's At-Point edge References, Objects to Cut, modeled taper threads (Fusion doesn't model those either).
 - Rectangle sizes typed while drawing (2-point and centre, `rect_input.rs`): after the first corner, typing fills the width box, Tab the height; typed sizes hold while the cursor picks the side, the click (or Enter) places it and each typed size becomes a dimension; nothing typed = free size, no dimensions; Esc drops what was typed.
 - Plane at Angle (CONSTRUCT): click a sketch line, a straight body edge, a construction axis or an origin axis, then type or drag the round arrow; `PlaneFeature.angle = PlaneAngle { hinge, degrees }`, the kernel finds the line again every build (edges/sketches move it), 0° lies in the sketch plane / the edge's first face / XY (XZ for Z). Axes and sketches a plane turns about can't be deleted first. The dialog's Line field re-picks the line (angle kept).

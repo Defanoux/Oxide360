@@ -39,6 +39,7 @@ mod plane_dialog;
 mod pattern;
 mod profile;
 mod hole_dialog;
+mod shell_dialog;
 mod thread_dialog;
 mod rect_input;
 mod project;
@@ -66,6 +67,7 @@ use glam::{DVec2, DVec3, Vec2, Vec3};
 use copy_dialog::{CopyDialog, Mode as CopyMode};
 use plane_dialog::PlaneDialog;
 use hole_dialog::HoleDialog;
+use shell_dialog::ShellDialog;
 use thread_dialog::ThreadDialog;
 use sketch_pattern::{Mode as SpMode, SketchPattern};
 use model::{PlaneFeature, AxisFeature, CopyFeature, EdgeFeature, EdgeKind, EdgeRef, Extrude, Mesh, Operation, Revolve, RevolveAxis};
@@ -152,6 +154,8 @@ impl OpenCad {
                 d.kind.name()
             } else if let Some(d) = &self.copy_dialog {
                 d.mode.title()
+            } else if self.shell_dialog.is_some() {
+                "Shell"
             } else if self.thread_dialog.is_some() {
                 "Thread"
             } else if self.hole_dialog.is_some() {
@@ -498,6 +502,7 @@ enum HandleTarget {
     PlaneOffset,
     PlaneAngle,
     HoleDepth,
+    ShellThickness,
     /// A sketch pattern's spacing along X / Y, and its angle.
     SketchSpacing1,
     SketchSpacing2,
@@ -541,6 +546,7 @@ impl KernelCache {
             removes: Vec::new(),
             holes: Vec::new(),
             thread_features: Vec::new(),
+            shells: Vec::new(),
             timeline: Vec::new(),
             model: kernel::Model::default(),
             stand_in: true,
@@ -559,6 +565,7 @@ struct KernelCache {
     removes: Vec<model::RemoveFeature>,
     holes: Vec<model::HoleFeature>,
     thread_features: Vec<model::ThreadFeature>,
+    shells: Vec<model::ShellFeature>,
     timeline: Vec<Feature>,
     model: kernel::Model,
     /// Nothing built yet (an empty model while the first build runs).
@@ -609,6 +616,10 @@ struct OpenCad {
     hole_errors: Vec<Option<String>>,
     hole_hover: Option<(model::HolePlace, DVec3)>, // what a click would add, and where its centre is
     thread_features: Vec<model::ThreadFeature>, // Thread features
+    shells: Vec<model::ShellFeature>,       // Shell features
+    shell_dialog: Option<ShellDialog>,
+    shell_errors: Vec<Option<String>>,
+    shell_hover: Option<(Option<model::PickedFace>, Option<BodyId>)>, // a face or body a click would pick
     thread_dialog: Option<thread_dialog::ThreadDialog>,
     thread_errors: Vec<Option<String>>,
     thread_hover: Option<(kernel::Cylinder, DVec3)>, // the cylindrical face under the cursor, and where
@@ -770,6 +781,10 @@ impl Default for OpenCad {
             hole_errors: Vec::new(),
             hole_hover: None,
             thread_features: Vec::new(),
+            shells: Vec::new(),
+            shell_dialog: None,
+            shell_errors: Vec::new(),
+            shell_hover: None,
             thread_dialog: None,
             thread_errors: Vec::new(),
             thread_hover: None,
@@ -943,7 +958,9 @@ impl OpenCad {
         // Enter finishes the open tool window (OK) when nothing else takes it:
         // no text box focused and no number box open (that has its own Enter).
         if self.active.is_none() && self.float.is_none() && !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
-            if self.thread_dialog.is_some() {
+            if self.shell_dialog.is_some() {
+                self.commit_shell();
+            } else if self.thread_dialog.is_some() {
                 self.commit_thread();
             } else if self.hole_dialog.is_some() {
                 self.commit_hole();
@@ -1048,6 +1065,17 @@ impl OpenCad {
             float("edges").show(&ctx, |ui| self.edge_panel(ui));
         } else if self.copy_dialog.is_some() && self.active.is_none() {
             float("copy").show(&ctx, |ui| self.copy_panel(ui));
+        } else if self.shell_dialog.is_some() && self.active.is_none() {
+            float("shell").show(&ctx, |ui| {
+                let error = self.dialog_error.clone();
+                if let Some(d) = self.shell_dialog.as_mut() {
+                    match d.panel(ui, design_units, error.as_deref()) {
+                        copy_dialog::Action::Ok => self.commit_shell(),
+                        copy_dialog::Action::Cancel => self.cancel_shell(),
+                        copy_dialog::Action::None => {}
+                    }
+                }
+            });
         } else if self.thread_dialog.is_some() && self.active.is_none() {
             float("thread").show(&ctx, |ui| {
                 let error = self.dialog_error.clone();
