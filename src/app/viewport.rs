@@ -154,20 +154,18 @@ impl OpenCad {
             self.focus_distance();
         }
 
-        let key_x = ui.input(|i| i.key_pressed(egui::Key::X) && !i.modifiers.command);
-        let (key_n, key_p) = ui.input(|i| {
-            let plain = !i.modifiers.command && !i.modifiers.alt;
-            (i.key_pressed(egui::Key::N) && plain, i.key_pressed(egui::Key::P) && plain)
-        });
-        let (key_l, key_r, key_c, key_g, key_d, key_e, key_f, esc, del, undo) = ui.input(|i| {
+        // Tool keys (Settings → Keybinds); none while a key is being set.
+        let pressed = |a: keys::Action| {
+            self.capturing_key.is_none()
+                && self.keymap.key(a).is_some_and(|k| ui.input(|i| i.key_pressed(k) && !i.modifiers.command && !i.modifiers.alt))
+        };
+        use keys::Action as A;
+        let (key_l, key_r, key_c, key_g, key_d, key_x, key_p) =
+            (pressed(A::Line), pressed(A::Rectangle), pressed(A::Circle), pressed(A::GridSnap), pressed(A::Dimension), pressed(A::Construction), pressed(A::Project));
+        let (key_trim, key_extend, key_offset) = (pressed(A::Trim), pressed(A::Extend), pressed(A::Offset));
+        let (key_n, key_e, key_f, key_i) = (pressed(A::NewSketch), pressed(A::Extrude), pressed(A::Fillet), pressed(A::Measure));
+        let (esc, del, undo) = ui.input(|i| {
             (
-                i.key_pressed(egui::Key::L),
-                i.key_pressed(egui::Key::R),
-                i.key_pressed(egui::Key::C),
-                i.key_pressed(egui::Key::G) && !i.modifiers.command,
-                i.key_pressed(egui::Key::D),
-                i.key_pressed(egui::Key::E),
-                i.key_pressed(egui::Key::F),
                 i.key_pressed(egui::Key::Escape),
                 i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace),
                 i.key_pressed(egui::Key::Z) && i.modifiers.command,
@@ -525,6 +523,8 @@ impl OpenCad {
             self.new_sketch_tool();
         } else if !sketching && key_f && !typing && self.body_count > 0 {
             self.open_edge_dialog(None, EdgeKind::Fillet);
+        } else if !sketching && key_i && !typing {
+            self.measure = if self.measure.is_some() { None } else { Some(measure::Measure::default()) };
         }
 
         // --- sketch input ---
@@ -735,6 +735,15 @@ impl OpenCad {
                 }
                 if key_x {
                     self.toggle_construction();
+                }
+                if key_trim {
+                    self.editor.set_tool(Tool::Trim);
+                }
+                if key_extend {
+                    self.editor.set_tool(Tool::Extend);
+                }
+                if key_offset {
+                    self.editor.set_tool(Tool::Offset);
                 }
                 if key_p && self.body_count > 0 && self.sketch_pattern.is_none() {
                     self.editor.set_tool(Tool::Project);

@@ -279,8 +279,61 @@ impl OpenCad {
                 ui.end_row();
             });
             ui.weak("A design's own units are under Document Settings in the browser.");
+            if ui.button("Set keybinds…").clicked() {
+                self.keybinds_open = true;
+            }
         });
         self.settings_open = open;
+        self.keybinds_window(ctx);
+    }
+
+    /// Which key does what: click a key, then press the new one (Esc: no key).
+    fn keybinds_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.keybinds_open;
+        // A key being set takes the next key pressed.
+        if let Some(a) = self.capturing_key {
+            let key = ctx.input(|i| {
+                i.events.iter().find_map(|e| match e {
+                    egui::Event::Key { key, pressed: true, modifiers, .. } if !modifiers.command && !modifiers.alt => Some(*key),
+                    _ => None,
+                })
+            });
+            if let Some(k) = key {
+                // Taken here, so the key doesn't also work as a shortcut this frame.
+                ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k));
+                self.capturing_key = None;
+                let k = (k != egui::Key::Escape).then_some(k);
+                if let Some(other) = self.keymap.set(a, k) {
+                    self.notify(format!("{} no longer has a key (it was {})", other.name(), k.map_or("", |k| k.name())));
+                }
+            }
+        }
+        egui::Window::new("Keybinds").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            for (title, sketch) in [("In a sketch", true), ("In the model", false)] {
+                ui.strong(title);
+                egui::Grid::new(("keybinds", sketch)).num_columns(3).spacing([16.0, 6.0]).striped(true).show(ui, |ui| {
+                    for a in keys::Action::ALL.into_iter().filter(|a| a.in_sketch() == sketch) {
+                        ui.label(a.name());
+                        ui.weak(a.about());
+                        let waiting = self.capturing_key == Some(a);
+                        let text = if waiting { "press a key…".to_string() } else { self.keymap.key(a).map_or("—".to_string(), |k| k.name().to_string()) };
+                        if ui.add(egui::Button::selectable(waiting, text).min_size(egui::vec2(90.0, 0.0))).on_hover_text("Click, then press the key (Esc: no key)").clicked() {
+                            self.capturing_key = if waiting { None } else { Some(a) };
+                        }
+                        ui.end_row();
+                    }
+                });
+                ui.add_space(6.0);
+            }
+            if ui.button("Reset to defaults").clicked() {
+                self.keymap = keys::Keymap::default();
+                self.capturing_key = None;
+            }
+        });
+        if !open {
+            self.capturing_key = None;
+        }
+        self.keybinds_open = open;
     }
 
     /// The ribbon: quick-access icons (file, save, undo, redo), then tool
