@@ -1687,8 +1687,17 @@ fn hole_tools(
                 if end - start < t.pitch {
                     return Err("the hole is too shallow for a modeled thread".into());
                 }
-                // (Straight threads; the strip is generous by the run-in above the face.)
-                groove = Some((thread_groove(&t, p, dir, start, end, h.thread.right_hand)?, thread_strip(bore / 2.0, t.pitch) * (end - start)));
+                // What it may share with the bore: the strip along its length, and
+                // all of it where it runs through air the hole's head (counterbore
+                // or countersink) or the run-in above the face takes out anyway.
+                let head = match h.kind {
+                    crate::model::HoleKind::Simple => 0.0,
+                    crate::model::HoleKind::Counterbore => h.cbore_depth,
+                    crate::model::HoleKind::Countersink => (h.csink_diameter / 2.0 - bore / 2.0) / (h.csink_angle / 2.0).to_radians().tan(),
+                };
+                let whole = thread_removal_per_length(bore / 2.0, true, t.pitch) + thread_strip(bore / 2.0, t.pitch);
+                let shared = thread_strip(bore / 2.0, t.pitch) * (end - start) + whole * (head.max(0.0) - start);
+                groove = Some((thread_groove(&t, p, dir, start, end, h.thread.right_hand)?, shared));
             } else {
                 threads.push(CosmeticThread { origin: p, axis: dir.normalize(), radius: bore / 2.0 * 0.99, pitch: t.pitch, length: h.thread_depth(depth) });
             }
@@ -3353,6 +3362,26 @@ mod tests {
         assert_eq!(threaded.thread_errors, vec![None]);
         let want = thread_removal_per_length(4.0, false, 1.25) * 8.0;
         assert!(near(total(&m) - total(&threaded), want), "{} vs {want}", total(&m) - total(&threaded));
+    }
+
+    #[test]
+    fn a_countersunk_modeled_tapped_hole_cuts() {
+        use crate::model::{HoleKind, ThreadSpec};
+        let thread = ThreadSpec { designation: "M6x1".into(), modeled: true, ..Default::default() };
+        let h = HoleFeature {
+            places: vec![on_top(25.0, 15.0, 20.0, false)],
+            kind: HoleKind::Countersink,
+            csink_diameter: 12.4,
+            csink_angle: 90.0,
+            tap: TapType::Tapped,
+            depth: 10.0,
+            thread,
+            ..Default::default()
+        };
+        let m = drilled(20.0, None, &[h.clone()], &[]);
+        assert_eq!(m.hole_errors, vec![None], "the thread through the countersink's air isn't a failure");
+        let cb = HoleFeature { kind: HoleKind::Counterbore, cbore_diameter: 11.0, cbore_depth: 6.4, ..h };
+        assert_eq!(drilled(20.0, None, &[cb], &[]).hole_errors, vec![None]);
     }
 
     #[test]
