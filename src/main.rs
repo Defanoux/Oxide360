@@ -865,14 +865,38 @@ impl Default for OpenCad {
 }
 
 
-/// Prints the frame's time when it drops (if OPENCAD_TIMING is set and it was slow).
+thread_local! {
+    /// OPENCAD_TIMING: where this frame's time went (section, when it started).
+    static MARKS: std::cell::RefCell<Vec<(&'static str, std::time::Instant)>> = const { std::cell::RefCell::new(Vec::new()) };
+    static TIMING: bool = std::env::var_os("OPENCAD_TIMING").is_some();
+}
+
+/// A section of the frame starts here (for OPENCAD_TIMING's slow-frame report).
+fn mark(name: &'static str) {
+    if TIMING.with(|t| *t) {
+        MARKS.with(|m| m.borrow_mut().push((name, std::time::Instant::now())));
+    }
+}
+
+/// Prints the frame's time when it drops, if OPENCAD_TIMING is set and it was
+/// slow, with the sections that took over a millisecond.
 struct SlowFrame(std::time::Instant);
 
 impl Drop for SlowFrame {
     fn drop(&mut self) {
+        let marks = MARKS.with(|m| std::mem::take(&mut *m.borrow_mut()));
         let ms = self.0.elapsed().as_secs_f64() * 1e3;
-        if ms > 30.0 && std::env::var_os("OPENCAD_TIMING").is_some() {
-            eprintln!("slow frame: {ms:.0} ms");
+        if ms > 30.0 && TIMING.with(|t| *t) {
+            let mut parts = Vec::new();
+            let mut from = ("frame start", self.0);
+            for &(name, at) in marks.iter().chain([("frame end", std::time::Instant::now())].iter()) {
+                let d = (at - from.1).as_secs_f64() * 1e3;
+                if d >= 1.0 {
+                    parts.push(format!("{} {d:.0}", from.0));
+                }
+                from = (name, at);
+            }
+            eprintln!("slow frame: {ms:.0} ms  [{}]", parts.join(", "));
         }
     }
 }
@@ -1046,8 +1070,11 @@ impl OpenCad {
         } else if self.measure.is_some() {
             float("measure").show(&ctx, |ui| self.measure_panel(ui));
         }
+        mark("timeline bar");
         self.timeline_height = egui::Panel::bottom("timeline").show(ui, |ui| self.timeline_bar(ui)).response.rect.height();
+        mark("view");
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui));
+        mark("after the view");
         self.float_editor(&ctx);
         self.rect_size_boxes(&ctx);
         // A slow rebuild waits for the next frame: show the busy cursor meanwhile.

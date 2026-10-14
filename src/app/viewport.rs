@@ -8,6 +8,7 @@ impl OpenCad {
         self.view_rect = rect;
         let sketching = self.active.is_some();
 
+        crate::mark("view cube: sits on top of the viewport");
         // --- view cube: sits on top of the viewport, so it gets clicks first ---
         let cube_center = rect.right_top() + egui::vec2(-CUBE_MARGIN, CUBE_TOP);
         let cube_rect = egui::Rect::from_center_size(cube_center, egui::vec2(CUBE_MARGIN * 1.8, CUBE_MARGIN * 1.8));
@@ -56,6 +57,7 @@ impl OpenCad {
         let size = Vec2::new(rect.width().max(1.0), rect.height().max(1.0));
         let aspect = size.x / size.y;
 
+        crate::mark("camera input");
         // --- camera input ---
         let shift = ui.input(|i| i.modifiers.shift);
         let d = response.drag_delta();
@@ -121,6 +123,7 @@ impl OpenCad {
         {
             self.float = None;
         }
+        crate::mark("arrow drag (extrude distance, fillet /");
         // --- arrow drag (extrude distance, fillet / chamfer size, revolve angle, pattern arrows) ---
         let handles = self.current_handles(&regions);
         if let Some(k) = grabbed.filter(|&k| k < handles.len()) {
@@ -178,6 +181,7 @@ impl OpenCad {
             self.selected_bodies.clear();
         }
 
+        crate::mark("pattern axis: click one of the axes in");
         // --- pattern axis: click one of the axes in the view ---
         self.copy_axis_hover = None;
         if self.copy_dialog.as_ref().is_some_and(|d| d.picking_axis) {
@@ -216,6 +220,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("create sketch / offset plane: pick an ");
         // --- create sketch / offset plane: pick an origin plane, a construction plane or a flat face ---
         self.face_hover = None;
         self.origin_hover = None;
@@ -282,6 +287,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("Mirror / patterns: the active selectio");
         // --- Mirror / patterns: the active selection field takes clicks in the
         // view: bodies (click again to drop one), or a mirror plane ---
         self.copy_body_hover = None;
@@ -335,6 +341,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("the 3D view: hover origin planes and f");
         // --- the 3D view: hover origin planes and faces; click selects a plane, right-click offers a sketch ---
         if !self.face_pick && self.active.is_none() {
             self.marquee = None;
@@ -398,6 +405,7 @@ impl OpenCad {
             self.selected_cplane = None;
         }
 
+        crate::mark("Hole: click sketch points, sketch circ");
         // --- Hole: click sketch points, sketch circles or faces (the face's
         // middle snaps) to add places; click one again to drop it ---
         self.hole_hover = None;
@@ -423,6 +431,7 @@ impl OpenCad {
             self.cancel_hole(); // Esc ends the command, as in Fusion
         }
 
+        crate::mark("Thread: click cylindrical faces (shaft");
         // --- Thread: click cylindrical faces (shafts or holes) ---
         self.thread_hover = None;
         if self.thread_dialog.as_ref().is_some_and(|d| d.picking) && self.active.is_none() {
@@ -442,6 +451,7 @@ impl OpenCad {
             self.cancel_thread(); // Esc ends the command, as in Fusion
         }
 
+        crate::mark("Extrude To Object / Hole To: click the");
         // --- Extrude To Object / Hole To: click the plane or flat face it runs up to ---
         let picking_target = self.dialog.as_ref().is_some_and(|d| d.picking_target) || self.hole_dialog.as_ref().is_some_and(|d| d.picking_target);
         if picking_target {
@@ -490,6 +500,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("extrude / revolve input: pick profiles");
         // --- extrude / revolve input: pick profiles (and a revolve axis) ---
         let mut hover_profile: Option<(usize, usize)> = None;
         self.axis_hover = None;
@@ -700,6 +711,7 @@ impl OpenCad {
             self.measure = if self.measure.is_some() { None } else { Some(measure::Measure::default()) };
         }
 
+        crate::mark("sketch input");
         // --- sketch input ---
         self.refresh_sketch_pattern();
         let mut cursor: Option<Anchor> = None; // drawing target (snapped)
@@ -1509,6 +1521,7 @@ impl OpenCad {
         // was computed per sketch before drawing with it.
         let regions: Vec<Vec<Region>> = self.sketches.iter().map(find_regions).collect();
 
+        crate::mark("draw: background, grid, axes");
         // --- draw: background, grid, axes ---
         painter.rect_filled(rect, 0.0, Color32::from_gray(38));
         let rel = self.camera.target - dplane.origin;
@@ -1591,6 +1604,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("draw: the origin planes (3D view)");
         // --- draw: the origin planes (3D view) ---
         let mut origin_glass: Vec<([Vec3; 3], [f32; 4])> = Vec::new();
         let mut origin_outlines: Vec<(Vec3, Vec3, [f32; 4])> = Vec::new();
@@ -1639,6 +1653,7 @@ impl OpenCad {
             origin_outlines = outlines;
         }
 
+        crate::mark("draw: construction planes (and the one");
         // --- draw: construction planes (and the one being set up) ---
         if !sketching {
             self.ensure_model(Slot::Committed);
@@ -1690,6 +1705,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("draw: bodies (from the kernel; with an");
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
         let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
@@ -1786,6 +1802,7 @@ impl OpenCad {
             view.solids(&meshes, &self.camera);
         }
 
+        crate::mark("draw: threads that are only shown, whi");
         // --- draw: threads that are only shown, while a Hole or Thread window
         // is open: on top (the rest of the time they're drawn with the bodies) ---
         if !self.gpu || self.hole_dialog.is_some() || self.thread_dialog.is_some() {
@@ -1795,6 +1812,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("draw: the cylinder a Thread would go o");
         // --- draw: the cylinder a Thread would go on, and those picked ---
         if let Some(d) = &self.thread_dialog {
             let ring = |c: &model::CylinderRef, len: f64, stroke: Stroke| {
@@ -1829,6 +1847,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("draw: hole places (where a click could");
         // --- draw: hole places (where a click could go, the one under the
         // cursor, and those picked) ---
         if self.hole_dialog.as_ref().is_some_and(|d| d.picking) {
@@ -1868,6 +1887,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("draw: the face a sketch would start on");
         // --- draw: the face a sketch would start on ---
         if let Some((b, face)) = self.face_hover {
             let model = self.model(Slot::Committed);
@@ -1900,6 +1920,7 @@ impl OpenCad {
             );
         }
 
+        crate::mark("draw: the origin's centre dot");
         // --- draw: the origin's centre dot ---
         if show_origin {
             if let Some(o) = view.project(Vec3::ZERO) {
@@ -1908,6 +1929,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("draw: the body the Project tool would ");
         // --- draw: the body the Project tool would bring in whole ---
         if let (Some(b), true) = (self.project_body_hover, self.active.is_some()) {
             if let Some(body) = self.model(Slot::Committed).bodies.get(b) {
@@ -1919,6 +1941,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("draw: the body edge the Project tool w");
         // --- draw: the body edge the Project tool would bring in ---
         if let (Some(h), true) = (self.project_hover, self.active.is_some()) {
             for body in &self.model(Slot::Committed).bodies {
@@ -1930,6 +1953,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("draw: the axis a pattern would turn ab");
         // --- draw: the axis a pattern would turn about ---
         if let Some(d) = self.copy_dialog.as_ref().filter(|d| d.picking_axis) {
             let reach = origin_size;
@@ -1952,6 +1976,7 @@ impl OpenCad {
             );
         }
 
+        crate::mark("draw: the line a Plane at Angle would ");
         // --- draw: the line a Plane at Angle would turn about ---
         if self.angle_pick || self.plane_dialog.as_ref().is_some_and(|d| d.picking_line()) {
             if let Some((_, p, q, _)) = self.hinge_hover {
@@ -1966,6 +1991,7 @@ impl OpenCad {
             );
         }
 
+        crate::mark("draw: the edge a construction axis wou");
         // --- draw: the edge a construction axis would go along ---
         if self.axis_pick {
             if let Some(h) = self.edge_hover {
@@ -1986,6 +2012,7 @@ impl OpenCad {
             );
         }
 
+        crate::mark("draw: picked and hovered edges (fillet");
         // --- draw: picked and hovered edges (fillet / chamfer) ---
         if self.edge_dialog.is_some() {
             self.ensure_model(Slot::Base); // the dialog may have opened this frame
@@ -2007,6 +2034,7 @@ impl OpenCad {
         }
 
 
+        crate::mark("draw: the drag arrow");
         // --- draw: the drag arrow ---
         let prev_arrows = std::mem::take(&mut self.arrows);
         for (k, h) in self.current_handles(&regions).into_iter().enumerate() {
@@ -2021,6 +2049,7 @@ impl OpenCad {
             self.arrows.push(view.arrow3d(base, tip, if hot { COL_ARROW_HOT } else { COL_ARROW }));
         }
 
+        crate::mark("draw: the drag-select rectangle");
         // --- draw: the drag-select rectangle ---
         if let (Some((a, b)), Some(i)) = (self.marquee, self.active) {
             let plane = self.plane_of(i);
@@ -2031,6 +2060,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("draw: the fillet / chamfer the size bo");
         // --- draw: the fillet / chamfer the size box would make ---
         if let (Some(EditTarget::Corner(p)), Some(i)) = (self.float.as_ref().map(|f| f.target), self.active) {
             if let Some(cut) = self.corner_preview(i, p) {
@@ -2043,6 +2073,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("draw: profile fills");
         // --- draw: profile fills ---
         if let Some((pick_sketch, pick_profiles)) = self.profile_pick() {
             for s in (0..self.sketches.len()).filter(|&s| self.pickable_sketch(s)) {
@@ -2066,6 +2097,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("draw: the revolve axis (and a line it ");
         // --- draw: the revolve axis (and a line it could be) ---
         if let Some(d) = &self.revolve_dialog {
             let axis_line = |s: usize, which: RevolveAxis| self.revolve_axis_line(s, which, 1.0);
@@ -2079,6 +2111,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("draw: sketches");
         // --- draw: sketches ---
         self.dim_labels.clear();
         for (j, sk) in self.sketches.iter().enumerate() {
@@ -2349,6 +2382,7 @@ impl OpenCad {
             }
         }
 
+        crate::mark("draw: measure (over the sketches, so a");
         // --- draw: measure (over the sketches, so a picked sketch line shows) ---
         if let Some(m) = &self.measure {
             use measure::{Geom, Pick, Show};
@@ -2437,6 +2471,7 @@ impl OpenCad {
             );
         }
 
+        crate::mark("right-click menu: a sketch's selection");
         // --- right-click menu: a sketch's selection, or an origin plane ---
         response.context_menu(|ui| {
             if let Some(i) = self.active {
@@ -2520,6 +2555,7 @@ impl OpenCad {
             }
         });
 
+        crate::mark("floating editor position");
         // --- floating editor position ---
         self.float_anchor = match self.float.as_ref().map(|f| f.target) {
             Some(EditTarget::Dimension(ci)) => {
@@ -2576,6 +2612,7 @@ impl OpenCad {
             None => None,
         };
 
+        crate::mark("draw: snap marker, tool preview, reado");
         // --- draw: snap marker, tool preview, readouts ---
         let mut status = String::new();
         let u = self.units; // readouts in the design's units
@@ -2820,6 +2857,7 @@ impl OpenCad {
             );
         }
 
+        crate::mark("notification (bottom-left, fades after");
         // --- notification (bottom-left, fades after a few seconds) ---
         // What's selected in the sketch measures, bottom right.
         if let Some(i) = self.active {

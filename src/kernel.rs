@@ -1471,10 +1471,24 @@ fn apply_threads(current: Tagged, tf: &ThreadFeature, made_by: Feature, shown: &
         // Swept past both ends, then trimmed to the span (so a shoulder isn't notched).
         let lead = 1.5 * t.pitch;
         let x = crate::model::zero_normal(dir, DVec3::Z);
-        let swept = Shape::try_thread(kv(start + dir * (from - lead)), kv(dir), kv(x), (r_in, r_out), widths, t.pitch, to - from + 2.0 * lead, tf.spec.right_hand, 0.0)
-            .ok_or("the kernel couldn't model this thread — try it cosmetic (Modeled off)")?;
-        let span = Shape::cylinder(kv(start + dir * from), r_out + 1.0, kv(dir), to - from);
-        let groove = swept.try_intersect(&span).ok_or("the kernel couldn't trim this thread")?;
+        // The groove only depends on the cylinder and the thread: remember it
+        // (a change elsewhere in the part needn't sweep it again).
+        let key = format!("groove|{start:?}|{dir:?}|{:?}|{from}|{to}|{:?}", (c.radius, c.internal), tf.spec);
+        let groove = match GROOVES.with(|g| g.borrow().iter().find(|(k, _)| *k == key).map(|(_, s)| s.clone())) {
+            Some(g) => g,
+            None => {
+                let swept = Shape::try_thread(kv(start + dir * (from - lead)), kv(dir), kv(x), (r_in, r_out), widths, t.pitch, to - from + 2.0 * lead, tf.spec.right_hand, 0.0)
+                    .ok_or("the kernel couldn't model this thread — try it cosmetic (Modeled off)")?;
+                let span = Shape::cylinder(kv(start + dir * from), r_out + 1.0, kv(dir), to - from);
+                let g = swept.try_intersect(&span).ok_or("the kernel couldn't trim this thread")?;
+                GROOVES.with(|c| {
+                    let mut c = c.borrow_mut();
+                    c.push((key, g.clone()));
+                    bounded(&mut c);
+                });
+                g
+            }
+        };
         let before: f64 = acc.iter().map(|(s, _)| s.volume()).sum();
         let (next, t_id) = apply(acc, groove, Operation::Cut, made_by)?;
         let removed = before - next.iter().map(|(s, _)| s.volume()).sum::<f64>();
@@ -1525,6 +1539,7 @@ thread_local! {
     static FINGERPRINTS: std::cell::RefCell<Vec<(Shape, String)>> = const { std::cell::RefCell::new(Vec::new()) };
     static FEATURES: std::cell::RefCell<Vec<(String, FeatureResult)>> = const { std::cell::RefCell::new(Vec::new()) };
     static BODIES: std::cell::RefCell<Vec<(Shape, BodyData)>> = const { std::cell::RefCell::new(Vec::new()) };
+    static GROOVES: std::cell::RefCell<Vec<(String, Shape)>> = const { std::cell::RefCell::new(Vec::new()) };
     static FACES_FOUND: std::cell::RefCell<Vec<(String, Option<FacePlane>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -1578,8 +1593,20 @@ fn remember(key: String, r: &FeatureResult) {
     });
 }
 
-/// What a hole cuts at each place: the bore, and a modeled thread's groove.
-type HoleCuts = Vec<(Shape, Option<Shape>)>;
+/// What a hole cuts at each place: the bore, and a modeled thread's groove
+/// with the most of it that lies inside the bore (cut by the bore anyway).
+type HoleCuts = Vec<(Shape, Option<(Shape, f64)>)>;
+
+/// Per unit length, the part of a hole's thread groove (on a bore of radius
+/// `r`) that starts inside the bore so it shares no face with it.
+fn thread_strip(r: f64, pitch: f64) -> f64 {
+    let ((r_in, r_out), (w_in, w_out)) = thread_profile(r, true, pitch);
+    let width = |x: f64| w_in + (w_out - w_in) * (x - r_in) / (r_out - r_in);
+    let (wa, wb) = (width(r_in), width(r));
+    let area = (wa + wb) / 2.0 * (r - r_in);
+    let r_c = r_in + (r - r_in) * (wa + 2.0 * wb) / (3.0 * (wa + wb));
+    area * std::f64::consts::TAU * r_c / pitch
+}
 
 /// The cutters for a hole and the threads it only shows.
 fn hole_tools(
@@ -1660,7 +1687,8 @@ fn hole_tools(
                 if end - start < t.pitch {
                     return Err("the hole is too shallow for a modeled thread".into());
                 }
-                groove = Some(thread_groove(&t, p, dir, start, end, h.thread.right_hand)?);
+                // (Straight threads; the strip is generous by the run-in above the face.)
+                groove = Some((thread_groove(&t, p, dir, start, end, h.thread.right_hand)?, thread_strip(bore / 2.0, t.pitch) * (end - start)));
             } else {
                 threads.push(CosmeticThread { origin: p, axis: dir.normalize(), radius: bore / 2.0 * 0.99, pitch: t.pitch, length: h.thread_depth(depth) });
             }
@@ -1943,7 +1971,7 @@ pub fn build_all(
                     let mut acc = current;
                     let mut touched = None;
                     for (bore, groove) in tools {
-                        let Some(groove) = groove else {
+                        let Some((groove, strip)) = groove else {
                             let (next, t) = apply(acc, bore, Operation::Cut, Feature::Hole(k))?;
                             (acc, touched) = (next, touched.or(t));
                             continue;
@@ -1953,13 +1981,12 @@ pub fn build_all(
                         // beside a helix; better an error than a wrong part).
                         let overlap = |a: &Shape| acc.iter().filter_map(|(s, _)| s.try_intersect(a)).map(|c| c.volume()).sum::<f64>();
                         let (ob, og) = (overlap(&bore), overlap(&groove));
-                        let ogb: f64 = acc.iter().filter_map(|(s, _)| s.try_intersect(&groove)?.try_intersect(&bore)).map(|c| c.volume()).sum();
-                        let want = ob + og - ogb;
                         let before = volume(&acc);
-                        let (next, t1) = apply(acc, groove, Operation::Cut, Feature::Hole(k))?;
-                        let (next, t2) = apply(next, bore, Operation::Cut, Feature::Hole(k))?;
+                        let (next, t2) = apply(acc, bore, Operation::Cut, Feature::Hole(k))?;
+                        let (next, t1) = apply(next, groove, Operation::Cut, Feature::Hole(k))?;
                         let removed = before - volume(&next);
-                        if (removed - want).abs() > 0.02 * want.max(1e-9) {
+                        // Bore and groove together, less the strip they share (at most).
+                        if removed < (ob + og - strip) * 0.98 || removed > (ob + og) * 1.02 {
                             return Err("the kernel couldn't cut this thread — try it cosmetic (Modeled off)".into());
                         }
                         (acc, touched) = (next, touched.or(t1).or(t2));
