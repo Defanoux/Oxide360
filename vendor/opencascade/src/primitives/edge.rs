@@ -97,6 +97,17 @@ impl Edge {
 
     pub fn ellipse() {}
 
+    /// opencad patch: the interpolated spline through `points` (as
+    /// `spline_from_points` without tangents), or None if OpenCASCADE can't
+    /// make it (it throws, e.g. on repeated points, which would abort).
+    pub fn try_spline_through(points: &[DVec3]) -> Option<Self> {
+        let curve = try_interpolate(points)?;
+        let curve_handle = ffi::geom::new_HandleGeomCurve_from_HandleGeom_BSplineCurve(&curve);
+        let mut make_edge = ffi::b_rep_builder_api::BRepBuilderAPI_MakeEdge_HandleGeomCurve(&curve_handle);
+        let edge = make_edge.pin_mut().Edge();
+        Some(Self::from_edge(edge))
+    }
+
     pub fn spline_from_points(
         points: impl IntoIterator<Item = DVec3>,
         tangents: Option<(DVec3, DVec3)>,
@@ -174,6 +185,28 @@ impl Edge {
 
         EdgeType::from(curve.GetType())
     }
+}
+
+/// The interpolated B-spline through `points`, or None when it can't be made.
+fn try_interpolate(points: &[DVec3]) -> Option<UniquePtr<ffi::geom::Handle_Geom_BSplineCurve>> {
+    if points.len() < 2 {
+        return None;
+    }
+    let mut array = ffi::t_col_gp::TColgp_HArray1OfPnt_new(1, points.len() as i32);
+    for (index, point) in points.iter().enumerate() {
+        array.pin_mut().SetValue(index as i32 + 1, &make_point(*point));
+    }
+    let array_handle = ffi::t_col_gp::new_HandleTColgpHArray1OfPnt_from_TColgpHArray1OfPnt(array);
+    let curve = ffi::geom_api::GeomAPI_Interpolate_try_curve(&array_handle);
+    (!curve.IsNull()).then_some(curve)
+}
+
+/// opencad patch: `count` points along the interpolated spline through
+/// `points`, evenly spaced in its parameter (ends included). None on failure.
+pub fn try_spline_samples(points: &[DVec3], count: usize) -> Option<Vec<DVec3>> {
+    let curve = try_interpolate(points)?;
+    let mut out = vec![0.0; 3 * count.max(2)];
+    ffi::geom_api::Geom_BSplineCurve_try_sample(&curve, &mut out).then(|| out.chunks_exact(3).map(|c| dvec3(c[0], c[1], c[2])).collect())
 }
 
 pub struct ApproximationSegmentIterator {

@@ -60,6 +60,7 @@ pub enum Icon {
     Folder,
     Gear,
     Part,
+    Spline,
 }
 
 const BLUE: Color32 = Color32::from_rgb(70, 145, 230);
@@ -485,6 +486,19 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             painter.circle_stroke(p(0.5, 0.5), w * 0.38, Stroke::new(thin.width * 1.2, ink));
             painter.circle_stroke(p(0.5, 0.5), w * 0.2, Stroke::new(thin.width * 1.2, orange));
             dot(0.5, 0.5, ink);
+        }
+        Icon::Spline => {
+            // A wavy curve through three fit points.
+            let pts: Vec<Pos2> = (0..=24)
+                .map(|i| {
+                    let t = i as f32 / 24.0;
+                    p(0.1 + 0.8 * t, 0.5 - 0.28 * (t * std::f32::consts::TAU * 0.85).sin())
+                })
+                .collect();
+            painter.add(egui::Shape::line(pts, Stroke::new(thin.width * 1.3, orange)));
+            for (x, y) in [(0.1, 0.5), (0.48, 0.52), (0.9, 0.62)] {
+                dot(x, y, ink);
+            }
         }
         Icon::Folder => {
             poly(&[(0.08, 0.28), (0.4, 0.28), (0.48, 0.38), (0.92, 0.38), (0.92, 0.84), (0.08, 0.84)], Color32::from_rgb(150, 150, 150));

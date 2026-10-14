@@ -220,6 +220,9 @@ pub enum Entity {
     /// Part of a circle, counter-clockwise from `a` to `b` around `center`.
     /// Its radius is |a − center| (the solver keeps |b − center| equal).
     Arc { center: PointId, a: PointId, b: PointId },
+    /// A fit-point spline: the smooth curve through `Sketch::splines[s]`
+    /// (ordinary sketch points, so they drag and take constraints).
+    Spline { s: usize },
 }
 
 /// Geometric constraints. Each (except Fix) is one equation for the solver.
@@ -389,6 +392,9 @@ pub struct Sketch {
     /// the geometry and are never solved. Missing entries mean driving.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub driven: Vec<bool>,
+    /// Each spline's fit points, in order (see `Entity::Spline`). Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub splines: Vec<Vec<PointId>>,
     /// A unit a dimension was typed in that differs from the design's ("1 in"
     /// in a mm design), by constraint index: it keeps showing in that unit.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -742,6 +748,7 @@ impl Sketch {
             label_shift: Vec::new(),
             driven: Vec::new(),
             dim_units: Vec::new(),
+            splines: Vec::new(),
             construction: Vec::new(),
         }
     }
@@ -864,8 +871,19 @@ impl Sketch {
             Some(&Entity::Circle { center, .. }) => vec![center],
             Some(&Entity::Arc { center, a, b }) => vec![center, a, b],
             Some(&Entity::Point { p }) => vec![p],
+            Some(&Entity::Spline { s }) => self.splines.get(s).cloned().unwrap_or_default(),
             None => Vec::new(),
         }
+    }
+
+    /// Where a spline's fit points are now.
+    pub fn spline_fit(&self, s: usize) -> Vec<DVec2> {
+        self.splines.get(s).map_or(Vec::new(), |l| l.iter().map(|&p| self.points[p]).collect())
+    }
+
+    /// Points along spline `s` (see `spline::polyline`).
+    pub fn spline_curve(&self, s: usize) -> Vec<DVec2> {
+        crate::spline::polyline(&self.spline_fit(s))
     }
 
     /// Geometry brought in by Project: construction, and locked where it lies.
@@ -910,6 +928,7 @@ impl Sketch {
                     Entity::Line { a, b } => dist_to_segment(p, self.points[a], self.points[b]),
                     Entity::Circle { center, radius } => (p.distance(self.points[center]) - radius).abs(),
                     Entity::Point { .. } => f64::INFINITY, // picked as its point
+                    Entity::Spline { s } => crate::spline::distance(&self.spline_fit(s), p),
                     Entity::Arc { .. } => {
                         let (c, r, a0, sweep) = self.arc_geometry(id).expect("an arc");
                         let ang = (p - c).y.atan2((p - c).x);
@@ -973,6 +992,14 @@ impl Sketch {
                         pts.iter().all(|&p| inside(p))
                     }
                 }
+                Entity::Spline { s } => {
+                    let pts = self.spline_curve(s);
+                    if crossing {
+                        pts.windows(2).any(|w| segment_touches_rect(w[0], w[1], lo, hi))
+                    } else {
+                        pts.iter().all(|&p| inside(p))
+                    }
+                }
             };
             if hit {
                 out.push(Sel::Entity(e));
@@ -991,6 +1018,7 @@ impl Sketch {
                 Entity::Circle { center, .. } => vec![center],
                 Entity::Point { p } => vec![p],
                 Entity::Arc { center, a, b } => vec![center, a, b],
+                Entity::Spline { s } => self.splines.get(s).cloned().unwrap_or_default(),
             }
         };
         let mut ents: Vec<EntityId> = Vec::new();
@@ -1049,12 +1077,17 @@ impl Sketch {
                 _ => {}
             }
         }
+        // A spline loses a deleted fit point (and goes when fewer than two are left).
+        for list in &mut self.splines {
+            list.retain(|&p| !dead_pts[p]);
+        }
         for (i, e) in self.entities.iter().enumerate() {
             let uses_dead = match *e {
                 Entity::Line { a, b } => dead_pts[a] || dead_pts[b],
                 Entity::Circle { center, .. } => dead_pts[center],
                 Entity::Point { p } => dead_pts[p],
                 Entity::Arc { center, a, b } => dead_pts[center] || dead_pts[a] || dead_pts[b],
+                Entity::Spline { s } => self.splines.get(s).is_none_or(|l| l.len() < 2),
             };
             if uses_dead {
                 dead_ents[i] = true;
@@ -1101,6 +1134,11 @@ impl Sketch {
                     used[a] = true;
                     used[b] = true;
                 }
+                Entity::Spline { s } => {
+                    for &p in self.splines.get(s).into_iter().flatten() {
+                        used[p] = true;
+                    }
+                }
             }
         }
         // A Fix or distance on a point that no longer has geometry is meaningless.
@@ -1129,8 +1167,22 @@ impl Sketch {
                     *a = pt_map[*a];
                     *b = pt_map[*b];
                 }
+                Entity::Spline { .. } => {}
             }
         }
+        // Splines: keep the lists still used (renumbered), their points renumbered.
+        let mut spline_map = vec![usize::MAX; self.splines.len()];
+        let mut lists = Vec::new();
+        for e in &mut self.entities {
+            if let Entity::Spline { s } = e {
+                if let Some(list) = self.splines.get(*s) {
+                    spline_map[*s] = lists.len();
+                    lists.push(list.iter().map(|&p| pt_map[p]).collect::<Vec<_>>());
+                    *s = spline_map[*s];
+                }
+            }
+        }
+        self.splines = lists;
         use Constraint::*;
         for c in &mut self.constraints {
             *c = match *c {
@@ -1186,7 +1238,7 @@ impl Sketch {
                 Entity::Line { a, b } => Some(self.points[a].midpoint(self.points[b])).filter(|&m| on_outline(m)),
                 Entity::Circle { center, radius } => Some(self.points[center]).filter(|c| c.distance(p) < radius),
                 Entity::Arc { center, .. } => self.arc_geometry(e).and_then(|(_, r, _, _)| Some(self.points[center]).filter(|c| c.distance(p) < r)),
-                Entity::Point { .. } => None,
+                Entity::Point { .. } | Entity::Spline { .. } => None,
             })
             .filter(|r| r.distance(p) > tol) // not when already on it
             .collect();
@@ -1214,6 +1266,7 @@ impl Sketch {
             Entity::Line { a, b } => dist_to_segment(p, self.points[a], self.points[b]),
             Entity::Circle { center, radius } => (p.distance(self.points[center]) - radius).abs(),
             Entity::Point { p: q } => p.distance(self.points[q]),
+            Entity::Spline { s } => crate::spline::distance(&self.spline_fit(s), p),
             Entity::Arc { .. } => {
                 let Some((c, r, a0, sweep)) = self.arc_geometry(e) else { return f64::INFINITY };
                 let ang = (p - c).y.atan2((p - c).x);
@@ -1240,6 +1293,7 @@ impl Sketch {
             Entity::Circle { radius, .. } => std::f64::consts::TAU * radius,
             Entity::Arc { .. } => self.arc_geometry(e).map_or(0.0, |(_, r, _, sweep)| r * sweep),
             Entity::Point { .. } => 0.0,
+            Entity::Spline { s } => self.spline_curve(s).windows(2).map(|w| w[0].distance(w[1])).sum(),
         };
         let mut out = Vec::new();
         match (ents.as_slice(), pts.as_slice()) {
@@ -1260,6 +1314,7 @@ impl Sketch {
                         out.extend([("Radius", r, Length), ("Length", length(*e), Length)]);
                     }
                 }
+                Entity::Spline { .. } => out.push(("Length", length(*e), Length)),
                 Entity::Point { p } => {
                     let q = self.points[p];
                     out.extend([("X", q.x, Length), ("Y", q.y, Length)]);
@@ -1533,6 +1588,13 @@ impl Sketch {
                     n[b] += 1;
                     n[center] += 1;
                 }
+                // A spline's ends join things; its inside fit points are its own.
+                Entity::Spline { s } => {
+                    if let (Some(&a), Some(&b)) = (self.splines.get(s).and_then(|l| l.first()), self.splines.get(s).and_then(|l| l.last())) {
+                        n[a] += 1;
+                        n[b] += 1;
+                    }
+                }
             }
         }
         // Tied onto another line or circle: a joint too.
@@ -1571,6 +1633,8 @@ impl Sketch {
                 Entity::Circle { center, .. } if center == p => return None,
                 Entity::Arc { a, b, .. } if a == p || b == p => return None,
                 Entity::Circle { .. } | Entity::Arc { .. } => {}
+                Entity::Spline { s } if self.splines.get(s).is_some_and(|l| l.first() == Some(&p) || l.last() == Some(&p)) => return None,
+                Entity::Spline { .. } => {}
             }
         }
         match found.as_slice() {
@@ -1766,6 +1830,23 @@ impl Sketch {
                         }
                     }
                 }
+                // A spline cuts where its curve crosses (the new end isn't tied to it).
+                Entity::Spline { s } => {
+                    let ends = self.splines.get(s).map_or(Vec::new(), |l| [l.first(), l.last()].into_iter().flatten().copied().collect());
+                    for w in self.spline_curve(s).windows(2) {
+                        let f = w[1] - w[0];
+                        let denom = d.perp_dot(f);
+                        if denom.abs() < 1e-12 * len * f.length().max(1e-12) {
+                            continue;
+                        }
+                        let t = (w[0] - pa).perp_dot(f) / denom;
+                        let u = (w[0] - pa).perp_dot(d) / denom;
+                        if t > t_lo && t < t_hi && (0.0..=1.0).contains(&u) {
+                            let x = pa + d * t;
+                            cuts.push((t, x, i, ends.iter().copied().find_map(|q| near(q, x))));
+                        }
+                    }
+                }
                 Entity::Point { .. } => {}
             }
         }
@@ -1859,10 +1940,11 @@ impl Sketch {
         let mut out = copy_to_new;
         for (x, other) in ties {
             let Some(p) = trial.points.iter().position(|q| *q == x) else { continue };
-            out.push(match trial.entities.get(other) {
-                Some(Entity::Line { .. }) => Constraint::OnLine(p, other),
-                _ => Constraint::OnCircle(p, other),
-            });
+            match trial.entities.get(other) {
+                Some(Entity::Line { .. }) => out.push(Constraint::OnLine(p, other)),
+                Some(Entity::Circle { .. } | Entity::Arc { .. }) => out.push(Constraint::OnCircle(p, other)),
+                _ => {} // (nothing holds a point on a spline yet)
+            }
         }
         *self = trial;
         Ok(out)
@@ -1915,6 +1997,7 @@ impl Sketch {
                         offer(x, i, None);
                     }
                 }
+                Entity::Spline { .. } => {} // (curves cut by splines: not yet)
                 Entity::Arc { a, b, .. } => {
                     let Some((c2, r2, b0, sw2)) = self.arc_geometry(i) else { continue };
                     for x in circle_circle(c, r, c2, r2) {
@@ -2024,10 +2107,11 @@ impl Sketch {
         let mut out = extra;
         for (x, other) in ties {
             let Some(p) = trial.points.iter().position(|q| *q == x) else { continue };
-            out.push(match trial.entities.get(other) {
-                Some(Entity::Line { .. }) => Constraint::OnLine(p, other),
-                _ => Constraint::OnCircle(p, other),
-            });
+            match trial.entities.get(other) {
+                Some(Entity::Line { .. }) => out.push(Constraint::OnLine(p, other)),
+                Some(Entity::Circle { .. } | Entity::Arc { .. }) => out.push(Constraint::OnCircle(p, other)),
+                _ => {} // (nothing holds a point on a spline yet)
+            }
         }
         *self = trial;
         Ok(out)
@@ -2268,6 +2352,8 @@ pub enum Tool {
     PolygonEdge,
     /// Three lines it touches.
     Circle3Tangent,
+    /// Fit-point spline: click its points; Enter (or clicking the last again) finishes.
+    Spline,
     /// Pick geometry for a constraint ("Dimension", "Parallel", …): the
     /// constraint is added as soon as the picks are enough for it.
     Constrain(&'static str),
@@ -2295,6 +2381,7 @@ impl Tool {
             Tool::Rectangle3Point => "3-Point Rectangle",
             Tool::RectangleCenter => "Center Rectangle",
             Tool::Point => "Point",
+            Tool::Spline => "Spline",
             Tool::Circle => "Center Diameter Circle",
             Tool::Circle2Point => "2-Point Circle",
             Tool::Circle3Point => "3-Point Circle",
@@ -2343,6 +2430,8 @@ pub struct Editor {
     pub construction: bool,
     /// Polygon tools: the number of sides (0 = not set yet, which means 6).
     pub polygon_sides: usize,
+    /// Spline tool: the fit points clicked so far.
+    pub spline: Vec<Anchor>,
 }
 
 /// A slot: the two end-cap centres and half the width.
@@ -2378,11 +2467,52 @@ impl Editor {
         self.start = None;
         self.second = None;
         self.tangent_lines.clear();
+        self.spline.clear();
     }
 
     /// Is something half-made (a line started, circle points or lines picked)?
     pub fn busy(&self) -> bool {
-        self.start.is_some() || self.second.is_some() || !self.tangent_lines.is_empty()
+        self.start.is_some() || self.second.is_some() || !self.tangent_lines.is_empty() || !self.spline.is_empty()
+    }
+
+    /// The spline being drawn, through its points so far and `here` (the cursor).
+    pub fn spline_preview(&self, sk: &Sketch, here: DVec2) -> Vec<DVec2> {
+        let mut pts: Vec<DVec2> = self.spline.iter().filter(|a| sk.is_valid_anchor(**a)).map(|&a| sk.pos(a)).collect();
+        if pts.last().is_none_or(|l| l.distance(here) > MIN_SIZE) {
+            pts.push(here);
+        }
+        crate::spline::polyline(&pts)
+    }
+
+    /// Finish the spline being drawn: its points become sketch points (tied
+    /// onto lines / axes they were dropped on) and the curve goes through
+    /// them. Needs two points; returns the constraints to add.
+    pub fn finish_spline(&mut self, sk: &mut Sketch) -> Vec<Constraint> {
+        let anchors: Vec<Anchor> = std::mem::take(&mut self.spline).into_iter().filter(|a| sk.is_valid_anchor(*a)).collect();
+        let mut ties = Vec::new();
+        let mut pts: Vec<PointId> = Vec::new();
+        for a in anchors {
+            if pts.last().is_some_and(|&l| sk.points[l].distance(sk.pos(a)) < MIN_SIZE) {
+                continue; // the same spot twice
+            }
+            let p = sk.resolve(a);
+            match a {
+                Anchor::OnLine(e, _) => ties.push(Constraint::OnLine(p, e)),
+                Anchor::OnAxis(axis, _) => ties.push(Constraint::OnAxis(p, axis)),
+                _ => {}
+            }
+            pts.push(p);
+        }
+        if pts.len() < 2 {
+            sk.delete(&[]); // points made for nothing
+            return Vec::new();
+        }
+        sk.splines.push(pts);
+        sk.entities.push(Entity::Spline { s: sk.splines.len() - 1 });
+        if self.construction {
+            sk.set_construction(sk.entities.len() - 1, true);
+        }
+        ties
     }
 
     /// Tangent-circle tools: pick a line it should touch. Picking the same
@@ -2641,6 +2771,14 @@ impl Editor {
             }
             p
         };
+        // Spline: each click is a fit point; the last one clicked again finishes.
+        if self.tool == Tool::Spline {
+            if self.spline.last().is_some_and(|&l| sk.is_valid_anchor(l) && sk.pos(l).distance(sk.pos(at)) < MIN_SIZE) {
+                return self.finish_spline(sk);
+            }
+            self.spline.push(at);
+            return Vec::new();
+        }
         if self.tool == Tool::Point {
             if !matches!(at, Anchor::Point(_)) {
                 let p = resolve(sk, at);
@@ -2703,6 +2841,7 @@ impl Editor {
                     Entity::Line { a, b } => a == center || b == center,
                     Entity::Circle { center: c, .. } => c == center,
                     Entity::Arc { center: c, a, b } => c == center || a == center || b == center,
+                    Entity::Spline { s } => sk.splines.get(s).is_some_and(|l| l.contains(&center)),
                 });
                 if !used {
                     sk.entities.push(Entity::Point { p: center });
@@ -2831,6 +2970,7 @@ impl Editor {
                         Entity::Circle { center: c, .. } => c == center,
                         Entity::Arc { center: c, a, b } => c == center || a == center || b == center,
                         Entity::Point { .. } => false,
+                        Entity::Spline { s } => sk.splines.get(s).is_some_and(|l| l.contains(&center)),
                     })
                 {
                     sk.entities.push(Entity::Point { p: center });
@@ -2946,7 +3086,7 @@ impl Editor {
                 sk.entities.push(Entity::Arc { center: c, a, b });
                 ties
             }
-            Tool::Circle2Tangent | Tool::Circle3Tangent | Tool::Constrain(_) | Tool::Point => Vec::new(),
+            Tool::Circle2Tangent | Tool::Circle3Tangent | Tool::Constrain(_) | Tool::Point | Tool::Spline => Vec::new(),
             Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Extend | Tool::Offset | Tool::Mirror | Tool::Project => Vec::new(),
             Tool::Select => Vec::new(),
         }
@@ -4049,6 +4189,38 @@ mod trim_tests {
         let total: f64 = arcs.iter().map(|&e| sk.arc_geometry(e).unwrap().3).sum();
         assert!((total - 2.0 * PI / 3.0).abs() < 1e-9, "two 60° arcs left: {total}");
         assert!(cs.iter().any(|k| matches!(k, Constraint::Equal(..))));
+    }
+
+    #[test]
+    fn the_spline_tool_draws_through_its_points_and_deleting_one_shortens_it() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Spline);
+        for (x, y) in [(0.0, 0.0), (10.0, 6.0), (20.0, -3.0), (30.0, 2.0)] {
+            assert!(ed.click(&mut sk, Anchor::Free(DVec2::new(x, y))).is_empty());
+        }
+        assert!(sk.entities.is_empty(), "not made until finished");
+        // Clicking the last point again finishes it.
+        ed.click(&mut sk, Anchor::Free(DVec2::new(30.0, 2.0)));
+        assert_eq!(sk.entities, vec![Entity::Spline { s: 0 }]);
+        assert_eq!(sk.splines[0].len(), 4);
+        assert!(!ed.busy());
+        let curve = sk.spline_curve(0);
+        assert!(curve[0].distance(DVec2::ZERO) < 1e-9 && curve.last().unwrap().distance(DVec2::new(30.0, 2.0)) < 1e-9);
+        crate::solver::solve(&mut sk.clone(), &[]).unwrap();
+        // The second fit point deleted: three left, still a spline.
+        let p = sk.splines[0][1];
+        sk.delete(&[Sel::Point(p)]);
+        assert_eq!(sk.splines.len(), 1);
+        assert_eq!(sk.splines[0].len(), 3);
+        assert!(sk.splines[0].iter().all(|&q| q < sk.points.len()));
+        // Down to one point: the spline goes.
+        let (a, b) = (sk.splines[0][0], sk.splines[0][1]);
+        sk.delete(&[Sel::Point(a), Sel::Point(b)]);
+        assert!(sk.entities.is_empty() && sk.splines.is_empty());
+        // Enter-style finish with one point makes nothing.
+        ed.click(&mut sk, Anchor::Free(DVec2::new(5.0, 5.0)));
+        assert!(ed.finish_spline(&mut sk).is_empty() && sk.entities.is_empty());
     }
 
     #[test]

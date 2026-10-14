@@ -191,6 +191,7 @@ fn selection_points(sk: &Sketch, objects: &[Sel]) -> Vec<DVec2> {
                 }
                 Some(&Entity::Point { p }) => pts.push(sk.points[p]),
                 Some(&Entity::Arc { center, a, b }) => pts.extend([sk.points[center], sk.points[a], sk.points[b]]),
+                Some(&Entity::Spline { s }) => pts.extend(sk.spline_fit(s)),
                 None => {}
             },
         }

@@ -98,6 +98,11 @@ impl OpenCad {
                         round(c, r, a0, sweep)
                     }
                     sketch::Entity::Point { p } => return Some(Picked { pick, ..Picked::point(w(sk.points[p])) }),
+                    sketch::Entity::Spline { s } => {
+                        let pts: Vec<DVec3> = sk.spline_curve(s).into_iter().map(w).collect();
+                        let length = pts.windows(2).map(|q| q[0].distance(q[1])).sum();
+                        (Geom::Curve { length }, segments(&pts))
+                    }
                 }
             }
             Pick::Profile { sketch, region } => {

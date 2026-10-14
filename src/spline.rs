@@ -1,0 +1,89 @@
+//! Fit-point splines: the smooth curve through a sketch's fit points. It is
+//! the kernel's own curve (OpenCASCADE's interpolated B-spline), sampled for
+//! drawing, picking and profiles, so the sketch and the solid always agree.
+//! Samples are cached by the fit points (dragging changes them every frame,
+//! the cache keeps the rest cheap).
+
+use glam::DVec2;
+use glam24::DVec3 as KVec;
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+/// Points per span (between two fit points) when sampling.
+pub const PER_SPAN: usize = 24;
+
+thread_local! {
+    static CACHE: RefCell<HashMap<Vec<[u64; 2]>, Vec<DVec2>>> = RefCell::new(HashMap::new());
+}
+
+/// Points along the spline through `pts`, ends included. Straight lines
+/// between the points if the kernel can't make the curve (e.g. two fit
+/// points in the same place).
+pub fn polyline(pts: &[DVec2]) -> Vec<DVec2> {
+    if pts.len() < 3 {
+        return pts.to_vec(); // two points: a straight line
+    }
+    let key: Vec<[u64; 2]> = pts.iter().map(|p| [p.x.to_bits(), p.y.to_bits()]).collect();
+    if let Some(hit) = CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return hit;
+    }
+    let too_close = pts.windows(2).any(|w| w[0].distance(w[1]) < 1e-6);
+    let made = (!too_close)
+        .then(|| {
+            let k: Vec<KVec> = pts.iter().map(|p| KVec::new(p.x, p.y, 0.0)).collect();
+            opencascade::primitives::try_spline_samples(&k, PER_SPAN * (pts.len() - 1) + 1)
+        })
+        .flatten()
+        .map(|v| v.into_iter().map(|q| DVec2::new(q.x, q.y)).collect::<Vec<_>>())
+        .unwrap_or_else(|| pts.to_vec());
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() > 512 {
+            c.clear();
+        }
+        c.insert(key, made.clone());
+    });
+    made
+}
+
+/// How far `p` is from the spline through `pts`.
+pub fn distance(pts: &[DVec2], p: DVec2) -> f64 {
+    polyline(pts).windows(2).map(|w| crate::sketch::dist_to_segment(p, w[0], w[1])).fold(f64::INFINITY, f64::min)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PTS: [DVec2; 5] = [DVec2::new(0.0, 0.0), DVec2::new(10.0, 6.0), DVec2::new(20.0, -3.0), DVec2::new(35.0, 4.0), DVec2::new(40.0, 0.0)];
+
+    #[test]
+    fn it_runs_from_first_to_last_through_every_fit_point() {
+        let line = polyline(&PTS);
+        assert_eq!(line.len(), PER_SPAN * 4 + 1);
+        assert!(line[0].distance(PTS[0]) < 1e-9 && line.last().unwrap().distance(PTS[4]) < 1e-9);
+        for p in PTS {
+            assert!(distance(&PTS, p) < 0.02, "{p} is {} off", distance(&PTS, p));
+        }
+        assert!(distance(&PTS, DVec2::new(20.0, 30.0)) > 20.0);
+    }
+
+    #[test]
+    fn two_points_or_bad_points_fall_back_to_straight_lines() {
+        let two = [DVec2::ZERO, DVec2::new(4.0, 2.0)];
+        assert_eq!(polyline(&two), two.to_vec());
+        let repeated = [DVec2::ZERO, DVec2::ZERO, DVec2::new(5.0, 1.0)];
+        assert_eq!(polyline(&repeated), repeated.to_vec(), "no crash on repeated points");
+    }
+
+    #[test]
+    fn the_sketch_spline_is_the_kernels_spline() {
+        let k: Vec<KVec> = PTS.iter().map(|p| KVec::new(p.x, p.y, 0.0)).collect();
+        let edge = opencascade::primitives::Edge::try_spline_through(&k).expect("a spline");
+        let ours = polyline(&PTS);
+        for q in edge.approximation_segments() {
+            let d = ours.windows(2).map(|w| crate::sketch::dist_to_segment(DVec2::new(q.x, q.y), w[0], w[1])).fold(f64::INFINITY, f64::min);
+            assert!(d < 0.02, "kernel point {q:?} is {d} off the drawn curve");
+        }
+    }
+}

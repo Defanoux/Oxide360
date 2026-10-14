@@ -568,6 +568,9 @@ impl OpenCad {
                     if icons::button(ui, Icon::Slot, "Slot: click the two end centres, then the width", true, self.editor.tool == Tool::Slot).clicked() {
                         self.editor.set_tool(Tool::Slot);
                     }
+                    if icons::button(ui, Icon::Spline, "Spline: click the points it goes through; Enter (or click the last point again) finishes", true, self.editor.tool == Tool::Spline).clicked() {
+                        self.editor.set_tool(Tool::Spline);
+                    }
                 });
                 let _ = i;
                 let t = self.editor.tool;

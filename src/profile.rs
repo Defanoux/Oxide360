@@ -27,6 +27,9 @@ const TOL: f64 = 1e-6;
 pub enum Curve {
     Line,
     Arc { center: DVec2, radius: f64 },
+    /// Part of spline `s` (its index in the sketch's splines); the kernel
+    /// rebuilds a smooth curve through a run of these.
+    Spline { s: usize },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -293,6 +296,7 @@ impl Graph {
 /// the circles that touch nothing (they stay whole loops).
 fn arrangement(sk: &Sketch) -> (Graph, Vec<(DVec2, f64)>) {
     let mut lines: Vec<(DVec2, DVec2)> = Vec::new();
+    let mut line_tags: Vec<Curve> = Vec::new(); // per entry in `lines`: a line, or a spline's piece
     let mut circles: Vec<(DVec2, f64)> = Vec::new();
     // Per circle: None for a whole circle, or an arc's (start angle, sweep).
     let mut spans: Vec<Option<(f64, f64)>> = Vec::new();
@@ -302,7 +306,8 @@ fn arrangement(sk: &Sketch) -> (Graph, Vec<(DVec2, f64)>) {
         }
         match *e {
             Entity::Line { a, b } if sk.points[a].distance(sk.points[b]) > TOL => {
-                lines.push((sk.points[a], sk.points[b]))
+                lines.push((sk.points[a], sk.points[b]));
+                line_tags.push(Curve::Line);
             }
             Entity::Line { .. } => {}
             Entity::Circle { center, radius } if radius > TOL => {
@@ -313,6 +318,15 @@ fn arrangement(sk: &Sketch) -> (Graph, Vec<(DVec2, f64)>) {
                 if let Some((c, r, a0, sweep)) = sk.arc_geometry(i).filter(|g| g.1 > TOL) {
                     circles.push((c, r));
                     spans.push(Some((a0, sweep)));
+                }
+            }
+            // A spline goes in as its short segments, tagged with which spline it is.
+            Entity::Spline { s } => {
+                for w in sk.spline_curve(s).windows(2) {
+                    if w[0].distance(w[1]) > TOL {
+                        lines.push((w[0], w[1]));
+                        line_tags.push(Curve::Spline { s });
+                    }
                 }
             }
             Entity::Circle { .. } | Entity::Point { .. } => {}
@@ -364,7 +378,7 @@ fn arrangement(sk: &Sketch) -> (Graph, Vec<(DVec2, f64)>) {
         ts.sort_by(|a, b| a.total_cmp(b));
         let ids: Vec<usize> = ts.iter().map(|&t| g.vertex(p + (q - p) * t)).collect();
         for w in ids.windows(2) {
-            g.edge(w[0], w[1], Curve::Line);
+            g.edge(w[0], w[1], line_tags[i]);
         }
     }
     let mut whole = Vec::new();

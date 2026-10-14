@@ -766,7 +766,9 @@ impl OpenCad {
                     self.delete_selection();
                 }
                 if esc {
-                    if self.editor.busy() {
+                    if self.editor.tool == Tool::Spline && self.editor.spline.len() >= 2 {
+                        self.finish_spline(); // Esc keeps the spline drawn so far
+                    } else if self.editor.busy() {
                         self.editor.cancel();
                     } else if matches!(self.editor.tool, Tool::Constrain(_)) && !self.editor.selection.is_empty() {
                         self.editor.selection.clear(); // drop the picks, stay in the tool
@@ -1234,7 +1236,12 @@ impl OpenCad {
                 | Tool::Slot
                 | Tool::PolygonCircumscribed
                 | Tool::PolygonInscribed
-                | Tool::PolygonEdge => {
+                | Tool::PolygonEdge
+                | Tool::Spline => {
+                    // Spline: Enter finishes it (as Esc does, keeping the points so far).
+                    if self.editor.tool == Tool::Spline && !typing && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        self.finish_spline();
+                    }
                     // After the centre (circle), the first point (line) or the two centres (slot),
                     // typing a number sets the diameter / length / width.
                     let wants_number = (matches!(self.editor.tool, Tool::Circle | Tool::Line) && self.editor.start.is_some())
@@ -1796,6 +1803,15 @@ impl OpenCad {
                             }
                         }
                     }
+                    Entity::Spline { s } => {
+                        for w in sk.spline_curve(s).windows(2) {
+                            if dashed {
+                                view.dashed(plane.to_world(w[0]), plane.to_world(w[1]), stroke);
+                            } else {
+                                view.line(plane.to_world(w[0]), plane.to_world(w[1]), stroke);
+                            }
+                        }
+                    }
                 }
             }
             if let (true, Some((above, beside, q))) = (active, self.line_up) {
@@ -1831,7 +1847,7 @@ impl OpenCad {
                                     view.arc(&plane, c, r, a0, sweep, stroke);
                                 }
                             }
-                            Entity::Point { .. } => {}
+                            Entity::Point { .. } | Entity::Spline { .. } => {}
                         }
                     }
                 }
@@ -1978,6 +1994,13 @@ impl OpenCad {
                             if let (Some(pc), Some(pm)) = (projected[center], view.project(plane.to_world(mid))) {
                                 place(g, pm, (pm - pc).normalize_or_zero(), 6.0);
                             }
+                        }
+                    }
+                    // Beside the middle of the curve.
+                    Entity::Spline { s } => {
+                        let curve = sk.spline_curve(s);
+                        if let Some(px) = curve.get(curve.len() / 2).and_then(|&m| view.project(plane.to_world(m))) {
+                            place(g, px, Vec2::new(0.0, -1.0), 8.0);
                         }
                     }
                 }
@@ -2242,6 +2265,23 @@ impl OpenCad {
                     }
                 }
                 status = format!("x {}  y {}", u.show(here.x), u.show(here.y));
+                // The spline being drawn: through its points and the cursor.
+                if self.editor.tool == Tool::Spline && !self.editor.spline.is_empty() {
+                    let curve = self.editor.spline_preview(sk, here);
+                    for w in curve.windows(2) {
+                        view.line(plane.to_world(w[0]), plane.to_world(w[1]), Stroke::new(1.5, COL_PREVIEW));
+                    }
+                    for a in self.editor.spline.iter().filter(|a| sk.is_valid_anchor(**a)) {
+                        if let Some(px) = view.project(plane.to_world(sk.pos(*a))) {
+                            painter.circle_filled(to_pos(px), 3.5, COL_PREVIEW);
+                        }
+                    }
+                    status = format!(
+                        "{} point{} — click more, Enter (or click the last again) to finish",
+                        self.editor.spline.len(),
+                        if self.editor.spline.len() == 1 { "" } else { "s" }
+                    );
+                }
                 if let Some(start) = self.editor.start {
                     let from = sk.pos(start);
                     let preview = Stroke::new(1.5, COL_PREVIEW);

@@ -305,6 +305,21 @@ fn loop_wire(plane: &Frame, pts: &[DVec2], curves: &[Curve]) -> Result<Wire, Str
                 edges.push(Edge::arc(p3(a), p3(mid), p3(b)));
                 i = j;
             }
+            // A run of one spline's pieces: the smooth curve through them.
+            spline @ Curve::Spline { .. } => {
+                let mut j = i + 1;
+                while j < n && curve(j) == spline {
+                    j += 1;
+                }
+                let run: Vec<KVec> = (i..=j).map(|k| p3(at(k))).collect();
+                let edge = if run.len() == 2 {
+                    Edge::segment(run[0], run[1])
+                } else {
+                    Edge::try_spline_through(&run).ok_or("the kernel couldn't make a spline in this profile")?
+                };
+                edges.push(edge);
+                i = j;
+            }
         }
     }
     Ok(Wire::from_edges(&edges))
@@ -871,6 +886,7 @@ fn sketch_anchor(sk: &Sketch) -> DVec2 {
             crate::sketch::Entity::Circle { center, .. } => vec![sk.points[center]],
             crate::sketch::Entity::Point { .. } => vec![],
             crate::sketch::Entity::Arc { center, a, b } => vec![sk.points[center], sk.points[a], sk.points[b]],
+            crate::sketch::Entity::Spline { s } => sk.spline_fit(s),
         })
         .collect();
     if used.is_empty() { DVec2::ZERO } else { used.iter().copied().sum::<DVec2>() / used.len() as f64 }
@@ -1968,6 +1984,29 @@ mod tests {
         assert_eq!(early.error_count(), 1);
         assert!(early.remove_errors[0].as_deref().is_some_and(|e| e.contains("gone")));
         assert_eq!(early.bodies.len(), 2, "the rest still builds");
+    }
+
+    #[test]
+    fn a_spline_and_a_line_close_a_profile_that_extrudes() {
+        // A spline arching over (0,0)…(40,0), closed by the line along the bottom.
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Spline);
+        for (x, y) in [(0.0, 0.0), (10.0, 12.0), (30.0, 12.0), (40.0, 0.0)] {
+            ed.click(&mut sk, free(x, y));
+        }
+        ed.finish_spline(&mut sk);
+        let (a, b) = (sk.splines[0][0], sk.splines[0][3]);
+        sk.entities.push(crate::sketch::Entity::Line { a, b });
+        let regions = find_regions(&sk);
+        assert_eq!(regions.len(), 1, "one closed profile");
+        let area = regions[0].area();
+        let m = build4(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &timeline(1, 1));
+        assert_eq!(m.errors, vec![None]);
+        let v = total(&m);
+        // The solid follows the smooth curve; the profile's polygon is its
+        // sampled version, so they agree closely but not exactly.
+        assert!((v - area * 5.0).abs() < 1e-3 * area * 5.0, "volume {v} vs {}", area * 5.0);
     }
 
     #[test]

@@ -94,6 +94,11 @@ fn copy_chosen(
             Entity::Point { p } => Entity::Point { p: image(sk, p) },
             Entity::Arc { center, a, b } if reverse_arcs => Entity::Arc { center: image(sk, center), a: image(sk, b), b: image(sk, a) },
             Entity::Arc { center, a, b } => Entity::Arc { center: image(sk, center), a: image(sk, a), b: image(sk, b) },
+            Entity::Spline { s } => {
+                let list: Vec<PointId> = sk.splines[s].clone().into_iter().map(|p| image(sk, p)).collect();
+                sk.splines.push(list);
+                Entity::Spline { s: sk.splines.len() - 1 }
+            }
         };
         let was_construction = sk.is_construction(e);
         sk.entities.push(copy);

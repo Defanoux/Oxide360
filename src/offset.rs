@@ -120,7 +120,7 @@ impl Sketch {
                         }
                     }
                 }
-                Entity::Point { .. } => {}
+                Entity::Point { .. } | Entity::Spline { .. } => {} // (extending to a spline: not yet)
             }
         }
         let Some((_, x, other, join)) = best else {
@@ -251,7 +251,7 @@ impl Sketch {
                 let off = at.distance(self.points[center]) - radius;
                 (if off < 0.0 { 1.0 } else { -1.0 }, off.abs())
             }
-            Entity::Point { .. } => (1.0, 0.0),
+            Entity::Point { .. } | Entity::Spline { .. } => (1.0, 0.0),
         }
     }
 
@@ -316,8 +316,8 @@ impl Sketch {
     /// `distance` says. Returns the new entities. Corners are kept sharp where
     /// the moved pieces cross; the originals stay.
     pub fn offset_chain(&mut self, e: EntityId, at: DVec2, distance: Option<f64>) -> Result<Vec<EntityId>, String> {
-        if e >= self.entities.len() || matches!(self.entities[e], Entity::Point { .. }) {
-            return Err("Offset works on lines, arcs and circles".into());
+        if e >= self.entities.len() || matches!(self.entities[e], Entity::Point { .. } | Entity::Spline { .. }) {
+            return Err("Offset works on lines, arcs and circles (not splines yet)".into());
         }
         let (pieces, closed) = self.chain_of(e)?;
         let at_piece = pieces.iter().copied().find(|p| p.e == e).expect("e is in its chain");

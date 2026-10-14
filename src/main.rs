@@ -31,6 +31,7 @@ mod app;
 mod measure;
 mod units;
 mod keys;
+mod spline;
 mod model;
 mod offset;
 mod origin;

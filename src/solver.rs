@@ -456,6 +456,7 @@ fn collapsed(before: &Sketch, after: &Sketch) -> bool {
         Entity::Circle { radius, .. } => radius,
         Entity::Arc { .. } => sk.arc_geometry(e).map_or(0.0, |(_, r, _, _)| r),
         Entity::Point { .. } => 0.0,
+        Entity::Spline { s } => sk.spline_fit(s).windows(2).map(|w| w[0].distance(w[1])).sum(),
     };
     (0..before.entities.len().min(after.entities.len())).any(|e| {
         let (b, a) = (size(before, e), size(after, e));
@@ -661,6 +662,7 @@ fn solve_with(sk: &mut Sketch, pinned: &[PointId], soft: Option<PointId>, stiff:
             Entity::Circle { radius, .. } => radius,
             Entity::Arc { .. } => out.arc_geometry(e).map_or(0.0, |(_, r, _, _)| r),
             Entity::Point { .. } => continue,
+            Entity::Spline { s } => out.spline_fit(s).windows(2).map(|w| w[0].distance(w[1])).sum(),
         };
         if size < MIN_GEOM {
             return Err(SolveError::Degenerate);

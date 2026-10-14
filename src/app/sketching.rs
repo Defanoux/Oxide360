@@ -411,6 +411,21 @@ impl OpenCad {
     }
 
     /// Typed width for the slot being drawn (the third click, at that width).
+    /// Finish the spline being drawn (Enter / Esc), with the points so far.
+    pub(crate) fn finish_spline(&mut self) {
+        let Some(i) = self.active else { return };
+        let ed = &mut self.editor;
+        let r = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
+            for c in ed.finish_spline(sk) {
+                let mut t = sk.clone();
+                if solver::add_constraints(&mut t, &[c]).is_ok() {
+                    *sk = t;
+                }
+            }
+        });
+        self.report(r);
+    }
+
     pub(crate) fn finish_slot_typed(&mut self, width: f64) {
         let (Some(i), Some(a), Some(b)) = (self.active, self.editor.start, self.editor.second) else { return };
         let sk = &self.sketches[i];
