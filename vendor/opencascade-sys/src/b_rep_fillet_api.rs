@@ -71,6 +71,14 @@ mod inner {
         // opencad patch: exception-safe builds (see include/b_rep_fillet_api.hxx).
         pub fn BRepFilletAPI_MakeFillet_try_build(make: Pin<&mut BRepFilletAPI_MakeFillet>) -> bool;
         pub fn BRepFilletAPI_MakeChamfer_try_build(make: Pin<&mut BRepFilletAPI_MakeChamfer>) -> bool;
+        /// opencad patch: a chamfer by distance and angle (false if OCCT refuses).
+        pub fn BRepFilletAPI_MakeChamfer_try_add_da(
+            make: Pin<&mut BRepFilletAPI_MakeChamfer>,
+            dist: f64,
+            angle: f64,
+            edge: &TopoDS_Edge,
+            face: &TopoDS_Face,
+        ) -> bool;
         pub fn BRepFilletAPI_MakeChamfer_try_add_two(
             make: Pin<&mut BRepFilletAPI_MakeChamfer>,
             dist1: f64,

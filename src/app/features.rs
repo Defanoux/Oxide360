@@ -1337,8 +1337,8 @@ impl OpenCad {
         self.cancel_revolve();
         self.message = None;
         let d = match editing.and_then(|k| self.edge_features.get(k)) {
-            Some(f) => EdgeDialog { editing, kind: f.kind, size: f.size, size2: f.size2, edges: f.edges.clone() },
-            None => EdgeDialog { editing: None, kind, size: 2.0, size2: None, edges: Vec::new() },
+            Some(f) => EdgeDialog { editing, kind: f.kind, size: f.size, size2: f.size2, angle: f.angle, tangent_chain: true, edges: f.edges.clone() },
+            None => EdgeDialog { editing: None, kind, size: 2.0, size2: None, angle: None, tangent_chain: true, edges: Vec::new() },
         };
         let text = sizes_text(d.size, d.size2, self.units);
         self.float = Some(FloatEdit { target: EditTarget::EdgeSize, text, focus: true, keep_text: false });
@@ -1354,7 +1354,15 @@ impl OpenCad {
                 format!("{}{n}", d.kind.name())
             }
         };
-        Some(EdgeFeature { name, kind: d.kind, size: d.size, size2: d.size2, edges: d.edges.clone() })
+        let chamfer = d.kind == EdgeKind::Chamfer;
+        Some(EdgeFeature {
+            name,
+            kind: d.kind,
+            size: d.size,
+            size2: d.size2.filter(|_| chamfer && d.angle.is_none()),
+            angle: d.angle.filter(|_| chamfer),
+            edges: d.edges.clone(),
+        })
     }
 
     pub(crate) fn commit_edge_feature(&mut self) {

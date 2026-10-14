@@ -79,8 +79,8 @@ Suggested crates: `wgpu`, `winit`, `egui`/`eframe` (UI), `glam` or `nalgebra` (m
 - [x] **Extrude** — distance, to object, to face, symmetric, two-sided, taper angle; new body / join / cut / intersect — taper is One Side only; To Object has no taper
 - [ ] **Revolve** — full or partial angle, around axis/edge — partial angle + axis done
 - [x] **Hole** — simple, counterbore, countersink; tapped (cosmetic thread); depth, tip angle; place by sketch points or face — plus clearance, taper tapped, modeled threads, To/All; no edge References / Objects to Cut
-- [ ] **Fillet** — constant radius, variable radius, chain/tangent edges, rolling-ball setback — constant radius done
-- [ ] **Chamfer** — equal distance, two distances, distance + angle — equal and two distances done; distance+angle not yet
+- [ ] **Fillet** — constant radius, variable radius, chain/tangent edges, rolling-ball setback — constant radius, tangent chain, face picks done
+- [x] **Chamfer** — equal distance, two distances, distance + angle
 - [x] **Shell** — inside/outside, remove faces, uniform thickness — plus Both, closed hollow, sharp/rounded; flat faces only for the opening
 - [ ] **Draft** — pull direction, angle, by plane/parting line
 - [ ] **Combine** — join, cut, intersect, keep tools

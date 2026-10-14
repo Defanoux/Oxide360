@@ -859,6 +859,22 @@ impl Shape {
         }
     }
 
+    /// opencad patch: chamfer `distance` along the given face of each edge,
+    /// at `angle` (radians) from that face. None if the kernel can't.
+    pub fn try_chamfer_edges_da<E: AsRef<Edge>, F: AsRef<Face>>(&self, distance: f64, angle: f64, edges: impl IntoIterator<Item = (E, F)>) -> Option<Self> {
+        let mut make = ffi::b_rep_fillet_api::BRepFilletAPI_MakeChamfer_new(&self.inner);
+        for (edge, face) in edges.into_iter() {
+            if !ffi::b_rep_fillet_api::BRepFilletAPI_MakeChamfer_try_add_da(make.pin_mut(), distance, angle, &edge.as_ref().inner, &face.as_ref().inner) {
+                return None;
+            }
+        }
+        if ffi::b_rep_fillet_api::BRepFilletAPI_MakeChamfer_try_build(make.pin_mut()) {
+            Some(Self::from_shape(make.pin_mut().Shape()))
+        } else {
+            None
+        }
+    }
+
     /// opencad patch: chamfer cutting `d1` off one face and `d2` off the other
     /// at each edge; `d1` is measured on the face paired with the edge.
     pub fn try_chamfer_edges_two<E: AsRef<Edge>, F: AsRef<Face>>(

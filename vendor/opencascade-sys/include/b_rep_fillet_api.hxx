@@ -57,3 +57,14 @@ inline bool BRepFilletAPI_MakeChamfer_try_add_two(BRepFilletAPI_MakeChamfer &mak
     return false;
   }
 }
+
+// opencad patch: a chamfer `dist` along `face` at `angle` (radians) from it.
+inline bool BRepFilletAPI_MakeChamfer_try_add_da(BRepFilletAPI_MakeChamfer &make, Standard_Real dist, Standard_Real angle,
+                                                 const TopoDS_Edge &edge, const TopoDS_Face &face) {
+  try {
+    make.AddDA(dist, angle, edge, face);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}

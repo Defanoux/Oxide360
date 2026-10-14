@@ -926,6 +926,10 @@ pub struct EdgeFeature {
     /// None: the same distance both ways.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size2: Option<f64>,
+    /// A chamfer by distance and angle: the angle (degrees) from the first
+    /// face (`size` is then measured along that face). Overrides `size2`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle: Option<f64>,
     pub edges: Vec<EdgeRef>,
 }
 

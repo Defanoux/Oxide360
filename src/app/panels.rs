@@ -1393,15 +1393,47 @@ impl OpenCad {
             }
         });
         ui.label(format!("Edges: {} selected", d.edges.len()));
-        ui.weak("Click edges on a body to add or remove them.");
+        ui.weak("Click edges (or a face, for all its edges) to add or remove them.");
+        ui.checkbox(&mut d.tangent_chain, "Tangent Chain").on_hover_text("Picking an edge picks the edges running smoothly on from it");
         ui.separator();
         let mut changed = false;
+        if d.kind == EdgeKind::Chamfer {
+            // Fusion's Chamfer Type.
+            let kind = if d.angle.is_some() { 2 } else if d.size2.is_some() { 1 } else { 0 };
+            ui.horizontal(|ui| {
+                ui.label("Type");
+                for (k, name) in [(0, "Equal distance"), (1, "Two distances"), (2, "Distance and angle")] {
+                    if ui.selectable_label(kind == k, name).clicked() && kind != k {
+                        (d.size2, d.angle) = match k {
+                            1 => (Some(d.size), None),
+                            2 => (None, Some(45.0)),
+                            _ => (None, None),
+                        };
+                        changed = true;
+                    }
+                }
+            });
+        }
         ui.horizontal(|ui| {
-            ui.label(d.kind.size_label());
+            ui.label(if d.kind == EdgeKind::Chamfer && (d.size2.is_some() || d.angle.is_some()) { "Distance" } else { d.kind.size_label() });
             changed |= ui
                 .add(units::length_drag(&mut d.size, unit, 0.1).range(0.001..=1.0e5))
                 .changed();
         });
+        if d.kind == EdgeKind::Chamfer {
+            if let Some(d2) = d.size2.as_mut().filter(|_| d.angle.is_none()) {
+                ui.horizontal(|ui| {
+                    ui.label("Distance 2");
+                    changed |= ui.add(units::length_drag(d2, unit, 0.1).range(0.001..=1.0e5)).changed();
+                });
+            }
+            if let Some(a) = d.angle.as_mut() {
+                ui.horizontal(|ui| {
+                    ui.label("Angle");
+                    changed |= ui.add(egui::DragValue::new(a).speed(0.5).range(0.1..=89.9).suffix("°")).changed();
+                });
+            }
+        }
         let editing = d.editing;
         let has_edges = !d.edges.is_empty();
         if changed {

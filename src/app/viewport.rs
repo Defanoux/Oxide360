@@ -725,22 +725,49 @@ impl OpenCad {
             // --- fillet / chamfer input: pick edges on the model before this feature ---
             self.ensure_model(Slot::Base);
             self.edge_hover = None;
+            self.edge_group_hover.clear();
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 self.edge_hover = self.edge_under(&view, Slot::Base, px, &ray, false);
+                let chain = self.edge_dialog.as_ref().is_some_and(|d| d.tangent_chain);
+                let base = self.model(Slot::Base);
+                // An edge (with its tangent chain), or else a face's edges (Fusion).
+                let group: Vec<EdgeRef> = match self.edge_hover {
+                    Some(r) => base
+                        .bodies
+                        .iter()
+                        .find_map(|b| {
+                            let i = b.edges.iter().position(|e| e.at.mid.distance(r.mid) < 1e-6)?;
+                            Some(if chain { b.tangent_chain(i).into_iter().map(|j| b.edges[j].at).collect() } else { vec![r] })
+                        })
+                        .unwrap_or_else(|| vec![r]),
+                    None => base
+                        .bodies
+                        .iter()
+                        .filter(|b| !self.hidden_bodies.contains(&b.id))
+                        .filter_map(|b| model::ray_hit_tri(&b.mesh, ray.origin, ray.dir).map(|(t, tri)| (t, tri, b)))
+                        .min_by(|x, y| x.0.total_cmp(&y.0))
+                        .map(|(_, tri, b)| b.face_edges(b.tri_face.get(tri).copied().unwrap_or(0) as usize).into_iter().map(|j| b.edges[j].at).collect())
+                        .unwrap_or_default(),
+                };
+                self.edge_group_hover = group;
             }
-            if response.clicked() {
-                // Remember if the edge lies on the far end of an extrude/revolve.
-                let tagged = self.edge_hover.map(|mut r| {
-                    r.follow = kernel::follow_for_edge(&self.model(Slot::Base).caps, r.mid, r.dir, FOLLOW_TOL);
-                    r
-                });
-                if let (Some(r), Some(d)) = (tagged, self.edge_dialog.as_mut()) {
-                    match d.edges.iter().position(|e| e.mid.distance(r.mid) < 1e-6) {
-                        Some(i) => {
-                            d.edges.remove(i);
-                        }
-                        None => d.edges.push(r),
+            if response.clicked() && !self.edge_group_hover.is_empty() {
+                // Remember if an edge lies on the far end of an extrude/revolve.
+                let caps = &self.model(Slot::Base).caps;
+                let group: Vec<EdgeRef> = self
+                    .edge_group_hover
+                    .iter()
+                    .map(|&r| EdgeRef { follow: kernel::follow_for_edge(caps, r.mid, r.dir, FOLLOW_TOL), ..r })
+                    .collect();
+                if let Some(d) = self.edge_dialog.as_mut() {
+                    let has = |r: &EdgeRef| d.edges.iter().any(|e| e.mid.distance(r.mid) < 1e-6);
+                    // Clicking picked edges again drops them; else the group is added.
+                    if group.iter().all(has) {
+                        d.edges.retain(|e| !group.iter().any(|r| r.mid.distance(e.mid) < 1e-6));
+                    } else {
+                        let new: Vec<EdgeRef> = group.into_iter().filter(|r| !has(r)).collect();
+                        d.edges.extend(new);
                     }
                 }
                 self.focus_distance();
@@ -2116,7 +2143,7 @@ impl OpenCad {
             for body in &base.bodies {
                 for e in &body.edges {
                     let selected = d.edges.iter().any(|r| r.mid.distance(e.at.mid) < 1e-6);
-                    let hovered = self.edge_hover.is_some_and(|r| r.mid.distance(e.at.mid) < 1e-6);
+                    let hovered = self.edge_group_hover.iter().any(|r| r.mid.distance(e.at.mid) < 1e-6);
                     if selected || hovered {
                         let stroke = Stroke::new(3.0, if selected { COL_SELECT } else { COL_HOVER });
                         for w in e.points.windows(2) {

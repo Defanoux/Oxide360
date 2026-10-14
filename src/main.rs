@@ -516,6 +516,10 @@ struct EdgeDialog {
     size: f64,
     /// A chamfer's second distance (type `2, 5`).
     size2: Option<f64>,
+    /// A chamfer by distance and angle: the angle in degrees.
+    angle: Option<f64>,
+    /// Picking an edge picks the edges running smoothly on from it.
+    tangent_chain: bool,
     edges: Vec<EdgeRef>,
 }
 
@@ -615,6 +619,7 @@ struct OpenCad {
     frame_no: u64,                           // frames drawn (a build runs once a frame)
     hole_errors: Vec<Option<String>>,
     hole_hover: Option<(model::HolePlace, DVec3)>, // what a click would add, and where its centre is
+    edge_group_hover: Vec<EdgeRef>,          // fillet/chamfer: the edges a click would pick (a tangent chain, or a face's edges)
     thread_features: Vec<model::ThreadFeature>, // Thread features
     shells: Vec<model::ShellFeature>,       // Shell features
     shell_dialog: Option<ShellDialog>,
@@ -780,6 +785,7 @@ impl Default for OpenCad {
             frame_no: 0,
             hole_errors: Vec::new(),
             hole_hover: None,
+            edge_group_hover: Vec::new(),
             thread_features: Vec::new(),
             shells: Vec::new(),
             shell_dialog: None,

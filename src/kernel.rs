@@ -61,6 +61,46 @@ impl Body {
             .map(|(_, t)| t.map(|i| self.mesh.positions[i as usize].as_dvec3()))
     }
 
+    /// The edges (indices into `edges`) joined end to end with `start` so
+    /// that each runs smoothly on from the last (Fusion's Tangent Chain).
+    pub fn tangent_chain(&self, start: usize) -> Vec<usize> {
+        // Each edge's ends and the way it leaves them.
+        let ends = |e: &BodyEdge| -> Option<[(Vec3, Vec3); 2]> {
+            let p = &e.points;
+            let (a, b) = (*p.first()?, *p.last()?);
+            Some([(a, (p.get(1)? - a).normalize_or_zero()), (b, (p[p.len() - 2] - b).normalize_or_zero())])
+        };
+        let size = self.mesh.positions.iter().fold(0.0f32, |m, p| m.max(p.length())).max(1.0);
+        let tol = size * 1e-5;
+        let mut chain = vec![start];
+        let mut todo = vec![start];
+        while let Some(e) = todo.pop() {
+            let Some(mine) = self.edges.get(e).and_then(ends) else { continue };
+            for (j, other) in self.edges.iter().enumerate() {
+                if chain.contains(&j) {
+                    continue;
+                }
+                let Some(theirs) = ends(other) else { continue };
+                // Meeting at an end, leaving it in opposite directions (to
+                // within the polyline's first step on an arc).
+                let smooth = mine.iter().any(|&(p, d)| theirs.iter().any(|&(q, t)| p.distance(q) < tol && d.dot(t) < -0.98));
+                if smooth {
+                    chain.push(j);
+                    todo.push(j);
+                }
+            }
+        }
+        chain
+    }
+
+    /// The edges (indices into `edges`) round face `face` (Fusion: picking a
+    /// face picks its edges).
+    pub fn face_edges(&self, face: usize) -> Vec<usize> {
+        let Some(f) = self.shape.faces().nth(face) else { return Vec::new() };
+        let mids: Vec<DVec3> = f.edges().filter_map(|e| polyline_mid(&edge_points(&e)).map(|r| r.mid)).collect();
+        (0..self.edges.len()).filter(|&i| mids.iter().any(|m| m.distance(self.edges[i].at.mid) < 1e-6)).collect()
+    }
+
     /// The flat face lying in `plane` that has `point` on it (its index).
     pub fn face_at(&self, plane: &FacePlane, point: DVec3) -> Option<usize> {
         let n = plane.normal();
@@ -879,10 +919,20 @@ fn apply_edges(tagged: Tagged, f: &EdgeFeature, ext: &[Option<End>], rev: &[Opti
         }
         let edges = picked[i].iter().map(|&(j, _)| &all[j].1);
         let two = f.size2.filter(|d2| f.kind == EdgeKind::Chamfer && (d2 - f.size).abs() > 1e-12);
-        let done = match (f.kind, two) {
-            (EdgeKind::Fillet, _) => b.try_fillet_edges(f.size, edges),
-            (EdgeKind::Chamfer, None) => b.try_chamfer_edges(f.size, edges),
-            (EdgeKind::Chamfer, Some(d2)) => {
+        let faces_for = |b: &Shape| -> Result<Vec<(&Edge, Face)>, String> {
+            let with: Option<Vec<(&Edge, Face)>> = picked[i].iter().map(|&(j, want)| edge_face(b, &all[j].2, want).map(|face| (&all[j].1, face))).collect();
+            with.ok_or_else(|| "couldn't find the face a chamfer distance is measured on".into())
+        };
+        let done = match (f.kind, two, f.angle) {
+            (EdgeKind::Chamfer, _, Some(a)) => {
+                if !(a.is_finite() && a > 0.0 && a < 90.0) {
+                    return Err("the chamfer angle must be between 0° and 90°".into());
+                }
+                b.try_chamfer_edges_da(f.size, a.to_radians(), faces_for(&b)?)
+            }
+            (EdgeKind::Fillet, ..) => b.try_fillet_edges(f.size, edges),
+            (EdgeKind::Chamfer, None, None) => b.try_chamfer_edges(f.size, edges),
+            (EdgeKind::Chamfer, Some(d2), None) => {
                 if !d2.is_finite() || d2 <= 0.0 {
                     return Err("chamfer distance must be greater than zero".into());
                 }
@@ -2912,7 +2962,7 @@ mod tests {
         rect(&mut a, 0.0, 0.0, 50.0, 30.0);
         let features: Vec<EdgeFeature> = edge
             .into_iter()
-            .map(|(kind, size, r)| EdgeFeature { name: "F".into(), kind, size, size2: None, edges: vec![r] })
+            .map(|(kind, size, r)| EdgeFeature { name: "F".into(), kind, size, size2: None, angle: None, edges: vec![r] })
             .collect();
         let mut tl = timeline(1, 1);
         if !features.is_empty() {
@@ -2972,17 +3022,73 @@ mod tests {
         r.faces = [first_face, other];
         let mut a = Sketch::new("A".into(), OriginPlane::XY);
         rect(&mut a, 0.0, 0.0, 50.0, 30.0);
-        let f = EdgeFeature { name: "C".into(), kind: EdgeKind::Chamfer, size: d1, size2: Some(d2), edges: vec![r] };
+        let f = EdgeFeature { name: "C".into(), kind: EdgeKind::Chamfer, size: d1, size2: Some(d2), angle: None, edges: vec![r] };
         let mut tl = timeline(1, 1);
         tl.push(Feature::Edge(0));
         build4(&[a], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[f], &tl)
     }
 
     #[test]
+    fn a_tangent_chain_and_a_face_pick_take_the_rounded_outline() {
+        // The plate with its four upright edges rounded: the top outline is
+        // 4 lines and 4 arcs, each running smoothly into the next.
+        let base = plate_with(10.0, None);
+        let upright: Vec<EdgeRef> = base.bodies[0].edges.iter().map(|e| e.at).filter(|r| r.dir.dot(DVec3::Z).abs() > 0.99).collect();
+        assert_eq!(upright.len(), 4);
+        let mut a = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut a, 0.0, 0.0, 50.0, 30.0);
+        let f = EdgeFeature { name: "F".into(), kind: EdgeKind::Fillet, size: 3.0, size2: None, angle: None, edges: upright };
+        let mut tl = timeline(1, 1);
+        tl.push(Feature::Edge(0));
+        let m = build4(&[a], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[f], &tl);
+        let b = &m.bodies[0];
+        let top = |i: &usize| (b.edges[*i].at.mid.z - 10.0).abs() < 1e-6;
+        let start = (0..b.edges.len()).find(|i| top(i) && b.edges[*i].at.dir.dot(DVec3::X).abs() > 0.99).expect("a straight top edge");
+        let chain = b.tangent_chain(start);
+        assert_eq!(chain.len(), 8, "{chain:?}");
+        assert!(chain.iter().all(top), "only the top outline");
+        // The top face's edges are the same eight.
+        let face = (0..b.faces.len()).find(|&f| b.face_tris(f).all(|t| t.iter().all(|p| (p.z - 10.0).abs() < 1e-9))).unwrap();
+        let mut around = b.face_edges(face);
+        around.sort();
+        let mut chain = chain;
+        chain.sort();
+        assert_eq!(around, chain);
+        // A plain box's edges meet at corners: a chain of one.
+        let plain = &base.bodies[0];
+        assert_eq!(plain.tangent_chain(0), vec![0]);
+    }
+
+    #[test]
+    fn a_chamfer_by_distance_and_angle_cuts_its_triangle() {
+        // 2 mm along the top face, 30° down from it: the other leg is 2 tan 30°.
+        let build = |first: DVec3, d: f64, a: f64| {
+            let mut r = picked_top_front(10.0);
+            let other = if r.faces[0].dot(first) > 0.99 { r.faces[1] } else { r.faces[0] };
+            r.faces = [first, other];
+            let mut s = Sketch::new("A".into(), OriginPlane::XY);
+            rect(&mut s, 0.0, 0.0, 50.0, 30.0);
+            let f = EdgeFeature { name: "C".into(), kind: EdgeKind::Chamfer, size: d, size2: None, angle: Some(a), edges: vec![r] };
+            let mut tl = timeline(1, 1);
+            tl.push(Feature::Edge(0));
+            build4(&[s], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[f], &tl)
+        };
+        let m = build(DVec3::Z, 2.0, 30.0);
+        assert_eq!(m.edge_errors, vec![None]);
+        let want = 0.5 * 2.0 * (2.0 * 30f64.to_radians().tan()) * 50.0;
+        assert!(close(15000.0 - total(&m), want), "{} vs {want}", 15000.0 - total(&m));
+        // At 45° it's the equal-distance chamfer.
+        assert!(close(15000.0 - total(&build(DVec3::Z, 2.0, 45.0)), 0.5 * 4.0 * 50.0));
+        // Measured on the front face instead: the legs swap, the same amount.
+        assert!(close(15000.0 - total(&build(DVec3::NEG_Y, 2.0, 30.0)), want));
+        assert!(build(DVec3::Z, 2.0, 95.0).edge_errors[0].is_some(), "an angle past 90°");
+    }
+
+    #[test]
     fn a_fillet_moved_before_its_body_is_an_error_the_app_can_refuse() {
         let mut a = Sketch::new("A".into(), OriginPlane::XY);
         rect(&mut a, 0.0, 0.0, 50.0, 30.0);
-        let f = EdgeFeature { name: "F".into(), kind: EdgeKind::Fillet, size: 2.0, size2: None, edges: vec![picked_top_front(10.0)] };
+        let f = EdgeFeature { name: "F".into(), kind: EdgeKind::Fillet, size: 2.0, size2: None, angle: None, edges: vec![picked_top_front(10.0)] };
         let mut tl = timeline(1, 1);
         tl.push(Feature::Edge(0));
         let ok = build4(&[a.clone()], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[f.clone()], &tl);
@@ -4072,7 +4178,7 @@ mod tests {
             })
             .expect("outer edge of the end face");
         picked.follow = follow_for_edge(&m.caps, picked.mid, picked.dir, 1e-6);
-        let fillet = EdgeFeature { name: "F".into(), kind: EdgeKind::Fillet, size: 1.0, size2: None, edges: vec![picked] };
+        let fillet = EdgeFeature { name: "F".into(), kind: EdgeKind::Fillet, size: 1.0, size2: None, angle: None, edges: vec![picked] };
         let timeline = [Feature::Sketch(0), Feature::Revolve(0), Feature::Edge(0)];
         // The edge sits between a flat end and the curved outside, so the
         // material removed isn't the straight-edge formula — but it is the same
