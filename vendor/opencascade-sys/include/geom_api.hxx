@@ -9,9 +9,9 @@ inline std::unique_ptr<Handle_Geom_BSplineCurve> GeomAPI_Interpolate_Curve(const
 
 // opencad patch: interpolation throws (e.g. on repeated points) and that would
 // abort the app; this reports failure as a null handle instead.
-inline std::unique_ptr<Handle_Geom_BSplineCurve> GeomAPI_Interpolate_try_curve(const Handle_TColgp_HArray1OfPnt &points) {
+inline std::unique_ptr<Handle_Geom_BSplineCurve> GeomAPI_Interpolate_try_curve(const Handle_TColgp_HArray1OfPnt &points, bool periodic) {
   try {
-    GeomAPI_Interpolate interp(points, false, 1.0e-7);
+    GeomAPI_Interpolate interp(points, periodic, 1.0e-7);
     interp.Perform();
     if (!interp.IsDone()) {
       return std::unique_ptr<Handle_Geom_BSplineCurve>(new opencascade::handle<Geom_BSplineCurve>());

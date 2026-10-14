@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 /// Points per span (between two fit points) when sampling.
-pub const PER_SPAN: usize = 24;
+pub const PER_SPAN: usize = 48;
 
 thread_local! {
     static CACHE: RefCell<HashMap<Vec<[u64; 2]>, Vec<DVec2>>> = RefCell::new(HashMap::new());
@@ -18,7 +18,8 @@ thread_local! {
 
 /// Points along the spline through `pts`, ends included. Straight lines
 /// between the points if the kernel can't make the curve (e.g. two fit
-/// points in the same place).
+/// points in the same place). A closed spline (its last point is its first)
+/// runs smoothly round, with no corner where it closes.
 pub fn polyline(pts: &[DVec2]) -> Vec<DVec2> {
     if pts.len() < 3 {
         return pts.to_vec(); // two points: a straight line
@@ -27,11 +28,13 @@ pub fn polyline(pts: &[DVec2]) -> Vec<DVec2> {
     if let Some(hit) = CACHE.with(|c| c.borrow().get(&key).cloned()) {
         return hit;
     }
-    let too_close = pts.windows(2).any(|w| w[0].distance(w[1]) < 1e-6);
+    let closed = is_closed(pts);
+    let fit = if closed { &pts[..pts.len() - 1] } else { pts };
+    let too_close = fit.windows(2).any(|w| w[0].distance(w[1]) < 1e-6);
     let made = (!too_close)
         .then(|| {
-            let k: Vec<KVec> = pts.iter().map(|p| KVec::new(p.x, p.y, 0.0)).collect();
-            opencascade::primitives::try_spline_samples(&k, PER_SPAN * (pts.len() - 1) + 1)
+            let k: Vec<KVec> = fit.iter().map(|p| KVec::new(p.x, p.y, 0.0)).collect();
+            opencascade::primitives::try_spline_samples(&k, PER_SPAN * (pts.len() - 1) + 1, closed)
         })
         .flatten()
         .map(|v| v.into_iter().map(|q| DVec2::new(q.x, q.y)).collect::<Vec<_>>())
@@ -44,6 +47,11 @@ pub fn polyline(pts: &[DVec2]) -> Vec<DVec2> {
         c.insert(key, made.clone());
     });
     made
+}
+
+/// A closed spline: at least three different points, the last one the first again.
+pub fn is_closed(pts: &[DVec2]) -> bool {
+    pts.len() >= 4 && pts[0].distance(pts[pts.len() - 1]) < 1e-9
 }
 
 /// How far `p` is from the spline through `pts`.

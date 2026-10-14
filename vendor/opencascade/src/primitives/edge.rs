@@ -101,7 +101,13 @@ impl Edge {
     /// `spline_from_points` without tangents), or None if OpenCASCADE can't
     /// make it (it throws, e.g. on repeated points, which would abort).
     pub fn try_spline_through(points: &[DVec3]) -> Option<Self> {
-        let curve = try_interpolate(points)?;
+        Self::try_spline(points, false)
+    }
+
+    /// opencad patch: as `try_spline_through`; `periodic` closes it smoothly
+    /// back to the first point (the points don't repeat it).
+    pub fn try_spline(points: &[DVec3], periodic: bool) -> Option<Self> {
+        let curve = try_interpolate(points, periodic)?;
         let curve_handle = ffi::geom::new_HandleGeomCurve_from_HandleGeom_BSplineCurve(&curve);
         let mut make_edge = ffi::b_rep_builder_api::BRepBuilderAPI_MakeEdge_HandleGeomCurve(&curve_handle);
         let edge = make_edge.pin_mut().Edge();
@@ -188,8 +194,8 @@ impl Edge {
 }
 
 /// The interpolated B-spline through `points`, or None when it can't be made.
-fn try_interpolate(points: &[DVec3]) -> Option<UniquePtr<ffi::geom::Handle_Geom_BSplineCurve>> {
-    if points.len() < 2 {
+fn try_interpolate(points: &[DVec3], periodic: bool) -> Option<UniquePtr<ffi::geom::Handle_Geom_BSplineCurve>> {
+    if points.len() < if periodic { 3 } else { 2 } {
         return None;
     }
     let mut array = ffi::t_col_gp::TColgp_HArray1OfPnt_new(1, points.len() as i32);
@@ -197,14 +203,14 @@ fn try_interpolate(points: &[DVec3]) -> Option<UniquePtr<ffi::geom::Handle_Geom_
         array.pin_mut().SetValue(index as i32 + 1, &make_point(*point));
     }
     let array_handle = ffi::t_col_gp::new_HandleTColgpHArray1OfPnt_from_TColgpHArray1OfPnt(array);
-    let curve = ffi::geom_api::GeomAPI_Interpolate_try_curve(&array_handle);
+    let curve = ffi::geom_api::GeomAPI_Interpolate_try_curve(&array_handle, periodic);
     (!curve.IsNull()).then_some(curve)
 }
 
 /// opencad patch: `count` points along the interpolated spline through
 /// `points`, evenly spaced in its parameter (ends included). None on failure.
-pub fn try_spline_samples(points: &[DVec3], count: usize) -> Option<Vec<DVec3>> {
-    let curve = try_interpolate(points)?;
+pub fn try_spline_samples(points: &[DVec3], count: usize, periodic: bool) -> Option<Vec<DVec3>> {
+    let curve = try_interpolate(points, periodic)?;
     let mut out = vec![0.0; 3 * count.max(2)];
     ffi::geom_api::Geom_BSplineCurve_try_sample(&curve, &mut out).then(|| out.chunks_exact(3).map(|c| dvec3(c[0], c[1], c[2])).collect())
 }

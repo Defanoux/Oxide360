@@ -305,6 +305,12 @@ fn loop_wire(plane: &Frame, pts: &[DVec2], curves: &[Curve]) -> Result<Wire, Str
                 edges.push(Edge::arc(p3(a), p3(mid), p3(b)));
                 i = j;
             }
+            // A whole loop of one spline (a closed spline): smooth all the way round.
+            spline @ Curve::Spline { .. } if i == 0 && (0..n).all(|k| curve(k) == spline) => {
+                let round: Vec<KVec> = (0..n).map(|k| p3(at(k))).collect();
+                edges.push(Edge::try_spline(&round, true).ok_or("the kernel couldn't make this closed spline")?);
+                i = n;
+            }
             // A run of one spline's pieces: the smooth curve through them.
             spline @ Curve::Spline { .. } => {
                 let mut j = i + 1;
@@ -2007,6 +2013,31 @@ mod tests {
         // The solid follows the smooth curve; the profile's polygon is its
         // sampled version, so they agree closely but not exactly.
         assert!((v - area * 5.0).abs() < 1e-3 * area * 5.0, "volume {v} vs {}", area * 5.0);
+    }
+
+    #[test]
+    fn a_closed_spline_is_a_profile_on_its_own() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Spline);
+        for (x, y) in [(0.0, 0.0), (20.0, -5.0), (30.0, 10.0), (10.0, 18.0)] {
+            ed.click(&mut sk, free(x, y));
+        }
+        // Back on the first point: closed, and the tool is done.
+        ed.click(&mut sk, free(0.0, 0.0));
+        assert!(!ed.busy());
+        let list = &sk.splines[0];
+        assert_eq!((list.len(), list.first(), list.last()), (5, list.last(), list.first()));
+        let curve = sk.spline_curve(0);
+        // Smooth where it closes: the direction in matches the direction out.
+        let (d_in, d_out) = ((curve[curve.len() - 1] - curve[curve.len() - 2]).normalize(), (curve[1] - curve[0]).normalize());
+        assert!(d_in.dot(d_out) > 0.99, "a corner where it closes: {d_in} vs {d_out}");
+        let regions = find_regions(&sk);
+        assert_eq!(regions.len(), 1);
+        let area = regions[0].area();
+        let m = build4(&[sk], &[ex(0, vec![0], 4.0, Operation::NewBody)], &[], &timeline(1, 1));
+        assert_eq!(m.errors, vec![None]);
+        assert!((total(&m) - area * 4.0).abs() < 1e-3 * area * 4.0, "{} vs {}", total(&m), area * 4.0);
     }
 
     #[test]

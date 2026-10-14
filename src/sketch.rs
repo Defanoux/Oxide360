@@ -2488,6 +2488,11 @@ impl Editor {
     /// onto lines / axes they were dropped on) and the curve goes through
     /// them. Needs two points; returns the constraints to add.
     pub fn finish_spline(&mut self, sk: &mut Sketch) -> Vec<Constraint> {
+        self.make_spline(sk, false)
+    }
+
+    /// `finish_spline`; `closed` joins it back to its first point (smoothly).
+    fn make_spline(&mut self, sk: &mut Sketch, closed: bool) -> Vec<Constraint> {
         let anchors: Vec<Anchor> = std::mem::take(&mut self.spline).into_iter().filter(|a| sk.is_valid_anchor(*a)).collect();
         let mut ties = Vec::new();
         let mut pts: Vec<PointId> = Vec::new();
@@ -2503,9 +2508,12 @@ impl Editor {
             }
             pts.push(p);
         }
-        if pts.len() < 2 {
+        if pts.len() < if closed { 3 } else { 2 } {
             sk.delete(&[]); // points made for nothing
             return Vec::new();
+        }
+        if closed {
+            pts.push(pts[0]);
         }
         sk.splines.push(pts);
         sk.entities.push(Entity::Spline { s: sk.splines.len() - 1 });
@@ -2775,6 +2783,11 @@ impl Editor {
         if self.tool == Tool::Spline {
             if self.spline.last().is_some_and(|&l| sk.is_valid_anchor(l) && sk.pos(l).distance(sk.pos(at)) < MIN_SIZE) {
                 return self.finish_spline(sk);
+            }
+            // Back on the first point (with three or more placed): a closed shape, done.
+            let back_to_start = self.spline.first().is_some_and(|&f| sk.is_valid_anchor(f) && (f == at || sk.pos(f).distance(sk.pos(at)) < MIN_SIZE));
+            if self.spline.len() >= 3 && back_to_start {
+                return self.make_spline(sk, true);
             }
             self.spline.push(at);
             return Vec::new();

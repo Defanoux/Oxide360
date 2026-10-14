@@ -706,9 +706,20 @@ impl OpenCad {
                             cursor = Some(Anchor::Free(a + dir * l));
                         }
                     }
+                    // Spline: near its first point (three or more placed), the cursor
+                    // snaps onto it — a click there closes the shape.
+                    if let (Tool::Spline, Some(&first), Some(px)) = (tool, self.editor.spline.first(), hover_px) {
+                        let near = sk.is_valid_anchor(first)
+                            && self.editor.spline.len() >= 3
+                            && view.project(plane.to_world(sk.pos(first))).is_some_and(|q| q.distance(px) < SNAP_PX);
+                        if near {
+                            cursor = Some(first);
+                        }
+                    }
+                    let closing_spline = tool == Tool::Spline && self.editor.spline.len() >= 3 && cursor == self.editor.spline.first().copied();
                     // Inference: lined up with a line's middle or a circle's centre
                     // (dashed lines show it; both at once lands where they cross).
-                    if let (false, Some(Anchor::Free(g)), Some(raw)) = (tool.tangent_lines() > 0 || arc3_third || self.line_length.is_some(), cursor, raw_hover) {
+                    if let (false, Some(Anchor::Free(g)), Some(raw)) = (tool.tangent_lines() > 0 || arc3_third || self.line_length.is_some() || closing_spline, cursor, raw_hover) {
                         let (q, above, beside) = sk.line_up(raw, SNAP_PX as f64 * mm_per_px);
                         if above.is_some() || beside.is_some() {
                             let q = DVec2::new(if above.is_some() { q.x } else { g.x }, if beside.is_some() { q.y } else { g.y });
@@ -2276,11 +2287,21 @@ impl OpenCad {
                             painter.circle_filled(to_pos(px), 3.5, COL_PREVIEW);
                         }
                     }
-                    status = format!(
-                        "{} point{} — click more, Enter (or click the last again) to finish",
-                        self.editor.spline.len(),
-                        if self.editor.spline.len() == 1 { "" } else { "s" }
-                    );
+                    let closing = self.editor.spline.len() >= 3 && cursor == self.editor.spline.first().copied();
+                    if closing {
+                        if let Some(px) = view.project(plane.to_world(here)) {
+                            painter.circle_stroke(to_pos(px), 8.0, Stroke::new(2.0, COL_SNAP));
+                        }
+                    }
+                    status = if closing {
+                        "click to close the spline".to_string()
+                    } else {
+                        format!(
+                            "{} point{} — click more, the first point to close it, or Enter (or the last point again) to finish",
+                            self.editor.spline.len(),
+                            if self.editor.spline.len() == 1 { "" } else { "s" }
+                        )
+                    };
                 }
                 if let Some(start) = self.editor.start {
                     let from = sk.pos(start);

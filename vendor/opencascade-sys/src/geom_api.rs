@@ -29,7 +29,7 @@ mod inner {
             interpolate: &GeomAPI_Interpolate,
         ) -> UniquePtr<Handle_Geom_BSplineCurve>;
         // opencad patch: exception-safe interpolation and sampling (see include/geom_api.hxx).
-        pub fn GeomAPI_Interpolate_try_curve(points: &Handle_TColgp_HArray1OfPnt) -> UniquePtr<Handle_Geom_BSplineCurve>;
+        pub fn GeomAPI_Interpolate_try_curve(points: &Handle_TColgp_HArray1OfPnt, periodic: bool) -> UniquePtr<Handle_Geom_BSplineCurve>;
         pub fn Geom_BSplineCurve_try_sample(curve: &Handle_Geom_BSplineCurve, out: &mut [f64]) -> bool;
 
         type GeomAPI_ProjectPointOnSurf;
