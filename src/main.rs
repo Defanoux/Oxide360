@@ -527,6 +527,27 @@ enum Slot {
 
 /// The last kernel evaluation and the inputs it was built from. The kernel
 /// only runs again when those inputs change.
+impl KernelCache {
+    /// Built from nothing (stands in until the first build is done).
+    fn empty() -> Self {
+        KernelCache {
+            sketches: Vec::new(),
+            extrudes: Vec::new(),
+            revolves: Vec::new(),
+            edge_features: Vec::new(),
+            copies: Vec::new(),
+            axes: Vec::new(),
+            planes: Vec::new(),
+            removes: Vec::new(),
+            holes: Vec::new(),
+            thread_features: Vec::new(),
+            timeline: Vec::new(),
+            model: kernel::Model::default(),
+            stand_in: true,
+        }
+    }
+}
+
 struct KernelCache {
     sketches: Vec<Sketch>,
     extrudes: Vec<Extrude>,
@@ -540,6 +561,8 @@ struct KernelCache {
     thread_features: Vec<model::ThreadFeature>,
     timeline: Vec<Feature>,
     model: kernel::Model,
+    /// Nothing built yet (an empty model while the first build runs).
+    stand_in: bool,
 }
 
 struct OpenCad {
@@ -571,6 +594,8 @@ struct OpenCad {
     prev_body_count: usize, // (to notice the first body being made)
     dialog_error: Option<String>,
     caches: [Option<KernelCache>; 3], // indexed by Slot
+    builds: [Option<kernel::Build>; 3], // a rebuild under way, run a little each frame (indexed by Slot)
+    stepped: [u64; 3],                  // the frame each slot's build last ran in
     edge_features: Vec<EdgeFeature>,
     edge_dialog: Option<EdgeDialog>,
     revolves: Vec<Revolve>,
@@ -580,9 +605,7 @@ struct OpenCad {
     removes: Vec<model::RemoveFeature>,     // Remove features (bodies taken out)
     holes: Vec<model::HoleFeature>,         // Hole features
     hole_dialog: Option<hole_dialog::HoleDialog>,
-    last_build_ms: f64,                      // how long the last kernel rebuild took
-    frame_no: u64,                           // frames drawn (for the busy cursor)
-    wait_from: Option<u64>,                  // a slow rebuild is waiting a frame so the busy cursor shows first
+    frame_no: u64,                           // frames drawn (a build runs once a frame)
     hole_errors: Vec<Option<String>>,
     hole_hover: Option<(model::HolePlace, DVec3)>, // what a click would add, and where its centre is
     thread_features: Vec<model::ThreadFeature>, // Thread features
@@ -732,6 +755,8 @@ impl Default for OpenCad {
             prev_body_count: 0,
             dialog_error: None,
             caches: [None, None, None],
+            builds: [None, None, None],
+            stepped: [0; 3],
             edge_features: Vec::new(),
             edge_dialog: None,
             revolves: Vec::new(),
@@ -741,9 +766,7 @@ impl Default for OpenCad {
             removes: Vec::new(),
             holes: Vec::new(),
             hole_dialog: None,
-            last_build_ms: 0.0,
             frame_no: 0,
-            wait_from: None,
             hole_errors: Vec::new(),
             hole_hover: None,
             thread_features: Vec::new(),
@@ -1077,10 +1100,11 @@ impl OpenCad {
         mark("after the view");
         self.float_editor(&ctx);
         self.rect_size_boxes(&ctx);
-        // A slow rebuild waits for the next frame: show the busy cursor meanwhile.
-        if self.wait_from.is_some() {
+        // A rebuild under way: the busy cursor and a progress bar, and keep drawing.
+        if self.builds.iter().any(Option::is_some) {
             ctx.set_cursor_icon(egui::CursorIcon::Progress);
             ctx.request_repaint();
+            self.build_progress(&ctx);
         }
         self.copy_quantity_boxes(&ctx);
 

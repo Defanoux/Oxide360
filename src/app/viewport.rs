@@ -1730,6 +1730,8 @@ impl OpenCad {
         self.body_ids = self.model(Slot::Committed).bodies.iter().map(|b| b.id).collect();
         let slot = if previewing { Slot::Preview } else { Slot::Committed };
         self.ensure_model(slot);
+        // The preview's first build still running: show the design as it is meanwhile.
+        let slot = if self.ready(slot) { slot } else { Slot::Committed };
         let model = &self.caches[slot as usize].as_ref().expect("built above").model;
         self.dialog_error = if let Some(d) = &self.thread_dialog {
             let k = d.editing.unwrap_or(self.thread_features.len());

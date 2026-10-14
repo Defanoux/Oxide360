@@ -623,3 +623,24 @@ impl View<'_> {
         self.painter.add(egui::Shape::mesh(mesh));
     }
 }
+
+/// A rounded card with a label and a rounded green bar `frac` of the way along.
+pub fn progress_card(ui: &mut egui::Ui, label: &str, frac: f32) {
+    egui::Frame::new().fill(Color32::from_rgba_unmultiplied(30, 30, 30, 235)).corner_radius(10.0).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+        ui.label(egui::RichText::new(label).small());
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(220.0, 8.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 4.0, Color32::from_gray(60));
+        let filled = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * frac.clamp(0.04, 1.0), rect.height()));
+        ui.painter().rect_filled(filled, 4.0, Color32::from_rgb(80, 200, 110));
+    });
+}
+
+#[cfg(test)]
+mod progress_tests {
+    #[test]
+    #[ignore]
+    fn progress_card_shot() {
+        let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
+        crate::ui_shot::shot(&format!("{dir}/progress.png"), [300, 90], |ui| super::progress_card(ui, "Building Hole1", 0.45));
+    }
+}

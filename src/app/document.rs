@@ -583,21 +583,114 @@ impl OpenCad {
                 && c.thread_features == thread_features
                 && c.timeline == timeline
         });
-        if !fresh {
-            // A slow rebuild freezes the window: show the busy cursor for a
-            // frame first (the system keeps it up while we work).
-            if self.caches[slot as usize].is_some() && self.last_build_ms > 150.0 && self.wait_from.is_none_or(|f| f >= self.frame_no) {
-                self.wait_from.get_or_insert(self.frame_no);
-                return;
-            }
-            self.wait_from = None;
-            let started = std::time::Instant::now();
-            let removes = self.removes.clone();
-            let model = kernel::build_all(&self.sketches, &extrudes, &revolves, &edge_features, &copies, &axes, &planes, &removes, &holes, &thread_features, &timeline);
-            self.caches[slot as usize] =
-                Some(KernelCache { sketches: self.sketches.clone(), extrudes, revolves, edge_features, copies, axes, planes, removes, holes, thread_features, timeline, model });
-            self.last_build_ms = started.elapsed().as_secs_f64() * 1e3;
+        let i = slot as usize;
+        if fresh {
+            self.builds[i] = None;
+            return;
         }
+        // Build a little each frame (the last model stays up meanwhile), so the
+        // window keeps drawing and shows how far it's got. A quick build is
+        // done within the frame, as before.
+        let inp = kernel::BuildInputs {
+            sketches: self.sketches.clone(),
+            extrudes,
+            revolves,
+            edge_features,
+            copies,
+            axis_features: axes,
+            plane_features: planes,
+            removes: self.removes.clone(),
+            holes,
+            thread_features,
+            timeline,
+        };
+        let same = |b: &kernel::Build| {
+            let a = b.inputs();
+            a.sketches.len() == inp.sketches.len()
+                && a.sketches.iter().zip(&inp.sketches).all(|(x, y)| x.same_shape(y))
+                && kernel::BuildInputs { sketches: Vec::new(), ..a.clone() } == kernel::BuildInputs { sketches: Vec::new(), ..inp.clone() }
+        };
+        if !self.builds[i].as_ref().is_some_and(same) {
+            self.builds[i] = Some(kernel::Build::start(inp));
+        } else if self.stepped[i] == self.frame_no && self.caches[i].is_some() {
+            return; // (once a frame)
+        }
+        self.stepped[i] = self.frame_no;
+        let more = self.builds[i].as_mut().is_some_and(|b| b.step(std::time::Duration::from_millis(25)));
+        if more {
+            if self.caches[i].is_none() {
+                // Nothing to show yet: an empty model until it's done.
+                self.caches[i] = Some(KernelCache { model: kernel::Model::default(), ..KernelCache::empty() });
+            }
+            return;
+        }
+        let Some(b) = self.builds[i].take() else { return };
+        let inp = b.inputs().clone();
+        let model = b.finish();
+        self.caches[i] = Some(KernelCache {
+            sketches: inp.sketches,
+            extrudes: inp.extrudes,
+            revolves: inp.revolves,
+            edge_features: inp.edge_features,
+            copies: inp.copies,
+            axes: inp.axis_features,
+            planes: inp.plane_features,
+            removes: inp.removes,
+            holes: inp.holes,
+            thread_features: inp.thread_features,
+            timeline: inp.timeline,
+            model,
+            stand_in: false,
+        });
+    }
+
+    /// Finish `slot`'s build now, however long it takes (export needs the real thing).
+    pub(crate) fn build_now(&mut self, slot: Slot) {
+        let i = slot as usize;
+        loop {
+            self.stepped[i] = u64::MAX; // (any number of goes this frame)
+            self.ensure_model(slot);
+            if self.builds[i].is_none() {
+                break;
+            }
+        }
+    }
+
+    /// Is there a real model for `slot` (not just the stand-in while its first build runs)?
+    pub(crate) fn ready(&self, slot: Slot) -> bool {
+        self.caches[slot as usize].as_ref().is_some_and(|c| !c.stand_in)
+    }
+
+    /// The green bar (bottom right) while a rebuild is under way.
+    pub(crate) fn build_progress(&self, ctx: &egui::Context) {
+        let Some((done, all, next)) = self.builds.iter().flatten().map(|b| b.progress()).max_by_key(|p| p.1) else { return };
+        let label = match next {
+            Some(f) => format!("Building {}", self.feature_label(f)),
+            None => "Finishing".into(),
+        };
+        let frac = (done as f32 + 0.5) / (all as f32 + 1.0);
+        egui::Area::new(egui::Id::new("build_progress"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-14.0, -self.timeline_height - 14.0))
+            .interactable(false)
+            .show(ctx, |ui| view::progress_card(ui, &label, frac));
+    }
+
+    /// A timeline entry's name ("Hole1", "Extrude2").
+    pub(crate) fn feature_label(&self, f: Feature) -> String {
+        match f {
+            Feature::Sketch(i) => self.sketches.get(i).map(|s| s.name.clone()),
+            Feature::Extrude(k) => self.extrudes.get(k).map(|e| e.name.clone()),
+            Feature::Edge(k) => self.edge_features.get(k).map(|e| e.name.clone()),
+            Feature::Revolve(k) => self.revolves.get(k).map(|r| r.name.clone()),
+            Feature::Copy(k) => self.copies.get(k).map(|c| c.name.clone()),
+            Feature::Axis(k) => self.axes.get(k).map(|a| a.name.clone()),
+            Feature::Plane(k) => self.planes.get(k).map(|p| p.name.clone()),
+            Feature::Remove(k) => self.removes.get(k).map(|r| r.name.clone()),
+            Feature::Hole(k) => self.holes.get(k).map(|h| h.name.clone()),
+            Feature::Thread(k) => self.thread_features.get(k).map(|t| t.name.clone()),
+        }
+        .unwrap_or_else(|| format!("{f:?}"))
     }
 
     pub(crate) fn model(&self, slot: Slot) -> &kernel::Model {
@@ -605,7 +698,7 @@ impl OpenCad {
     }
 
     pub(crate) fn export(&mut self, format: export::Format) {
-        self.ensure_model(Slot::Committed);
+        self.build_now(Slot::Committed); // export what's really there, not a build half done
         if self.model(Slot::Committed).bodies.is_empty() {
             self.alert = Some("Nothing to export yet — extrude a body first.".into());
             return;

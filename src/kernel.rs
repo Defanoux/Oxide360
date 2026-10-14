@@ -126,6 +126,7 @@ impl Model {
 }
 
 /// The evaluated design.
+#[derive(Default)]
 pub struct Model {
     pub bodies: Vec<Body>,
     /// Where each face sketch's face is in this build (None for origin-plane
@@ -1779,315 +1780,385 @@ pub fn build_with(
 }
 
 /// `build_with`, plus Remove features.
-pub fn build_all(
-    sketches: &[Sketch],
-    extrudes: &[Extrude],
-    revolves: &[Revolve],
-    edge_features: &[EdgeFeature],
-    copies: &[CopyFeature],
-    axis_features: &[AxisFeature],
-    plane_features: &[PlaneFeature],
-    removes: &[RemoveFeature],
-    holes: &[HoleFeature],
-    thread_features: &[ThreadFeature],
-    timeline: &[Feature],
-) -> Model {
-    let mut hole_errors: Vec<Option<String>> = vec![None; holes.len()];
-    let mut thread_errors: Vec<Option<String>> = vec![None; thread_features.len()];
-    let mut threads: Vec<CosmeticThread> = Vec::new();
-    let mut remove_errors: Vec<Option<String>> = vec![None; removes.len()];
-    let mut planes: Vec<Option<FacePlane>> = vec![None; plane_features.len()];
-    let mut plane_errors: Vec<Option<String>> = vec![None; plane_features.len()];
-    let mut axes: Vec<Option<(DVec3, DVec3)>> = vec![None; axis_features.len()];
-    let mut axis_errors: Vec<Option<String>> = vec![None; axis_features.len()];
-    let mut copy_errors: Vec<Option<String>> = vec![None; copies.len()];
-    let mut shapes: Tagged = Vec::new();
-    let mut errors: Vec<Option<String>> = vec![None; extrudes.len()];
-    let mut edge_errors: Vec<Option<String>> = vec![None; edge_features.len()];
-    let mut revolve_errors: Vec<Option<String>> = vec![None; revolves.len()];
-    let mut extrude_ends: Vec<Option<End>> = vec![None; extrudes.len()];
-    let mut revolve_ends: Vec<Option<End>> = vec![None; revolves.len()];
-    let mut frames: Vec<Option<FacePlane>> = sketches.iter().map(|s| s.face).collect();
-    let mut sketch_errors: Vec<Option<String>> = vec![None; sketches.len()];
-    let mut touched_by: HashMap<Feature, BodyId> = HashMap::new();
-    // OPENCAD_TIMING=1: how long each feature takes (to find what's slow).
-    let timing = std::env::var_os("OPENCAD_TIMING").is_some();
-    let started = std::time::Instant::now();
-    let mut step = std::time::Instant::now();
-    for f in timeline {
-        if timing {
-            eprintln!("  {:>8.1} ms  before {f:?}", step.elapsed().as_secs_f64() * 1e3);
-            step = std::time::Instant::now();
-        }
-        let current = std::mem::take(&mut shapes);
-        // Keep a copy so a failed operation leaves the previous bodies intact.
-        // Extrudes, revolves, fillets and patterns: the same inputs as last
-        // time give the same result (holes and threads do this themselves).
-        let memo = match *f {
-            Feature::Extrude(k) => extrudes.get(k).map(|ex| format!("{f:?}|{ex:?}|{}|{:?}|{planes:?}", sketch_geometry(sketches.get(ex.sketch)), frames.get(ex.sketch))),
-            Feature::Revolve(k) => revolves.get(k).map(|rv| format!("{f:?}|{rv:?}|{}|{:?}|{axes:?}", sketch_geometry(sketches.get(rv.sketch)), frames.get(rv.sketch))),
-            Feature::Edge(k) => edge_features.get(k).map(|ef| format!("{f:?}|{ef:?}|{extrude_ends:?}|{revolve_ends:?}")),
-            Feature::Copy(k) => copies.get(k).map(|c| format!("{f:?}|{c:?}|{axes:?}|{planes:?}")),
-            _ => None,
-        }
-        .map(|inputs| key_of(&format!("{}|{inputs}", bodies_key(&current))));
-        if let Some((next, touched, _, end)) = memo.as_deref().and_then(remembered) {
-            match *f {
-                Feature::Extrude(k) => extrude_ends[k] = end,
-                Feature::Revolve(k) => revolve_ends[k] = end,
-                _ => {}
+/// What a build reads (its own copy, so it can run over several frames).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BuildInputs {
+    pub sketches: Vec<Sketch>,
+    pub extrudes: Vec<Extrude>,
+    pub revolves: Vec<Revolve>,
+    pub edge_features: Vec<EdgeFeature>,
+    pub copies: Vec<CopyFeature>,
+    pub axis_features: Vec<AxisFeature>,
+    pub plane_features: Vec<PlaneFeature>,
+    pub removes: Vec<RemoveFeature>,
+    pub holes: Vec<HoleFeature>,
+    pub thread_features: Vec<ThreadFeature>,
+    pub timeline: Vec<Feature>,
+}
+
+/// A build of the timeline that can be run a little at a time (so the window
+/// keeps drawing — and shows how far it's got — while a slow part is built).
+pub struct Build {
+    inp: BuildInputs,
+    /// The next timeline entry to build.
+    next: usize,
+    hole_errors: Vec<Option<String>>,
+    thread_errors: Vec<Option<String>>,
+    threads: Vec<CosmeticThread>,
+    remove_errors: Vec<Option<String>>,
+    planes: Vec<Option<FacePlane>>,
+    plane_errors: Vec<Option<String>>,
+    axes: Vec<Option<(DVec3, DVec3)>>,
+    axis_errors: Vec<Option<String>>,
+    copy_errors: Vec<Option<String>>,
+    shapes: Tagged,
+    errors: Vec<Option<String>>,
+    edge_errors: Vec<Option<String>>,
+    revolve_errors: Vec<Option<String>>,
+    extrude_ends: Vec<Option<End>>,
+    revolve_ends: Vec<Option<End>>,
+    frames: Vec<Option<FacePlane>>,
+    sketch_errors: Vec<Option<String>>,
+    touched_by: HashMap<Feature, BodyId>,
+    timing: bool,
+    started: std::time::Instant,
+    step: std::time::Instant,
+}
+
+impl Build {
+    pub fn start(inp: BuildInputs) -> Build {
+        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, timeline: _ } = &inp;
+        let _ = (extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, sketches);
+        let hole_errors: Vec<Option<String>> = vec![None; holes.len()];
+        let thread_errors: Vec<Option<String>> = vec![None; thread_features.len()];
+        let threads: Vec<CosmeticThread> = Vec::new();
+        let remove_errors: Vec<Option<String>> = vec![None; removes.len()];
+        let planes: Vec<Option<FacePlane>> = vec![None; plane_features.len()];
+        let plane_errors: Vec<Option<String>> = vec![None; plane_features.len()];
+        let axes: Vec<Option<(DVec3, DVec3)>> = vec![None; axis_features.len()];
+        let axis_errors: Vec<Option<String>> = vec![None; axis_features.len()];
+        let copy_errors: Vec<Option<String>> = vec![None; copies.len()];
+        let shapes: Tagged = Vec::new();
+        let errors: Vec<Option<String>> = vec![None; extrudes.len()];
+        let edge_errors: Vec<Option<String>> = vec![None; edge_features.len()];
+        let revolve_errors: Vec<Option<String>> = vec![None; revolves.len()];
+        let extrude_ends: Vec<Option<End>> = vec![None; extrudes.len()];
+        let revolve_ends: Vec<Option<End>> = vec![None; revolves.len()];
+        let frames: Vec<Option<FacePlane>> = sketches.iter().map(|s| s.face).collect();
+        let sketch_errors: Vec<Option<String>> = vec![None; sketches.len()];
+        let touched_by: HashMap<Feature, BodyId> = HashMap::new();
+        // OPENCAD_TIMING=1: how long each feature takes (to find what's slow).
+        let timing = std::env::var_os("OPENCAD_TIMING").is_some();
+        let started = std::time::Instant::now();
+        let step = std::time::Instant::now();
+        Build { next: 0, hole_errors, thread_errors, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, step, inp }
+    }
+
+    /// How far it's got: (entries built, all of them, the one being built next).
+    pub fn progress(&self) -> (usize, usize, Option<Feature>) {
+        (self.next, self.inp.timeline.len(), self.inp.timeline.get(self.next).copied())
+    }
+
+    /// The inputs it's building.
+    pub fn inputs(&self) -> &BuildInputs {
+        &self.inp
+    }
+
+    /// Build timeline entries until `budget` is used up (at least one).
+    /// False once every entry is built (then `finish`).
+    pub fn step(&mut self, budget: std::time::Duration) -> bool {
+        let began = std::time::Instant::now();
+        let first = self.next;
+        let Build { inp, next, hole_errors, thread_errors, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, step } = self;
+        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, timeline } = &*inp;
+        let _ = (&timing, &started);
+        loop {
+            if *next >= timeline.len() {
+                return false;
             }
-            if let Some(id) = touched {
-                touched_by.insert(*f, id);
+            if *next > first && began.elapsed() >= budget {
+                return true;
             }
-            shapes = next;
-            continue;
-        }
-        let backup: Tagged = current.iter().flat_map(|(s, id)| s.solids().into_iter().map(move |x| (x, *id))).collect();
-        let (result, slot) = match *f {
-            Feature::Plane(k) => {
-                if let Some(a) = plane_features.get(k).and_then(|pf| pf.angle) {
-                    let made = catch_unwind(AssertUnwindSafe(|| hinge_line(&a, &current, &axes, axis_features, sketches, &frames)))
-                        .unwrap_or_else(|_| Err("the geometry kernel couldn't find its line".into()))
-                        .and_then(|(o, d, n0)| crate::model::angle_frame(o, d, n0, a.degrees).ok_or_else(|| "its line has no length".into()));
-                    match made {
-                        Ok(f) => planes[k] = Some(f),
-                        Err(e) => plane_errors[k] = Some(e),
-                    }
-                } else if let Some(pf) = plane_features.get(k) {
-                    let now = if pf.on_origin {
-                        Some(pf.base)
-                    } else {
-                        let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
-                        catch_unwind(AssertUnwindSafe(|| resolve_face(&bodies, &pf.base, DVec2::from(pf.anchor)))).ok().flatten()
-                    };
-                    match now {
-                        Some(f) => planes[k] = Some(FacePlane { origin: f.origin + f.normal() * pf.offset, follow: None, ..f }),
-                        None => plane_errors[k] = Some("the face it was measured from is gone".into()),
-                    }
+            let f = &timeline[*next];
+            *next += 1;
+            if *timing {
+                eprintln!("  {:>8.1} ms  before {f:?}", step.elapsed().as_secs_f64() * 1e3);
+                *step = std::time::Instant::now();
+            }
+            let current = std::mem::take(shapes);
+            // Keep a copy so a failed operation leaves the previous bodies intact.
+            // Extrudes, revolves, fillets and patterns: the same inputs as last
+            // time give the same result (holes and threads do this themselves).
+            let memo = match *f {
+                Feature::Extrude(k) => extrudes.get(k).map(|ex| format!("{f:?}|{ex:?}|{}|{:?}|{planes:?}", sketch_geometry(sketches.get(ex.sketch)), frames.get(ex.sketch))),
+                Feature::Revolve(k) => revolves.get(k).map(|rv| format!("{f:?}|{rv:?}|{}|{:?}|{axes:?}", sketch_geometry(sketches.get(rv.sketch)), frames.get(rv.sketch))),
+                Feature::Edge(k) => edge_features.get(k).map(|ef| format!("{f:?}|{ef:?}|{extrude_ends:?}|{revolve_ends:?}")),
+                Feature::Copy(k) => copies.get(k).map(|c| format!("{f:?}|{c:?}|{axes:?}|{planes:?}")),
+                _ => None,
+            }
+            .map(|inputs| key_of(&format!("{}|{inputs}", bodies_key(&current))));
+            if let Some((next, touched, _, end)) = memo.as_deref().and_then(remembered) {
+                match *f {
+                    Feature::Extrude(k) => extrude_ends[k] = end,
+                    Feature::Revolve(k) => revolve_ends[k] = end,
+                    _ => {}
                 }
-                shapes = current;
-                continue;
-            }
-            Feature::Sketch(k) if sketches.get(k).is_some_and(|s| s.plane_ref.is_some()) => {
-                // A sketch on a construction plane goes wherever the plane is now.
-                let c = sketches[k].plane_ref.unwrap_or(0);
-                match planes.get(c).copied().flatten() {
-                    Some(f) => frames[k] = Some(f),
-                    None => {
-                        frames[k] = None;
-                        sketch_errors[k] = Some("the plane it is on couldn't be built".into());
-                    }
-                }
-                shapes = current;
-                continue;
-            }
-            Feature::Sketch(k) => {
-                // A sketch on a face follows that face as the part changes.
-                if let Some(sk) = sketches.get(k).filter(|s| s.face.is_some()) {
-                    let mut face = sk.face.expect("checked above");
-                    // On the far end of an extrude/revolve: move with it first.
-                    if let Some(m) = face.follow.and_then(|fl| motion_for(fl, &extrude_ends, &revolve_ends)) {
-                        face = move_face(&face, m);
-                    }
-                    let anchor = sketch_anchor(sk);
-                    match catch_unwind(AssertUnwindSafe(|| resolve_face(&current.iter().map(|(s, _)| s).collect::<Vec<_>>(), &face, anchor))) {
-                        Ok(Some(now)) => frames[k] = Some(now),
-                        _ => {
-                            // Lost: features built from it fail rather than
-                            // build in the wrong place.
-                            frames[k] = None;
-                            sketch_errors[k] = Some("the face it was on is gone".into());
-                        }
-                    }
-                }
-                shapes = current;
-                continue;
-            }
-            Feature::Extrude(k) => {
-                let Some(ex) = extrudes.get(k) else {
-                    shapes = current;
-                    continue;
-                };
-                let ends = &mut extrude_ends;
-                let planes_now = &planes;
-                let r = catch_unwind(AssertUnwindSafe(|| {
-                    let target = match &ex.target {
-                        Some(t) if ex.extent == crate::model::Extent::ToObject => {
-                            let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
-                            Some(target_plane(t, planes_now, &bodies)?)
-                        }
-                        _ => None,
-                    };
-                    let (shape, end) = tool(sketches, &frames, ex, target)?;
-                    ends[k] = Some(end);
-                    apply(current, shape, ex.op, Feature::Extrude(k))
-                }));
-                (r, &mut errors[k])
-            }
-            Feature::Revolve(k) => {
-                let Some(rv) = revolves.get(k) else {
-                    shapes = current;
-                    continue;
-                };
-                let ends = &mut revolve_ends;
-                let r = catch_unwind(AssertUnwindSafe(|| {
-                    let (shape, end) = revolve_tool(sketches, &frames, rv, &axes)?;
-                    ends[k] = Some(end);
-                    apply(current, shape, rv.op, Feature::Revolve(k))
-                }));
-                (r, &mut revolve_errors[k])
-            }
-            Feature::Axis(k) => {
-                // An axis changes no body: find its edge in what's built so far.
-                if let Some(af) = axis_features.get(k) {
-                    match catch_unwind(AssertUnwindSafe(|| resolve_axis(&current, af))) {
-                        Ok(Ok(a)) => axes[k] = Some(a),
-                        Ok(Err(e)) => axis_errors[k] = Some(e),
-                        Err(_) => axis_errors[k] = Some("the geometry kernel couldn't find its edge".into()),
-                    }
-                }
-                shapes = current;
-                continue;
-            }
-            Feature::Hole(k) => {
-                let Some(h) = holes.get(k) else {
-                    shapes = current;
-                    continue;
-                };
-                let (fr, pl) = (&frames, &planes);
-                // Same bodies in, same hole, same places and planes: the same result.
-                let places = {
-                    let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
-                    format!("{:?}", catch_unwind(AssertUnwindSafe(|| hole_places(h, sketches, fr, &bodies))).ok())
-                };
-                let key = format!("hole{k}|{}|{h:?}|{places}|{pl:?}", bodies_key(&current));
-                if let Some((next, touched, shown, _)) = remembered(&key) {
-                    if let Some(id) = touched {
-                        touched_by.insert(*f, id);
-                    }
-                    threads.extend(shown);
-                    shapes = next;
-                    continue;
-                }
-                let mut shown = Vec::new();
-                let r = catch_unwind(AssertUnwindSafe(|| -> Result<(Tagged, Option<BodyId>), String> {
-                    let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
-                    let (tools, th) = hole_tools(h, sketches, fr, pl, &bodies)?;
-                    shown = th;
-                    drop(bodies);
-                    let volume = |t: &Tagged| t.iter().map(|(s, _)| s.volume()).sum::<f64>();
-                    let mut acc = current;
-                    let mut touched = None;
-                    for (bore, groove) in tools {
-                        let Some((groove, strip)) = groove else {
-                            let (next, t) = apply(acc, bore, Operation::Cut, Feature::Hole(k))?;
-                            (acc, touched) = (next, touched.or(t));
-                            continue;
-                        };
-                        // A modeled thread: what the bore and groove should take out
-                        // together, measured on the part as it is (OCCT can fail quietly
-                        // beside a helix; better an error than a wrong part).
-                        let overlap = |a: &Shape| acc.iter().filter_map(|(s, _)| s.try_intersect(a)).map(|c| c.volume()).sum::<f64>();
-                        let (ob, og) = (overlap(&bore), overlap(&groove));
-                        let before = volume(&acc);
-                        let (next, t2) = apply(acc, bore, Operation::Cut, Feature::Hole(k))?;
-                        let (next, t1) = apply(next, groove, Operation::Cut, Feature::Hole(k))?;
-                        let removed = before - volume(&next);
-                        // Bore and groove together, less the strip they share (at most).
-                        if removed < (ob + og - strip) * 0.98 || removed > (ob + og) * 1.02 {
-                            return Err("the kernel couldn't cut this thread — try it cosmetic (Modeled off)".into());
-                        }
-                        (acc, touched) = (next, touched.or(t1).or(t2));
-                    }
-                    Ok((acc, touched))
-                }));
-                if let Ok(Ok((next, touched))) = &r {
-                    remember(key, &(next.clone(), *touched, shown.clone(), None));
-                    threads.extend(shown);
-                }
-                (r, &mut hole_errors[k])
-            }
-            Feature::Thread(k) => {
-                let Some(tf) = thread_features.get(k) else {
-                    shapes = current;
-                    continue;
-                };
-                let key = format!("thread{k}|{}|{tf:?}", bodies_key(&current));
-                if let Some((next, touched, shown, _)) = remembered(&key) {
-                    if let Some(id) = touched {
-                        touched_by.insert(*f, id);
-                    }
-                    threads.extend(shown);
-                    shapes = next;
-                    continue;
-                }
-                let mut shown = Vec::new();
-                let r = catch_unwind(AssertUnwindSafe(|| apply_threads(current, tf, Feature::Thread(k), &mut shown)));
-                if let Ok(Ok((next, touched))) = &r {
-                    remember(key, &(next.clone(), *touched, shown.clone(), None));
-                    threads.extend(shown);
-                }
-                (r, &mut thread_errors[k])
-            }
-            Feature::Remove(k) => {
-                // Take the bodies out; the rest carry on.
-                if let Some(rf) = removes.get(k) {
-                    let before = current.len();
-                    let kept: Tagged = current.into_iter().filter(|(_, id)| !rf.bodies.contains(id)).collect();
-                    if kept.len() == before {
-                        remove_errors[k] = Some("the body it removes is gone".into());
-                    }
-                    shapes = kept;
-                } else {
-                    shapes = current;
-                }
-                continue;
-            }
-            Feature::Copy(k) => {
-                let Some(cf) = copies.get(k) else {
-                    shapes = current;
-                    continue;
-                };
-                let (axes_now, planes_now) = (&axes, &planes);
-                let r = catch_unwind(AssertUnwindSafe(|| apply_copy(current, cf, k, axes_now, planes_now)));
-                (r, &mut copy_errors[k])
-            }
-            Feature::Edge(k) => {
-                let Some(ef) = edge_features.get(k) else {
-                    shapes = current;
-                    continue;
-                };
-                let (ext, rev) = (&extrude_ends, &revolve_ends);
-                let r = catch_unwind(AssertUnwindSafe(|| apply_edges(current, ef, ext, rev)));
-                (r, &mut edge_errors[k])
-            }
-        };
-        shapes = match result {
-            Ok(Ok((next, touched))) => {
                 if let Some(id) = touched {
                     touched_by.insert(*f, id);
                 }
-                if let Some(key) = memo {
-                    let end = match *f {
-                        Feature::Extrude(k) => extrude_ends[k],
-                        Feature::Revolve(k) => revolve_ends[k],
-                        _ => None,
-                    };
-                    remember(key, &(next.clone(), touched, Vec::new(), end));
+                *shapes = next;
+                continue;
+            }
+            let backup: Tagged = current.iter().flat_map(|(s, id)| s.solids().into_iter().map(move |x| (x, *id))).collect();
+            let (result, slot) = match *f {
+                Feature::Plane(k) => {
+                    if let Some(a) = plane_features.get(k).and_then(|pf| pf.angle) {
+                        let made = catch_unwind(AssertUnwindSafe(|| hinge_line(&a, &current, &axes, axis_features, sketches, &frames)))
+                            .unwrap_or_else(|_| Err("the geometry kernel couldn't find its line".into()))
+                            .and_then(|(o, d, n0)| crate::model::angle_frame(o, d, n0, a.degrees).ok_or_else(|| "its line has no length".into()));
+                        match made {
+                            Ok(f) => planes[k] = Some(f),
+                            Err(e) => plane_errors[k] = Some(e),
+                        }
+                    } else if let Some(pf) = plane_features.get(k) {
+                        let now = if pf.on_origin {
+                            Some(pf.base)
+                        } else {
+                            let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
+                            catch_unwind(AssertUnwindSafe(|| resolve_face(&bodies, &pf.base, DVec2::from(pf.anchor)))).ok().flatten()
+                        };
+                        match now {
+                            Some(f) => planes[k] = Some(FacePlane { origin: f.origin + f.normal() * pf.offset, follow: None, ..f }),
+                            None => plane_errors[k] = Some("the face it was measured from is gone".into()),
+                        }
+                    }
+                    *shapes = current;
+                    continue;
                 }
-                next
-            }
-            Ok(Err(e)) => {
-                *slot = Some(e);
-                backup
-            }
-            Err(_) => {
-                *slot = Some("the geometry kernel couldn't build this feature".into());
-                backup
-            }
-        };
+                Feature::Sketch(k) if sketches.get(k).is_some_and(|s| s.plane_ref.is_some()) => {
+                    // A sketch on a construction plane goes wherever the plane is now.
+                    let c = sketches[k].plane_ref.unwrap_or(0);
+                    match planes.get(c).copied().flatten() {
+                        Some(f) => frames[k] = Some(f),
+                        None => {
+                            frames[k] = None;
+                            sketch_errors[k] = Some("the plane it is on couldn't be built".into());
+                        }
+                    }
+                    *shapes = current;
+                    continue;
+                }
+                Feature::Sketch(k) => {
+                    // A sketch on a face follows that face as the part changes.
+                    if let Some(sk) = sketches.get(k).filter(|s| s.face.is_some()) {
+                        let mut face = sk.face.expect("checked above");
+                        // On the far end of an extrude/revolve: move with it first.
+                        if let Some(m) = face.follow.and_then(|fl| motion_for(fl, &extrude_ends, &revolve_ends)) {
+                            face = move_face(&face, m);
+                        }
+                        let anchor = sketch_anchor(sk);
+                        match catch_unwind(AssertUnwindSafe(|| resolve_face(&current.iter().map(|(s, _)| s).collect::<Vec<_>>(), &face, anchor))) {
+                            Ok(Some(now)) => frames[k] = Some(now),
+                            _ => {
+                                // Lost: features built from it fail rather than
+                                // build in the wrong place.
+                                frames[k] = None;
+                                sketch_errors[k] = Some("the face it was on is gone".into());
+                            }
+                        }
+                    }
+                    *shapes = current;
+                    continue;
+                }
+                Feature::Extrude(k) => {
+                    let Some(ex) = extrudes.get(k) else {
+                        *shapes = current;
+                        continue;
+                    };
+                    let ends = &mut *extrude_ends;
+                    let planes_now = &planes;
+                    let r = catch_unwind(AssertUnwindSafe(|| {
+                        let target = match &ex.target {
+                            Some(t) if ex.extent == crate::model::Extent::ToObject => {
+                                let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
+                                Some(target_plane(t, planes_now, &bodies)?)
+                            }
+                            _ => None,
+                        };
+                        let (shape, end) = tool(sketches, &frames, ex, target)?;
+                        ends[k] = Some(end);
+                        apply(current, shape, ex.op, Feature::Extrude(k))
+                    }));
+                    (r, &mut errors[k])
+                }
+                Feature::Revolve(k) => {
+                    let Some(rv) = revolves.get(k) else {
+                        *shapes = current;
+                        continue;
+                    };
+                    let ends = &mut *revolve_ends;
+                    let r = catch_unwind(AssertUnwindSafe(|| {
+                        let (shape, end) = revolve_tool(sketches, &frames, rv, &axes)?;
+                        ends[k] = Some(end);
+                        apply(current, shape, rv.op, Feature::Revolve(k))
+                    }));
+                    (r, &mut revolve_errors[k])
+                }
+                Feature::Axis(k) => {
+                    // An axis changes no body: find its edge in what's built so far.
+                    if let Some(af) = axis_features.get(k) {
+                        match catch_unwind(AssertUnwindSafe(|| resolve_axis(&current, af))) {
+                            Ok(Ok(a)) => axes[k] = Some(a),
+                            Ok(Err(e)) => axis_errors[k] = Some(e),
+                            Err(_) => axis_errors[k] = Some("the geometry kernel couldn't find its edge".into()),
+                        }
+                    }
+                    *shapes = current;
+                    continue;
+                }
+                Feature::Hole(k) => {
+                    let Some(h) = holes.get(k) else {
+                        *shapes = current;
+                        continue;
+                    };
+                    let (fr, pl) = (&frames, &planes);
+                    // Same bodies in, same hole, same places and planes: the same result.
+                    let places = {
+                        let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
+                        format!("{:?}", catch_unwind(AssertUnwindSafe(|| hole_places(h, sketches, fr, &bodies))).ok())
+                    };
+                    let key = format!("hole{k}|{}|{h:?}|{places}|{pl:?}", bodies_key(&current));
+                    if let Some((next, touched, shown, _)) = remembered(&key) {
+                        if let Some(id) = touched {
+                            touched_by.insert(*f, id);
+                        }
+                        threads.extend(shown);
+                        *shapes = next;
+                        continue;
+                    }
+                    let mut shown = Vec::new();
+                    let r = catch_unwind(AssertUnwindSafe(|| -> Result<(Tagged, Option<BodyId>), String> {
+                        let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
+                        let (tools, th) = hole_tools(h, sketches, fr, pl, &bodies)?;
+                        shown = th;
+                        drop(bodies);
+                        let volume = |t: &Tagged| t.iter().map(|(s, _)| s.volume()).sum::<f64>();
+                        let mut acc = current;
+                        let mut touched = None;
+                        for (bore, groove) in tools {
+                            let Some((groove, strip)) = groove else {
+                                let (next, t) = apply(acc, bore, Operation::Cut, Feature::Hole(k))?;
+                                (acc, touched) = (next, touched.or(t));
+                                continue;
+                            };
+                            // A modeled thread: what the bore and groove should take out
+                            // together, measured on the part as it is (OCCT can fail quietly
+                            // beside a helix; better an error than a wrong part).
+                            let overlap = |a: &Shape| acc.iter().filter_map(|(s, _)| s.try_intersect(a)).map(|c| c.volume()).sum::<f64>();
+                            let (ob, og) = (overlap(&bore), overlap(&groove));
+                            let before = volume(&acc);
+                            let (next, t2) = apply(acc, bore, Operation::Cut, Feature::Hole(k))?;
+                            let (next, t1) = apply(next, groove, Operation::Cut, Feature::Hole(k))?;
+                            let removed = before - volume(&next);
+                            // Bore and groove together, less the strip they share (at most).
+                            if removed < (ob + og - strip) * 0.98 || removed > (ob + og) * 1.02 {
+                                return Err("the kernel couldn't cut this thread — try it cosmetic (Modeled off)".into());
+                            }
+                            (acc, touched) = (next, touched.or(t1).or(t2));
+                        }
+                        Ok((acc, touched))
+                    }));
+                    if let Ok(Ok((next, touched))) = &r {
+                        remember(key, &(next.clone(), *touched, shown.clone(), None));
+                        threads.extend(shown);
+                    }
+                    (r, &mut hole_errors[k])
+                }
+                Feature::Thread(k) => {
+                    let Some(tf) = thread_features.get(k) else {
+                        *shapes = current;
+                        continue;
+                    };
+                    let key = format!("thread{k}|{}|{tf:?}", bodies_key(&current));
+                    if let Some((next, touched, shown, _)) = remembered(&key) {
+                        if let Some(id) = touched {
+                            touched_by.insert(*f, id);
+                        }
+                        threads.extend(shown);
+                        *shapes = next;
+                        continue;
+                    }
+                    let mut shown = Vec::new();
+                    let r = catch_unwind(AssertUnwindSafe(|| apply_threads(current, tf, Feature::Thread(k), &mut shown)));
+                    if let Ok(Ok((next, touched))) = &r {
+                        remember(key, &(next.clone(), *touched, shown.clone(), None));
+                        threads.extend(shown);
+                    }
+                    (r, &mut thread_errors[k])
+                }
+                Feature::Remove(k) => {
+                    // Take the bodies out; the rest carry on.
+                    if let Some(rf) = removes.get(k) {
+                        let before = current.len();
+                        let kept: Tagged = current.into_iter().filter(|(_, id)| !rf.bodies.contains(id)).collect();
+                        if kept.len() == before {
+                            remove_errors[k] = Some("the body it removes is gone".into());
+                        }
+                        *shapes = kept;
+                    } else {
+                        *shapes = current;
+                    }
+                    continue;
+                }
+                Feature::Copy(k) => {
+                    let Some(cf) = copies.get(k) else {
+                        *shapes = current;
+                        continue;
+                    };
+                    let (axes_now, planes_now) = (&axes, &planes);
+                    let r = catch_unwind(AssertUnwindSafe(|| apply_copy(current, cf, k, axes_now, planes_now)));
+                    (r, &mut copy_errors[k])
+                }
+                Feature::Edge(k) => {
+                    let Some(ef) = edge_features.get(k) else {
+                        *shapes = current;
+                        continue;
+                    };
+                    let (ext, rev) = (&extrude_ends, &revolve_ends);
+                    let r = catch_unwind(AssertUnwindSafe(|| apply_edges(current, ef, ext, rev)));
+                    (r, &mut edge_errors[k])
+                }
+            };
+            *shapes = match result {
+                Ok(Ok((next, touched))) => {
+                    if let Some(id) = touched {
+                        touched_by.insert(*f, id);
+                    }
+                    if let Some(key) = memo {
+                        let end = match *f {
+                            Feature::Extrude(k) => extrude_ends[k],
+                            Feature::Revolve(k) => revolve_ends[k],
+                            _ => None,
+                        };
+                        remember(key, &(next.clone(), touched, Vec::new(), end));
+                    }
+                    next
+                }
+                Ok(Err(e)) => {
+                    *slot = Some(e);
+                    backup
+                }
+                Err(_) => {
+                    *slot = Some("the geometry kernel couldn't build this feature".into());
+                    backup
+                }
+            };
+        }
     }
+
+    /// The model built (bodies analysed for picking and Measure).
+    pub fn finish(self) -> Model {
+        let Build { inp: _, next: _, hole_errors, thread_errors, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, mut step } = self;
     if timing {
         eprintln!("  {:>8.1} ms  last feature; analysing bodies…", step.elapsed().as_secs_f64() * 1e3);
         step = std::time::Instant::now();
@@ -2116,6 +2187,40 @@ pub fn build_all(
     }
     let caps = caps_of(&extrude_ends, &revolve_ends);
     Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, threads, caps, touched: touched_by }
+    }
+}
+
+/// Evaluate the timeline. A feature that fails is skipped (with its error
+/// recorded) and the rest still build — like a red feature in Fusion.
+#[allow(clippy::too_many_arguments)]
+pub fn build_all(
+    sketches: &[Sketch],
+    extrudes: &[Extrude],
+    revolves: &[Revolve],
+    edge_features: &[EdgeFeature],
+    copies: &[CopyFeature],
+    axis_features: &[AxisFeature],
+    plane_features: &[PlaneFeature],
+    removes: &[RemoveFeature],
+    holes: &[HoleFeature],
+    thread_features: &[ThreadFeature],
+    timeline: &[Feature],
+) -> Model {
+    let mut b = Build::start(BuildInputs {
+        sketches: sketches.to_vec(),
+        extrudes: extrudes.to_vec(),
+        revolves: revolves.to_vec(),
+        edge_features: edge_features.to_vec(),
+        copies: copies.to_vec(),
+        axis_features: axis_features.to_vec(),
+        plane_features: plane_features.to_vec(),
+        removes: removes.to_vec(),
+        holes: holes.to_vec(),
+        thread_features: thread_features.to_vec(),
+        timeline: timeline.to_vec(),
+    });
+    while b.step(std::time::Duration::MAX) {}
+    b.finish()
 }
 
 /// Exact STEP export of all bodies (true planes, cylinders, arcs).
