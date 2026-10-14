@@ -859,9 +859,24 @@ impl Default for OpenCad {
 }
 
 
+/// Prints the frame's time when it drops (if OPENCAD_TIMING is set and it was slow).
+struct SlowFrame(std::time::Instant);
+
+impl Drop for SlowFrame {
+    fn drop(&mut self) {
+        let ms = self.0.elapsed().as_secs_f64() * 1e3;
+        if ms > 30.0 && std::env::var_os("OPENCAD_TIMING").is_some() {
+            eprintln!("slow frame: {ms:.0} ms");
+        }
+    }
+}
+
 impl OpenCad {
     /// One frame of this design (the tab that's showing).
     fn tab_ui(&mut self, ui: &mut egui::Ui) {
+        // OPENCAD_TIMING=1: report frames slow enough to feel (and the kernel prints its steps).
+        let frame_start = std::time::Instant::now();
+        let _slow = SlowFrame(frame_start);
         let ctx = ui.ctx().clone();
         // Enter finishes the open tool window (OK) when nothing else takes it:
         // no text box focused and no number box open (that has its own Enter).

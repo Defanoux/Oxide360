@@ -78,6 +78,24 @@ impl Body {
         })
     }
 
+    /// The middle of each of its flat faces, in one pass over the mesh.
+    pub fn flat_face_centres(&self) -> Vec<DVec3> {
+        let mut acc = vec![(DVec3::ZERO, 0.0); self.faces.len()];
+        for (f, t) in self.tri_face.iter().zip(&self.mesh.tris) {
+            let [a, b, c] = t.map(|i| self.mesh.positions[i as usize].as_dvec3());
+            let w = (b - a).cross(c - a).length() / 2.0;
+            if let Some(slot) = acc.get_mut(*f as usize) {
+                slot.0 += (a + b + c) / 3.0 * w;
+                slot.1 += w;
+            }
+        }
+        acc.iter()
+            .zip(&self.faces)
+            .filter(|((_, area), g)| *area > 0.0 && matches!(g, Geom::Plane { .. }))
+            .map(|((sum, area), _)| *sum / *area)
+            .collect()
+    }
+
     /// The middle of one of its faces (area-weighted over its triangles).
     pub fn face_centroid(&self, face: usize) -> Option<DVec3> {
         let (mut sum, mut area) = (DVec3::ZERO, 0.0);
@@ -1005,6 +1023,22 @@ fn sketch_anchor(sk: &Sketch) -> DVec2 {
 /// model's size. Only the plane's offset can change, so the sketch keeps its
 /// axes and just slides along the normal with its face.
 fn resolve_face(shapes: &[&Shape], f: &FacePlane, anchor: DVec2) -> Option<FacePlane> {
+    // Checking every face is slow on a part with a modeled thread: remember
+    // the answer for the same bodies and the same face.
+    let key = key_of(&format!("{}|{f:?}|{anchor:?}", shapes.iter().map(|s| fingerprint(s)).collect::<Vec<_>>().join(";")));
+    if let Some(found) = FACES_FOUND.with(|c| c.borrow().iter().find(|(k, _)| *k == key).map(|(_, r)| *r)) {
+        return found;
+    }
+    let found = resolve_face_now(shapes, f, anchor);
+    FACES_FOUND.with(|c| {
+        let mut c = c.borrow_mut();
+        c.push((key, found));
+        bounded(&mut c);
+    });
+    found
+}
+
+fn resolve_face_now(shapes: &[&Shape], f: &FacePlane, anchor: DVec2) -> Option<FacePlane> {
     let n = f.normal();
     let offset = n.dot(f.origin);
     let mut lo = DVec3::splat(f64::MAX);
@@ -1351,23 +1385,40 @@ fn apply_threads(current: Tagged, tf: &ThreadFeature, made_by: Feature, shown: &
 
 // --- Remembering slow results between rebuilds ---
 //
-// Every change rebuilds the timeline from the start, and a modeled thread's
-// cuts (and the analysis of a body with hundreds of helical faces) take a
-// second or more. A hole or thread whose inputs are unchanged gives back its
-// last result, and a body that is literally the same shape keeps its mesh and
-// faces. Inputs are recognised by a geometric fingerprint (volume, faces,
-// box), worked out once per shape.
+// Every change rebuilds the timeline from the start, and booleans on a part
+// with a modeled thread (and analysing its hundreds of helical faces) take a
+// second or more. A feature whose inputs are unchanged gives back its last
+// result, and a body that is literally the same shape keeps its mesh and
+// faces. Input bodies are recognised by a fingerprint: a remembered result's
+// shapes carry one from the inputs that made them (free); a shape built fresh
+// gets a geometric one (volume, faces, box).
 
 /// How many results are kept.
-const MEMO: usize = 24;
+const MEMO: usize = 64;
 
-type FeatureResult = (Tagged, Option<BodyId>, Vec<CosmeticThread>);
+/// A feature's result: bodies, the body it made or changed, threads it
+/// shows, and where an extrude's or revolve's far end is.
+type FeatureResult = (Tagged, Option<BodyId>, Vec<CosmeticThread>, Option<End>);
+
+/// A short key for everything a feature reads.
+fn key_of(text: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    format!("{:016x}{}", h.finish(), text.len())
+}
+
+/// What a sketch contributes to the solid (not its names, labels or units).
+fn sketch_geometry(sk: Option<&Sketch>) -> String {
+    sk.map_or(String::new(), |s| format!("{:?}{:?}{:?}{:?}{:?}{:?}", s.plane, s.face, s.plane_ref, s.points, s.entities, s.splines))
+}
 type BodyData = (Mesh, Vec<u32>, Vec<BodyEdge>, Vec<(DVec3, DVec3)>, Vec<Geom>);
 
 thread_local! {
     static FINGERPRINTS: std::cell::RefCell<Vec<(Shape, String)>> = const { std::cell::RefCell::new(Vec::new()) };
     static FEATURES: std::cell::RefCell<Vec<(String, FeatureResult)>> = const { std::cell::RefCell::new(Vec::new()) };
     static BODIES: std::cell::RefCell<Vec<(Shape, BodyData)>> = const { std::cell::RefCell::new(Vec::new()) };
+    static FACES_FOUND: std::cell::RefCell<Vec<(String, Option<FacePlane>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Keep at most MEMO entries (dropping the oldest).
@@ -1403,6 +1454,15 @@ fn remembered(key: &str) -> Option<FeatureResult> {
 }
 
 fn remember(key: String, r: &FeatureResult) {
+    // Its shapes are known by where they came from, so later features don't
+    // have to measure them.
+    FINGERPRINTS.with(|c| {
+        let mut c = c.borrow_mut();
+        for (i, (s, _)) in r.0.iter().enumerate() {
+            c.push((s.clone(), format!("from {key}#{i}")));
+        }
+        bounded(&mut c);
+    });
     FEATURES.with(|c| {
         let mut c = c.borrow_mut();
         c.retain(|(k, _)| *k != key);
@@ -1606,9 +1666,39 @@ pub fn build_all(
     let mut frames: Vec<Option<FacePlane>> = sketches.iter().map(|s| s.face).collect();
     let mut sketch_errors: Vec<Option<String>> = vec![None; sketches.len()];
     let mut touched_by: HashMap<Feature, BodyId> = HashMap::new();
+    // OPENCAD_TIMING=1: how long each feature takes (to find what's slow).
+    let timing = std::env::var_os("OPENCAD_TIMING").is_some();
+    let started = std::time::Instant::now();
+    let mut step = std::time::Instant::now();
     for f in timeline {
+        if timing {
+            eprintln!("  {:>8.1} ms  before {f:?}", step.elapsed().as_secs_f64() * 1e3);
+            step = std::time::Instant::now();
+        }
         let current = std::mem::take(&mut shapes);
         // Keep a copy so a failed operation leaves the previous bodies intact.
+        // Extrudes, revolves, fillets and patterns: the same inputs as last
+        // time give the same result (holes and threads do this themselves).
+        let memo = match *f {
+            Feature::Extrude(k) => extrudes.get(k).map(|ex| format!("{f:?}|{ex:?}|{}|{:?}|{planes:?}", sketch_geometry(sketches.get(ex.sketch)), frames.get(ex.sketch))),
+            Feature::Revolve(k) => revolves.get(k).map(|rv| format!("{f:?}|{rv:?}|{}|{:?}|{axes:?}", sketch_geometry(sketches.get(rv.sketch)), frames.get(rv.sketch))),
+            Feature::Edge(k) => edge_features.get(k).map(|ef| format!("{f:?}|{ef:?}|{extrude_ends:?}|{revolve_ends:?}")),
+            Feature::Copy(k) => copies.get(k).map(|c| format!("{f:?}|{c:?}|{axes:?}|{planes:?}")),
+            _ => None,
+        }
+        .map(|inputs| key_of(&format!("{}|{inputs}", bodies_key(&current))));
+        if let Some((next, touched, _, end)) = memo.as_deref().and_then(remembered) {
+            match *f {
+                Feature::Extrude(k) => extrude_ends[k] = end,
+                Feature::Revolve(k) => revolve_ends[k] = end,
+                _ => {}
+            }
+            if let Some(id) = touched {
+                touched_by.insert(*f, id);
+            }
+            shapes = next;
+            continue;
+        }
         let backup: Tagged = current.iter().flat_map(|(s, id)| s.solids().into_iter().map(move |x| (x, *id))).collect();
         let (result, slot) = match *f {
             Feature::Plane(k) => {
@@ -1728,7 +1818,7 @@ pub fn build_all(
                     format!("{:?}", catch_unwind(AssertUnwindSafe(|| hole_places(h, sketches, fr, &bodies))).ok())
                 };
                 let key = format!("hole{k}|{}|{h:?}|{places}|{pl:?}", bodies_key(&current));
-                if let Some((next, touched, shown)) = remembered(&key) {
+                if let Some((next, touched, shown, _)) = remembered(&key) {
                     if let Some(id) = touched {
                         touched_by.insert(*f, id);
                     }
@@ -1770,7 +1860,7 @@ pub fn build_all(
                     Ok((acc, touched))
                 }));
                 if let Ok(Ok((next, touched))) = &r {
-                    remember(key, &(next.clone(), *touched, shown.clone()));
+                    remember(key, &(next.clone(), *touched, shown.clone(), None));
                     threads.extend(shown);
                 }
                 (r, &mut hole_errors[k])
@@ -1781,7 +1871,7 @@ pub fn build_all(
                     continue;
                 };
                 let key = format!("thread{k}|{}|{tf:?}", bodies_key(&current));
-                if let Some((next, touched, shown)) = remembered(&key) {
+                if let Some((next, touched, shown, _)) = remembered(&key) {
                     if let Some(id) = touched {
                         touched_by.insert(*f, id);
                     }
@@ -1792,7 +1882,7 @@ pub fn build_all(
                 let mut shown = Vec::new();
                 let r = catch_unwind(AssertUnwindSafe(|| apply_threads(current, tf, Feature::Thread(k), &mut shown)));
                 if let Ok(Ok((next, touched))) = &r {
-                    remember(key, &(next.clone(), *touched, shown.clone()));
+                    remember(key, &(next.clone(), *touched, shown.clone(), None));
                     threads.extend(shown);
                 }
                 (r, &mut thread_errors[k])
@@ -1835,6 +1925,14 @@ pub fn build_all(
                 if let Some(id) = touched {
                     touched_by.insert(*f, id);
                 }
+                if let Some(key) = memo {
+                    let end = match *f {
+                        Feature::Extrude(k) => extrude_ends[k],
+                        Feature::Revolve(k) => revolve_ends[k],
+                        _ => None,
+                    };
+                    remember(key, &(next.clone(), touched, Vec::new(), end));
+                }
                 next
             }
             Ok(Err(e)) => {
@@ -1846,6 +1944,10 @@ pub fn build_all(
                 backup
             }
         };
+    }
+    if timing {
+        eprintln!("  {:>8.1} ms  last feature; analysing bodies…", step.elapsed().as_secs_f64() * 1e3);
+        step = std::time::Instant::now();
     }
     let bodies = shapes
         .into_iter()
@@ -1866,6 +1968,9 @@ pub fn build_all(
             Some(Body { id, shape, mesh, edges, flat_faces, faces, tri_face })
         })
         .collect();
+    if timing {
+        eprintln!("  {:>8.1} ms  bodies; build {:.1} ms in all", step.elapsed().as_secs_f64() * 1e3, started.elapsed().as_secs_f64() * 1e3);
+    }
     let caps = caps_of(&extrude_ends, &revolve_ends);
     Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, threads, caps, touched: touched_by }
 }
@@ -3122,6 +3227,9 @@ mod tests {
         let b = &m.bodies[0];
         let top = (0..b.faces.len()).find(|&f| b.face_tris(f).all(|t| t.iter().all(|p| (p.z - 10.0).abs() < 1e-9))).unwrap();
         assert!(b.face_centroid(top).unwrap().distance(DVec3::new(25.0, 15.0, 10.0)) < 1e-9);
+        let centres = b.flat_face_centres();
+        assert_eq!(centres.len(), 6);
+        assert!(centres.iter().any(|c| c.distance(DVec3::new(25.0, 15.0, 0.0)) < 1e-9) && centres.iter().any(|c| c.distance(DVec3::new(0.0, 15.0, 5.0)) < 1e-9));
         let plane = FacePlane::from_face(DVec3::Z, DVec3::new(0.0, 0.0, 10.0));
         assert_eq!(b.face_at(&plane, DVec3::new(10.0, 3.0, 10.0)), Some(top), "found again from a point on it");
         assert_eq!(b.face_at(&plane, DVec3::new(60.0, 3.0, 10.0)), None, "off the face");

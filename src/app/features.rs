@@ -651,6 +651,33 @@ impl OpenCad {
         }
     }
 
+    /// Where a hole could go that the camera can see: the middle of each flat
+    /// face, and the points and circle centres of the visible sketches.
+    /// Spots behind the part are left out.
+    pub(crate) fn hole_spots(&self) -> Vec<DVec3> {
+        let Some(cache) = self.caches[Slot::Committed as usize].as_ref() else { return Vec::new() };
+        let bodies: Vec<&kernel::Body> = cache.model.bodies.iter().filter(|b| !self.hidden_bodies.contains(&b.id)).collect();
+        let mut spots: Vec<DVec3> = bodies.iter().flat_map(|b| b.flat_face_centres()).collect();
+        for s in (0..self.sketches.len()).filter(|&s| self.sketch_visible(s)) {
+            let (sk, plane) = (&self.sketches[s], self.plane_of(s));
+            let mut used = vec![false; sk.points.len()];
+            for e in 0..sk.entities.len() {
+                for p in sk.entity_points(e) {
+                    used[p] = true;
+                }
+            }
+            spots.extend(used.iter().enumerate().filter(|(_, u)| **u).map(|(p, _)| plane.to_world(sk.points[p]).as_dvec3()));
+        }
+        // Seen: nothing of a body between it and the eye.
+        let lift = self.camera.distance * 1e-3;
+        spots.retain(|p| {
+            let to_eye = self.camera.to_eye(p.as_vec3());
+            let from = p.as_vec3() + to_eye * lift;
+            !bodies.iter().any(|b| model::ray_hit(&b.mesh, from, to_eye).is_some())
+        });
+        spots
+    }
+
     /// Where a hole place is now (as far as the app knows) and the way it drills (unflipped).
     pub(crate) fn hole_place_world(&self, place: &model::HolePlace) -> Option<(DVec3, DVec3)> {
         match *place {

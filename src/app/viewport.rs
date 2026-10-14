@@ -1829,7 +1829,15 @@ impl OpenCad {
             }
         }
 
-        // --- draw: hole places (the one under the cursor, and those picked) ---
+        // --- draw: hole places (where a click could go, the one under the
+        // cursor, and those picked) ---
+        if self.hole_dialog.as_ref().is_some_and(|d| d.picking) {
+            for p in self.hole_spots() {
+                if let Some(q) = view.project(p.as_vec3()) {
+                    painter.circle_stroke(to_pos(q), 3.5, Stroke::new(1.5, Color32::from_rgba_unmultiplied(235, 235, 235, 200)));
+                }
+            }
+        }
         if let Some(d) = &self.hole_dialog {
             for place in &d.hole.places {
                 if let Some(q) = self.hole_place_world(place).and_then(|(p, _)| view.project(p.as_vec3())) {

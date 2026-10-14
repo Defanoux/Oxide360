@@ -25,3 +25,12 @@ pollster = "0.4"
 
 [patch.crates-io]
 opencascade-sys = { path = "vendor/opencascade-sys" }
+
+# `cargo run` stays a debug build (fast to compile, checks overflow), but the
+# libraries it leans on every frame (egui, wgpu, glam, …) are optimised, and
+# opencad itself lightly: unoptimised they made the app feel laggy.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
