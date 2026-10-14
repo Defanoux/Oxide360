@@ -293,6 +293,7 @@ impl OpenCad {
         self.plane_pick = false;
         self.axis_hidden.clear();
         self.axis_pick = false;
+        self.angle_pick = false;
         self.copy_dialog = None;
         self.revolve_dialog = None;
         self.timeline = doc.timeline.clone();
@@ -361,6 +362,7 @@ impl OpenCad {
         self.plane_pick = false;
         self.axis_hidden.retain(|&k| k < self.axes.len());
         self.axis_pick = false;
+        self.angle_pick = false;
         self.copy_dialog = None;
         self.timeline = doc.timeline;
         self.suppressed = doc.suppressed;

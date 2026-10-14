@@ -5,6 +5,7 @@ use crate::*;
 impl OpenCad {
     pub(crate) fn open_extrude(&mut self, editing: Option<usize>) {
         self.axis_pick = false;
+        self.angle_pick = false;
         self.finish_sketch();
         self.cancel_edge_dialog();
         self.cancel_revolve();
@@ -92,7 +93,7 @@ impl OpenCad {
     /// Put the cursor back in the number box with its text selected.
     pub(crate) fn focus_distance(&mut self) {
         if let Some(fe) = self.float.as_mut() {
-            if matches!(fe.target, EditTarget::ExtrudeDistance | EditTarget::EdgeSize | EditTarget::RevolveAngle | EditTarget::PlaneOffset | EditTarget::Corner(_)) {
+            if matches!(fe.target, EditTarget::ExtrudeDistance | EditTarget::EdgeSize | EditTarget::RevolveAngle | EditTarget::PlaneOffset | EditTarget::PlaneAngle | EditTarget::Corner(_)) {
                 fe.focus = true;
             }
         }
@@ -122,6 +123,13 @@ impl OpenCad {
                     v
                 }
             };
+        }
+        if let Some((d, a)) = self.plane_dialog.as_ref().and_then(|d| Some((d, d.angle?))) {
+            // A round arrow that swings the plane about its line.
+            let (o, dir, n0) = a.line;
+            let reach = (d.extent[2] - d.extent[0]).abs().max(1.0) * 0.5;
+            let at = o + model::zero_normal(dir, n0).cross(dir.normalize_or_zero()) * reach;
+            return TurnHandle::new(o, dir, at).map(|turn| Handle::Turn { turn, value: a.degrees, target: HandleTarget::PlaneAngle }).into_iter().collect();
         }
         if let Some(d) = &self.plane_dialog {
             let size = origin::size_for(self.camera.distance);
@@ -284,6 +292,11 @@ impl OpenCad {
                     d.distance = v;
                 }
             }
+            HandleTarget::PlaneAngle => {
+                if let Some(a) = self.plane_dialog.as_mut().and_then(|d| d.angle.as_mut()) {
+                    a.degrees = v.clamp(-360.0, 360.0);
+                }
+            }
             HandleTarget::Corner => {
                 // Scales a chamfer's two distances together, keeping their ratio.
                 let unit = self.units;
@@ -368,6 +381,7 @@ impl OpenCad {
 
     pub(crate) fn open_revolve(&mut self, editing: Option<usize>) {
         self.axis_pick = false;
+        self.angle_pick = false;
         self.finish_sketch();
         self.cancel_extrude();
         self.cancel_edge_dialog();
@@ -449,6 +463,7 @@ impl OpenCad {
 
     pub(crate) fn open_copy(&mut self, mode: CopyMode, editing: Option<usize>) {
         self.axis_pick = false;
+        self.angle_pick = false;
         self.cancel_extrude();
         self.cancel_revolve();
         self.cancel_edge_dialog();
@@ -534,18 +549,22 @@ impl OpenCad {
         self.close_plane_dialog();
         self.plane_pick = false;
         self.axis_pick = false;
+        self.angle_pick = false;
         self.face_pick = false;
     }
 
     /// Open the Offset Plane box with the distance ready to type into.
     pub(crate) fn open_plane_dialog(&mut self, d: PlaneDialog) {
-        self.float = Some(FloatEdit { target: EditTarget::PlaneOffset, text: self.units.plain(d.distance), focus: true, keep_text: false });
+        self.float = Some(match d.angle {
+            Some(a) => FloatEdit { target: EditTarget::PlaneAngle, text: format!("{:.1}", a.degrees), focus: true, keep_text: false },
+            None => FloatEdit { target: EditTarget::PlaneOffset, text: self.units.plain(d.distance), focus: true, keep_text: false },
+        });
         self.plane_dialog = Some(d);
     }
 
     pub(crate) fn close_plane_dialog(&mut self) {
         self.plane_dialog = None;
-        if self.float.as_ref().is_some_and(|f| f.target == EditTarget::PlaneOffset) {
+        if self.float.as_ref().is_some_and(|f| matches!(f.target, EditTarget::PlaneOffset | EditTarget::PlaneAngle)) {
             self.float = None;
         }
     }
@@ -703,6 +722,18 @@ impl OpenCad {
     }
 
     pub(crate) fn delete_axis(&mut self, k: usize) {
+        if self.planes.iter().any(|p| p.angle.is_some_and(|a| a.hinge.uses_axis(k))) {
+            self.notify("A plane at angle turns about that axis — delete the plane first".into());
+            return;
+        }
+        for p in &mut self.planes {
+            if let Some(a) = p.angle.as_mut() {
+                a.hinge.axis_deleted(k);
+            }
+        }
+        if let Some(a) = self.plane_dialog.as_mut().and_then(|d| d.angle.as_mut()) {
+            a.hinge.axis_deleted(k);
+        }
         self.axes.remove(k);
         self.axis_hidden = self.axis_hidden.iter().filter(|&&j| j != k).map(|&j| if j > k { j - 1 } else { j }).collect();
         self.timeline_remove(Feature::Axis(k));
@@ -738,6 +769,7 @@ impl OpenCad {
         self.axes.push(AxisFeature { name, edge });
         self.timeline_insert(Feature::Axis(self.axes.len() - 1));
         self.axis_pick = false;
+        self.angle_pick = false;
     }
 
     /// The straight body edge nearest the cursor (within snapping reach) that
@@ -912,6 +944,7 @@ impl OpenCad {
 
     pub(crate) fn open_edge_dialog(&mut self, editing: Option<usize>, kind: EdgeKind) {
         self.axis_pick = false;
+        self.angle_pick = false;
         self.finish_sketch();
         self.cancel_extrude();
         self.cancel_revolve();
@@ -1010,6 +1043,11 @@ impl OpenCad {
             EditTarget::PlaneOffset => {
                 if let Some(d) = self.plane_dialog.as_ref() {
                     fe.text = unit.plain(d.distance);
+                }
+            }
+            EditTarget::PlaneAngle => {
+                if let Some(a) = self.plane_dialog.as_ref().and_then(|d| d.angle) {
+                    fe.text = format!("{:.1}", a.degrees);
                 }
             }
             _ => {}

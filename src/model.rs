@@ -371,6 +371,87 @@ pub struct PlaneFeature {
     /// plane's coordinates): only what the picked plane is drawn over.
     #[serde(default)]
     pub extent: [f64; 4],
+    /// Plane at Angle: set, the plane runs through a line at an angle instead
+    /// (and `base` / `offset` only remember how it looked when made).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle: Option<PlaneAngle>,
+}
+
+/// The line a Plane at Angle turns about.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Hinge {
+    /// An origin axis.
+    World(WorldAxis),
+    /// A construction axis.
+    Axis(usize),
+    /// A straight body edge, found again every build.
+    Edge(EdgeRef),
+    /// A line of a sketch (follows the sketch).
+    SketchLine { sketch: usize, line: usize },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlaneAngle {
+    pub hinge: Hinge,
+    pub degrees: f64,
+}
+
+impl Hinge {
+    pub fn uses_axis(&self, k: usize) -> bool {
+        *self == Hinge::Axis(k)
+    }
+
+    pub fn uses_sketch(&self, i: usize) -> bool {
+        matches!(*self, Hinge::SketchLine { sketch, .. } if sketch == i)
+    }
+
+    /// Renumber after construction axis `k` (not this one's) is deleted.
+    pub fn axis_deleted(&mut self, k: usize) {
+        if let Hinge::Axis(j) = self
+            && *j > k
+        {
+            *j -= 1;
+        }
+    }
+
+    /// Renumber after sketch `i` (not this one's) is deleted.
+    pub fn sketch_deleted(&mut self, i: usize) {
+        if let Hinge::SketchLine { sketch, .. } = self
+            && *sketch > i
+        {
+            *sketch -= 1;
+        }
+    }
+
+    /// Which way the plane faces at 0° when nothing better is known: an
+    /// origin axis lies in the XY plane (Z in XZ).
+    pub fn world_normal(axis: WorldAxis) -> DVec3 {
+        match axis {
+            WorldAxis::X | WorldAxis::Y => DVec3::Z,
+            WorldAxis::Z => DVec3::NEG_Y,
+        }
+    }
+}
+
+/// The plane's normal at 0°: `hint` made square to the line `d` (any square
+/// direction if the hint runs along it).
+pub fn zero_normal(d: DVec3, hint: DVec3) -> DVec3 {
+    let d = d.normalize_or_zero();
+    [hint, DVec3::Z, DVec3::X]
+        .into_iter()
+        .find_map(|h| (h - d * h.dot(d)).try_normalize().filter(|_| h.length() > 1e-9))
+        .unwrap_or(DVec3::Z)
+}
+
+/// Plane at Angle: the plane through the line (`o`, `d`) that faces `n0` at
+/// 0°, turned right-handed about `d` by `degrees`. Its u runs along the line,
+/// its origin is `o`.
+pub fn angle_frame(o: DVec3, d: DVec3, n0: DVec3, degrees: f64) -> Option<crate::sketch::FacePlane> {
+    let u = d.try_normalize()?;
+    let n0 = zero_normal(u, n0);
+    let a = degrees.to_radians();
+    let n = n0 * a.cos() + u.cross(n0) * a.sin();
+    Some(crate::sketch::FacePlane { origin: o, u, v: n.cross(u), follow: None })
 }
 
 /// Most copies one feature may make (keeps a typo from hanging the app).
@@ -636,6 +717,38 @@ mod tests {
     use super::*;
     use crate::sketch::{Anchor, Editor, OriginPlane, Tool};
     use glam::DVec2;
+
+    #[test]
+    fn a_plane_at_angle_turns_about_its_line() {
+        // About X from the XY plane: 0° is XY itself, 90° stands up as XZ (facing -Y).
+        let f = angle_frame(DVec3::new(0.0, 0.0, 5.0), DVec3::X, Hinge::world_normal(WorldAxis::X), 0.0).unwrap();
+        assert!(f.normal().distance(DVec3::Z) < 1e-12 && f.origin.z == 5.0);
+        let f = angle_frame(DVec3::ZERO, DVec3::X, DVec3::Z, 90.0).unwrap();
+        assert!(f.normal().distance(DVec3::NEG_Y) < 1e-12, "{}", f.normal());
+        let f = angle_frame(DVec3::ZERO, DVec3::X, DVec3::Z, 30.0).unwrap();
+        assert!((f.normal().dot(DVec3::Z) - 30f64.to_radians().cos()).abs() < 1e-12);
+        assert!(f.u.distance(DVec3::X) < 1e-12, "the line lies in the plane");
+        // A hint along the line still gives a plane through it.
+        let n = zero_normal(DVec3::Z, DVec3::Z);
+        assert!(n.dot(DVec3::Z).abs() < 1e-12 && (n.length() - 1.0).abs() < 1e-12);
+        assert!(angle_frame(DVec3::ZERO, DVec3::ZERO, DVec3::Z, 0.0).is_none());
+    }
+
+    #[test]
+    fn a_hinge_renumbers_when_earlier_axes_and_sketches_go() {
+        let mut h = Hinge::Axis(3);
+        assert!(h.uses_axis(3) && !h.uses_axis(1));
+        h.axis_deleted(1);
+        assert_eq!(h, Hinge::Axis(2));
+        h.axis_deleted(5);
+        assert_eq!(h, Hinge::Axis(2));
+        let mut s = Hinge::SketchLine { sketch: 2, line: 4 };
+        assert!(s.uses_sketch(2));
+        s.sketch_deleted(0);
+        assert_eq!(s, Hinge::SketchLine { sketch: 1, line: 4 });
+        s.axis_deleted(0);
+        assert_eq!(s, Hinge::SketchLine { sketch: 1, line: 4 });
+    }
 
     #[test]
     fn a_plane_is_used_up_only_by_what_runs_to_or_mirrors_in_it() {

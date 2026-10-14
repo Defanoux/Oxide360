@@ -59,6 +59,15 @@ impl OpenCad {
         if i >= self.sketches.len() {
             return;
         }
+        if self.planes.iter().any(|p| p.angle.is_some_and(|a| a.hinge.uses_sketch(i))) {
+            self.notify("A plane at angle turns about a line of that sketch — delete the plane first".into());
+            return;
+        }
+        for p in &mut self.planes {
+            if let Some(a) = p.angle.as_mut() {
+                a.hinge.sketch_deleted(i);
+            }
+        }
         // Leave sketch mode without finish_sketch (it may drop an empty sketch
         // and shift the indices under us).
         self.active = None;

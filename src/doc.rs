@@ -377,6 +377,19 @@ pub fn validate(doc: &Document) -> Result<(), String> {
         if !(p.offset.is_finite() && f.origin.is_finite() && f.u.is_finite() && f.v.is_finite() && f.normal().length() > 0.5) {
             return Err(format!("{}: invalid plane", p.name));
         }
+        if let Some(a) = p.angle {
+            use crate::model::Hinge;
+            let ok = a.degrees.is_finite()
+                && match a.hinge {
+                    Hinge::World(_) => true,
+                    Hinge::Axis(k) => k < doc.axes.len(),
+                    Hinge::Edge(r) => r.mid.is_finite() && r.dir.is_finite(),
+                    Hinge::SketchLine { sketch, line } => doc.sketches.get(sketch).is_some_and(|sk| sk.is_line(line)),
+                };
+            if !ok {
+                return Err(format!("{}: invalid line or angle", p.name));
+            }
+        }
     }
     for (i, sk) in doc.sketches.iter().enumerate() {
         if sk.plane_ref.is_some_and(|k| k >= doc.planes.len()) {
@@ -705,7 +718,7 @@ mod tests {
         use crate::sketch::FacePlane;
         let mut doc = sample();
         let top = FacePlane::from_face(glam::DVec3::Z, glam::DVec3::new(1.0, 2.0, 5.0));
-        doc.planes.push(PlaneFeature { name: "Plane1".into(), base: top, on_origin: false, offset: -3.5, anchor: [1.0, 2.0], extent: [0.0, 0.0, 6.0, 6.0] });
+        doc.planes.push(PlaneFeature { name: "Plane1".into(), base: top, on_origin: false, offset: -3.5, anchor: [1.0, 2.0], extent: [0.0, 0.0, 6.0, 6.0], angle: None });
         doc.timeline.push(Feature::Plane(0));
         let mut on = Sketch::on_plane("S9".into(), top, 0);
         on.points.push(glam::DVec2::new(1.0, 1.0));
@@ -719,6 +732,17 @@ mod tests {
         let mut nan = doc.clone();
         nan.planes[0].offset = f64::NAN;
         assert!(validate(&nan).is_err());
+        // Plane at Angle: about a line of sketch 0 (its line 0); older files have no angle.
+        use crate::model::{Hinge, PlaneAngle};
+        assert!(!to_json(&doc).contains("angle\""));
+        let mut angled = doc.clone();
+        angled.planes[0].angle = Some(PlaneAngle { hinge: Hinge::SketchLine { sketch: 0, line: 0 }, degrees: 30.0 });
+        assert_eq!(from_json(&to_json(&angled)).unwrap(), angled);
+        let mut bad = angled.clone();
+        bad.planes[0].angle = Some(PlaneAngle { hinge: Hinge::SketchLine { sketch: 0, line: 4 }, degrees: 30.0 });
+        assert!(validate(&bad).is_err(), "entity 4 is the circle, not a line");
+        bad.planes[0].angle = Some(PlaneAngle { hinge: Hinge::Axis(0), degrees: 30.0 });
+        assert!(validate(&bad).is_err(), "there are no axes");
     }
 
     #[test]

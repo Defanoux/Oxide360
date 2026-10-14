@@ -534,6 +534,68 @@ impl OpenCad {
             if esc && !typing {
                 self.axis_pick = false;
             }
+        } else if self.angle_pick {
+            // --- Plane at Angle: click a sketch line, an axis or a straight edge ---
+            self.ensure_model(Slot::Committed);
+            self.edge_hover = None;
+            self.hinge_hover = None;
+            let reach = origin::size_for(self.camera.distance) as f64;
+            if let Some(px) = hover_px {
+                // Lines and axes by how near they pass on screen.
+                let mut lines: Vec<(model::Hinge, DVec3, DVec3, DVec3)> = model::WorldAxis::ALL
+                    .into_iter()
+                    .map(|a| (model::Hinge::World(a), -a.dir() * reach, a.dir() * reach, model::Hinge::world_normal(a)))
+                    .collect();
+                for (k, a) in self.model(Slot::Committed).axes.iter().enumerate() {
+                    if let (Some((o, d)), false) = (a, self.axis_hidden.contains(&k)) {
+                        let n0 = self.axes.get(k).map_or(DVec3::Z, |af| af.edge.faces[0]);
+                        lines.push((model::Hinge::Axis(k), *o - *d * reach * 1.5, *o + *d * reach * 1.5, n0));
+                    }
+                }
+                for s in (0..self.sketches.len()).filter(|&s| self.sketch_visible(s)) {
+                    let (sk, plane) = (&self.sketches[s], self.plane_of(s));
+                    for (e, ent) in sk.entities.iter().enumerate() {
+                        if let Entity::Line { a, b } = *ent {
+                            let (p, q) = (plane.to_world(sk.points[a]).as_dvec3(), plane.to_world(sk.points[b]).as_dvec3());
+                            lines.push((model::Hinge::SketchLine { sketch: s, line: e }, p, q, plane.normal().as_dvec3()));
+                        }
+                    }
+                }
+                self.hinge_hover = lines
+                    .into_iter()
+                    .filter_map(|l| {
+                        let d = dist_to_segment_px(px, view.project(l.1.as_vec3())?, view.project(l.2.as_vec3())?);
+                        (d < SNAP_PX).then_some((l, d))
+                    })
+                    .min_by(|x, y| x.1.total_cmp(&y.1))
+                    .map(|(l, _)| l);
+                if self.hinge_hover.is_none() {
+                    let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                    self.edge_hover = self.edge_under(&view, Slot::Committed, px, &ray, true);
+                    if let Some(r) = self.edge_hover {
+                        let ends = self.model(Slot::Committed).bodies.iter().flat_map(|b| &b.edges).find(|e| e.at.mid.distance(r.mid) < 1e-6).and_then(|e| {
+                            Some((e.points.first()?.as_dvec3(), e.points.last()?.as_dvec3()))
+                        });
+                        if let Some((p, q)) = ends {
+                            self.hinge_hover = Some((model::Hinge::Edge(r), p, q, r.faces[0]));
+                        }
+                    }
+                }
+            }
+            if let (true, Some((hinge, p, q))) = (response.clicked(), self.hinge_hover.map(|h| (h.0, h.1, h.2))) {
+                let n0 = self.hinge_hover.map_or(DVec3::Z, |h| h.3);
+                // The plane's origin where the kernel puts it: an origin axis
+                // through the origin, anything else at its middle.
+                let o = if matches!(hinge, model::Hinge::World(_)) { DVec3::ZERO } else { (p + q) * 0.5 };
+                let size = p.distance(q).max(reach * 0.5);
+                self.cancel_all_dialogs();
+                self.open_plane_dialog(PlaneDialog::at_angle(hinge, o, q - p, n0, size));
+                self.hinge_hover = None;
+            }
+            if esc && !typing {
+                self.angle_pick = false;
+                self.hinge_hover = None;
+            }
         } else if self.edge_dialog.is_some() {
             // --- fillet / chamfer input: pick edges on the model before this feature ---
             self.ensure_model(Slot::Base);
@@ -1360,7 +1422,8 @@ impl OpenCad {
         // Create Sketch shows the whole origin, whatever the browser says.
         // Picking an axis or a mirror plane shows the whole origin too.
         let picking_axis = self.copy_dialog.as_ref().is_some_and(|d| d.picking_axis || d.mode == CopyMode::Mirror)
-            || self.dialog.as_ref().is_some_and(|d| d.picking_target || d.extent == model::Extent::ToObject);
+            || self.dialog.as_ref().is_some_and(|d| d.picking_target || d.extent == model::Extent::ToObject)
+            || self.angle_pick;
         let shown = if self.face_pick || picking_axis { origin::Shown::default() } else { self.origin_shown };
         let show_origin = !sketching && (shown.all || self.face_pick || picking_axis);
         let mirror_plane = self.copy_dialog.as_ref().filter(|d| d.mode == CopyMode::Mirror && d.plane_set).map(|d| (d.mirror_custom, d.plane));
@@ -1687,6 +1750,20 @@ impl OpenCad {
                 rect.center_top() + egui::vec2(0.0, 40.0),
                 egui::Align2::CENTER_TOP,
                 "Click an axis to turn the pattern about   (Esc to cancel)",
+                egui::FontId::proportional(15.0),
+                Color32::from_gray(220),
+            );
+        }
+
+        // --- draw: the line a Plane at Angle would turn about ---
+        if self.angle_pick {
+            if let Some((_, p, q, _)) = self.hinge_hover {
+                view.line(p.as_vec3(), q.as_vec3(), Stroke::new(4.0, COL_HOVER));
+            }
+            painter.text(
+                rect.center_top() + egui::vec2(0.0, 40.0),
+                egui::Align2::CENTER_TOP,
+                "Click a sketch line, edge or axis to turn the plane about   (Esc to cancel)",
                 egui::FontId::proportional(15.0),
                 Color32::from_gray(220),
             );
@@ -2278,6 +2355,12 @@ impl OpenCad {
                 // Next to the first picked edge.
                 let r = d.edges.first()?;
                 view.project(r.mid.as_vec3()).map(|p| self.off_arrow(to_pos(p) + egui::vec2(18.0, -22.0)))
+            }),
+            Some(EditTarget::PlaneAngle) => self.plane_dialog.as_ref().and_then(|d| {
+                // By the round arrow, which sits on the plane's far side from its line.
+                let reach = (d.extent[2] - d.extent[0]).abs().max(1.0) * 0.5;
+                let f = d.frame();
+                view.project((f.origin + f.v * reach).as_vec3()).map(|p| self.off_arrow(to_pos(p) + egui::vec2(16.0, -16.0)))
             }),
             Some(EditTarget::PlaneOffset) => self.plane_dialog.as_ref().and_then(|d| {
                 // By the arrow's tip.

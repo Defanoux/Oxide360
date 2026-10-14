@@ -639,7 +639,8 @@ impl OpenCad {
             Some(Feature::Axis(_) | Feature::Remove(_)) => {}
             Some(Feature::Plane(k)) => {
                 self.cancel_all_dialogs();
-                self.open_plane_dialog(PlaneDialog::from_feature(k, &self.planes[k]));
+                let built = self.caches[Slot::Committed as usize].as_ref().and_then(|c| c.model.planes.get(k).copied().flatten());
+                self.open_plane_dialog(PlaneDialog::from_feature(k, &self.planes[k], built));
             }
             Some(Feature::Copy(k)) => {
                 let mode = match self.copies[k].kind {

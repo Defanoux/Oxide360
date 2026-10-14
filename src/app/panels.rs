@@ -666,11 +666,18 @@ impl OpenCad {
                 });
                 group(ui, "CONSTRUCT", |ui| {
                     let tip = "Offset Plane: click an origin plane or a face, then set the distance";
-                    if icons::button(ui, Icon::Plane, tip, true, self.plane_pick || self.plane_dialog.is_some()).clicked() {
+                    if icons::button(ui, Icon::Plane, tip, true, self.plane_pick || self.plane_dialog.as_ref().is_some_and(|d| d.angle.is_none())).clicked() {
                         let was = self.plane_pick;
                         self.cancel_all_dialogs();
                         self.plane_pick = !was;
                         self.face_pick = !was;
+                    }
+                    let tip = "Plane at Angle: click a sketch line, body edge or axis, then set the angle";
+                    let angled = self.plane_dialog.as_ref().is_some_and(|d| d.angle.is_some());
+                    if icons::button(ui, Icon::PlaneAngle, tip, true, self.angle_pick || angled).clicked() {
+                        let was = self.angle_pick;
+                        self.cancel_all_dialogs();
+                        self.angle_pick = !was;
                     }
                     let tip = "Axis Along Edge: click a straight edge of a body";
                     if icons::button(ui, Icon::Axis, tip, has_bodies, self.axis_pick).clicked() {
@@ -1389,7 +1396,7 @@ impl OpenCad {
         let (Some(anchor), Some(fe)) = (self.float_anchor, self.float.as_mut()) else { return };
         let target = fe.target;
         let degrees = match target {
-            EditTarget::RevolveAngle => true,
+            EditTarget::RevolveAngle | EditTarget::PlaneAngle => true,
             EditTarget::Dimension(ci) => self
                 .active
                 .and_then(|i| self.sketches.get(i))
@@ -1480,7 +1487,7 @@ impl OpenCad {
                                     close = true; // Esc or clicking away cancels
                                 }
                             }
-                            EditTarget::ExtrudeDistance | EditTarget::EdgeSize | EditTarget::RevolveAngle | EditTarget::PlaneOffset => {
+                            EditTarget::ExtrudeDistance | EditTarget::EdgeSize | EditTarget::RevolveAngle | EditTarget::PlaneOffset | EditTarget::PlaneAngle => {
                                 if changed {
                                     live = parsed;
                                 }
@@ -1579,9 +1586,12 @@ impl OpenCad {
                     }
                 }
             }
-            EditTarget::PlaneOffset => {
+            EditTarget::PlaneOffset | EditTarget::PlaneAngle => {
                 if let (Some(v), Some(d)) = (live, self.plane_dialog.as_mut()) {
-                    d.distance = v;
+                    match d.angle.as_mut() {
+                        Some(a) => a.degrees = v.clamp(-360.0, 360.0),
+                        None => d.distance = v,
+                    }
                 }
                 if extrude_cancel {
                     self.close_plane_dialog();

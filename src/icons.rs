@@ -26,6 +26,7 @@ pub enum Icon {
     Mirror,
     Midpoint,
     Plane,
+    PlaneAngle,
     Project,
     Axis,
     RectPattern,
@@ -278,6 +279,18 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             line((0.5, 0.55), (0.5, 0.12), thin);
             line((0.42, 0.22), (0.5, 0.1), thin);
             line((0.58, 0.22), (0.5, 0.1), thin);
+        }
+        Icon::PlaneAngle => {
+            // A flat square, a line along its back edge, and a second square tilted up off that line.
+            let (a, b, c, d) = ((0.1, 0.85), (0.6, 0.85), (0.9, 0.6), (0.4, 0.6));
+            for (p, q) in [(a, b), (b, c), (c, d), (d, a)] {
+                line(p, q, thin);
+            }
+            let (e, f) = ((0.4, 0.15), (0.9, 0.1));
+            for (p, q) in [(d, e), (e, f), (f, c)] {
+                line(p, q, Stroke::new(thin.width * 1.2, orange));
+            }
+            line((0.3, 0.6), (1.0, 0.6), Stroke::new(thin.width * 1.4, ink));
         }
         Icon::Midpoint => {
             // A line with a dot at its middle and two small ticks.

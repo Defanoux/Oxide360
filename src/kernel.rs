@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::measure::{self, Geom};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
@@ -1025,6 +1025,43 @@ fn resolve_axis(bodies: &Tagged, af: &AxisFeature) -> Result<(DVec3, DVec3), Str
     Ok((found.2.mid, found.2.dir.normalize()))
 }
 
+/// Plane at Angle: the line it turns about as built so far (a point on it, its
+/// direction) and which way the plane faces at 0°.
+fn hinge_line(
+    a: &PlaneAngle,
+    bodies: &Tagged,
+    axes: &[Option<(DVec3, DVec3)>],
+    axis_features: &[AxisFeature],
+    sketches: &[Sketch],
+    frames: &[Option<FacePlane>],
+) -> Result<(DVec3, DVec3, DVec3), String> {
+    match a.hinge {
+        Hinge::World(w) => Ok((DVec3::ZERO, w.dir(), Hinge::world_normal(w))),
+        Hinge::Axis(k) => {
+            let (o, d) = axes.get(k).copied().flatten().ok_or("its construction axis couldn't be built")?;
+            Ok((o, d, axis_features.get(k).map_or(DVec3::Z, |af| af.edge.faces[0])))
+        }
+        Hinge::Edge(r) => {
+            let (o, d) = resolve_axis(bodies, &AxisFeature { name: String::new(), edge: r })?;
+            Ok((o, d, r.faces[0]))
+        }
+        Hinge::SketchLine { sketch, line } => {
+            let sk = sketches.get(sketch).ok_or("its sketch was deleted")?;
+            let plane = frame_for(sk, frames.get(sketch).copied().flatten())?;
+            match sk.entities.get(line) {
+                Some(&crate::sketch::Entity::Line { a, b }) => {
+                    let (p, q) = (world(&plane, sk.points[a]), world(&plane, sk.points[b]));
+                    if p.distance(q) < 1e-9 {
+                        return Err("its line has no length".into());
+                    }
+                    Ok(((p + q) * 0.5, q - p, plane.normal()))
+                }
+                _ => Err("its line no longer exists — delete the plane and make it again".into()),
+            }
+        }
+    }
+}
+
 /// Is a polyline a straight run (all points on the line through its ends)?
 pub fn is_straight(pts: &[DVec3]) -> bool {
     let (Some(&a), Some(&b)) = (pts.first(), pts.last()) else { return false };
@@ -1129,7 +1166,15 @@ pub fn build_all(
         let backup: Tagged = current.iter().flat_map(|(s, id)| s.solids().into_iter().map(move |x| (x, *id))).collect();
         let (result, slot) = match *f {
             Feature::Plane(k) => {
-                if let Some(pf) = plane_features.get(k) {
+                if let Some(a) = plane_features.get(k).and_then(|pf| pf.angle) {
+                    let made = catch_unwind(AssertUnwindSafe(|| hinge_line(&a, &current, &axes, axis_features, sketches, &frames)))
+                        .unwrap_or_else(|_| Err("the geometry kernel couldn't find its line".into()))
+                        .and_then(|(o, d, n0)| crate::model::angle_frame(o, d, n0, a.degrees).ok_or_else(|| "its line has no length".into()));
+                    match made {
+                        Ok(f) => planes[k] = Some(f),
+                        Err(e) => plane_errors[k] = Some(e),
+                    }
+                } else if let Some(pf) = plane_features.get(k) {
                     let now = if pf.on_origin {
                         Some(pf.base)
                     } else {
@@ -1632,7 +1677,7 @@ mod tests {
         let mut sk = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk, 2.0, 0.0, 6.0, 3.0);
         let yz = FacePlane::from_face(DVec3::X, DVec3::ZERO);
-        let plane = PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4] };
+        let plane = PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None };
         let c = CopyFeature { name: "M".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: crate::model::CopyKind::MirrorPlane(0) };
         let t = [Feature::Sketch(0), Feature::Extrude(0), Feature::Plane(0), Feature::Copy(0)];
         let m = build_all(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[], &[plane], &[], &t);
@@ -1646,7 +1691,7 @@ mod tests {
         let c2 = CopyFeature { name: "M".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: crate::model::CopyKind::MirrorPlane(0) };
         let mut sk2 = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk2, 2.0, 0.0, 6.0, 3.0);
-        let early = build_all(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c2], &[], &[PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4] }], &[], &[Feature::Sketch(0), Feature::Extrude(0), Feature::Copy(0), Feature::Plane(0)]);
+        let early = build_all(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c2], &[], &[PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None }], &[], &[Feature::Sketch(0), Feature::Extrude(0), Feature::Copy(0), Feature::Plane(0)]);
         assert!(early.copy_errors[0].is_some());
     }
 
@@ -1659,8 +1704,8 @@ mod tests {
         let xy = FacePlane::from_face(DVec3::Z, DVec3::ZERO);
         let top = FacePlane::from_face(DVec3::Z, DVec3::new(4.0, 1.5, 5.0));
         let planes = [
-            PlaneFeature { name: "P0".into(), base: xy, on_origin: true, offset: 2.0, anchor: [0.0, 0.0], extent: [0.0; 4] },
-            PlaneFeature { name: "P1".into(), base: top, on_origin: false, offset: 3.0, anchor: [4.0, 1.5], extent: [0.0; 4] },
+            PlaneFeature { name: "P0".into(), base: xy, on_origin: true, offset: 2.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None },
+            PlaneFeature { name: "P1".into(), base: top, on_origin: false, offset: 3.0, anchor: [4.0, 1.5], extent: [0.0; 4], angle: None },
         ];
         let mut on0 = Sketch::on_plane("A".into(), xy, 0);
         rect(&mut on0, 0.0, 0.0, 1.0, 1.0);
@@ -2143,7 +2188,7 @@ mod tests {
     }
 
     fn offset_plane(z: f64) -> crate::model::PlaneFeature {
-        crate::model::PlaneFeature { name: "P".into(), base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: true, offset: z, anchor: [0.0, 0.0], extent: [0.0; 4] }
+        crate::model::PlaneFeature { name: "P".into(), base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: true, offset: z, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None }
     }
 
     #[test]
@@ -2172,6 +2217,67 @@ mod tests {
         let m = square_to(ExtrudeTarget::Face { face: top, anchor }, Some(0), &[offset_plane(30.0)], true);
         assert_eq!(m.errors, vec![None, None]);
         assert!(close(total(&m), 15000.0 + 2000.0), "{}", total(&m));
+    }
+
+    fn angled(hinge: Hinge, degrees: f64) -> PlaneFeature {
+        PlaneFeature { name: "P".into(), base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: false, offset: 0.0, anchor: [0.0; 2], extent: [0.0; 4], angle: Some(PlaneAngle { hinge, degrees }) }
+    }
+
+    #[test]
+    fn a_plane_at_angle_about_an_origin_axis_slants_a_to_object_extrude() {
+        use crate::model::{Extent, WorldAxis};
+        // 30° about X from the XY plane: z = y·tan 30°. A 10 × 10 square at y 10..20
+        // runs up to it: 10 × ∫ y tan30 dy over 10..20 = 1500 tan 30°.
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk, 0.0, 10.0, 10.0, 20.0);
+        let mut e = ex(0, vec![0], 1.0, Operation::NewBody);
+        (e.extent, e.target) = (Extent::ToObject, Some(ExtrudeTarget::Plane(0)));
+        let planes = [angled(Hinge::World(WorldAxis::X), 30.0)];
+        let m = build_all(&[sk], &[e], &[], &[], &[], &[], &planes, &[], &[Feature::Plane(0), Feature::Sketch(0), Feature::Extrude(0)]);
+        assert_eq!((m.plane_errors.clone(), m.errors.clone()), (vec![None], vec![None]));
+        let n = m.planes[0].unwrap().normal();
+        assert!(n.distance(DVec3::new(0.0, -0.5, 30f64.to_radians().cos())) < 1e-12, "{n}");
+        let want = 1500.0 * 30f64.to_radians().tan();
+        assert!(close(total(&m), want), "{} vs {want}", total(&m));
+    }
+
+    #[test]
+    fn a_plane_at_angle_follows_its_sketch_line_edge_or_axis() {
+        use crate::model::AxisFeature;
+        // A sketch line along Y at x = 4 on XY; 90° stands the plane up as x = 4.
+        let mut sk = Sketch::new("L".into(), OriginPlane::XY);
+        sk.points.extend([DVec2::new(4.0, 0.0), DVec2::new(4.0, 10.0)]);
+        let n = sk.points.len();
+        sk.entities.push(crate::sketch::Entity::Line { a: n - 2, b: n - 1 });
+        let line = sk.entities.len() - 1;
+        let planes = [angled(Hinge::SketchLine { sketch: 0, line }, 90.0)];
+        let m = build_all(&[sk], &[], &[], &[], &[], &[], &planes, &[], &[Feature::Sketch(0), Feature::Plane(0)]);
+        assert_eq!(m.plane_errors, vec![None]);
+        let f = m.planes[0].unwrap();
+        assert!(f.normal().cross(DVec3::X).length() < 1e-12 && (f.origin - DVec3::new(4.0, 5.0, 0.0)).length() < 1e-9, "{f:?}");
+
+        // A 50 × 30 × h plate; its top front edge (along X at y 0, z h), between
+        // the top (0°) and front faces. At 45° the plane leans out over the front.
+        let edge = EdgeRef { mid: DVec3::new(25.0, 0.0, 10.0), dir: DVec3::X, faces: [DVec3::Z, DVec3::NEG_Y], follow: None };
+        let axes = [AxisFeature { name: "A".into(), edge }];
+        let planes = [angled(Hinge::Edge(edge), 45.0), angled(Hinge::Axis(0), 0.0)];
+        for h in [10.0, 20.0] {
+            let mut b = Sketch::new("B".into(), OriginPlane::XY);
+            rect(&mut b, 0.0, 0.0, 50.0, 30.0);
+            let t = [Feature::Sketch(0), Feature::Extrude(0), Feature::Axis(0), Feature::Plane(0), Feature::Plane(1)];
+            let m = build_all(&[b], &[ex(0, vec![0], h, Operation::NewBody)], &[], &[], &[], &axes, &planes, &[], &t);
+            assert_eq!(m.plane_errors, vec![None, None], "h {h}");
+            let (lean, flat) = (m.planes[0].unwrap(), m.planes[1].unwrap());
+            let s = 0.5f64.sqrt();
+            assert!(lean.normal().distance(DVec3::new(0.0, -s, s)) < 1e-9, "{}", lean.normal());
+            assert!(flat.normal().distance(DVec3::Z) < 1e-9, "0° lies on the top face");
+            for f in [lean, flat] {
+                assert!((f.origin.y).abs() < 1e-9 && (f.origin.z - h).abs() < 1e-9, "the plane rides on the edge at h {h}: {:?}", f.origin);
+            }
+        }
+        // A line that's gone is an error, not a crash.
+        let m = build_all(&[Sketch::new("E".into(), OriginPlane::XY)], &[], &[], &[], &[], &[], &[angled(Hinge::SketchLine { sketch: 0, line: 0 }, 10.0)], &[], &[Feature::Sketch(0), Feature::Plane(0)]);
+        assert!(m.plane_errors[0].is_some() && m.planes[0].is_none());
     }
 
     #[test]

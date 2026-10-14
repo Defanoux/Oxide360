@@ -144,6 +144,10 @@ impl OpenCad {
                 d.kind.name()
             } else if let Some(d) = &self.copy_dialog {
                 d.mode.title()
+            } else if self.plane_dialog.as_ref().is_some_and(|d| d.angle.is_some()) {
+                "Plane at Angle"
+            } else if self.angle_pick {
+                "Plane at Angle — click a line, edge or axis"
             } else if self.plane_dialog.is_some() || self.plane_pick {
                 "Offset Plane"
             } else if self.face_pick {
@@ -377,6 +381,7 @@ enum EditTarget {
     Corner(PointId), // sketch fillet radius / chamfer distance for this corner
     PolygonSides,    // number of sides, asked after the polygon's first click
     PlaneOffset,     // Offset Plane distance
+    PlaneAngle,      // Plane at Angle, degrees
 }
 
 struct FloatEdit {
@@ -480,6 +485,7 @@ enum HandleTarget {
     PatternAngle,
     PatternRadial,
     PlaneOffset,
+    PlaneAngle,
     /// A sketch pattern's spacing along X / Y, and its angle.
     SketchSpacing1,
     SketchSpacing2,
@@ -590,6 +596,8 @@ struct OpenCad {
     cplane_hover: Option<usize>,             // the construction plane under the mouse
     ctx_cplane: Option<usize>,               // the one a right-click was on
     axis_pick: bool,                         // waiting for a click on a straight edge to put an axis on
+    angle_pick: bool,                        // Plane at Angle: waiting for a click on a line, edge or axis
+    hinge_hover: Option<(model::Hinge, DVec3, DVec3, DVec3)>, // the line under the cursor: what, its ends, the 0° normal
     revolve_errors: Vec<Option<String>>,
     sketch_pattern: Option<SketchPattern>,   // an open Rectangular / Circular Pattern in a sketch
     offset_preview: Option<Sketch>,          // the sketch with the offset the cursor would make
@@ -737,6 +745,8 @@ impl Default for OpenCad {
             cplane_hover: None,
             ctx_cplane: None,
             axis_pick: false,
+            angle_pick: false,
+            hinge_hover: None,
             revolve_errors: Vec::new(),
             sketch_pattern: None,
             offset_preview: None,
@@ -923,9 +933,9 @@ impl OpenCad {
             float("plane").show(&ctx, |ui| {
                 let error = self.dialog_error.clone();
                 if let Some(d) = self.plane_dialog.as_mut() {
-                    let before = d.distance;
+                    let before = (d.distance, d.angle.map(|a| a.degrees));
                     let action = d.panel(ui, design_units, error.as_deref());
-                    if d.distance != before {
+                    if (d.distance, d.angle.map(|a| a.degrees)) != before {
                         self.set_distance_text();
                     }
                     match action {
