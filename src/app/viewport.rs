@@ -3354,6 +3354,10 @@ impl OpenCad {
             }
             if let (Some(msg), Some(_)) = (&self.message, self.active) {
                 painter.text(rect.center_top() + egui::vec2(0.0, 58.0), egui::Align2::CENTER_TOP, msg.as_str(), egui::FontId::proportional(13.0), COL_FIXED);
+            } else if let (Tool::Constrain("Symmetric"), Some(i)) = (self.editor.tool, self.active) {
+                // What to pick next, in order.
+                let step = self.sketches[i].symmetric_step(&self.editor.selection);
+                painter.text(rect.center_top() + egui::vec2(0.0, 58.0), egui::Align2::CENTER_TOP, step, egui::FontId::proportional(15.0), Color32::from_gray(220));
             }
         }
 

@@ -2307,6 +2307,17 @@ impl Sketch {
         }
     }
 
+    /// What Symmetric wants next, given what's picked so far.
+    pub fn symmetric_step(&self, sel: &[Sel]) -> &'static str {
+        match sel {
+            [] => "Symmetric 1 of 3: click a point, line, circle or arc",
+            [Sel::Point(_)] => "Symmetric 2 of 3: click the other point",
+            [Sel::Entity(e)] if self.is_line(*e) => "Symmetric 2 of 3: click the other line",
+            [_] => "Symmetric 2 of 3: click the other circle or arc",
+            _ => "Symmetric 3 of 3: click the line (or axis) to mirror about",
+        }
+    }
+
     pub fn constraint_options(&self, sel: &[Sel]) -> Vec<(&'static str, Vec<Constraint>)> {
         use Constraint::*;
         let (mut lines, mut circles, mut points, mut axes) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -4072,6 +4083,10 @@ mod construction_tests {
         assert!(sk.symmetric_options(&[Sel::Point(p), Sel::Point(q), Sel::Point(1)]).is_none());
         assert!(sk.symmetric_options(&[Sel::Point(p), Sel::Point(q)]).is_none());
         assert!(sk.constraint_options(&[Sel::Point(p), Sel::Point(q), Sel::Entity(0)]).iter().any(|(l, _)| *l == "Symmetric"));
+        assert!(sk.symmetric_step(&[]).contains("1 of 3"));
+        assert!(sk.symmetric_step(&[Sel::Entity(1)]).contains("other line"));
+        assert!(sk.symmetric_step(&[Sel::Entity(3)]).contains("circle"));
+        assert!(sk.symmetric_step(&[Sel::Point(p), Sel::Point(q)]).contains("mirror about"));
     }
 
     #[test]

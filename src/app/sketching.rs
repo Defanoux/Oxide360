@@ -342,7 +342,8 @@ impl OpenCad {
         }
         if applies(self) {
             self.constrain(label);
-            self.editor.set_tool(Tool::Constrain(label)); // stay in the tool for the next one
+            // Symmetric is done once (back to Select); the quick ones stay for the next.
+            self.editor.set_tool(if label == "Symmetric" { Tool::Select } else { Tool::Constrain(label) });
         }
     }
 
