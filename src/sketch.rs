@@ -1250,6 +1250,56 @@ impl Sketch {
     }
 }
 
+// ---------- Perpendicular guides from line middles ----------
+
+impl Sketch {
+    /// The line whose middle `p` is on (within `tol`), for acquiring it.
+    pub fn middle_at(&self, p: DVec2, tol: f64) -> Option<EntityId> {
+        self.entities
+            .iter()
+            .enumerate()
+            .filter_map(|(e, ent)| match *ent {
+                Entity::Line { a, b } => Some((e, self.points[a].midpoint(self.points[b]).distance(p))),
+                _ => None,
+            })
+            .filter(|&(_, d)| d <= tol)
+            .min_by(|x, y| x.1.total_cmp(&y.1))
+            .map(|(e, _)| e)
+    }
+
+    /// The guide through line `e`'s middle, square to the line: (middle, direction).
+    pub fn middle_guide(&self, e: EntityId) -> Option<(DVec2, DVec2)> {
+        let Some(&Entity::Line { a, b }) = self.entities.get(e) else { return None };
+        let (a, b) = (self.points[a], self.points[b]);
+        let dir = (b - a).try_normalize()?;
+        Some((a.midpoint(b), dir.perp()))
+    }
+
+    /// Fusion's inference from line middles the cursor rested on: `p` snapped
+    /// onto the perpendicular through an acquired middle when within `tol`
+    /// of it — onto where two of them cross when near both. Returns the
+    /// point and the middles it lines up with; None when no guide is near.
+    pub fn on_middle_guides(&self, acquired: &[EntityId], p: DVec2, tol: f64) -> Option<(DVec2, Vec<DVec2>)> {
+        let guides: Vec<(DVec2, DVec2)> = acquired.iter().filter_map(|&e| self.middle_guide(e)).collect();
+        let off = |(m, d): (DVec2, DVec2)| (p - m).perp_dot(d).abs();
+        // Two guides crossing near the cursor: right onto the crossing.
+        for (i, &(m1, d1)) in guides.iter().enumerate() {
+            for &(m2, d2) in &guides[i + 1..] {
+                let den = d1.perp_dot(d2);
+                if den.abs() < 1e-9 {
+                    continue;
+                }
+                let x = m1 + d1 * ((m2 - m1).perp_dot(d2) / den);
+                if x.distance(p) <= tol * 1.5 {
+                    return Some((x, vec![m1, m2]));
+                }
+            }
+        }
+        let (m, d) = guides.into_iter().filter(|&g| off(g) <= tol && g.0.distance(p) > tol).min_by(|a, b| off(*a).total_cmp(&off(*b)))?;
+        Some((m + d * (p - m).dot(d), vec![m]))
+    }
+}
+
 // ---------- Selection details ----------
 
 /// What a figure in the selection details measures.
@@ -3849,6 +3899,32 @@ mod construction_tests {
 
     fn free(x: f64, y: f64) -> Anchor {
         Anchor::Free(DVec2::new(x, y))
+    }
+
+    #[test]
+    fn perpendicular_guides_through_line_middles_cross_at_the_centre() {
+        // A slanted square: the perpendiculars through two neighbouring
+        // sides' middles cross at its centre.
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Line);
+        let c = [DVec2::new(10.0, 0.0), DVec2::new(20.0, 10.0), DVec2::new(10.0, 20.0), DVec2::new(0.0, 10.0)];
+        for q in c {
+            ed.click(&mut sk, Anchor::Free(q));
+        }
+        ed.click(&mut sk, Anchor::Point(0));
+        let side = |m: DVec2| sk.middle_at(m, 0.1).expect("a side's middle");
+        let (s1, s2) = (side(DVec2::new(15.0, 5.0)), side(DVec2::new(15.0, 15.0)));
+        assert_eq!(sk.middle_at(DVec2::new(12.0, 3.0), 0.1), None, "not at a middle");
+        // One guide: near it, the cursor goes onto it.
+        let (q, from) = sk.on_middle_guides(&[s1], DVec2::new(10.3, 10.0), 0.5).expect("near the guide");
+        assert!(q.distance(DVec2::new(10.15, 9.85)) < 1e-9, "{q}");
+        assert_eq!(from, vec![DVec2::new(15.0, 5.0)]);
+        assert!(sk.on_middle_guides(&[s1], DVec2::new(14.0, 10.0), 0.5).is_none(), "far from it");
+        // Two: near their crossing, right onto the centre.
+        let (q, from) = sk.on_middle_guides(&[s1, s2], DVec2::new(10.4, 9.7), 0.5).expect("near the crossing");
+        assert!(q.distance(DVec2::new(10.0, 10.0)) < 1e-9, "{q}");
+        assert_eq!(from.len(), 2);
     }
 
     #[test]

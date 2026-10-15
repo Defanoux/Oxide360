@@ -984,6 +984,7 @@ impl OpenCad {
                 }
                 // …drawing tools a snapped cursor.
                 self.line_up = None;
+                self.mid_guide = None;
                 if matches!(tool, Tool::Select | Tool::Constrain(_) | Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Extend | Tool::Offset | Tool::Mirror | Tool::Project) {
                 } else if let Some(px) = hover_px {
                     let nearest = sk
@@ -1103,9 +1104,31 @@ impl OpenCad {
                         }
                     }
                     let closing_spline = tool == Tool::Spline && self.editor.spline.len() >= 3 && cursor == self.editor.spline.first().copied();
+                    // Line middles the cursor rests on are acquired (the two newest),
+                    // as in Fusion; the perpendicular through each then guides it.
+                    let tol = SNAP_PX as f64 * mm_per_px;
+                    if self.acquired.0 != Some(i) || self.acquired.1.iter().any(|&e| !sk.is_line(e)) {
+                        self.acquired = (Some(i), Vec::new());
+                    }
+                    if let Some(e) = raw_hover.and_then(|p| sk.middle_at(p, tol)) {
+                        let got = &mut self.acquired.1;
+                        if !got.contains(&e) {
+                            got.push(e);
+                            if got.len() > 2 {
+                                got.remove(0);
+                            }
+                        }
+                    }
+                    let inferring = !(tool.tangent_lines() > 0 || arc3_third || self.line_length.is_some() || closing_spline);
+                    if let (true, Some(Anchor::Free(_)), Some(raw)) = (inferring, cursor, raw_hover) {
+                        if let Some((q, from)) = sk.on_middle_guides(&self.acquired.1, raw, tol) {
+                            cursor = Some(Anchor::Free(q));
+                            self.mid_guide = Some((q, from));
+                        }
+                    }
                     // Inference: lined up with a line's middle or a circle's centre
                     // (dashed lines show it; both at once lands where they cross).
-                    if let (false, Some(Anchor::Free(g)), Some(raw)) = (tool.tangent_lines() > 0 || arc3_third || self.line_length.is_some() || closing_spline, cursor, raw_hover) {
+                    if let (true, None, Some(Anchor::Free(g)), Some(raw)) = (inferring, &self.mid_guide, cursor, raw_hover) {
                         let (q, above, beside) = sk.line_up(raw, SNAP_PX as f64 * mm_per_px);
                         if above.is_some() || beside.is_some() {
                             let q = DVec2::new(if above.is_some() { q.x } else { g.x }, if beside.is_some() { q.y } else { g.y });
@@ -2486,6 +2509,21 @@ impl OpenCad {
                                 view.line(plane.to_world(w[0]), plane.to_world(w[1]), stroke);
                             }
                         }
+                    }
+                }
+            }
+            if active && self.acquired.0 == Some(j) && !matches!(self.editor.tool, Tool::Select | Tool::Constrain(_)) {
+                // Acquired middles: a small ring; the guide through one, dashed to the cursor.
+                for &e in &self.acquired.1 {
+                    if let Some((m, _)) = sk.middle_guide(e) {
+                        if let Some(px) = view.project(plane.to_world(m)) {
+                            painter.circle_stroke(to_pos(px), 3.5, Stroke::new(1.5, COL_SNAP));
+                        }
+                    }
+                }
+                if let Some((q, from)) = &self.mid_guide {
+                    for &m in from {
+                        view.dashed(plane.to_world(m), plane.to_world(*q), Stroke::new(1.5, COL_SNAP));
                     }
                 }
             }

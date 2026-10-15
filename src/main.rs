@@ -702,6 +702,8 @@ struct OpenCad {
     offset_preview: Option<Sketch>,          // the sketch with the offset the cursor would make
     cut_preview: Option<(Tool, sketch::TrimPiece)>, // what Trim would cut / Extend would add, under the cursor
     line_up: Option<(Option<DVec2>, Option<DVec2>, DVec2)>, // inference: lined up above/beside these, at this point
+    acquired: (Option<usize>, Vec<sketch::EntityId>), // line middles the cursor rested on (sketch, lines; newest last)
+    mid_guide: Option<(DVec2, Vec<DVec2>)>,   // the cursor on the perpendicular(s) through those middles
     line_length: Option<f64>,               // Line tool: a typed length the next segment keeps (the click sets its angle)
     rect_input: Option<rect_input::RectInput>, // 2-point / centre rectangle: typed width and height
     rect_boxes: Option<([egui::Pos2; 2], [f64; 2])>, // where the width / height boxes go, and the sizes shown now
@@ -880,6 +882,8 @@ impl Default for OpenCad {
             offset_preview: None,
             cut_preview: None,
             line_up: None,
+            acquired: (None, Vec::new()),
+            mid_guide: None,
             line_length: None,
             rect_input: None,
             rect_boxes: None,
