@@ -50,6 +50,19 @@ impl OpenCad {
             keep_text: false,
         });
         self.dialog = Some(d);
+        if editing.is_none() {
+            self.pick_only_profile();
+        }
+    }
+
+    /// A new Extrude/Revolve starts with the profile picked when the shown
+    /// sketches have only one.
+    fn pick_only_profile(&mut self) {
+        let shown = (0..self.sketches.len()).filter(|&s| self.sketch_visible(s)).map(|s| (s, &self.sketches[s]));
+        if let (Some((s, ri)), Some((sketch, profiles))) = (profile::only_profile(shown), self.profile_pick_mut()) {
+            *sketch = Some(s);
+            *profiles = vec![ri];
+        }
     }
 
     pub(crate) fn dialog_extrude(&self) -> Option<Extrude> {
@@ -445,6 +458,9 @@ impl OpenCad {
         };
         self.float = Some(FloatEdit { target: EditTarget::RevolveAngle, text: format!("{:.1}", d.angle), focus: true, keep_text: false });
         self.revolve_dialog = Some(d);
+        if editing.is_none() {
+            self.pick_only_profile();
+        }
     }
 
     pub(crate) fn dialog_revolve(&self) -> Option<Revolve> {

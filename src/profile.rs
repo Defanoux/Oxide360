@@ -619,6 +619,21 @@ pub fn union(regions: &[&Region]) -> Vec<Region> {
     result
 }
 
+/// The one profile to start an Extrude or Revolve with: when the shown
+/// sketches have exactly one closed region between them, it's picked
+/// already (as in Fusion); with more, the user picks.
+pub fn only_profile<'a>(sketches: impl IntoIterator<Item = (usize, &'a Sketch)>) -> Option<(usize, usize)> {
+    let mut found = None;
+    for (s, sk) in sketches {
+        match find_regions(sk).len() {
+            0 => {}
+            1 if found.is_none() => found = Some((s, 0)),
+            _ => return None,
+        }
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -648,6 +663,19 @@ mod tests {
 
     fn new() -> Sketch {
         Sketch::new("S".into(), OriginPlane::XY)
+    }
+
+    #[test]
+    fn a_lone_profile_is_picked_for_you() {
+        let mut one = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut one, 0.0, 0.0, 10.0, 5.0);
+        let empty = Sketch::new("B".into(), OriginPlane::XZ);
+        assert_eq!(only_profile([(0, &empty), (3, &one)]), Some((3, 0)), "an empty sketch doesn't count");
+        assert_eq!(only_profile([(0, &one), (1, &one)]), None, "two sketches with a profile each");
+        let mut two = one.clone();
+        rect(&mut two, 20.0, 0.0, 30.0, 5.0);
+        assert_eq!(only_profile([(0, &two)]), None, "two profiles in one sketch");
+        assert_eq!(only_profile([(0, &empty)]), None);
     }
 
     #[test]
