@@ -10,11 +10,6 @@ the spec for each.
 
 **Core solid tools (the gaps you hit modelling a real part)**
 
-**Parameters (Fusion's other core idea)**
-7. **User parameters** — a Change Parameters window (name, expression, unit,
-   comment); dimensions and feature values accept expressions
-   (`width * 2 + 5`, `sin`, `sqrt`, units), renaming keeps them working.
-
 **Sketch gaps**
 8. **Symmetric** constraint (two points/lines about a line).
 9. **Tangent arc** (from a line end, Fusion's drag-off-the-end arc too) and
@@ -59,6 +54,8 @@ sheet metal, surfaces, CAM.
   load from the built model.
 
 ## Done
+
+- User parameters: expressions with units and functions in every length/angle box (expr.rs); Change Parameters window (fx, in MODIFY and the sketch MODIFY) with rename-follows-through and delete-while-used refused; name suggestions under number boxes (Tab/Enter/click); dimensions and the main feature values (extrude/Press Pull distance, revolve angle, fillet size, offset plane distance/angle) follow parameters (fx:, red when broken). Not linked yet: dialog spin boxes (shell walls, hole sizes, move distances, pattern counts).
 
 - Move/Copy (M; MODIFY): bodies from the view or browser; Free Move (X/Y/Z distances and angles about the bodies' box middle, coloured arrows and rings to drag) or Rotate (origin or construction axis, angle); Create Copy makes new bodies (renumbered when the Move is deleted). Timeline feature; tests check the moved boxes. Not done: Point to Point, faces/sketches as objects.
 
