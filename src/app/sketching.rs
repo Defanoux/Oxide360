@@ -638,9 +638,14 @@ impl OpenCad {
         self.sketch_op("trim", move |sk| sk.trim(e, p));
     }
 
+    /// Break tool: split `e` at the crossings either side of `p`.
+    pub(crate) fn break_curve_at(&mut self, e: usize, p: DVec2) {
+        self.sketch_op("break", move |sk| sk.break_at(e, p));
+    }
+
     /// Extend tool: run line `e` on from the end nearest `p`.
     pub(crate) fn extend_at(&mut self, e: usize, p: DVec2) {
-        self.sketch_op("extend", move |sk| sk.extend_line(e, p));
+        self.sketch_op("extend", move |sk| if matches!(sk.entities.get(e), Some(Entity::Spline { .. })) { sk.extend_spline(e, p) } else { sk.extend_line(e, p) });
     }
 
     /// Offset tool: copy the run `e` belongs to over to where `p` is.

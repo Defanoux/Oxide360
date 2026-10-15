@@ -57,6 +57,11 @@ impl Sketch {
     /// The piece Extend would add to line `e` for a click at `at`: from the
     /// end it moves to where that end would go (for showing it first).
     pub fn extend_preview(&self, e: EntityId, at: DVec2) -> Option<(DVec2, DVec2)> {
+        // A spline: from its end on to what it would reach.
+        if let Some(&Entity::Spline { s }) = self.entities.get(e) {
+            let (start, dir, _) = self.spline_end_ray(s, at)?;
+            return self.first_hit(start, dir, e).map(|(x, ..)| (start, x));
+        }
         let Some(&Entity::Line { a, b }) = self.entities.get(e) else { return None };
         let (pa, pb) = (self.points[a], self.points[b]);
         let mut t = self.clone();
@@ -120,7 +125,26 @@ impl Sketch {
                         }
                     }
                 }
-                Entity::Point { .. } | Entity::Spline { .. } | Entity::Ellipse { .. } => {} // (extending to a spline or ellipse: not yet)
+                // A spline's or an ellipse's curve: the new end isn't tied to it.
+                Entity::Spline { .. } | Entity::Ellipse { .. } => {
+                    let curve = match *ent {
+                        Entity::Spline { s } => self.spline_curve(s),
+                        _ => self.ellipse_curve(i),
+                    };
+                    for v in curve.windows(2) {
+                        let f = v[1] - v[0];
+                        let denom = dir.perp_dot(f);
+                        if denom.abs() < 1e-12 * f.length().max(1e-12) {
+                            continue;
+                        }
+                        let s = (v[0] - start).perp_dot(f) / denom;
+                        let w = (v[0] - start).perp_dot(dir) / denom;
+                        if (0.0..=1.0).contains(&w) {
+                            offer(s, start + dir * s, i, None);
+                        }
+                    }
+                }
+                Entity::Point { .. } => {}
             }
         }
         let Some((_, x, other, join)) = best else {

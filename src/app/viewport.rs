@@ -978,6 +978,7 @@ impl OpenCad {
                         | Tool::SketchFillet
                         | Tool::SketchChamfer
                         | Tool::Trim
+                        | Tool::Break
                         | Tool::Extend
                         | Tool::Offset
                         | Tool::Mirror
@@ -987,12 +988,16 @@ impl OpenCad {
                     if tool.tangent_lines() > 0 {
                         hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e)));
                     }
-                    if matches!(tool, Tool::Extend | Tool::Mirror) {
+                    if tool == Tool::Mirror {
                         hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e)));
                     }
-                    // Trim takes lines, circles and arcs.
-                    if tool == Tool::Trim {
-                        hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e) || sk.is_round(*e)));
+                    let spline = |e: usize| matches!(sk.entities.get(e), Some(Entity::Spline { .. }));
+                    if tool == Tool::Extend {
+                        hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e) || spline(*e)));
+                    }
+                    // Trim and Break take lines, circles, arcs and splines.
+                    if matches!(tool, Tool::Trim | Tool::Break) {
+                        hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e) || sk.is_round(*e) || spline(*e)));
                     }
                     // Only Select and the constraint tools pick the sketch's axes.
                     if !matches!(tool, Tool::Select | Tool::Constrain(_)) {
@@ -1013,7 +1018,7 @@ impl OpenCad {
                 }
                 // Trim / Extend: show what a click on the hovered line would do.
                 self.cut_preview = match (tool, hovered, raw_hover) {
-                    (Tool::Trim, Some(Sel::Entity(e)), Some(p)) => sk.trim_piece(e, p).map(|piece| (tool, piece)),
+                    (Tool::Trim | Tool::Break, Some(Sel::Entity(e)), Some(p)) => sk.trim_piece(e, p).map(|piece| (tool, piece)),
                     (Tool::Extend, Some(Sel::Entity(e)), Some(p)) => sk.extend_preview(e, p).map(|(a, b)| (tool, sketch::TrimPiece::Line(a, b))),
                     _ => None,
                 };
@@ -1028,7 +1033,11 @@ impl OpenCad {
                 // …drawing tools a snapped cursor.
                 self.line_up = None;
                 self.mid_guide = None;
-                if matches!(tool, Tool::Select | Tool::Constrain(_) | Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Extend | Tool::Offset | Tool::Mirror | Tool::Project) {
+                self.break_marks = match (tool, hovered, raw_hover) {
+                    (Tool::Break, Some(Sel::Entity(e)), Some(p)) => sk.break_points(e, p),
+                    _ => Vec::new(),
+                };
+                if matches!(tool, Tool::Select | Tool::Constrain(_) | Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Break | Tool::Extend | Tool::Offset | Tool::Mirror | Tool::Project) {
                 } else if let Some(px) = hover_px {
                     let nearest = sk
                         .points
@@ -1585,6 +1594,14 @@ impl OpenCad {
                         match (hovered, raw_hover) {
                             (Some(Sel::Entity(e)), Some(p)) => self.trim_at(e, p),
                             _ => self.notify("Click a line, circle or arc to trim it back to the nearest crossings".into()),
+                        }
+                    }
+                }
+                Tool::Break => {
+                    if response.clicked() {
+                        match (hovered, raw_hover) {
+                            (Some(Sel::Entity(e)), Some(p)) => self.break_curve_at(e, p),
+                            _ => self.notify("Click a line, circle, arc or spline where something crosses it".into()),
                         }
                     }
                 }
@@ -2666,7 +2683,34 @@ impl OpenCad {
                 }
             }
             if active {
-                match self.cut_preview {
+                // Break: the stretch the click picks out, and dots where it splits.
+                if self.editor.tool == Tool::Break {
+                    let stroke = Stroke::new(4.0, COL_SELECT);
+                    match &self.cut_preview {
+                        Some((_, sketch::TrimPiece::Line(a, b))) => view.line(plane.to_world(*a), plane.to_world(*b), stroke),
+                        Some((_, sketch::TrimPiece::Arc(c, r, a0, sweep))) => view.arc(&plane, *c, *r, *a0, *sweep, stroke),
+                        Some((_, sketch::TrimPiece::Curve(pts))) => {
+                            for w in pts.windows(2) {
+                                view.line(plane.to_world(w[0]), plane.to_world(w[1]), stroke);
+                            }
+                        }
+                        None => {}
+                    }
+                    for m in &self.break_marks {
+                        if let Some(px) = view.project(plane.to_world(*m)) {
+                            painter.circle_filled(to_pos(px), 5.0, COL_SNAP);
+                        }
+                    }
+                }
+                match &self.cut_preview {
+                    Some((Tool::Trim, sketch::TrimPiece::Curve(pts))) => {
+                        for w in pts.windows(2) {
+                            view.line(plane.to_world(w[0]), plane.to_world(w[1]), Stroke::new(4.0, Color32::from_rgb(230, 70, 70)));
+                        }
+                    }
+                    _ => {}
+                }
+                match self.cut_preview.clone().filter(|(t, _)| *t != Tool::Break) {
                     // The stretch Trim takes away: red over the line or curve.
                     Some((Tool::Trim, sketch::TrimPiece::Line(a, b))) => view.line(plane.to_world(a), plane.to_world(b), Stroke::new(4.0, Color32::from_rgb(230, 70, 70))),
                     Some((Tool::Trim, sketch::TrimPiece::Arc(c, r, a0, sweep))) => view.arc(&plane, c, r, a0, sweep, Stroke::new(4.0, Color32::from_rgb(230, 70, 70))),

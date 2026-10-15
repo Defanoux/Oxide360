@@ -44,6 +44,7 @@ mod offset_dialog;
 mod combine_dialog;
 mod move_dialog;
 mod expr;
+mod spline_edit;
 mod params_window;
 mod thread_dialog;
 mod rect_input;
@@ -734,6 +735,7 @@ struct OpenCad {
     sketch_pattern: Option<SketchPattern>,   // an open Rectangular / Circular Pattern in a sketch
     offset_preview: Option<Sketch>,          // the sketch with the offset the cursor would make
     cut_preview: Option<(Tool, sketch::TrimPiece)>, // what Trim would cut / Extend would add, under the cursor
+    break_marks: Vec<DVec2>,                  // where Break would split what's under the cursor
     line_up: Option<(Option<DVec2>, Option<DVec2>, DVec2)>, // inference: lined up above/beside these, at this point
     line_arc: Option<sketch::PointId>,        // Line tool: dragging a tangent arc off this end (Fusion's)
     line_length_text: Option<String>,         // the line length as typed (an expression links its dimension)
@@ -924,6 +926,7 @@ impl Default for OpenCad {
             revolve_errors: Vec::new(),
             sketch_pattern: None,
             offset_preview: None,
+            break_marks: Vec::new(),
             cut_preview: None,
             line_up: None,
             line_arc: None,

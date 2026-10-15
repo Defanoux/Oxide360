@@ -28,6 +28,7 @@ pub enum Icon {
     Symmetric,
     ArcTangent,
     Ellipse,
+    Break,
     Plane,
     PlaneAngle,
     Hole,
@@ -593,6 +594,15 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             dot(0.5, 0.24, ink);
             dot(0.88, 0.62, ink);
         }
+        Icon::Break => {
+            // A line crossed by another, split at the crossing (a small gap, two dots).
+            line((0.5, 0.08), (0.5, 0.92), thin);
+            let s = Stroke::new(thin.width * 1.4, orange);
+            line((0.08, 0.5), (0.42, 0.5), s);
+            line((0.58, 0.5), (0.92, 0.5), s);
+            dot(0.42, 0.5, orange);
+            dot(0.58, 0.5, orange);
+        }
         Icon::Ellipse => {
             // A wide ellipse with its centre.
             let pts: Vec<Pos2> = (0..=32).map(|k| {
@@ -867,9 +877,9 @@ mod shot_tests {
     #[ignore]
     fn shots() {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
-        crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [420, 80], |ui| {
+        crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [480, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break] {
                     button(ui, icon, "", true, false);
                 }
             });

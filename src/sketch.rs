@@ -614,10 +614,12 @@ fn segment_touches_rect(p: DVec2, q: DVec2, lo: DVec2, hi: DVec2) -> bool {
 
 /// What a Trim click would remove: a stretch of line, or of a circle / arc
 /// (centre, radius, start angle, sweep).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TrimPiece {
     Line(DVec2, DVec2),
     Arc(DVec2, f64, f64, f64),
+    /// A stretch of a spline, as points along it.
+    Curve(Vec<DVec2>),
 }
 
 /// Where two circles cross (none when they don't, or only touch).
@@ -2219,7 +2221,21 @@ impl Sketch {
                         offer(x, i, None);
                     }
                 }
-                Entity::Spline { .. } | Entity::Ellipse { .. } => {} // (curves cut by splines, ellipses: not yet)
+                // Cut where a spline's or an ellipse's curve crosses (the new end isn't tied to it).
+                Entity::Spline { .. } | Entity::Ellipse { .. } => {
+                    let curve = match *ent {
+                        Entity::Spline { s } => self.spline_curve(s),
+                        _ => self.ellipse_curve(i),
+                    };
+                    for w in curve.windows(2) {
+                        let d = w[1] - w[0];
+                        for t in line_circle(w[0], d, c, r) {
+                            if (0.0..=1.0).contains(&t) {
+                                offer(w[0] + d * t, i, None);
+                            }
+                        }
+                    }
+                }
                 Entity::Arc { a, b, .. } => {
                     let Some((c2, r2, b0, sw2)) = self.arc_geometry(i) else { continue };
                     for x in circle_circle(c, r, c2, r2) {
@@ -2339,15 +2355,167 @@ impl Sketch {
         Ok(out)
     }
 
+    /// Fusion's Break: split `e` where the nearest crossings either side of
+    /// the click `at` are, keeping every piece (Trim without the removing).
+    /// A line or arc splits at one or both; a circle needs two (it becomes
+    /// two arcs). The new pieces share their ends and are tied onto what
+    /// crosses there; a line's pieces keep its direction constraints, an
+    /// arc's or circle's stay equal in size. Constraints for the caller.
+    pub fn break_at(&mut self, e: EntityId, at: DVec2) -> Result<Vec<Constraint>, String> {
+        let nothing = || "nothing crosses it there to break it at".to_string();
+        let mut trial = self.clone();
+        let mut ties: Vec<(DVec2, EntityId)> = Vec::new();
+        let mut cut_point = |sk: &mut Sketch, k: (f64, DVec2, EntityId, Option<PointId>)| match k.3 {
+            Some(p) => p,
+            None => {
+                sk.points.push(k.1);
+                ties.push((k.1, k.2));
+                sk.points.len() - 1
+            }
+        };
+        let mut out: Vec<Constraint> = Vec::new();
+        // Its size changes: drop what pins the old one.
+        trial.retain_constraints(|k| match *k {
+            Constraint::Length(l, _) => l != e,
+            Constraint::Equal(x, y) => (x != e && y != e) || !self.is_line(e),
+            _ => true,
+        });
+        match self.entities.get(e).copied() {
+            Some(Entity::Line { a, b }) => {
+                let (pa, pb) = (self.points[a], self.points[b]);
+                let d = pb - pa;
+                let tc = ((at - pa).dot(d) / d.length_squared().max(1e-30)).clamp(0.0, 1.0);
+                let cuts = self.line_cuts(e);
+                let lo = cuts.iter().rev().find(|c| c.0 <= tc).copied();
+                let hi = cuts.iter().find(|c| c.0 > tc).copied();
+                let mut ends = vec![a];
+                for k in [lo, hi].into_iter().flatten() {
+                    ends.push(cut_point(&mut trial, k));
+                }
+                ends.push(b);
+                if ends.len() == 2 {
+                    return Err(nothing());
+                }
+                trial.entities[e] = Entity::Line { a: ends[0], b: ends[1] };
+                for w in ends[1..].windows(2) {
+                    trial.entities.push(Entity::Line { a: w[0], b: w[1] });
+                    let n = trial.entities.len() - 1;
+                    trial.set_construction(n, self.is_construction(e));
+                    for k in &self.constraints {
+                        match *k {
+                            Constraint::Horizontal(x) if x == e => out.push(Constraint::Horizontal(n)),
+                            Constraint::Vertical(x) if x == e => out.push(Constraint::Vertical(n)),
+                            Constraint::Parallel(x, y) if x == e => out.push(Constraint::Parallel(n, y)),
+                            Constraint::Parallel(x, y) if y == e => out.push(Constraint::Parallel(x, n)),
+                            Constraint::Perpendicular(x, y) if x == e => out.push(Constraint::Perpendicular(n, y)),
+                            Constraint::Perpendicular(x, y) if y == e => out.push(Constraint::Perpendicular(x, n)),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Some(Entity::Circle { center, .. }) => {
+                let (c, _, _, _) = self.round_shape(e).ok_or_else(nothing)?;
+                let cuts = self.round_cuts(e);
+                if cuts.len() < 2 {
+                    return Err("a circle breaks where two things cross it".into());
+                }
+                let t = (at - c).y.atan2((at - c).x).rem_euclid(std::f64::consts::TAU);
+                let lo = *cuts.iter().rev().find(|k| k.0 <= t).unwrap_or(cuts.last().expect("two cuts"));
+                let hi = *cuts.iter().find(|k| k.0 > t).unwrap_or(&cuts[0]);
+                let (pl, ph) = (cut_point(&mut trial, lo), cut_point(&mut trial, hi));
+                // The clicked stretch and the rest, both counter-clockwise.
+                trial.entities[e] = Entity::Arc { center, a: pl, b: ph };
+                trial.entities.push(Entity::Arc { center, a: ph, b: pl });
+                let n = trial.entities.len() - 1;
+                trial.set_construction(n, self.is_construction(e));
+                for k in trial.constraints.iter_mut() {
+                    if let Constraint::Diameter(x, d) = *k {
+                        if x == e {
+                            *k = Constraint::Radius(e, d / 2.0);
+                        }
+                    }
+                }
+                out.push(Constraint::Equal(n, e));
+            }
+            Some(Entity::Arc { center, a, b }) => {
+                let (c, _, a0, sweep) = self.round_shape(e).ok_or_else(nothing)?;
+                let cuts = self.round_cuts(e);
+                let t = ((at - c).y.atan2((at - c).x) - a0).rem_euclid(std::f64::consts::TAU).min(sweep);
+                let lo = cuts.iter().rev().find(|k| k.0 <= t).copied();
+                let hi = cuts.iter().find(|k| k.0 > t).copied();
+                let mut ends = vec![a];
+                for k in [lo, hi].into_iter().flatten() {
+                    ends.push(cut_point(&mut trial, k));
+                }
+                ends.push(b);
+                if ends.len() == 2 {
+                    return Err(nothing());
+                }
+                trial.entities[e] = Entity::Arc { center, a: ends[0], b: ends[1] };
+                for w in ends[1..].windows(2) {
+                    trial.entities.push(Entity::Arc { center, a: w[0], b: w[1] });
+                    let n = trial.entities.len() - 1;
+                    trial.set_construction(n, self.is_construction(e));
+                    out.push(Constraint::Equal(n, e));
+                }
+            }
+            Some(Entity::Spline { .. }) => return self.break_spline(e, at),
+            _ => return Err("Break works on lines, circles, arcs and splines".into()),
+        }
+        for (x, other) in ties {
+            let Some(p) = trial.points.iter().position(|q| *q == x) else { continue };
+            match trial.entities.get(other) {
+                Some(Entity::Line { .. }) => out.push(Constraint::OnLine(p, other)),
+                Some(Entity::Circle { .. } | Entity::Arc { .. }) => out.push(Constraint::OnCircle(p, other)),
+                _ => {}
+            }
+        }
+        *self = trial;
+        Ok(out)
+    }
+
+    /// Where Break would split `e` for a click at `at` (for showing it first).
+    pub fn break_points(&self, e: EntityId, at: DVec2) -> Vec<DVec2> {
+        let mut t = self.clone();
+        let before = t.entities.len();
+        if t.break_at(e, at).is_err() {
+            return Vec::new();
+        }
+        // Where two of the pieces meet.
+        let ends = |n: usize| -> Vec<PointId> {
+            match t.entities.get(n) {
+                Some(&Entity::Line { a, b } | &Entity::Arc { a, b, .. }) => vec![a, b],
+                Some(&Entity::Spline { s }) => t.splines.get(s).map_or(Vec::new(), |l| [l.first(), l.last()].into_iter().flatten().copied().collect()),
+                _ => Vec::new(),
+            }
+        };
+        let pieces: Vec<usize> = std::iter::once(e).chain(before..t.entities.len()).collect();
+        let all: Vec<PointId> = pieces.iter().flat_map(|&n| ends(n)).collect();
+        let mut out: Vec<DVec2> = Vec::new();
+        for (k, p) in all.iter().enumerate() {
+            if all[k + 1..].contains(p) && !out.iter().any(|q| q.distance(t.points[*p]) < 1e-9) {
+                out.push(t.points[*p]);
+            }
+        }
+        out
+    }
+
     /// Trim whatever `e` is (line, circle or arc) at the click `at`.
     pub fn trim(&mut self, e: EntityId, at: DVec2) -> Result<Vec<Constraint>, String> {
-        if self.is_line(e) { self.trim_line(e, at) } else { self.trim_round(e, at) }
+        match self.entities.get(e) {
+            Some(Entity::Line { .. }) => self.trim_line(e, at),
+            Some(Entity::Spline { .. }) => self.trim_spline(e, at),
+            _ => self.trim_round(e, at),
+        }
     }
 
     /// What Trim would take away for a click at `at` (for showing it first).
     pub fn trim_piece(&self, e: EntityId, at: DVec2) -> Option<TrimPiece> {
         if self.is_line(e) {
             self.trim_preview(e, at).map(|(a, b)| TrimPiece::Line(a, b))
+        } else if matches!(self.entities.get(e), Some(Entity::Spline { .. })) {
+            self.spline_trim_preview(e, at).map(TrimPiece::Curve)
         } else {
             self.round_trim_span(e, at).map(|(c, r, a0, sweep)| TrimPiece::Arc(c, r, a0, sweep))
         }
@@ -2619,6 +2787,8 @@ pub enum Tool {
     /// Bevel a corner where two lines meet.
     SketchChamfer,
     Trim,
+    /// Split a curve where things cross it, keeping every piece.
+    Break,
     /// Run a line on to the next geometry in its way.
     Extend,
     /// Copy a run of lines / arcs (or a circle) to one side.
@@ -2678,6 +2848,7 @@ impl Tool {
             Tool::SketchFillet => "Fillet",
             Tool::SketchChamfer => "Chamfer",
             Tool::Trim => "Trim",
+            Tool::Break => "Break",
             Tool::Extend => "Extend",
             Tool::Offset => "Offset",
             Tool::Slot => "Slot",
@@ -3051,6 +3222,7 @@ impl Editor {
                 | Tool::SketchFillet
                 | Tool::SketchChamfer
                 | Tool::Trim
+                | Tool::Break
                 | Tool::Extend
                 | Tool::Offset
                 | Tool::Mirror
@@ -3453,7 +3625,7 @@ impl Editor {
                 ties
             }
             Tool::Circle2Tangent | Tool::Circle3Tangent | Tool::Constrain(_) | Tool::Point | Tool::Spline => Vec::new(),
-            Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Extend | Tool::Offset | Tool::Mirror | Tool::Project => Vec::new(),
+            Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Break | Tool::Extend | Tool::Offset | Tool::Mirror | Tool::Project => Vec::new(),
             Tool::Select => Vec::new(),
         }
     }
@@ -4359,6 +4531,54 @@ mod construction_tests {
 
     fn find_regions_count(sk: &Sketch) -> usize {
         crate::profile::find_regions(sk).len()
+    }
+
+    #[test]
+    fn break_splits_lines_and_circles_at_crossings_and_keeps_every_piece() {
+        // A horizontal line crossed by two verticals, and a circle the first vertical crosses twice.
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        let mut line = |sk: &mut Sketch, a: (f64, f64), b: (f64, f64)| {
+            ed.set_tool(Tool::Line);
+            ed.click(sk, Anchor::Free(DVec2::new(a.0, a.1)));
+            ed.click(sk, Anchor::Free(DVec2::new(b.0, b.1)));
+            ed.cancel();
+        };
+        line(&mut sk, (0.0, 0.0), (30.0, 0.0));
+        line(&mut sk, (10.0, -40.0), (10.0, 5.0));
+        line(&mut sk, (20.0, -5.0), (20.0, 5.0));
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Circle);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(10.0, -25.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(15.0, -25.0)));
+        let length = |sk: &Sketch| sk.entities.iter().enumerate().filter_map(|(e, _)| sk.line_length(e)).sum::<f64>();
+        let before = length(&sk);
+        // The middle of the horizontal: three pieces, nothing lost.
+        assert_eq!(sk.break_points(0, DVec2::new(15.0, 0.0)).len(), 2);
+        let ties = sk.break_at(0, DVec2::new(15.0, 0.0)).unwrap();
+        // (As the app does: one at a time, skipping any the sketch already has.)
+        let add = |t: &mut Sketch, ties: &[Constraint]| {
+            for c in ties {
+                let _ = crate::solver::add_constraints(t, &[*c]);
+            }
+        };
+        let mut t = sk.clone();
+        add(&mut t, &ties);
+        let horizontals = t.entities.iter().enumerate().filter(|(e, _)| t.is_line(*e) && t.line_length(*e).is_some_and(|_| { let Entity::Line { a, b } = t.entities[*e] else { unreachable!() }; (t.points[a].y).abs() < 1e-9 && (t.points[b].y).abs() < 1e-9 })).count();
+        assert_eq!(horizontals, 3);
+        assert!((length(&t) - before).abs() < 1e-9, "no length lost");
+        // The circle: two arcs that make the whole circle.
+        let c = t.entities.iter().position(|x| matches!(x, Entity::Circle { .. })).unwrap();
+        let ties = t.break_at(c, DVec2::new(15.0, -25.0)).unwrap();
+        add(&mut t, &ties);
+        let arcs: Vec<f64> = (0..t.entities.len()).filter_map(|e| t.arc_geometry(e).map(|g| g.3)).collect();
+        assert_eq!(arcs.len(), 2);
+        assert!((arcs.iter().sum::<f64>() - std::f64::consts::TAU).abs() < 1e-9, "{arcs:?}");
+        // Nothing crossing: refused.
+        let lone = t.entities.iter().position(|x| matches!(x, Entity::Line { a, b } if (t.points[*a].x - 20.0).abs() < 1e-9 && (t.points[*b].x - 20.0).abs() < 1e-9));
+        if let Some(l) = lone {
+            assert!(t.clone().break_at(l, DVec2::new(20.0, 4.0)).is_ok(), "it is crossed by the horizontal");
+        }
     }
 
     #[test]
