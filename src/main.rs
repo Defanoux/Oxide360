@@ -336,7 +336,9 @@ fn draw_dimension(
 }
 
 /// The digits typed this frame, if it starts like a number.
-fn typed_number(ui: &egui::Ui) -> Option<String> {
+/// The text typed this frame when it starts a number — or, with `names`
+/// (the design has parameters), a name.
+fn typed_number(ui: &egui::Ui, names: bool) -> Option<String> {
     let typed: String = ui.input(|inp| {
         inp.events
             .iter()
@@ -346,7 +348,7 @@ fn typed_number(ui: &egui::Ui) -> Option<String> {
             })
             .collect()
     });
-    typed.chars().next().filter(|ch| ch.is_ascii_digit() || *ch == '.').map(|_| typed)
+    typed.chars().next().filter(|ch| ch.is_ascii_digit() || *ch == '.' || (names && (ch.is_alphabetic() || *ch == '_'))).map(|_| typed)
 }
 
 /// The point dimensions are drawn away from: the middle of the sketch's
@@ -731,6 +733,7 @@ struct OpenCad {
     offset_preview: Option<Sketch>,          // the sketch with the offset the cursor would make
     cut_preview: Option<(Tool, sketch::TrimPiece)>, // what Trim would cut / Extend would add, under the cursor
     line_up: Option<(Option<DVec2>, Option<DVec2>, DVec2)>, // inference: lined up above/beside these, at this point
+    line_length_text: Option<String>,         // the line length as typed (an expression links its dimension)
     acquired: (Option<usize>, Vec<sketch::EntityId>), // line middles the cursor rested on (sketch, lines; newest last)
     mid_guide: Option<(DVec2, Vec<DVec2>)>,   // the cursor on the perpendicular(s) through those middles
     line_length: Option<f64>,               // Line tool: a typed length the next segment keeps (the click sets its angle)
@@ -918,6 +921,7 @@ impl Default for OpenCad {
             offset_preview: None,
             cut_preview: None,
             line_up: None,
+            line_length_text: None,
             acquired: (None, Vec::new()),
             mid_guide: None,
             line_length: None,

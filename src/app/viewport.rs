@@ -168,9 +168,19 @@ impl OpenCad {
             self.focus_distance();
         }
 
+        // Part-way through a shape that takes a typed size, a letter starts a
+        // parameter name in its box (as Fusion does), not a tool.
+        let ed = &self.editor;
+        let mid_shape = self.active.is_some()
+            && self.float.is_none()
+            && ((matches!(ed.tool, Tool::Rectangle | Tool::RectangleCenter | Tool::Circle | Tool::Line) && ed.start.is_some())
+                || (ed.tool == Tool::Slot && ed.second.is_some())
+                || (ed.tool == Tool::Offset && ed.selection.len() == 1));
+        let name_typed = mid_shape && typed_number(ui, !self.parameters.is_empty()).is_some_and(|t| t.starts_with(|c: char| c.is_alphabetic() || c == '_'));
         // Tool keys (Settings → Keybinds); none while a key is being set.
         let pressed = |a: keys::Action| {
-            self.capturing_key.is_none()
+            !name_typed
+                && self.capturing_key.is_none()
                 && self.keymap.key(a).is_some_and(|k| ui.input(|i| i.key_pressed(k) && !i.modifiers.command && !i.modifiers.alt))
         };
         use keys::Action as A;
@@ -1580,7 +1590,7 @@ impl OpenCad {
                 Tool::Offset => {
                     // Click the geometry, then click where the copy should go (the cursor shows it) — or type how far.
                     if self.editor.selection.len() == 1 && !typing && self.float.is_none() {
-                        if let Some(typed) = typed_number(ui) {
+                        if let Some(typed) = typed_number(ui, !self.parameters.is_empty()) {
                             self.float = Some(FloatEdit { target: EditTarget::NewCircle, text: typed, focus: true, keep_text: true });
                         }
                     }
@@ -1701,14 +1711,14 @@ impl OpenCad {
                     // box (Tab: the height box).
                     let rect_sizing = matches!(self.editor.tool, Tool::Rectangle | Tool::RectangleCenter) && self.editor.start.is_some();
                     if rect_sizing && !typing && self.float.is_none() {
-                        if let Some(typed) = typed_number(ui) {
+                        if let Some(typed) = typed_number(ui, !self.parameters.is_empty()) {
                             self.rect_input.get_or_insert_with(Default::default).type_text(typed);
                         } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
                             self.rect_input.get_or_insert_with(Default::default).tab();
                         }
                     }
                     if wants_number && !typing && self.float.is_none() {
-                        if let Some(typed) = typed_number(ui) {
+                        if let Some(typed) = typed_number(ui, !self.parameters.is_empty()) {
                             if self.editor.tool == Tool::Line {
                                 // The line takes the length from the first digit typed.
                                 self.line_length = units::parse_length(&typed, self.units).filter(|v| *v > 0.0);
@@ -1720,7 +1730,9 @@ impl OpenCad {
                         if let Some(at) = cursor {
                             let ed = &mut self.editor;
                             let length = self.line_length.filter(|_| ed.tool == Tool::Line && ed.start.is_some());
-                            let rect_sizes = self.rect_input.take().filter(|_| matches!(ed.tool, Tool::Rectangle | Tool::RectangleCenter) && ed.start.is_some()).map(|r| r.sizes(self.units));
+                            let rect_typed = self.rect_input.take().filter(|_| matches!(ed.tool, Tool::Rectangle | Tool::RectangleCenter) && ed.start.is_some());
+                            let rect_sizes = rect_typed.as_ref().map(|r| r.sizes(self.units));
+                            let mut rect_first = None; // the rectangle's first line (its width)
                             let r = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
                                 let before = sk.entities.len();
                                 // A line drawn nearly horizontal/vertical gets that constraint,
@@ -1733,6 +1745,7 @@ impl OpenCad {
                                 }
                                 // Typed rectangle sizes: kept as its width / height dimensions.
                                 if let (Some(sizes), Some(first)) = (rect_sizes, (before..sk.entities.len()).find(|&e| sk.is_line(e))) {
+                                    rect_first = Some(first);
                                     for c in rect_input::size_dimensions(first, sizes) {
                                         let mut t = sk.clone();
                                         if solver::add_constraints(&mut t, &[c]).is_ok() {
@@ -1749,6 +1762,19 @@ impl OpenCad {
                                 }
                             });
                             self.report(r);
+                            // Sizes typed as expressions: their dimensions follow the parameters.
+                            if let (Some(l), Some(t)) = (length, self.line_length_text.take()) {
+                                self.link_new_dimension(l, &t);
+                            }
+                            if let (Some(r), Some(first), Some(sk)) = (rect_typed, rect_first, self.sketches.get_mut(i)) {
+                                // Width on the first line, height on the next.
+                                for k in 0..2 {
+                                    let ci = sk.constraints.iter().position(|c| matches!(c, Constraint::Length(e, _) if *e == first + k));
+                                    if let (Some(ci), true) = (ci, units::is_expression(&r.text[k])) {
+                                        sk.set_dim_expr(ci, Some(r.text[k].trim().to_string()));
+                                    }
+                                }
+                            }
                             self.line_length = None;
                         }
                     }

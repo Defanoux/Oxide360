@@ -483,6 +483,18 @@ impl OpenCad {
 
     /// Centre circle: a diameter was typed after placing the centre. Make the
     /// circle that size, with a diameter dimension holding it.
+    /// A size typed as an expression made a dimension of value `v`: link the
+    /// newest such dimension to the text, so it follows the parameters.
+    pub(crate) fn link_new_dimension(&mut self, v: f64, text: &str) {
+        let Some(sk) = self.active.and_then(|i| self.sketches.get_mut(i)) else { return };
+        if !units::is_expression(text) {
+            return;
+        }
+        if let Some(ci) = (0..sk.constraints.len()).rev().find(|&ci| sk.dim_expr(ci).is_none() && sk.constraints[ci].value().is_some_and(|d| (d - v).abs() < 1e-9)) {
+            sk.set_dim_expr(ci, Some(text.trim().to_string()));
+        }
+    }
+
     pub(crate) fn finish_circle_typed(&mut self, d: f64) {
         let (Some(i), Some(start)) = (self.active, self.editor.start) else { return };
         if !(d > 0.0) || !self.sketches[i].is_valid_anchor(start) {

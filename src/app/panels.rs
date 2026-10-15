@@ -1511,6 +1511,56 @@ impl OpenCad {
     /// The width and height boxes beside a rectangle being drawn. Empty boxes
     /// show the size the cursor makes; Tab swaps boxes, Enter places it, Esc
     /// lets go of what was typed.
+    /// Fusion's name list under a box being typed in: the parameters
+    /// holding the letters at the end of `text` (up to 6, with values), drawn
+    /// at `at`. ↑/↓ choose; Tab, Enter or a click puts the name in (returned;
+    /// the caller keeps the box focused). Call before the box is drawn, so
+    /// the keys are taken first.
+    pub(crate) fn name_suggestions(params: &[expr::UserParameter], ctx: &egui::Context, id: egui::Id, text: &mut String, at: egui::Pos2) -> Option<String> {
+        let names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+        let Some((start, found)) = expr::suggestions(text, &names, 6) else {
+            ctx.data_mut(|d| d.remove::<(usize, Vec<egui::Rect>)>(id));
+            return None;
+        };
+        let (mut pick, rows): (usize, Vec<egui::Rect>) = ctx.data(|d| d.get_temp(id)).unwrap_or_default();
+        pick = pick.min(found.len() - 1);
+        let (take, up, down, release) = ctx.input_mut(|i| {
+            let tab = i.consume_key(egui::Modifiers::NONE, egui::Key::Tab);
+            let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            let up = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
+            let down = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
+            (tab || enter, up, down, i.pointer.primary_released().then(|| i.pointer.interact_pos()).flatten())
+        });
+        if up {
+            pick = pick.saturating_sub(1);
+        }
+        if down {
+            pick = (pick + 1).min(found.len() - 1);
+        }
+        // (A click on a row counts when the button comes up: that's when the box would lose focus.)
+        let clicked = release.and_then(|p| rows.iter().position(|r| r.contains(p))).filter(|k| *k < found.len());
+        let chosen = clicked.or(take.then_some(pick)).map(|k| found[k].clone());
+        if let Some(name) = &chosen {
+            text.truncate(start);
+            text.push_str(name);
+            ctx.data_mut(|d| d.remove::<(usize, Vec<egui::Rect>)>(id));
+            return chosen;
+        }
+        let values = expr::evaluate(params);
+        let mut new_rows = Vec::new();
+        egui::Area::new(id.with("list")).order(egui::Order::Tooltip).fixed_pos(at).show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                for (k, name) in found.iter().enumerate() {
+                    let value = params.iter().zip(&values).find(|(p, _)| &p.name == name).and_then(|(p, v)| v.as_ref().ok().map(|v| p.unit.show(*v))).unwrap_or_default();
+                    let r = ui.add(egui::Button::selectable(k == pick, format!("{name}   {value}")).min_size(egui::vec2(160.0, 0.0)).sense(egui::Sense::hover()));
+                    new_rows.push(r.rect);
+                }
+            });
+        });
+        ctx.data_mut(|d| d.insert_temp(id, (pick, new_rows)));
+        None
+    }
+
     pub(crate) fn rect_size_boxes(&mut self, ctx: &egui::Context) {
         let sizing = self.active.is_some() && matches!(self.editor.tool, Tool::Rectangle | Tool::RectangleCenter) && self.editor.start.is_some();
         let Some((at, live)) = self.rect_boxes.filter(|_| sizing) else { return };
@@ -1525,6 +1575,13 @@ impl OpenCad {
         }
         let mut place = false;
         let mut drop = false;
+        // Parameter names for the box being typed in (Enter then fills the name, not places).
+        let mut named = false;
+        if let Some(k) = ours {
+            if Self::name_suggestions(&self.parameters, ctx, egui::Id::new("rect_suggest"), &mut input.text[k], at[k] + egui::vec2(-40.0, 16.0)).is_some() {
+                (input.field, input.focus, named) = (k, true, true);
+            }
+        }
         for k in 0..2 {
             egui::Area::new(ids[k].with("area")).order(egui::Order::Foreground).fixed_pos(at[k]).pivot(egui::Align2::CENTER_CENTER).show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(4, 2)).show(ui, |ui| {
@@ -1544,7 +1601,7 @@ impl OpenCad {
                             out.state.store(ui.ctx(), ids[k]);
                             input.focus = false;
                         }
-                        if out.response.lost_focus() {
+                        if out.response.lost_focus() && !named {
                             place |= enter;
                             drop |= esc;
                         }
@@ -1592,41 +1649,13 @@ impl OpenCad {
         let mut edge_sizes: Option<(f64, Option<f64>)> = None;
         let mut extrude_ok = false;
         let mut extrude_cancel = false;
-        // Parameter names for what's being typed (a list under the box, as
-        // Fusion shows): ↑/↓ choose, Tab or a click puts the name in.
-        let names: Vec<String> = self.parameters.iter().map(|p| p.name.clone()).collect();
-        let takes_names = !matches!(target, EditTarget::PolygonSides | EditTarget::Corner(_) | EditTarget::NewCircle);
-        let suggest = expr::suggestions(&fe.text, &names, 6).filter(|_| takes_names);
-        let pick_id = egui::Id::new("float_suggest");
-        let (mut pick, rows): (usize, Vec<egui::Rect>) = ctx.data(|d| d.get_temp(pick_id)).unwrap_or_default();
-        let mut chosen: Option<String> = None;
-        if let Some((_, found)) = &suggest {
-            pick = pick.min(found.len() - 1);
-            let (tab, up, down, press) = ctx.input_mut(|i| {
-                (i.consume_key(egui::Modifiers::NONE, egui::Key::Tab), i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp), i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown), i.pointer.primary_released().then(|| i.pointer.interact_pos()).flatten())
-            });
-            if up {
-                pick = pick.saturating_sub(1);
-            }
-            if down {
-                pick = (pick + 1).min(found.len() - 1);
-            }
-            let clicked = press.and_then(|p| rows.iter().position(|r| r.contains(p)));
-            if let Some(k) = clicked.filter(|k| *k < found.len()) {
-                chosen = Some(found[k].clone());
-            } else if tab {
-                chosen = Some(found[pick].clone());
-            }
-        } else {
-            pick = 0;
-        }
-        if let (Some(name), Some((start, _))) = (&chosen, &suggest) {
-            fe.text.truncate(*start);
-            fe.text.push_str(name);
+        // Parameter names for what's being typed: a list under the box.
+        let takes_names = !matches!(target, EditTarget::PolygonSides | EditTarget::Corner(_));
+        let chosen = if takes_names { Self::name_suggestions(&self.parameters, ctx, egui::Id::new("float_suggest"), &mut fe.text, anchor + egui::vec2(0.0, 38.0)) } else { None };
+        if chosen.is_some() {
             fe.focus = true;
             fe.keep_text = true;
         }
-        let mut new_rows = Vec::new();
         egui::Area::new(egui::Id::new("float_edit")).order(egui::Order::Foreground).fixed_pos(anchor).show(
             ctx,
             |ui| {
@@ -1714,17 +1743,9 @@ impl OpenCad {
                             }
                         }
                     });
-                    if let (Some((_, found)), None) = (&suggest, &chosen) {
-                        for (k, name) in found.iter().enumerate() {
-                            let value = self.parameters.iter().zip(expr::evaluate(&self.parameters)).find(|(p, _)| &p.name == name).and_then(|(p, v)| v.ok().map(|v| p.unit.show(v))).unwrap_or_default();
-                            let r = ui.add(egui::Button::selectable(k == pick, format!("{name}   {value}")).min_size(egui::vec2(160.0, 0.0)).sense(egui::Sense::hover()));
-                            new_rows.push(r.rect);
-                        }
-                    }
                 });
             },
         );
-        ctx.data_mut(|d| d.insert_temp(pick_id, (pick, new_rows)));
         match target {
             EditTarget::Corner(p) => {
                 if let Some(text) = corner_text {
@@ -1760,9 +1781,17 @@ impl OpenCad {
                     Some(Some(v)) => match self.editor.tool {
                         Tool::Slot => self.finish_slot_typed(v),
                         // A line keeps the length; the next click sets its angle.
-                        Tool::Line if v > 0.0 => self.line_length = Some(v),
+                        Tool::Line if v > 0.0 => {
+                            self.line_length = Some(v);
+                            self.line_length_text = typed_text.clone();
+                        }
                         Tool::Offset => self.finish_offset_typed(v),
-                        _ => self.finish_circle_typed(v),
+                        _ => {
+                            self.finish_circle_typed(v);
+                            if let Some(t) = &typed_text {
+                                self.link_new_dimension(v, t);
+                            }
+                        }
                     },
                     Some(None) => self.message = Some("Type a number".into()),
                     None => {}
