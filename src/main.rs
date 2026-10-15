@@ -648,6 +648,7 @@ struct OpenCad {
     offset_dialog: Option<OffsetDialog>,
     offset_face_errors: Vec<Option<String>>,
     offset_hover: Option<PressPullHover>,      // what a click would pick (Offset Face / Press Pull)
+    press_pull_go: Option<PressPullHover>,     // a fillet / profile Press Pull hands on to (next frame)
     thread_dialog: Option<thread_dialog::ThreadDialog>,
     thread_errors: Vec<Option<String>>,
     thread_hover: Option<(kernel::Cylinder, DVec3)>, // the cylindrical face under the cursor, and where
@@ -818,6 +819,7 @@ impl Default for OpenCad {
             offset_dialog: None,
             offset_face_errors: Vec::new(),
             offset_hover: None,
+            press_pull_go: None,
             thread_dialog: None,
             thread_errors: Vec::new(),
             thread_hover: None,

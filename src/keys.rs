@@ -179,6 +179,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn keys_saved_before_an_action_existed_give_it_its_default() {
+        let saved = vec![("Hole".to_string(), "H".to_string()), ("Fillet".to_string(), String::new())];
+        let m = Keymap::from_pairs(&saved);
+        assert_eq!(m.key(Action::PressPull), Some(Key::Q));
+        assert_eq!(m.key(Action::Fillet), None, "a key taken away stays away");
+    }
+
+    #[test]
     fn trim_is_x_and_keys_are_unique_where_they_work() {
         let m = Keymap::default();
         assert_eq!(m.key(Action::Trim), Some(Key::X));

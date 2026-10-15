@@ -4,6 +4,17 @@ use crate::*;
 
 impl OpenCad {
     pub(crate) fn viewport(&mut self, ui: &mut egui::Ui) {
+        // Press Pull clicked a fillet or a profile last frame: open its tool now.
+        match self.press_pull_go.take() {
+            Some(PressPullHover::Fillet(k)) => self.open_edge_dialog(Some(k), EdgeKind::Fillet),
+            Some(PressPullHover::Profile(s, ri)) => {
+                self.open_extrude(None);
+                if let Some(d) = self.dialog.as_mut() {
+                    (d.sketch, d.profiles) = (Some(s), vec![ri]);
+                }
+            }
+            _ => {}
+        }
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
         self.view_rect = rect;
         let sketching = self.active.is_some();
@@ -530,12 +541,11 @@ impl OpenCad {
                         }
                         self.focus_distance();
                     }
-                    Some(PressPullHover::Fillet(k)) => self.open_edge_dialog(Some(k), EdgeKind::Fillet),
-                    Some(PressPullHover::Profile(s, ri)) => {
-                        self.open_extrude(None);
-                        if let Some(d) = self.dialog.as_mut() {
-                            (d.sketch, d.profiles) = (Some(s), vec![ri]);
-                        }
+                    // Switch tools next frame, so this click isn't taken again
+                    // by the tool it opens (a profile picked, then dropped).
+                    other @ Some(_) => {
+                        self.press_pull_go = other;
+                        ui.ctx().request_repaint();
                     }
                     None => {}
                 }
