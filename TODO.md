@@ -44,13 +44,14 @@ sheet metal, surfaces, CAM.
 ## Polish (do when nearby code is touched)
 
 - New-circle diameter box closes silently on click-away — add a hint.
-- Dimension tool: clicking an existing dimension should select/edit it.
 - Tangent-tool error hints in red, not the preview colour.
 - Export only visible bodies (or ask).
 - Old files' edge/face references lack `faces` / `follow`; re-derive them on
   load from the built model.
 
 ## Done
+
+- Dimension lines no longer block picking the sketch line behind them (only the number box does); with the Dimension tool on, clicking another dimension's number edits it.
 
 - Tangent Arc (arc menu; from a line or arc end, Tangent constraint to a line) and the Line tool's drag-off-the-end arc; Ellipse (CREATE): centre, axis end, width; construction axis lines to dimension, axes kept square by the solver; exact OCCT ellipse edges (whole, or the stretch between crossings, corners moved onto the true curve); exact-volume tests. Not done: Trim/Extend/Offset on ellipses, ellipse arcs.
 

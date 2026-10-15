@@ -954,12 +954,14 @@ impl OpenCad {
             let raw_hover = hover_px.and_then(raw);
             self.sketch_cursor = raw_hover.or(self.sketch_cursor);
             let raw_press = ui.input(|i| i.pointer.press_origin()).map(to_vec).and_then(raw);
-            // Over a dimension: its label, or near any of its lines.
-            let over_label = hover_px.and_then(|px| {
-                self.dim_labels
-                    .iter()
-                    .find(|(_, r, segs)| r.contains(to_pos(px)) || segs.iter().any(|s| dist_to_segment_px(px, s[0], s[1]) < 5.0))
-                    .map(|(ci, ..)| *ci)
+            // Over a dimension: its label — or near one of its lines, when no
+            // sketch geometry is under the cursor (a line behind a dimension
+            // line is picked, not the dimension).
+            let geometry_under = raw_hover.and_then(|p| self.sketches[i].hit(p, SNAP_PX as f64 * mm_per_px)).filter(|h| !matches!(h, Sel::Axis(_)));
+            let over_text = hover_px.and_then(|px| self.dim_labels.iter().find(|(_, r, _)| r.contains(to_pos(px))).map(|(ci, ..)| *ci));
+            let over_label = over_text.or_else(|| {
+                let px = hover_px.filter(|_| geometry_under.is_none())?;
+                self.dim_labels.iter().find(|(_, _, segs)| segs.iter().any(|s| dist_to_segment_px(px, s[0], s[1]) < 5.0)).map(|(ci, ..)| *ci)
             });
             self.dim_hover = over_label;
 
@@ -1519,7 +1521,14 @@ impl OpenCad {
                                         }
                                     }
                                 }
-                                (None, _) if over_label.is_some() => {} // clicked an existing dimension
+                                // An existing dimension's number: edit it (the tool stays on).
+                                (None, _) if over_label.is_some() => {
+                                    let sk = &self.sketches[i];
+                                    if let Some(ci) = over_text.filter(|&ci| !sk.is_driven(ci) && sk.constraints.get(ci).is_some_and(|c| c.value().is_some())) {
+                                        self.editor.selection.clear();
+                                        self.float = Some(FloatEdit { target: EditTarget::Dimension(ci), text: self.value_text(i, ci), focus: true, keep_text: false });
+                                    }
+                                }
                                 (None, Some((c, shift))) => self.place_dimension(c, shift, None),
                                 (None, None) => self.editor.selection.clear(),
                             }
