@@ -586,6 +586,7 @@ impl OpenCad {
                     ToolItem { name: "Mirror", icon: Icon::Mirror, tip: "Mirror: select geometry first, then click this and the mirror line", enabled: true, on: t == Tool::Mirror },
                     ToolItem { name: "Project", icon: Icon::Project, tip: "Project: click a body edge to bring it into the sketch (as locked construction geometry)", enabled: self.body_count > 0, on: t == Tool::Project },
                     ToolItem { name: "Construction", icon: Icon::Construction, tip: "Construction: toggle the selected geometry, or what you draw next", enabled: true, on: self.editor.construction },
+                    ToolItem { name: "Change Parameters", icon: Icon::Parameters, tip: "Change Parameters: named values (width, depth…) that dimensions and boxes can use", enabled: true, on: self.params_window.open },
                 ];
                 match tool_group(ui, "MODIFY", &items, &mut self.toolbar_hidden, &mut self.toolbar_order) {
                     Some("Fillet") => self.editor.set_tool(Tool::SketchFillet),
@@ -598,6 +599,7 @@ impl OpenCad {
                     Some("Mirror") => self.start_mirror(),
                     Some("Project") => self.editor.set_tool(Tool::Project),
                     Some("Construction") => self.toggle_construction(),
+                    Some("Change Parameters") => self.params_window.open = !self.params_window.open,
                     _ => {}
                 }
                 let items: Vec<ToolItem> = CONSTRAINT_ACTIONS
