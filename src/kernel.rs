@@ -923,27 +923,30 @@ fn apply_edges(tagged: Tagged, f: &EdgeFeature, ext: &[Option<End>], rev: &[Opti
             let with: Option<Vec<(&Edge, Face)>> = picked[i].iter().map(|&(j, want)| edge_face(b, &all[j].2, want).map(|face| (&all[j].1, face))).collect();
             with.ok_or_else(|| "couldn't find the face a chamfer distance is measured on".into())
         };
-        let done = match (f.kind, two, f.angle) {
-            (EdgeKind::Chamfer, _, Some(a)) => {
-                if !(a.is_finite() && a > 0.0 && a < 90.0) {
-                    return Err("the chamfer angle must be between 0° and 90°".into());
-                }
-                b.try_chamfer_edges_da(f.size, a.to_radians(), faces_for(&b)?)
-            }
-            (EdgeKind::Fillet, ..) => b.try_fillet_edges(f.size, edges),
-            (EdgeKind::Chamfer, None, None) => b.try_chamfer_edges(f.size, edges),
-            (EdgeKind::Chamfer, Some(d2), None) => {
-                if !d2.is_finite() || d2 <= 0.0 {
-                    return Err("chamfer distance must be greater than zero".into());
-                }
-                let with_faces: Option<Vec<(&Edge, Face)>> =
-                    picked[i].iter().map(|&(j, want)| edge_face(&b, &all[j].2, want).map(|face| (&all[j].1, face))).collect();
-                let with_faces = with_faces.ok_or("couldn't find the face a chamfer distance is measured on")?;
-                b.try_chamfer_edges_two(f.size, d2, with_faces)
+        if let Some(a) = f.angle.filter(|_| f.kind == EdgeKind::Chamfer) {
+            if !(a.is_finite() && a > 0.0 && a < 90.0) {
+                return Err("the chamfer angle must be between 0° and 90°".into());
             }
         }
-        .filter(|s| s.volume() > MIN_VOLUME)
-        .ok_or_else(|| format!("{} {} is too large for these edges", f.kind.size_label().to_lowercase(), f.size))?;
+        if two.is_some_and(|d2| !d2.is_finite() || d2 <= 0.0) {
+            return Err("chamfer distance must be greater than zero".into());
+        }
+        let attempt = |k: f64| -> Result<Option<Shape>, String> {
+            let shape = match (f.kind, two, f.angle) {
+                (EdgeKind::Chamfer, _, Some(a)) => b.try_chamfer_edges_da(f.size * k, a.to_radians(), faces_for(&b)?),
+                (EdgeKind::Fillet, ..) => b.try_fillet_edges(f.size * k, edges.clone()),
+                (EdgeKind::Chamfer, None, None) => b.try_chamfer_edges(f.size * k, edges.clone()),
+                (EdgeKind::Chamfer, Some(d2), None) => b.try_chamfer_edges_two(f.size * k, d2 * k, faces_for(&b)?),
+            };
+            Ok(shape.filter(|s| s.volume() > MIN_VOLUME))
+        };
+        // A round exactly as wide as the face next to it (2 on a 2 mm wall)
+        // uses that face up; OCCT's fillet can't, and fails right there. A
+        // hair under (a millionth) works and leaves a face nobody can see.
+        let done = match attempt(1.0)? {
+            Some(s) => s,
+            None => attempt(1.0 - 1e-6)?.ok_or_else(|| format!("{} {} is too large for these edges", f.kind.size_label().to_lowercase(), f.size))?,
+        };
         out.extend(done.solids().into_iter().map(|s| (s, ids[i])));
     }
     let touched = (0..ids.len()).find(|&i| !picked[i].is_empty()).map(|i| ids[i]);
@@ -3718,24 +3721,35 @@ mod tests {
     }
 
     #[test]
-    fn a_fillet_that_crashes_occt_is_an_error() {
-        // A 2 mm round on the rim of a box with 2 mm walls segfaults inside
-        // OCCT's fillet builder; the wrapper turns that into a failure.
+    fn a_round_as_wide_as_the_wall_uses_the_rim_up() {
+        // A 2 mm round on the rim of a box with 2 mm walls takes the whole
+        // flat rim. At exactly 2 OCCT's fillet builder segfaults (caught as a
+        // failure); the retry a millionth under makes it.
         let open = ShellFeature { faces: vec![top_face(10.0)], ..Default::default() };
         let m = shelled(10.0, open.clone());
+        let box_volume = 15000.0 - 46.0 * 26.0 * 8.0;
         let rim = m.bodies[0].edges.iter().map(|e| e.at).find(|r| r.dir.dot(DVec3::X).abs() > 0.99 && (r.mid - DVec3::new(25.0, 30.0, 10.0)).length() < 1e-6).expect("the back outer rim");
         let mut b = Sketch::new("B".into(), OriginPlane::XY);
         rect(&mut b, 0.0, 0.0, 50.0, 30.0);
-        let f = EdgeFeature { name: "F".into(), kind: EdgeKind::Fillet, size: 2.0, size2: None, angle: None, edges: vec![rim] };
         let tl = [Feature::Sketch(0), Feature::Extrude(0), Feature::Shell(0), Feature::Edge(0)];
-        let m = build_all(&[b.clone()], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[], &[f.clone()], &[], &[], &[], &[], &[], &[], &[open.clone()], &tl);
-        assert!(m.edge_errors[0].is_some());
-        assert!(close(total(&m), 15000.0 - 46.0 * 26.0 * 8.0), "the box stays, unrounded: {}", total(&m));
-        // OCCT still works afterwards: a 1 mm round there is fine.
-        let f = EdgeFeature { size: 1.0, ..f };
-        let m = build_all(&[b], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[], &[f], &[], &[], &[], &[], &[], &[], &[open], &tl);
+        let rounded = |kind, size: f64| {
+            let f = EdgeFeature { name: "F".into(), kind, size, size2: None, angle: None, edges: vec![rim] };
+            build_all(&[b.clone()], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[], &[f], &[], &[], &[], &[], &[], &[], &[open.clone()], &tl)
+        };
+        let m = rounded(EdgeKind::Fillet, 2.0);
         assert_eq!(m.edge_errors, vec![None]);
-        assert!(close(total(&m), 15000.0 - 46.0 * 26.0 * 8.0 - (1.0 - PI / 4.0) * 50.0), "{}", total(&m));
+        let want = box_volume - 4.0 * (1.0 - PI / 4.0) * 50.0;
+        assert!((total(&m) - want).abs() < 1e-3, "{} vs {want}", total(&m));
+        assert_eq!(m.bodies[0].flat_face_centres().len(), 11, "no hairline face offered");
+        let m = rounded(EdgeKind::Chamfer, 2.0);
+        assert_eq!(m.edge_errors, vec![None]);
+        assert!((total(&m) - (box_volume - 2.0 * 50.0)).abs() < 1e-3, "{}", total(&m));
+        // Wider than the wall is still too large.
+        let m = rounded(EdgeKind::Fillet, 2.001);
+        assert!(m.edge_errors[0].is_some());
+        assert!(close(total(&m), box_volume), "the box stays, unrounded: {}", total(&m));
+        // A plain one is exact.
+        assert!(close(total(&rounded(EdgeKind::Fillet, 1.0)), box_volume - (1.0 - PI / 4.0) * 50.0));
     }
 
     fn top_face(h: f64) -> crate::model::PickedFace {
