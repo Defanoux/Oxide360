@@ -273,6 +273,11 @@ pub enum Constraint {
     Collinear(EntityId, EntityId),
     /// Two circles / arcs round one centre.
     Concentric(EntityId, EntityId),
+    /// Two points mirror images of each other about a line (Fusion's
+    /// Symmetry): their middle on it, the pair square to it.
+    Symmetric(PointId, PointId, EntityId),
+    /// The same about one of the sketch's origin axes (0 = X, 1 = Y).
+    SymmetricAxis(PointId, PointId, u8),
 }
 
 impl Constraint {
@@ -301,8 +306,8 @@ impl Constraint {
         match *self {
             Horizontal(e) | Vertical(e) | Length(e, _) | Diameter(e, _) => vec![e],
             Parallel(a, b) | Perpendicular(a, b) | Equal(a, b) | Tangent(a, b) | Angle(a, b, _) | Offset(a, b, _) | Collinear(a, b) | Concentric(a, b) => vec![a, b],
-            OnCircle(_, c) | OnLine(_, c) | Radius(c, _) | ArcEnds(c) => vec![c],
-            Fix(_) | Distance(..) | Midpoint(..) | OnAxis(..) | Coincident(..) => vec![],
+            OnCircle(_, c) | OnLine(_, c) | Radius(c, _) | ArcEnds(c) | Symmetric(_, _, c) => vec![c],
+            Fix(_) | Distance(..) | Midpoint(..) | OnAxis(..) | Coincident(..) | SymmetricAxis(..) => vec![],
         }
     }
 
@@ -310,7 +315,7 @@ impl Constraint {
     pub fn points(&self) -> Vec<PointId> {
         match *self {
             Constraint::Fix(p) => vec![p],
-            Constraint::Distance(p, q, _) | Constraint::Coincident(p, q) => vec![p, q],
+            Constraint::Distance(p, q, _) | Constraint::Coincident(p, q) | Constraint::Symmetric(p, q, _) | Constraint::SymmetricAxis(p, q, _) => vec![p, q],
             Constraint::OnCircle(p, _) | Constraint::OnLine(p, _) => vec![p],
             Constraint::Midpoint(p, a, b) => vec![p, a, b],
             Constraint::OnAxis(p, _) => vec![p],
@@ -334,6 +339,7 @@ impl Constraint {
             Collinear(..) => "Collinear",
             Concentric(..) => "Concentric",
             Midpoint(..) => "Midpoint",
+            Symmetric(..) | SymmetricAxis(..) => "Symmetric",
             ArcEnds(..) => "",
             Fix(_) => "Fix",
         }
@@ -359,6 +365,7 @@ impl Constraint {
             Concentric(..) => "Conc",
             OnCircle(..) | OnLine(..) => "On",
             Midpoint(..) => "Mid",
+            Symmetric(..) | SymmetricAxis(..) => "Sym",
             Radius(..) => "R",
             ArcEnds(..) => "",
             OnAxis(_, 0) => "On X axis",
@@ -1208,6 +1215,8 @@ impl Sketch {
                 OnCircle(p, c) => OnCircle(pt_map[p], ent_map[c]),
                 OnLine(p, c) => OnLine(pt_map[p], ent_map[c]),
                 Midpoint(p, a, b) => Midpoint(pt_map[p], pt_map[a], pt_map[b]),
+                Symmetric(p, q, l) => Symmetric(pt_map[p], pt_map[q], ent_map[l]),
+                SymmetricAxis(p, q, k) => SymmetricAxis(pt_map[p], pt_map[q], k),
                 Radius(e, r) => Radius(ent_map[e], r),
                 ArcEnds(e) => ArcEnds(ent_map[e]),
                 OnAxis(p, axis) => OnAxis(pt_map[p], axis),
@@ -1408,8 +1417,8 @@ impl Sketch {
 // ---------- Constraint actions ----------
 
 /// Constraint buttons, in toolbar order.
-pub const CONSTRAINT_ACTIONS: [&str; 12] = [
-    "Dimension", "Coincident", "Collinear", "Concentric", "Horizontal", "Vertical", "Parallel", "Perpendicular", "Equal", "Tangent", "Midpoint", "Fix",
+pub const CONSTRAINT_ACTIONS: [&str; 13] = [
+    "Dimension", "Coincident", "Collinear", "Concentric", "Horizontal", "Vertical", "Parallel", "Perpendicular", "Equal", "Tangent", "Midpoint", "Symmetric", "Fix",
 ];
 
 impl Sketch {
@@ -2254,6 +2263,50 @@ impl Sketch {
     }
 
     /// Which constraint actions apply to a selection and what each would add.
+    /// Fusion's Symmetry: two points, lines, or circles / arcs, then (picked
+    /// last) the line or axis they mirror about. Two lines pair their ends
+    /// by which mirror nearest; a shared end goes onto the mirror line.
+    /// Circles: centres mirrored and the sizes equal.
+    pub fn symmetric_options(&self, sel: &[Sel]) -> Option<Vec<Constraint>> {
+        use Constraint::*;
+        let [first, second, mirror] = *sel else { return None };
+        let (about, flip): (Box<dyn Fn(PointId, PointId) -> Constraint>, Box<dyn Fn(DVec2) -> DVec2>) = match mirror {
+            Sel::Entity(m) => {
+                let Some(&Entity::Line { a, b }) = self.entities.get(m) else { return None };
+                let (a, b) = (self.points[a], self.points[b]);
+                let d = (b - a).try_normalize()?;
+                (Box::new(move |p, q| if p == q { OnLine(p, m) } else { Symmetric(p, q, m) }), Box::new(move |p| a + d * (p - a).dot(d) * 2.0 - (p - a)))
+            }
+            Sel::Axis(k) => (
+                Box::new(move |p, q| if p == q { OnAxis(p, k) } else { SymmetricAxis(p, q, k) }),
+                Box::new(move |p: DVec2| if k == 0 { DVec2::new(p.x, -p.y) } else { DVec2::new(-p.x, p.y) }),
+            ),
+            Sel::Point(_) => return None,
+        };
+        match (first, second) {
+            (Sel::Point(p), Sel::Point(q)) if p != q => Some(vec![about(p, q)]),
+            (Sel::Entity(e1), Sel::Entity(e2)) if e1 != e2 && Sel::Entity(e1) != mirror && Sel::Entity(e2) != mirror => {
+                match (self.entities.get(e1)?, self.entities.get(e2)?) {
+                    (&Entity::Line { a: a1, b: b1 }, &Entity::Line { a: a2, b: b2 }) => {
+                        // a1 pairs with whichever end of the other line its mirror image is nearer.
+                        let m = flip(self.points[a1]);
+                        let (x, y) = if m.distance(self.points[a2]) <= m.distance(self.points[b2]) { (a2, b2) } else { (b2, a2) };
+                        Some(vec![about(a1, x), about(b1, y)])
+                    }
+                    _ if self.is_round(e1) && self.is_round(e2) => {
+                        let centre = |e| match self.entities.get(e) {
+                            Some(&Entity::Circle { center, .. } | &Entity::Arc { center, .. }) => Some(center),
+                            _ => None,
+                        };
+                        Some(vec![about(centre(e1)?, centre(e2)?), Equal(e1, e2)])
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     pub fn constraint_options(&self, sel: &[Sel]) -> Vec<(&'static str, Vec<Constraint>)> {
         use Constraint::*;
         let (mut lines, mut circles, mut points, mut axes) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -2267,6 +2320,9 @@ impl Sketch {
             }
         }
         let mut out: Vec<(&'static str, Vec<Constraint>)> = Vec::new();
+        if let Some(sym) = self.symmetric_options(sel) {
+            out.push(("Symmetric", sym));
+        }
         // With one of the sketch's axes: a point onto it, a line along it,
         // parallel or square to it.
         if let [k] = axes[..] {
@@ -3954,6 +4010,68 @@ mod construction_tests {
         let (q, from) = sk.on_middle_guides(&[s1, s2], DVec2::new(10.4, 9.7), 0.5).expect("near the crossing");
         assert!(q.distance(DVec2::new(10.0, 10.0)) < 1e-9, "{q}");
         assert_eq!(from.len(), 2);
+    }
+
+    #[test]
+    fn symmetric_mirrors_points_lines_and_circles_about_a_line_or_axis() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        // A slanted mirror line (line 0), two loose lines (1, 2), two circles (3, 4).
+        let mut line = |sk: &mut Sketch, a: DVec2, b: DVec2| {
+            ed.set_tool(Tool::Line);
+            ed.click(sk, Anchor::Free(a));
+            ed.click(sk, Anchor::Free(b));
+            ed.cancel();
+        };
+        line(&mut sk, DVec2::new(0.0, 0.0), DVec2::new(10.0, 10.0));
+        line(&mut sk, DVec2::new(1.0, 5.0), DVec2::new(2.0, 9.0));
+        line(&mut sk, DVec2::new(7.0, 2.0), DVec2::new(8.0, 0.5));
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Circle);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(-3.0, 4.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(-2.0, 4.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(5.0, -2.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(5.0, 0.0)));
+        // About line 0 as the solver left it (it may move too).
+        let mirror_in = |sk: &Sketch, p: DVec2| {
+            let Entity::Line { a, b } = sk.entities[0] else { unreachable!() };
+            let (a, d) = (sk.points[a], (sk.points[b] - sk.points[a]).normalize());
+            a + d * (p - a).dot(d) * 2.0 - (p - a)
+        };
+        let ends = |sk: &Sketch, e| match sk.entities[e] {
+            Entity::Line { a, b } => (sk.points[a], sk.points[b]),
+            _ => unreachable!(),
+        };
+        // Two lines about the slanted one: each end lands on the other's mirror image.
+        let cs = sk.symmetric_options(&[Sel::Entity(1), Sel::Entity(2), Sel::Entity(0)]).expect("two lines and a mirror");
+        assert_eq!(cs.len(), 2);
+        let mut t = sk.clone();
+        crate::solver::add_constraints(&mut t, &cs).unwrap();
+        let ((a1, b1), (a2, b2)) = (ends(&t, 1), ends(&t, 2));
+        let close = |x: DVec2, y: DVec2| x.distance(y) < 1e-7;
+        let mirror = |p| mirror_in(&t, p);
+        assert!((close(mirror(a1), a2) && close(mirror(b1), b2)) || (close(mirror(a1), b2) && close(mirror(b1), a2)), "{a1} {b1} {a2} {b2}");
+        // Two circles: centres mirrored, same size.
+        let cs = sk.symmetric_options(&[Sel::Entity(3), Sel::Entity(4), Sel::Entity(0)]).expect("two circles");
+        let mut t = sk.clone();
+        crate::solver::add_constraints(&mut t, &cs).unwrap();
+        let circle = |sk: &Sketch, e| match sk.entities[e] {
+            Entity::Circle { center, radius } => (sk.points[center], radius),
+            _ => unreachable!(),
+        };
+        let ((c1, r1), (c2, r2)) = (circle(&t, 3), circle(&t, 4));
+        assert!(close(mirror_in(&t, c1), c2) && (r1 - r2).abs() < 1e-7);
+        // Two points about the Y axis.
+        let (p, q) = (2, 4); // line 1's start, line 2's start
+        let cs = sk.symmetric_options(&[Sel::Point(p), Sel::Point(q), Sel::Axis(1)]).expect("about the Y axis");
+        let mut t = sk.clone();
+        crate::solver::add_constraints(&mut t, &cs).unwrap();
+        assert!(close(t.points[p], DVec2::new(-t.points[q].x, t.points[q].y)));
+        // The mirror must come last, and be a line or an axis.
+        assert!(sk.symmetric_options(&[Sel::Entity(0), Sel::Entity(1), Sel::Entity(2)]).is_some(), "any line can be the mirror");
+        assert!(sk.symmetric_options(&[Sel::Point(p), Sel::Point(q), Sel::Point(1)]).is_none());
+        assert!(sk.symmetric_options(&[Sel::Point(p), Sel::Point(q)]).is_none());
+        assert!(sk.constraint_options(&[Sel::Point(p), Sel::Point(q), Sel::Entity(0)]).iter().any(|(l, _)| *l == "Symmetric"));
     }
 
     #[test]

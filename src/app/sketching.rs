@@ -319,6 +319,7 @@ impl OpenCad {
     pub(crate) fn picks_needed(label: &str) -> usize {
         match label {
             "Horizontal" | "Vertical" | "Fix" => 1,
+            "Symmetric" => 3,
             _ => 2,
         }
     }

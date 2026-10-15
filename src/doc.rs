@@ -403,6 +403,8 @@ pub fn validate(doc: &Document) -> Result<(), String> {
                 Coincident(p, q) => p < np && q < np && p != q,
                 Collinear(a, b) => line(a) && line(b) && a != b,
                 Concentric(a, b) => circle(a) && circle(b) && a != b,
+                Symmetric(p, q, l) => p < np && q < np && p != q && line(l),
+                SymmetricAxis(p, q, axis) => p < np && q < np && p != q && axis < 2,
                 Fix(p) => p < np,
             };
             if !ok {

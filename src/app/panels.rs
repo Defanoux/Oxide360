@@ -620,6 +620,7 @@ impl OpenCad {
                             "Equal" => (Icon::Equal, "Equal: two lines or two circles"),
                             "Tangent" => (Icon::Tangent, "Tangent: a line and a circle"),
                             "Midpoint" => (Icon::Midpoint, "Midpoint: a point and a line — the point goes to the line's middle"),
+                            "Symmetric" => (Icon::Symmetric, "Symmetric: two points, lines or circles, then the line (or axis) they mirror about"),
                             _ => (Icon::Fix, "Fix: lock points where they are"),
                         };
                         // Always clickable: with the right things selected it's added

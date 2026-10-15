@@ -11,7 +11,6 @@ the spec for each.
 **Core solid tools (the gaps you hit modelling a real part)**
 
 **Sketch gaps**
-8. **Symmetric** constraint (two points/lines about a line).
 9. **Tangent arc** (from a line end, Fusion's drag-off-the-end arc too) and
    **Ellipse**.
 10. **Break**, and Trim/Extend/Offset for splines.
@@ -54,6 +53,8 @@ sheet metal, surfaces, CAM.
   load from the built model.
 
 ## Done
+
+- Symmetric constraint (CONSTRAINTS): two points, two lines (ends paired by nearest mirror image; a shared end goes onto the mirror) or two circles/arcs (centres + Equal), then the line or origin axis to mirror about; Sym glyph at the points; solver test.
 
 - User parameters: expressions with units and functions in every length/angle box (expr.rs); Change Parameters window (fx, in MODIFY and the sketch MODIFY) with rename-follows-through and delete-while-used refused; name suggestions under number boxes (Tab/Enter/click); dimensions and the main feature values (extrude/Press Pull distance, revolve angle, fillet size, offset plane distance/angle) follow parameters (fx:, red when broken). Not linked yet: dialog spin boxes (shell walls, hole sizes, move distances, pattern counts).
 

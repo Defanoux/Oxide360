@@ -273,6 +273,29 @@ impl Eval<'_> {
                 let d = self.circle(c1)?.0 - self.circle(c2)?.0;
                 if k == 0 { d.x } else { d.y }
             }
+            // Equation 0: their middle on the line; 1: the pair square to it.
+            Symmetric(p, q, l) => {
+                if p.max(q) >= self.sk.points.len() {
+                    return None;
+                }
+                let (a, b) = self.line(l)?;
+                let d = (b - a) / (b - a).length().max(1e-12);
+                let (x, y) = (self.pt(p), self.pt(q));
+                if k == 0 { d.perp_dot((x + y) * 0.5 - a) } else { d.dot(x - y) }
+            }
+            SymmetricAxis(p, q, axis) => {
+                if p.max(q) >= self.sk.points.len() {
+                    return None;
+                }
+                let (x, y) = (self.pt(p), self.pt(q));
+                // About X: same x, opposite y; about Y: same y, opposite x.
+                match (axis, k) {
+                    (0, 0) => x.y + y.y,
+                    (0, _) => x.x - y.x,
+                    (_, 0) => x.x + y.x,
+                    _ => x.y - y.y,
+                }
+            }
             Fix(_) => return None, // handled by freezing the point, not an equation
         })
     }
@@ -294,7 +317,7 @@ fn equations(sk: &Sketch) -> Vec<(Constraint, u8)> {
         .filter(|&(ci, _)| !sk.is_driven(ci))
         .flat_map(|(_, &c)| match c {
             Constraint::Fix(_) | Constraint::ArcEnds(_) => vec![],
-            Constraint::Midpoint(..) | Constraint::Coincident(..) | Constraint::Collinear(..) | Constraint::Concentric(..) => vec![(c, 0), (c, 1)],
+            Constraint::Midpoint(..) | Constraint::Coincident(..) | Constraint::Collinear(..) | Constraint::Concentric(..) | Constraint::Symmetric(..) | Constraint::SymmetricAxis(..) => vec![(c, 0), (c, 1)],
             Constraint::Offset(o, _, _) if sk.is_line(o) => vec![(c, 0), (c, 1)],
             _ => vec![(c, 0)],
         })
@@ -546,6 +569,8 @@ fn stiffness(sk: &Sketch, p: PointId) -> Vec<f64> {
                     join(*b, *q);
                 }
             }
+            // Mirror images move together.
+            Constraint::Symmetric(p, q, _) | Constraint::SymmetricAxis(p, q, _) => join(p, q),
             // A centre is joined to each corner (not the corners to each other).
             Constraint::Midpoint(m, a, b) => {
                 join(m, a);

@@ -2712,6 +2712,15 @@ impl OpenCad {
                         r.map(|r| (r, trace.into_inner()))
                     }
                     // Glyphs about a point sit at the point.
+                    // Symmetry: at both mirrored points.
+                    Constraint::Symmetric(p, q, _) | Constraint::SymmetricAxis(p, q, _) => {
+                        for x in [p, q] {
+                            if let Some(g) = point_glyphs.get_mut(x) {
+                                g.push((ci, c.glyph()));
+                            }
+                        }
+                        None
+                    }
                     Constraint::Fix(p) | Constraint::Coincident(p, _) | Constraint::OnAxis(p, _) | Constraint::Midpoint(p, ..) => {
                         if let Some(g) = point_glyphs.get_mut(p) {
                             g.push((ci, c.glyph()));

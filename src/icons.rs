@@ -25,6 +25,7 @@ pub enum Icon {
     Slot,
     Mirror,
     Midpoint,
+    Symmetric,
     Plane,
     PlaneAngle,
     Hole,
@@ -451,6 +452,19 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             line((0.38, 0.62), (0.5, 0.74), wall);
             line((0.62, 0.62), (0.5, 0.74), wall);
             line((0.5, 0.05), (0.5, 0.2), thin);
+        }
+        Icon::Symmetric => {
+            // A dashed mirror line between two matching slanted strokes.
+            let dash = Stroke::new(thin.width, ink);
+            for k in 0..4 {
+                let y = 0.08 + k as f32 * 0.24;
+                line((0.5, y), (0.5, y + 0.14), dash);
+            }
+            let s = Stroke::new(thin.width * 1.4, orange);
+            line((0.12, 0.8), (0.36, 0.28), s);
+            line((0.88, 0.8), (0.64, 0.28), s);
+            dot(0.36, 0.28, orange);
+            dot(0.64, 0.28, orange);
         }
         Icon::Midpoint => {
             // A line with a dot at its middle and two small ticks.
