@@ -979,12 +979,16 @@ impl OpenCad {
                     }
                 } else {
                     let name = self.body_name(id);
-                    let selected = self.selected_bodies.contains(&id);
+                    let picked = self.dialog_bodies().map(|b| b.contains(&id));
+                    let selected = picked.unwrap_or_else(|| self.selected_bodies.contains(&id));
                     let r = ui
                         .selectable_label(selected, name.clone())
                         .on_hover_text("Click to select (Ctrl/Shift adds) · double-click to rename · right-click for more");
                     if r.double_clicked() {
                         self.renaming = Some((id, name.clone()));
+                    } else if r.clicked() && picked.is_some() {
+                        // A dialog is picking bodies: the browser picks for it, as the view does.
+                        self.dialog_pick_body(id);
                     } else if r.clicked() {
                         let add = ui.input(|i| i.modifiers.ctrl || i.modifiers.shift || i.modifiers.command);
                         if add {

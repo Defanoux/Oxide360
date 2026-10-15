@@ -960,6 +960,36 @@ impl OpenCad {
         }
     }
 
+    /// The bodies an open dialog has picked, when it's picking bodies now
+    /// (Combine, Shell's Bodies field, Mirror / Pattern).
+    pub(crate) fn dialog_bodies(&self) -> Option<Vec<BodyId>> {
+        if let Some(d) = self.combine_dialog.as_ref().filter(|d| d.picking.is_some()) {
+            return Some(d.combine.target.into_iter().chain(d.combine.tools.iter().copied()).collect());
+        }
+        if let Some(d) = self.shell_dialog.as_ref().filter(|d| d.picking == Some(shell_dialog::Field::Bodies)) {
+            return Some(d.shell.bodies.clone());
+        }
+        if let Some(d) = self.copy_dialog.as_ref().filter(|d| d.picking == Some(copy_dialog::Field::Bodies)) {
+            return Some(d.bodies.clone());
+        }
+        None
+    }
+
+    /// A body clicked (in the view or the browser) for the dialog picking bodies.
+    pub(crate) fn dialog_pick_body(&mut self, id: BodyId) {
+        if let Some(d) = self.combine_dialog.as_mut().filter(|d| d.picking.is_some()) {
+            d.click(id);
+        } else if let Some(d) = self.shell_dialog.as_mut().filter(|d| d.picking == Some(shell_dialog::Field::Bodies)) {
+            d.toggle_body(id);
+        } else if let Some(d) = self.copy_dialog.as_mut().filter(|d| d.picking == Some(copy_dialog::Field::Bodies)) {
+            if d.bodies.contains(&id) {
+                d.bodies.retain(|b| *b != id);
+            } else {
+                d.bodies.push(id);
+            }
+        }
+    }
+
     /// Open the Thread dialog (a new Thread, or Thread `editing`).
     pub(crate) fn open_thread(&mut self, editing: Option<usize>) {
         self.finish_sketch();
