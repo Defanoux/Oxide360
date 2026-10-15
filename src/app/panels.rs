@@ -741,6 +741,14 @@ impl OpenCad {
                             self.open_shell(None);
                         }
                     }
+                    let moving = self.move_dialog.is_some();
+                    if icons::button(ui, Icon::Move, "Move/Copy (M): move or turn bodies — drag the arrows and rings, type distances and angles, or turn about an axis", has_bodies, moving).clicked() {
+                        if moving {
+                            self.cancel_move();
+                        } else {
+                            self.open_move(None);
+                        }
+                    }
                     let combining = self.combine_dialog.is_some();
                     if icons::button(ui, Icon::Combine, "Combine: join, cut or intersect bodies — a target body and tool bodies", self.body_count > 1, combining).clicked() {
                         if combining {

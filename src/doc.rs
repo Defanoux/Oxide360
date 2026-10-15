@@ -39,6 +39,8 @@ pub enum Feature {
     OffsetFace(usize),
     /// Bodies combined (index into `combines`).
     Combine(usize),
+    /// Bodies moved, or moved copies made (index into `moves`).
+    Move(usize),
 }
 
 /// Put `f` into the timeline at the rollback marker (the end when there is
@@ -77,6 +79,7 @@ pub fn forget_feature(list: &mut Vec<Feature>, gone: Feature) {
             (Feature::Shell(i), Feature::Shell(k)) if i > k => Feature::Shell(i - 1),
             (Feature::OffsetFace(i), Feature::OffsetFace(k)) if i > k => Feature::OffsetFace(i - 1),
             (Feature::Combine(i), Feature::Combine(k)) if i > k => Feature::Combine(i - 1),
+            (Feature::Move(i), Feature::Move(k)) if i > k => Feature::Move(i - 1),
             (f, _) => f,
         };
     }
@@ -113,12 +116,17 @@ impl BodyId {
     /// bodies it made are gone (None), later ones renumber.
     /// After mirror/pattern number `k` was deleted: the copies it made are
     /// gone, later features renumber.
-    pub fn after_copy_delete(self, k: usize) -> Option<BodyId> {
-        match self.feature {
-            Feature::Copy(j) if j == k => None,
-            Feature::Copy(j) if j > k => Some(BodyId { feature: Feature::Copy(j - 1), piece: self.piece }),
-            _ => Some(self),
-        }
+    /// After `gone` (a feature that makes bodies: a mirror / pattern, a
+    /// Move that copies) was deleted: its bodies are gone, the later
+    /// features of its kind renumber.
+    pub fn after_maker_delete(self, gone: Feature) -> Option<BodyId> {
+        let feature = match (self.feature, gone) {
+            (f, g) if f == g => return None,
+            (Feature::Copy(j), Feature::Copy(k)) if j > k => Feature::Copy(j - 1),
+            (Feature::Move(j), Feature::Move(k)) if j > k => Feature::Move(j - 1),
+            (f, _) => f,
+        };
+        Some(BodyId { feature, piece: self.piece })
     }
 
     pub fn after_delete(self, revolve: bool, k: usize) -> Option<BodyId> {
@@ -176,6 +184,9 @@ pub struct Document {
     /// Combine features. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub combines: Vec<crate::model::CombineFeature>,
+    /// Move/Copy features. Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub moves: Vec<crate::model::MoveFeature>,
     /// The units the design is shown and typed in (Fusion's Document Settings
     /// → Units). Values are always *stored* in mm (see the file header);
     /// older files are mm.
@@ -396,6 +407,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Feature::Extrude(k) => k < doc.extrudes.len(),
             Feature::Revolve(k) => k < doc.revolves.len(),
             Feature::Copy(k) => k < doc.copies.len(),
+            Feature::Move(k) => k < doc.moves.len(),
             _ => false,
         };
         if r.bodies.is_empty() || !r.bodies.iter().all(made_bodies) {
@@ -425,6 +437,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Feature::Extrude(k) => k < doc.extrudes.len(),
             Feature::Revolve(k) => k < doc.revolves.len(),
             Feature::Copy(k) => k < doc.copies.len(),
+            Feature::Move(k) => k < doc.moves.len(),
             _ => false,
         };
         let ok = [sh.inside, sh.outside].iter().all(|v| v.is_finite() && *v >= 0.0)
@@ -434,11 +447,28 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             return Err(format!("{}: invalid face, body or thickness", sh.name));
         }
     }
+    for m in &doc.moves {
+        let made = |id: &BodyId| match id.feature {
+            Feature::Extrude(k) => k < doc.extrudes.len(),
+            Feature::Revolve(k) => k < doc.revolves.len(),
+            Feature::Copy(k) => k < doc.copies.len(),
+            Feature::Move(k) => k < doc.moves.len(),
+            _ => false,
+        };
+        let axis_ok = match m.kind {
+            crate::model::MoveKind::Rotate { custom, .. } => custom.is_none_or(|k| k < doc.axes.len()),
+            _ => true,
+        };
+        if !(m.kind.is_finite() && axis_ok && m.bodies.iter().all(made)) {
+            return Err(format!("{}: invalid body, axis or amount", m.name));
+        }
+    }
     for c in &doc.combines {
         let made = |id: &BodyId| match id.feature {
             Feature::Extrude(k) => k < doc.extrudes.len(),
             Feature::Revolve(k) => k < doc.revolves.len(),
             Feature::Copy(k) => k < doc.copies.len(),
+            Feature::Move(k) => k < doc.moves.len(),
             _ => false,
         };
         let ok = c.op != crate::model::Operation::NewBody && c.target.iter().all(made) && c.tools.iter().all(made);
@@ -512,6 +542,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     let mut seen_sh = vec![false; doc.shells.len()];
     let mut seen_of = vec![false; doc.offset_faces.len()];
     let mut seen_cb = vec![false; doc.combines.len()];
+    let mut seen_mv = vec![false; doc.moves.len()];
     for f in &doc.timeline {
         let slot = match *f {
             Feature::Sketch(i) => seen_s.get_mut(i),
@@ -527,6 +558,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Feature::Shell(i) => seen_sh.get_mut(i),
             Feature::OffsetFace(i) => seen_of.get_mut(i),
             Feature::Combine(i) => seen_cb.get_mut(i),
+            Feature::Move(i) => seen_mv.get_mut(i),
         };
         match slot {
             Some(s) if !*s => *s = true,
@@ -536,7 +568,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     if doc.suppressed.iter().any(|f| !doc.timeline.contains(f)) {
         return Err("a suppressed feature isn't in the timeline".into());
     }
-    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).chain(&seen_sh).chain(&seen_of).chain(&seen_cb).any(|s| !s) {
+    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).chain(&seen_sh).chain(&seen_of).chain(&seen_cb).chain(&seen_mv).any(|s| !s) {
         return Err("timeline is missing a feature".into());
     }
     Ok(())
@@ -663,6 +695,7 @@ mod tests {
             shells: Vec::new(),
             offset_faces: Vec::new(),
             combines: Vec::new(),
+            moves: Vec::new(),
             units: crate::units::Unit::Mm,
             version: Version(0),
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],
@@ -823,6 +856,24 @@ mod tests {
     }
 
     #[test]
+    fn moves_save_and_their_copies_renumber() {
+        use crate::model::{MoveFeature, MoveKind, WorldAxis};
+        let mut doc = sample();
+        let body = BodyId { feature: Feature::Extrude(0), piece: 0 };
+        doc.moves.push(MoveFeature { bodies: vec![body], kind: MoveKind::Rotate { axis: WorldAxis::Z, custom: None, angle: 30.0 }, copy: true, ..Default::default() });
+        doc.timeline.push(Feature::Move(0));
+        assert_eq!(from_json(&to_json(&doc)).unwrap(), doc);
+        assert!(!to_json(&sample()).contains("moves"));
+        let mut bad = doc.clone();
+        bad.moves[0].kind = MoveKind::Rotate { axis: WorldAxis::Z, custom: Some(3), angle: 30.0 };
+        assert!(validate(&bad).is_err(), "no axis 3");
+        let copy = |k| BodyId { feature: Feature::Move(k), piece: 1 };
+        assert_eq!(copy(0).after_maker_delete(Feature::Move(0)), None);
+        assert_eq!(copy(2).after_maker_delete(Feature::Move(1)), Some(copy(1)));
+        assert_eq!(body.after_maker_delete(Feature::Move(0)), Some(body));
+    }
+
+    #[test]
     fn splines_save_and_older_files_have_none() {
         let mut doc = sample();
         let sk = &mut doc.sketches[0];
@@ -923,11 +974,11 @@ mod tests {
     #[test]
     fn deleting_a_pattern_renumbers_and_drops_its_bodies() {
         let id = |k: usize| BodyId { feature: Feature::Copy(k), piece: 2 };
-        assert_eq!(id(0).after_copy_delete(0), None);
-        assert_eq!(id(3).after_copy_delete(1), Some(id(2)));
-        assert_eq!(id(0).after_copy_delete(1), Some(id(0)));
+        assert_eq!(id(0).after_maker_delete(Feature::Copy(0)), None);
+        assert_eq!(id(3).after_maker_delete(Feature::Copy(1)), Some(id(2)));
+        assert_eq!(id(0).after_maker_delete(Feature::Copy(1)), Some(id(0)));
         let ex = BodyId { feature: Feature::Extrude(4), piece: 0 };
-        assert_eq!(ex.after_copy_delete(0), Some(ex), "other kinds untouched");
+        assert_eq!(ex.after_maker_delete(Feature::Copy(0)), Some(ex), "other kinds untouched");
     }
 
     #[test]

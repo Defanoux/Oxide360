@@ -32,6 +32,7 @@ pub enum Icon {
     Shell,
     PressPull,
     Combine,
+    Move,
     HoleSimple,
     HoleCounterbore,
     HoleCountersink,
@@ -405,6 +406,17 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             line((0.87, 0.14), (0.87, 0.6), s);
             arrow_head((0.87, 0.04), (0.87, 0.28), ink);
             arrow_head((0.87, 0.7), (0.87, 0.46), ink);
+        }
+        Icon::Move => {
+            // A block with a four-way arrow over it.
+            poly(&[(0.28, 0.42), (0.72, 0.42), (0.72, 0.86), (0.28, 0.86)], Color32::from_rgb(60, 125, 205));
+            let s = Stroke::new(thin.width * 1.3, ink);
+            line((0.5, 0.12), (0.5, 0.88), s);
+            line((0.12, 0.5), (0.88, 0.5), s);
+            arrow_head((0.5, 0.04), (0.5, 0.24), ink);
+            arrow_head((0.5, 0.96), (0.5, 0.76), ink);
+            arrow_head((0.04, 0.5), (0.24, 0.5), ink);
+            arrow_head((0.96, 0.5), (0.76, 0.5), ink);
         }
         Icon::Combine => {
             // Two overlapping blocks: the target (blue) and a tool (orange outline) merging into it.
@@ -819,7 +831,7 @@ mod shot_tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [260, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move] {
                     button(ui, icon, "", true, false);
                 }
             });

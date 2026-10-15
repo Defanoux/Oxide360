@@ -178,7 +178,7 @@ impl OpenCad {
             (pressed(A::Line), pressed(A::Rectangle), pressed(A::Circle), pressed(A::GridSnap), pressed(A::Dimension), pressed(A::Construction), pressed(A::Project));
         let (key_trim, key_extend, key_offset) = (pressed(A::Trim), pressed(A::Extend), pressed(A::Offset));
         let (key_n, key_e, key_f, key_i) = (pressed(A::NewSketch), pressed(A::Extrude), pressed(A::Fillet), pressed(A::Measure));
-        let (key_h, key_q) = (pressed(A::Hole), pressed(A::PressPull));
+        let (key_h, key_q, key_m) = (pressed(A::Hole), pressed(A::PressPull), pressed(A::Move));
         let (esc, del, undo) = ui.input(|i| {
             (
                 i.key_pressed(egui::Key::Escape),
@@ -367,7 +367,8 @@ impl OpenCad {
                 && self.thread_dialog.is_none()
                 && self.shell_dialog.is_none()
                 && self.offset_dialog.is_none()
-                && self.combine_dialog.is_none();
+                && self.combine_dialog.is_none()
+                && self.move_dialog.is_none();
             if let (Some(px), true) = (hover_px, free_view) {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 let face = self.pick_face(&ray);
@@ -491,6 +492,34 @@ impl OpenCad {
             }
         } else if self.shell_dialog.is_some() && esc && !typing {
             self.cancel_shell(); // Esc ends the command, as in Fusion
+        }
+
+        crate::mark("Move/Copy: click bodies");
+        // --- Move/Copy: click the bodies to move ---
+        self.move_hover = None;
+        if self.move_dialog.as_ref().is_some_and(|d| d.picking) && self.active.is_none() {
+            self.ensure_model(Slot::Committed);
+            if let Some(px) = hover_px.filter(|_| near_arrow(hover_px, &self.arrows).is_none()) {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                let model = self.model(Slot::Committed);
+                self.move_hover = model
+                    .bodies
+                    .iter()
+                    .filter(|b| !self.hidden_bodies.contains(&b.id))
+                    .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir).map(|t| (b.id, t)))
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(id, _)| id);
+            }
+            if let (true, Some(id), Some(d)) = (response.clicked(), self.move_hover, self.move_dialog.as_mut()) {
+                d.toggle_body(id);
+            }
+            if esc && !typing {
+                if let Some(d) = self.move_dialog.as_mut() {
+                    d.picking = false;
+                }
+            }
+        } else if self.move_dialog.is_some() && esc && !typing {
+            self.cancel_move();
         }
 
         crate::mark("Combine: click the target, then tool bodies");
@@ -891,6 +920,8 @@ impl OpenCad {
             self.open_edge_dialog(None, EdgeKind::Fillet);
         } else if !sketching && key_h && !typing && self.body_count > 0 {
             self.open_hole(None);
+        } else if !sketching && key_m && !typing && self.body_count > 0 {
+            self.open_move(None);
         } else if !sketching && key_q && !typing {
             self.open_offset(None, true);
         } else if !sketching && key_i && !typing {
@@ -1916,7 +1947,7 @@ impl OpenCad {
 
         crate::mark("draw: bodies (from the kernel; with an");
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
-        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some();
+        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some() || self.move_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
         self.ensure_model(Slot::Committed);
         self.feature_errors = self.model(Slot::Committed).errors.clone();
@@ -1932,6 +1963,7 @@ impl OpenCad {
         self.shell_errors = self.model(Slot::Committed).shell_errors.clone();
         self.offset_face_errors = self.model(Slot::Committed).offset_face_errors.clone();
         self.combine_errors = self.model(Slot::Committed).combine_errors.clone();
+        self.move_errors = self.model(Slot::Committed).move_errors.clone();
         self.body_count = self.model(Slot::Committed).bodies.len();
         // With a body in the scene the origin gets out of the way (Create Sketch
         // and the browser's Origin box bring it back).
@@ -1948,6 +1980,9 @@ impl OpenCad {
         self.dialog_error = if let Some(d) = &self.shell_dialog {
             let k = d.editing.unwrap_or(self.shells.len());
             if d.shell.faces.is_empty() && d.shell.bodies.is_empty() { None } else { model.shell_errors.get(k).cloned().flatten() }
+        } else if let Some(d) = &self.move_dialog {
+            let k = d.editing.unwrap_or(self.moves.len());
+            if d.feature.bodies.is_empty() { None } else { model.move_errors.get(k).cloned().flatten() }
         } else if let Some(d) = &self.combine_dialog {
             let k = d.editing.unwrap_or(self.combines.len());
             if d.ready() { model.combine_errors.get(k).cloned().flatten() } else { None }
@@ -1995,8 +2030,9 @@ impl OpenCad {
                 // Bodies selected in the browser (or picked for a mirror / pattern)
                 // are tinted with the selection colour; the one under the cursor lighter.
                 let picked = self.copy_dialog.as_ref().is_some_and(|d| d.bodies.contains(&b.id)) || self.shell_dialog.as_ref().is_some_and(|d| d.shell.bodies.contains(&b.id))
-                    || self.combine_dialog.as_ref().is_some_and(|d| d.combine.target == Some(b.id) || d.combine.tools.contains(&b.id));
-                let hovered = self.copy_body_hover == Some(b.id) || self.shell_hover.and_then(|h| h.1) == Some(b.id) || self.combine_hover == Some(b.id);
+                    || self.combine_dialog.as_ref().is_some_and(|d| d.combine.target == Some(b.id) || d.combine.tools.contains(&b.id))
+                    || self.move_dialog.as_ref().is_some_and(|d| d.feature.bodies.contains(&b.id));
+                let hovered = self.copy_body_hover == Some(b.id) || self.shell_hover.and_then(|h| h.1) == Some(b.id) || self.combine_hover == Some(b.id) || self.move_hover == Some(b.id);
                 let c = if hovered && !picked {
                     let mix = |x: u8, y: u8| ((x as u16 * 3 + y as u16) / 4) as u8;
                     Color32::from_rgb(mix(c.r(), COL_HOVER.r()), mix(c.g(), COL_HOVER.g()), mix(c.b(), COL_HOVER.b()))
@@ -2150,6 +2186,9 @@ impl OpenCad {
             }
         }
 
+        if self.move_dialog.as_ref().is_some_and(|d| d.picking) {
+            painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, "Click the bodies to move; click one again to drop it   (Esc when done)", egui::FontId::proportional(15.0), Color32::from_gray(220));
+        }
         if let Some(field) = self.combine_dialog.as_ref().and_then(|d| d.picking) {
             let hint = match field {
                 combine_dialog::Field::Target => "Click the target body (the one kept)   (Esc when done)",
@@ -2369,7 +2408,19 @@ impl OpenCad {
             let sign = if value < 0.0 { -1.0 } else { 1.0 };
             let (base, tip) = (base.as_vec3(), base.as_vec3() + dir.as_vec3() * (sign * len));
             let hot = self.arrow_drag.is_some_and(|(d, _)| d == k) || near_arrow(hover_px, &prev_arrows) == Some(k);
-            self.arrows.push(view.arrow3d(base, tip, if hot { COL_ARROW_HOT } else { COL_ARROW }));
+            // Move/Copy's arrows and rings in the axis colours (X red, Y green, Z blue).
+            let axis_colour = match h.target() {
+                HandleTarget::MoveX | HandleTarget::MoveRX => Some(Color32::from_rgb(225, 80, 70)),
+                HandleTarget::MoveY | HandleTarget::MoveRY => Some(Color32::from_rgb(90, 190, 90)),
+                HandleTarget::MoveZ | HandleTarget::MoveRZ => Some(Color32::from_rgb(80, 130, 235)),
+                _ => None,
+            };
+            let colour = match (hot, axis_colour) {
+                (true, _) => COL_ARROW_HOT,
+                (false, Some(c)) => c,
+                (false, None) => COL_ARROW,
+            };
+            self.arrows.push(view.arrow3d(base, tip, colour));
         }
 
         crate::mark("draw: the drag-select rectangle");

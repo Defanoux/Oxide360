@@ -9,8 +9,6 @@ has the full Fusion list; this is the slice to do now). Fusion's behaviour is
 the spec for each.
 
 **Core solid tools (the gaps you hit modelling a real part)**
-6. **Move/Copy (M)** — bodies: free drag (arrows + rings), typed X/Y/Z and
-   angles; as a timeline feature.
 
 **Parameters (Fusion's other core idea)**
 7. **User parameters** — a Change Parameters window (name, expression, unit,
@@ -61,6 +59,8 @@ sheet metal, surfaces, CAM.
   load from the built model.
 
 ## Done
+
+- Move/Copy (M; MODIFY): bodies from the view or browser; Free Move (X/Y/Z distances and angles about the bodies' box middle, coloured arrows and rings to drag) or Rotate (origin or construction axis, angle); Create Copy makes new bodies (renumbered when the Move is deleted). Timeline feature; tests check the moved boxes. Not done: Point to Point, faces/sketches as objects.
 
 - Combine (MODIFY, after Shell): Target Body, Tool Bodies, Join / Cut / Intersect, Keep Tools; the target keeps its identity, used tools disappear; bodies selected in the browser fill it; exact-volume tests. Not done: editing a Combine can't re-pick a tool it already used up (the × and the names still work).
 

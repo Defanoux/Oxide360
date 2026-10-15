@@ -393,6 +393,42 @@ impl Default for OffsetFaceFeature {
     }
 }
 
+/// How Move/Copy moves its bodies.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum MoveKind {
+    /// Fusion's Free Move: turned `angles` degrees about X, then Y, then Z
+    /// (through the middle of the bodies' bounding box), then moved `offset`.
+    Free { offset: [f64; 3], angles: [f64; 3] },
+    /// Turned `angle` degrees about an origin axis, or a construction axis
+    /// (index into the design's axes) when `custom` is set.
+    Rotate { axis: WorldAxis, custom: Option<usize>, angle: f64 },
+}
+
+/// Fusion's Move/Copy: bodies moved (they keep their identity), or moved
+/// copies made (new bodies) when `copy` is set.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MoveFeature {
+    pub name: String,
+    pub bodies: Vec<BodyId>,
+    pub kind: MoveKind,
+    pub copy: bool,
+}
+
+impl Default for MoveFeature {
+    fn default() -> Self {
+        MoveFeature { name: "Move1".into(), bodies: Vec::new(), kind: MoveKind::Free { offset: [0.0; 3], angles: [0.0; 3] }, copy: false }
+    }
+}
+
+impl MoveKind {
+    pub fn is_finite(&self) -> bool {
+        match *self {
+            MoveKind::Free { offset, angles } => offset.iter().chain(&angles).all(|v| v.is_finite()),
+            MoveKind::Rotate { angle, .. } => angle.is_finite(),
+        }
+    }
+}
+
 /// Fusion's Combine: the tool bodies joined to, cut from or intersected with
 /// the target body. The target keeps its identity; the tools go, unless kept.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -10,6 +10,7 @@ impl OpenCad {
         self.shell_dialog = None;
         self.offset_dialog = None;
         self.combine_dialog = None;
+        self.move_dialog = None;
         self.thread_dialog = None;
         self.finish_sketch();
         self.cancel_edge_dialog();
@@ -152,6 +153,42 @@ impl OpenCad {
                 _ => (-p.face.normal(), d.shell.inside),
             };
             return vec![Handle::Line { line: LineHandle { origin: at, dir }, value, target: HandleTarget::ShellThickness }];
+        }
+        if let Some(d) = &self.move_dialog {
+            // Free Move: an arrow along each axis and a ring about it, from the
+            // bodies' middle (where they've got to); Rotate: one ring about its axis.
+            let k = d.editing.unwrap_or(self.moves.len());
+            let slot = if self.ready(Slot::Preview) { Slot::Preview } else { Slot::Committed };
+            let Some(model) = self.caches[slot as usize].as_ref().map(|c| &c.model) else { return Vec::new() };
+            let Some(pivot) = model.move_pivots.get(k).copied().flatten() else { return Vec::new() };
+            let axes = [DVec3::X, DVec3::Y, DVec3::Z];
+            return match d.feature.kind {
+                model::MoveKind::Free { offset, angles } => {
+                    let at = pivot + DVec3::from(offset);
+                    let reach = self.camera.distance as f64 * 0.12;
+                    let mut v: Vec<Handle> = (0..3)
+                        .map(|i| Handle::Line {
+                            line: LineHandle { origin: at - axes[i] * offset[i], dir: axes[i] },
+                            value: offset[i],
+                            target: [HandleTarget::MoveX, HandleTarget::MoveY, HandleTarget::MoveZ][i],
+                        })
+                        .collect();
+                    for i in 0..3 {
+                        let spot = at + axes[(i + 1) % 3] * reach;
+                        if let Some(turn) = TurnHandle::new(at, axes[i], spot) {
+                            v.push(Handle::Turn { turn, value: angles[i], target: [HandleTarget::MoveRX, HandleTarget::MoveRY, HandleTarget::MoveRZ][i] });
+                        }
+                    }
+                    v
+                }
+                model::MoveKind::Rotate { axis, custom, angle } => {
+                    let line = match custom {
+                        Some(c) => model.axes.get(c).copied().flatten(),
+                        None => Some((DVec3::ZERO, axis.dir())),
+                    };
+                    line.and_then(|(o, dir)| TurnHandle::new(o, dir, pivot)).map(|turn| Handle::Turn { turn, value: angle, target: HandleTarget::MoveAngle }).into_iter().collect()
+                }
+            };
         }
         if let Some(d) = &self.offset_dialog {
             // The distance arrow, out of the first face picked (from where it was).
@@ -342,6 +379,20 @@ impl OpenCad {
                     }
                 }
             }
+            HandleTarget::MoveX | HandleTarget::MoveY | HandleTarget::MoveZ | HandleTarget::MoveRX | HandleTarget::MoveRY | HandleTarget::MoveRZ | HandleTarget::MoveAngle => {
+                if let Some(d) = self.move_dialog.as_mut() {
+                    match (&mut d.feature.kind, target) {
+                        (model::MoveKind::Free { offset, .. }, HandleTarget::MoveX) => offset[0] = v,
+                        (model::MoveKind::Free { offset, .. }, HandleTarget::MoveY) => offset[1] = v,
+                        (model::MoveKind::Free { offset, .. }, HandleTarget::MoveZ) => offset[2] = v,
+                        (model::MoveKind::Free { angles, .. }, HandleTarget::MoveRX) => angles[0] = v.clamp(-360.0, 360.0),
+                        (model::MoveKind::Free { angles, .. }, HandleTarget::MoveRY) => angles[1] = v.clamp(-360.0, 360.0),
+                        (model::MoveKind::Free { angles, .. }, HandleTarget::MoveRZ) => angles[2] = v.clamp(-360.0, 360.0),
+                        (model::MoveKind::Rotate { angle, .. }, HandleTarget::MoveAngle) => *angle = v.clamp(-360.0, 360.0),
+                        _ => {}
+                    }
+                }
+            }
             HandleTarget::OffsetDistance => {
                 if let Some(d) = self.offset_dialog.as_mut() {
                     d.offset.distance = v;
@@ -446,6 +497,7 @@ impl OpenCad {
         self.shell_dialog = None;
         self.offset_dialog = None;
         self.combine_dialog = None;
+        self.move_dialog = None;
         self.thread_dialog = None;
         self.finish_sketch();
         self.cancel_extrude();
@@ -536,6 +588,7 @@ impl OpenCad {
         self.shell_dialog = None;
         self.offset_dialog = None;
         self.combine_dialog = None;
+        self.move_dialog = None;
         self.thread_dialog = None;
         self.cancel_extrude();
         self.cancel_revolve();
@@ -650,6 +703,7 @@ impl OpenCad {
         self.shell_dialog = None;
         self.offset_dialog = None;
         self.combine_dialog = None;
+        self.move_dialog = None;
         self.thread_dialog = None;
         self.hole_hover = None;
         self.arrows.clear();
@@ -963,6 +1017,9 @@ impl OpenCad {
     /// The bodies an open dialog has picked, when it's picking bodies now
     /// (Combine, Shell's Bodies field, Mirror / Pattern).
     pub(crate) fn dialog_bodies(&self) -> Option<Vec<BodyId>> {
+        if let Some(d) = self.move_dialog.as_ref().filter(|d| d.picking) {
+            return Some(d.feature.bodies.clone());
+        }
         if let Some(d) = self.combine_dialog.as_ref().filter(|d| d.picking.is_some()) {
             return Some(d.combine.target.into_iter().chain(d.combine.tools.iter().copied()).collect());
         }
@@ -977,7 +1034,9 @@ impl OpenCad {
 
     /// A body clicked (in the view or the browser) for the dialog picking bodies.
     pub(crate) fn dialog_pick_body(&mut self, id: BodyId) {
-        if let Some(d) = self.combine_dialog.as_mut().filter(|d| d.picking.is_some()) {
+        if let Some(d) = self.move_dialog.as_mut().filter(|d| d.picking) {
+            d.toggle_body(id);
+        } else if let Some(d) = self.combine_dialog.as_mut().filter(|d| d.picking.is_some()) {
             d.click(id);
         } else if let Some(d) = self.shell_dialog.as_mut().filter(|d| d.picking == Some(shell_dialog::Field::Bodies)) {
             d.toggle_body(id);
@@ -987,6 +1046,79 @@ impl OpenCad {
             } else {
                 d.bodies.push(id);
             }
+        }
+    }
+
+    /// Open the Move/Copy dialog (a new one — bodies selected in the browser
+    /// fill it — or Move `editing`).
+    pub(crate) fn open_move(&mut self, editing: Option<usize>) {
+        let selected: Vec<BodyId> = self.selected_bodies.clone();
+        self.finish_sketch();
+        self.cancel_all_dialogs();
+        self.message = None;
+        self.move_dialog = Some(match editing.and_then(|k| self.moves.get(k).map(|m| (k, m))) {
+            Some((k, m)) => MoveDialog::from_feature(k, m),
+            None => MoveDialog::new(format!("Move{}", self.moves.len() + 1), &selected),
+        });
+    }
+
+    pub(crate) fn commit_move(&mut self) {
+        let Some(d) = self.move_dialog.as_ref() else { return };
+        if d.feature.bodies.is_empty() {
+            self.message = Some("Pick the bodies to move".into());
+            return;
+        }
+        if let Some(e) = self.dialog_error.clone() {
+            self.message = Some(format!("Can't move: {e}"));
+            return;
+        }
+        let m = d.feature.clone();
+        match d.editing {
+            Some(k) => self.moves[k] = m,
+            None => {
+                self.moves.push(m);
+                self.timeline_insert(Feature::Move(self.moves.len() - 1));
+            }
+        }
+        self.cancel_move();
+    }
+
+    pub(crate) fn cancel_move(&mut self) {
+        self.move_dialog = None;
+        self.move_hover = None;
+        self.arrows.clear();
+    }
+
+    pub(crate) fn delete_move(&mut self, k: usize) {
+        if k >= self.moves.len() {
+            return;
+        }
+        // Copies it made are gone; later Moves' copies renumber.
+        self.shift_maker_keys(Feature::Move(k));
+        self.moves.remove(k);
+        self.timeline_remove(Feature::Move(k));
+        for f in &mut self.timeline {
+            if let Feature::Move(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+        self.cancel_move();
+    }
+
+    pub(crate) fn move_panel(&mut self, ui: &mut egui::Ui) {
+        let error = self.dialog_error.clone();
+        let Some(d) = self.move_dialog.as_ref() else { return };
+        let ids: Vec<BodyId> = self.body_ids.iter().copied().chain(d.feature.bodies.iter().copied()).collect();
+        let names: Vec<(BodyId, String)> = ids.into_iter().map(|id| (id, self.body_name(id))).collect();
+        let axes: Vec<String> = self.axes.iter().map(|a| a.name.clone()).collect();
+        let unit = self.units;
+        let Some(d) = self.move_dialog.as_mut() else { return };
+        match d.panel(ui, &names, &axes, unit, error.as_deref()) {
+            copy_dialog::Action::Ok => self.commit_move(),
+            copy_dialog::Action::Cancel => self.cancel_move(),
+            copy_dialog::Action::None => {}
         }
     }
 
@@ -1102,6 +1234,7 @@ impl OpenCad {
         self.cancel_shell();
         self.cancel_offset();
         self.cancel_combine();
+        self.cancel_move();
         self.cancel_hole();
         self.cancel_thread();
         self.cancel_extrude();
@@ -1116,6 +1249,7 @@ impl OpenCad {
         self.shell_dialog = None;
         self.offset_dialog = None;
         self.combine_dialog = None;
+        self.move_dialog = None;
         self.thread_dialog = None;
         self.face_pick = false;
     }
@@ -1352,6 +1486,7 @@ impl OpenCad {
         self.shell_dialog = None;
         self.offset_dialog = None;
         self.combine_dialog = None;
+        self.move_dialog = None;
         self.thread_dialog = None;
     }
 
@@ -1532,6 +1667,7 @@ impl OpenCad {
         self.shell_dialog = None;
         self.offset_dialog = None;
         self.combine_dialog = None;
+        self.move_dialog = None;
         self.thread_dialog = None;
         self.finish_sketch();
         self.cancel_extrude();

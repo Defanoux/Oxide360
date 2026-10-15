@@ -18,6 +18,7 @@ impl OpenCad {
             shells: self.shells.clone(),
             offset_faces: self.offset_faces.clone(),
             combines: self.combines.clone(),
+            moves: self.moves.clone(),
             units: self.units,
             version: doc::Version(self.version),
             timeline: self.timeline.clone(),
@@ -114,6 +115,9 @@ impl OpenCad {
             c.target = c.target.and_then(|id| id.after_delete(revolve, k));
             c.tools = c.tools.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
         }
+        for m in &mut self.moves {
+            m.bodies = m.bodies.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
+        }
         self.selected_bodies.clear();
         self.renaming = None;
         self.prune_removes();
@@ -121,21 +125,30 @@ impl OpenCad {
 
     /// A mirror / pattern was deleted: its copies are gone, later ones renumber.
     pub(crate) fn shift_copy_keys(&mut self, k: usize) {
-        self.hidden_bodies = self.hidden_bodies.iter().filter_map(|id| id.after_copy_delete(k)).collect();
-        self.body_names = self.body_names.drain().filter_map(|(id, n)| Some((id.after_copy_delete(k)?, n))).collect();
-        self.body_colors = self.body_colors.drain().filter_map(|(id, c)| Some((id.after_copy_delete(k)?, c))).collect();
+        self.shift_maker_keys(Feature::Copy(k));
+    }
+
+    /// A feature that makes bodies from others (a mirror / pattern, a Move
+    /// that copies) was deleted: its bodies are gone, later ones renumber.
+    pub(crate) fn shift_maker_keys(&mut self, gone: Feature) {
+        self.hidden_bodies = self.hidden_bodies.iter().filter_map(|id| id.after_maker_delete(gone)).collect();
+        self.body_names = self.body_names.drain().filter_map(|(id, n)| Some((id.after_maker_delete(gone)?, n))).collect();
+        self.body_colors = self.body_colors.drain().filter_map(|(id, c)| Some((id.after_maker_delete(gone)?, c))).collect();
         for c in &mut self.copies {
-            c.bodies = c.bodies.iter().filter_map(|id| id.after_copy_delete(k)).collect();
+            c.bodies = c.bodies.iter().filter_map(|id| id.after_maker_delete(gone)).collect();
         }
         for r in &mut self.removes {
-            r.bodies = r.bodies.iter().filter_map(|id| id.after_copy_delete(k)).collect();
+            r.bodies = r.bodies.iter().filter_map(|id| id.after_maker_delete(gone)).collect();
         }
         for sh in &mut self.shells {
-            sh.bodies = sh.bodies.iter().filter_map(|id| id.after_copy_delete(k)).collect();
+            sh.bodies = sh.bodies.iter().filter_map(|id| id.after_maker_delete(gone)).collect();
+        }
+        for m in &mut self.moves {
+            m.bodies = m.bodies.iter().filter_map(|id| id.after_maker_delete(gone)).collect();
         }
         for c in &mut self.combines {
-            c.target = c.target.and_then(|id| id.after_copy_delete(k));
-            c.tools = c.tools.iter().filter_map(|id| id.after_copy_delete(k)).collect();
+            c.target = c.target.and_then(|id| id.after_maker_delete(gone));
+            c.tools = c.tools.iter().filter_map(|id| id.after_maker_delete(gone)).collect();
         }
         self.selected_bodies.clear();
         self.renaming = None;
@@ -245,6 +258,7 @@ impl OpenCad {
             || self.shells != self.saved.shells
             || self.offset_faces != self.saved.offset_faces
             || self.combines != self.saved.combines
+            || self.moves != self.saved.moves
             || self.units != self.saved.units
             || self.axes != self.saved.axes
             || self.planes != self.saved.planes
@@ -314,6 +328,8 @@ impl OpenCad {
         self.offset_dialog = None;
         self.combines = doc.combines.clone();
         self.combine_dialog = None;
+        self.moves = doc.moves.clone();
+        self.move_dialog = None;
         self.thread_dialog = None;
         self.hole_dialog = None;
         self.units = doc.units;
@@ -395,6 +411,8 @@ impl OpenCad {
         self.offset_dialog = None;
         self.combines = doc.combines;
         self.combine_dialog = None;
+        self.moves = doc.moves;
+        self.move_dialog = None;
         self.thread_dialog = None;
         self.hole_dialog = None;
         self.units = doc.units;
@@ -515,6 +533,7 @@ impl OpenCad {
         let mut shells = self.shells.clone();
         let mut offset_faces = self.offset_faces.clone();
         let mut combines = self.combines.clone();
+        let mut moves = self.moves.clone();
         timeline.truncate(self.applied()); // features after the marker aren't built
         timeline.retain(|f| !self.suppressed.contains(f));
         match slot {
@@ -566,6 +585,15 @@ impl OpenCad {
                         None => {
                             shells.push(d.shell.clone());
                             timeline.push(Feature::Shell(shells.len() - 1));
+                        }
+                    }
+                }
+                if let Some(d) = self.move_dialog.as_ref().filter(|d| !d.feature.bodies.is_empty()) {
+                    match d.editing {
+                        Some(k) => moves[k] = d.feature.clone(),
+                        None => {
+                            moves.push(d.feature.clone());
+                            timeline.push(Feature::Move(moves.len() - 1));
                         }
                     }
                 }
@@ -638,6 +666,7 @@ impl OpenCad {
             shells,
             offset_faces,
             combines,
+            moves,
             timeline,
         }
     }
@@ -661,6 +690,7 @@ impl OpenCad {
                 && c.shells == inp.shells
                 && c.offset_faces == inp.offset_faces
                 && c.combines == inp.combines
+                && c.moves == inp.moves
                 && c.timeline == inp.timeline
         });
         let i = slot as usize;
@@ -708,6 +738,7 @@ impl OpenCad {
             shells: inp.shells,
             offset_faces: inp.offset_faces,
             combines: inp.combines,
+            moves: inp.moves,
             timeline: inp.timeline,
             model,
             stand_in: false,
@@ -762,6 +793,7 @@ impl OpenCad {
             Feature::Shell(k) => self.shells.get(k).map(|s| s.name.clone()),
             Feature::OffsetFace(k) => self.offset_faces.get(k).map(|f| f.name.clone()),
             Feature::Combine(k) => self.combines.get(k).map(|c| c.name.clone()),
+            Feature::Move(k) => self.moves.get(k).map(|m| m.name.clone()),
         }
         .unwrap_or_else(|| format!("{f:?}"))
     }
