@@ -1727,6 +1727,39 @@ impl OpenCad {
                             self.float = Some(FloatEdit { target: EditTarget::NewCircle, text: typed, focus: true, keep_text: true });
                         }
                     }
+                    // Line: drag off the end just placed and it's a tangent arc
+                    // instead (as in Fusion); lines carry on from the arc's end.
+                    if self.editor.tool == Tool::Line && response.drag_started_by(egui::PointerButton::Primary) {
+                        let sk = &self.sketches[i];
+                        if let (Some(Anchor::Point(p)), Some(q)) = (self.editor.start, raw_press) {
+                            if sk.tangent_from(p).is_some() && sk.points[p].distance(q) <= SNAP_PX as f64 * mm_per_px {
+                                self.line_arc = Some(p);
+                            }
+                        }
+                    }
+                    if self.editor.tool != Tool::Line {
+                        self.line_arc = None;
+                    }
+                    if let (Some(p), true) = (self.line_arc, response.drag_stopped()) {
+                        self.line_arc = None;
+                        if let Some(at) = cursor {
+                            let mut arc_ed = Editor { tool: Tool::ArcTangent, start: Some(Anchor::Point(p)), construction: self.editor.construction, ..Default::default() };
+                            let before = self.sketches[i].entities.len();
+                            let r = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
+                                for c in arc_ed.click(sk, at) {
+                                    let mut t = sk.clone();
+                                    if solver::add_constraints(&mut t, &[c]).is_ok() {
+                                        *sk = t;
+                                    }
+                                }
+                            });
+                            self.report(r);
+                            let sk = &self.sketches[i];
+                            if let Some(&Entity::Arc { a, b, .. }) = sk.entities.get(before) {
+                                self.editor.start = Some(Anchor::Point(if a == p { b } else { a }));
+                            }
+                        }
+                    }
                     if response.clicked() || std::mem::take(&mut self.rect_place) {
                         if let Some(at) = cursor {
                             let ed = &mut self.editor;
@@ -3125,6 +3158,17 @@ impl OpenCad {
                     let from = sk.pos(start);
                     let preview = Stroke::new(1.5, COL_PREVIEW);
                     let label = match self.editor.tool {
+                        // Dragging off a line's end: the tangent arc it would make.
+                        Tool::Line if self.line_arc.is_some() => {
+                            let p = self.line_arc.expect("checked");
+                            match sk.tangent_from(p).and_then(|(dir, _)| sketch::tangent_arc(sk.points[p], dir, here)) {
+                                Some(a) => {
+                                    view.arc(&plane, a.center, a.radius, a.start, a.sweep, preview);
+                                    format!("R {}   {:.1}°   (let go to place the arc)", u.show(a.radius), a.sweep.to_degrees())
+                                }
+                                None => "drag sideways for an arc".to_string(),
+                            }
+                        }
                         Tool::Rectangle | Tool::Rectangle3Point | Tool::RectangleCenter => {
                             match self.editor.rectangle_preview(sk, here) {
                                 Some(c) => {

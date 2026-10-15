@@ -735,6 +735,7 @@ struct OpenCad {
     offset_preview: Option<Sketch>,          // the sketch with the offset the cursor would make
     cut_preview: Option<(Tool, sketch::TrimPiece)>, // what Trim would cut / Extend would add, under the cursor
     line_up: Option<(Option<DVec2>, Option<DVec2>, DVec2)>, // inference: lined up above/beside these, at this point
+    line_arc: Option<sketch::PointId>,        // Line tool: dragging a tangent arc off this end (Fusion's)
     line_length_text: Option<String>,         // the line length as typed (an expression links its dimension)
     acquired: (Option<usize>, Vec<sketch::EntityId>), // line middles the cursor rested on (sketch, lines; newest last)
     mid_guide: Option<(DVec2, Vec<DVec2>)>,   // the cursor on the perpendicular(s) through those middles
@@ -925,6 +926,7 @@ impl Default for OpenCad {
             offset_preview: None,
             cut_preview: None,
             line_up: None,
+            line_arc: None,
             line_length_text: None,
             acquired: (None, Vec::new()),
             mid_guide: None,
