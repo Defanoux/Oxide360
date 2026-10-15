@@ -1748,6 +1748,20 @@ impl OpenCad {
                 });
             },
         );
+        // A feature's box typed as an expression: kept with the feature at OK.
+        let field = match target {
+            EditTarget::ExtrudeDistance | EditTarget::OffsetDistance => Some(doc::Field::Distance),
+            EditTarget::EdgeSize => Some(doc::Field::Size),
+            EditTarget::RevolveAngle | EditTarget::PlaneAngle => Some(doc::Field::Angle),
+            EditTarget::PlaneOffset => Some(doc::Field::Offset),
+            _ => None,
+        };
+        if let (Some(field), Some(text)) = (field, self.float.as_ref().map(|f| f.text.clone())) {
+            self.pending_exprs.retain(|(f, _)| *f != field);
+            if units::is_expression(&text) {
+                self.pending_exprs.push((field, text.trim().to_string()));
+            }
+        }
         match target {
             EditTarget::Corner(p) => {
                 if let Some(text) = corner_text {

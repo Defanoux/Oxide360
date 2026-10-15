@@ -711,8 +711,11 @@ impl OpenCad {
     /// the Change Parameters window, when open.
     pub(crate) fn follow_parameters(&mut self, ctx: &egui::Context) {
         let sketches = &self.sketches;
+        let feature_users: Vec<(String, String)> = self.feature_exprs.iter().map(|e| (self.feature_label(e.feature), e.text.clone())).collect();
         let used_by = |name: &str| -> Vec<String> {
-            sketches.iter().filter(|sk| sk.dim_exprs.iter().flatten().any(|e| expr::uses(e, name))).map(|sk| sk.name.clone()).collect()
+            let mut users: Vec<String> = sketches.iter().filter(|sk| sk.dim_exprs.iter().flatten().any(|e| expr::uses(e, name))).map(|sk| sk.name.clone()).collect();
+            users.extend(feature_users.iter().filter(|(_, t)| expr::uses(t, name)).map(|(n, _)| n.clone()));
+            users
         };
         for change in self.params_window.show(ctx, &mut self.parameters, &used_by) {
             let params_window::Change::Renamed { old, new } = change;
@@ -720,6 +723,9 @@ impl OpenCad {
                 for e in sk.dim_exprs.iter_mut().flatten() {
                     *e = expr::rename(e, &old, &new);
                 }
+            }
+            for e in &mut self.feature_exprs {
+                e.text = expr::rename(&e.text, &old, &new);
             }
         }
         // (Half-typed in the window: wait until the box is left.)
@@ -733,6 +739,18 @@ impl OpenCad {
         for sk in &mut self.sketches {
             for (ci, why) in solver::follow_parameters(sk, unit) {
                 failed.push(format!("{} dimension {}: {why}", sk.name, ci + 1));
+            }
+        }
+        for e in self.feature_exprs.clone() {
+            let v = expr::eval(&e.text, e.field.kind(), unit);
+            let now = self.feature_value(e.feature, e.field);
+            let r = match (v, now) {
+                (Ok(v), Some(now)) if (v - now).abs() > 1e-9 => self.set_feature_value(e.feature, e.field, v),
+                (Err(why), _) => Err(why),
+                _ => Ok(()),
+            };
+            if let Err(why) = r {
+                failed.push(format!("{}: {why}", self.feature_label(e.feature)));
             }
         }
         if !failed.is_empty() {

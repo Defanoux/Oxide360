@@ -687,6 +687,8 @@ struct OpenCad {
     parameters: Vec<expr::UserParameter>,      // the design's user parameters
     params_window: params_window::ParamsWindow,
     params_seen: Option<Vec<expr::UserParameter>>, // what the dimensions last followed
+    feature_exprs: Vec<doc::FeatureExpr>,      // feature values typed as expressions
+    pending_exprs: Vec<(doc::Field, String)>,  // typed in the open dialog's box, kept at OK
     move_dialog: Option<MoveDialog>,
     move_errors: Vec<Option<String>>,
     move_hover: Option<BodyId>,                // the body a click would pick (Move/Copy)
@@ -872,6 +874,8 @@ impl Default for OpenCad {
             parameters: Vec::new(),
             params_window: Default::default(),
             params_seen: None,
+            feature_exprs: Vec::new(),
+            pending_exprs: Vec::new(),
             move_dialog: None,
             move_errors: Vec::new(),
             move_hover: None,

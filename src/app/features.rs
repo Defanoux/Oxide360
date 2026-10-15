@@ -4,6 +4,7 @@ use crate::*;
 
 impl OpenCad {
     pub(crate) fn open_extrude(&mut self, editing: Option<usize>) {
+        self.pending_exprs.clear();
         self.axis_pick = false;
         self.angle_pick = false;
         self.hole_dialog = None;
@@ -48,7 +49,7 @@ impl OpenCad {
         };
         self.float = Some(FloatEdit {
             target: EditTarget::ExtrudeDistance,
-            text: self.units.plain(d.distance),
+            text: editing.and_then(|k| self.linked_text(Feature::Extrude(k), doc::Field::Distance)).unwrap_or_else(|| self.units.plain(d.distance)),
             focus: true,
             keep_text: false,
         });
@@ -88,13 +89,18 @@ impl OpenCad {
         }
         // A plane it ran up to has done its job: hide it, as Fusion does.
         self.plane_hidden.extend(ex.plane_used());
-        match self.dialog.as_ref().and_then(|d| d.editing) {
-            Some(k) => self.extrudes[k] = ex,
+        let k = match self.dialog.as_ref().and_then(|d| d.editing) {
+            Some(k) => {
+                self.extrudes[k] = ex;
+                k
+            }
             None => {
                 self.extrudes.push(ex);
                 self.timeline_insert(Feature::Extrude(self.extrudes.len() - 1));
+                self.extrudes.len() - 1
             }
-        }
+        };
+        self.keep_exprs(Feature::Extrude(k));
         self.dialog = None;
         self.float = None;
         self.message = None;
@@ -491,6 +497,7 @@ impl OpenCad {
     // ---------- revolve ----------
 
     pub(crate) fn open_revolve(&mut self, editing: Option<usize>) {
+        self.pending_exprs.clear();
         self.axis_pick = false;
         self.angle_pick = false;
         self.hole_dialog = None;
@@ -523,7 +530,8 @@ impl OpenCad {
                 picking_axis: false,
             },
         };
-        self.float = Some(FloatEdit { target: EditTarget::RevolveAngle, text: format!("{:.1}", d.angle), focus: true, keep_text: false });
+        let text = editing.and_then(|k| self.linked_text(Feature::Revolve(k), doc::Field::Angle)).unwrap_or_else(|| format!("{:.1}", d.angle));
+        self.float = Some(FloatEdit { target: EditTarget::RevolveAngle, text, focus: true, keep_text: false });
         self.revolve_dialog = Some(d);
         if editing.is_none() {
             self.pick_only_profile();
@@ -548,13 +556,18 @@ impl OpenCad {
             self.message = Some(format!("Can't revolve: {e}"));
             return;
         }
-        match self.revolve_dialog.as_ref().and_then(|d| d.editing) {
-            Some(k) => self.revolves[k] = rv,
+        let k = match self.revolve_dialog.as_ref().and_then(|d| d.editing) {
+            Some(k) => {
+                self.revolves[k] = rv;
+                k
+            }
             None => {
                 self.revolves.push(rv);
                 self.timeline_insert(Feature::Revolve(self.revolves.len() - 1));
+                self.revolves.len() - 1
             }
-        }
+        };
+        self.keep_exprs(Feature::Revolve(k));
         self.cancel_revolve();
     }
 
@@ -896,7 +909,9 @@ impl OpenCad {
             Some((k, f)) => OffsetDialog::from_feature(k, f),
             None => OffsetDialog::new(format!("Offset Face{}", self.offset_faces.len() + 1), press_pull),
         };
-        self.float = Some(FloatEdit { target: EditTarget::OffsetDistance, text: self.units.plain(d.offset.distance), focus: true, keep_text: false });
+        self.pending_exprs.clear();
+        let text = editing.and_then(|k| self.linked_text(Feature::OffsetFace(k), doc::Field::Distance)).unwrap_or_else(|| self.units.plain(d.offset.distance));
+        self.float = Some(FloatEdit { target: EditTarget::OffsetDistance, text, focus: true, keep_text: false });
         self.offset_dialog = Some(d);
     }
 
@@ -911,13 +926,18 @@ impl OpenCad {
             return;
         }
         let f = d.offset.clone();
-        match d.editing {
-            Some(k) => self.offset_faces[k] = f,
+        let k = match d.editing {
+            Some(k) => {
+                self.offset_faces[k] = f;
+                k
+            }
             None => {
                 self.offset_faces.push(f);
                 self.timeline_insert(Feature::OffsetFace(self.offset_faces.len() - 1));
+                self.offset_faces.len() - 1
             }
-        }
+        };
+        self.keep_exprs(Feature::OffsetFace(k));
         self.cancel_offset();
     }
 
@@ -1122,6 +1142,69 @@ impl OpenCad {
         }
     }
 
+    /// A feature value that can follow an expression (None: no such value).
+    pub(crate) fn feature_value(&self, f: Feature, field: doc::Field) -> Option<f64> {
+        use doc::Field::*;
+        match (f, field) {
+            (Feature::Extrude(k), Distance) => self.extrudes.get(k).map(|e| e.distance),
+            (Feature::OffsetFace(k), Distance) => self.offset_faces.get(k).map(|o| o.distance),
+            (Feature::Revolve(k), Angle) => self.revolves.get(k).map(|r| r.angle),
+            (Feature::Edge(k), Size) => self.edge_features.get(k).map(|e| e.size),
+            (Feature::Plane(k), Offset) => self.planes.get(k).map(|p| p.offset),
+            (Feature::Plane(k), Angle) => self.planes.get(k).and_then(|p| p.angle).map(|a| a.degrees),
+            _ => None,
+        }
+    }
+
+    /// Set a feature value an expression gave (refused when it can't take it).
+    pub(crate) fn set_feature_value(&mut self, f: Feature, field: doc::Field, v: f64) -> Result<(), String> {
+        use doc::Field::*;
+        match (f, field) {
+            (Feature::Extrude(k), Distance) => self.extrudes.get_mut(k).ok_or("gone")?.distance = v,
+            (Feature::OffsetFace(k), Distance) => self.offset_faces.get_mut(k).ok_or("gone")?.distance = v,
+            (Feature::Revolve(k), Angle) if v != 0.0 && v.abs() <= 360.0 => self.revolves.get_mut(k).ok_or("gone")?.angle = v,
+            (Feature::Edge(k), Size) if v > 0.0 => {
+                let e = self.edge_features.get_mut(k).ok_or("gone")?;
+                // A chamfer's second distance keeps its proportion.
+                e.size2 = e.size2.map(|d2| d2 * v / e.size.max(1e-9));
+                e.size = v;
+            }
+            (Feature::Plane(k), Offset) => self.planes.get_mut(k).ok_or("gone")?.offset = v,
+            (Feature::Plane(k), Angle) if v.abs() <= 360.0 => self.planes.get_mut(k).ok_or("gone")?.angle.as_mut().ok_or("not at an angle")?.degrees = v,
+            (Feature::Revolve(_), Angle) | (Feature::Plane(_), Angle) => return Err("an angle up to 360°, not 0".into()),
+            (Feature::Edge(_), Size) => return Err("it must be greater than zero".into()),
+            _ => return Err("that value can't follow an expression".into()),
+        }
+        Ok(())
+    }
+
+    /// The expression a feature value follows, if any.
+    pub(crate) fn linked_text(&self, f: Feature, field: doc::Field) -> Option<String> {
+        self.feature_exprs.iter().find(|e| e.feature == f && e.field == field).map(|e| e.text.clone())
+    }
+
+    /// OK on feature `f`: what was typed as expressions is kept; a value
+    /// that no longer matches its expression (dragged, typed as a plain
+    /// number) lets it go.
+    pub(crate) fn keep_exprs(&mut self, f: Feature) {
+        for (field, text) in std::mem::take(&mut self.pending_exprs) {
+            self.feature_exprs.retain(|e| !(e.feature == f && e.field == field));
+            self.feature_exprs.push(doc::FeatureExpr { feature: f, field, text });
+        }
+        let unit = self.units;
+        let stale: Vec<doc::Field> = self
+            .feature_exprs
+            .iter()
+            .filter(|e| e.feature == f)
+            .filter(|e| match (expr::eval(&e.text, e.field.kind(), unit), self.feature_value(f, e.field)) {
+                (Ok(v), Some(now)) => (v - now).abs() > 1e-6,
+                _ => true,
+            })
+            .map(|e| e.field)
+            .collect();
+        self.feature_exprs.retain(|e| !(e.feature == f && stale.contains(&e.field)));
+    }
+
     /// Open the Thread dialog (a new Thread, or Thread `editing`).
     pub(crate) fn open_thread(&mut self, editing: Option<usize>) {
         self.finish_sketch();
@@ -1256,9 +1339,11 @@ impl OpenCad {
 
     /// Open the Offset Plane box with the distance ready to type into.
     pub(crate) fn open_plane_dialog(&mut self, d: PlaneDialog) {
+        self.pending_exprs.clear();
+        let linked = |field| d.editing.and_then(|k| self.linked_text(Feature::Plane(k), field));
         self.float = Some(match d.angle {
-            Some(a) => FloatEdit { target: EditTarget::PlaneAngle, text: format!("{:.1}", a.degrees), focus: true, keep_text: false },
-            None => FloatEdit { target: EditTarget::PlaneOffset, text: self.units.plain(d.distance), focus: true, keep_text: false },
+            Some(a) => FloatEdit { target: EditTarget::PlaneAngle, text: linked(doc::Field::Angle).unwrap_or_else(|| format!("{:.1}", a.degrees)), focus: true, keep_text: false },
+            None => FloatEdit { target: EditTarget::PlaneOffset, text: linked(doc::Field::Offset).unwrap_or_else(|| self.units.plain(d.distance)), focus: true, keep_text: false },
         });
         self.plane_dialog = Some(d);
     }
@@ -1281,13 +1366,18 @@ impl OpenCad {
             None => format!("Plane{}", self.planes.len() + 1),
         };
         let p = d.feature(name);
-        match d.editing {
-            Some(k) => self.planes[k] = p,
+        let k = match d.editing {
+            Some(k) => {
+                self.planes[k] = p;
+                k
+            }
             None => {
                 self.planes.push(p);
                 self.timeline_insert(Feature::Plane(self.planes.len() - 1));
+                self.planes.len() - 1
             }
-        }
+        };
+        self.keep_exprs(Feature::Plane(k));
         self.close_plane_dialog();
     }
 
@@ -1677,7 +1767,8 @@ impl OpenCad {
             Some(f) => EdgeDialog { editing, kind: f.kind, size: f.size, size2: f.size2, angle: f.angle, tangent_chain: true, edges: f.edges.clone() },
             None => EdgeDialog { editing: None, kind, size: 2.0, size2: None, angle: None, tangent_chain: true, edges: Vec::new() },
         };
-        let text = sizes_text(d.size, d.size2, self.units);
+        self.pending_exprs.clear();
+        let text = editing.and_then(|k| self.linked_text(Feature::Edge(k), doc::Field::Size)).unwrap_or_else(|| sizes_text(d.size, d.size2, self.units));
         self.float = Some(FloatEdit { target: EditTarget::EdgeSize, text, focus: true, keep_text: false });
         self.edge_dialog = Some(d);
     }
@@ -1712,13 +1803,18 @@ impl OpenCad {
             self.message = Some(format!("Can't {}: {e}", f.kind.name().to_lowercase()));
             return;
         }
-        match self.edge_dialog.as_ref().and_then(|d| d.editing) {
-            Some(k) => self.edge_features[k] = f,
+        let k = match self.edge_dialog.as_ref().and_then(|d| d.editing) {
+            Some(k) => {
+                self.edge_features[k] = f;
+                k
+            }
             None => {
                 self.edge_features.push(f);
                 self.timeline_insert(Feature::Edge(self.edge_features.len() - 1));
+                self.edge_features.len() - 1
             }
-        }
+        };
+        self.keep_exprs(Feature::Edge(k));
         self.cancel_edge_dialog();
     }
 

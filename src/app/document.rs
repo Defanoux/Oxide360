@@ -20,6 +20,7 @@ impl OpenCad {
             combines: self.combines.clone(),
             moves: self.moves.clone(),
             parameters: self.parameters.clone(),
+            feature_exprs: self.feature_exprs.clone(),
             units: self.units,
             version: doc::Version(self.version),
             timeline: self.timeline.clone(),
@@ -63,6 +64,7 @@ impl OpenCad {
     /// Take a feature out of the timeline, keeping the marker in place.
     pub(crate) fn timeline_remove(&mut self, f: Feature) {
         doc::forget_feature(&mut self.suppressed, f);
+        doc::forget_feature_exprs(&mut self.feature_exprs, f);
         self.marker = doc::remove_keeping_marker(&mut self.timeline, self.marker, f);
     }
 
@@ -261,6 +263,7 @@ impl OpenCad {
             || self.combines != self.saved.combines
             || self.moves != self.saved.moves
             || self.parameters != self.saved.parameters
+            || self.feature_exprs != self.saved.feature_exprs
             || self.units != self.saved.units
             || self.axes != self.saved.axes
             || self.planes != self.saved.planes
@@ -333,6 +336,7 @@ impl OpenCad {
         self.moves = doc.moves.clone();
         self.move_dialog = None;
         self.parameters = doc.parameters.clone();
+        self.feature_exprs = doc.feature_exprs.clone();
         self.params_seen = None;
         self.thread_dialog = None;
         self.hole_dialog = None;
@@ -418,6 +422,7 @@ impl OpenCad {
         self.moves = doc.moves;
         self.move_dialog = None;
         self.parameters = doc.parameters;
+        self.feature_exprs = doc.feature_exprs;
         self.params_seen = None;
         self.thread_dialog = None;
         self.hole_dialog = None;

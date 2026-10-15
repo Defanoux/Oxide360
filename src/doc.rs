@@ -60,29 +60,68 @@ pub fn remove_keeping_marker(timeline: &mut Vec<Feature>, marker: Option<usize>,
     marker.and_then(|m| if m > pos { Some(m - 1) } else { Some(m) }).filter(|&m| m < timeline.len())
 }
 
+/// What feature `f` is called once `gone` was deleted: None if it's the
+/// one gone, one less if it's a later one of the same kind.
+pub fn renumbered(f: Feature, gone: Feature) -> Option<Feature> {
+    if f == gone {
+        return None;
+    }
+    Some(match (f, gone) {
+        (Feature::Sketch(i), Feature::Sketch(k)) if i > k => Feature::Sketch(i - 1),
+        (Feature::Extrude(i), Feature::Extrude(k)) if i > k => Feature::Extrude(i - 1),
+        (Feature::Edge(i), Feature::Edge(k)) if i > k => Feature::Edge(i - 1),
+        (Feature::Revolve(i), Feature::Revolve(k)) if i > k => Feature::Revolve(i - 1),
+        (Feature::Copy(i), Feature::Copy(k)) if i > k => Feature::Copy(i - 1),
+        (Feature::Axis(i), Feature::Axis(k)) if i > k => Feature::Axis(i - 1),
+        (Feature::Plane(i), Feature::Plane(k)) if i > k => Feature::Plane(i - 1),
+        (Feature::Remove(i), Feature::Remove(k)) if i > k => Feature::Remove(i - 1),
+        (Feature::Hole(i), Feature::Hole(k)) if i > k => Feature::Hole(i - 1),
+        (Feature::Thread(i), Feature::Thread(k)) if i > k => Feature::Thread(i - 1),
+        (Feature::Shell(i), Feature::Shell(k)) if i > k => Feature::Shell(i - 1),
+        (Feature::OffsetFace(i), Feature::OffsetFace(k)) if i > k => Feature::OffsetFace(i - 1),
+        (Feature::Combine(i), Feature::Combine(k)) if i > k => Feature::Combine(i - 1),
+        (Feature::Move(i), Feature::Move(k)) if i > k => Feature::Move(i - 1),
+        (f, _) => f,
+    })
+}
+
 /// After feature `gone` was deleted: drop it from `list` and renumber the later
 /// features of its kind.
 pub fn forget_feature(list: &mut Vec<Feature>, gone: Feature) {
-    list.retain(|f| *f != gone);
-    for f in list.iter_mut() {
-        *f = match (*f, gone) {
-            (Feature::Sketch(i), Feature::Sketch(k)) if i > k => Feature::Sketch(i - 1),
-            (Feature::Extrude(i), Feature::Extrude(k)) if i > k => Feature::Extrude(i - 1),
-            (Feature::Edge(i), Feature::Edge(k)) if i > k => Feature::Edge(i - 1),
-            (Feature::Revolve(i), Feature::Revolve(k)) if i > k => Feature::Revolve(i - 1),
-            (Feature::Copy(i), Feature::Copy(k)) if i > k => Feature::Copy(i - 1),
-            (Feature::Axis(i), Feature::Axis(k)) if i > k => Feature::Axis(i - 1),
-            (Feature::Plane(i), Feature::Plane(k)) if i > k => Feature::Plane(i - 1),
-            (Feature::Remove(i), Feature::Remove(k)) if i > k => Feature::Remove(i - 1),
-            (Feature::Hole(i), Feature::Hole(k)) if i > k => Feature::Hole(i - 1),
-            (Feature::Thread(i), Feature::Thread(k)) if i > k => Feature::Thread(i - 1),
-            (Feature::Shell(i), Feature::Shell(k)) if i > k => Feature::Shell(i - 1),
-            (Feature::OffsetFace(i), Feature::OffsetFace(k)) if i > k => Feature::OffsetFace(i - 1),
-            (Feature::Combine(i), Feature::Combine(k)) if i > k => Feature::Combine(i - 1),
-            (Feature::Move(i), Feature::Move(k)) if i > k => Feature::Move(i - 1),
-            (f, _) => f,
-        };
+    *list = list.iter().filter_map(|&f| renumbered(f, gone)).collect();
+}
+
+/// Which value of a feature an expression drives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Field {
+    /// Extrude's or Offset Face's distance.
+    Distance,
+    /// Fillet radius / chamfer distance.
+    Size,
+    /// Revolve's angle, Plane at Angle's angle.
+    Angle,
+    /// Offset Plane's distance.
+    Offset,
+}
+
+impl Field {
+    pub fn kind(self) -> crate::expr::Kind {
+        if self == Field::Angle { crate::expr::Kind::Angle } else { crate::expr::Kind::Length }
     }
+}
+
+/// A feature value typed as an expression ("width / 2"): it follows the
+/// design's parameters, as a dimension does.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FeatureExpr {
+    pub feature: Feature,
+    pub field: Field,
+    pub text: String,
+}
+
+/// After `gone` was deleted: its expressions go, later features' renumber.
+pub fn forget_feature_exprs(list: &mut Vec<FeatureExpr>, gone: Feature) {
+    *list = list.iter().filter_map(|e| Some(FeatureExpr { feature: renumbered(e.feature, gone)?, ..e.clone() })).collect();
 }
 
 /// The timeline with the feature at `from` dropped into gap `gap` (0 = before
@@ -187,6 +226,9 @@ pub struct Document {
     /// User parameters (Change Parameters). Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parameters: Vec<crate::expr::UserParameter>,
+    /// Feature values typed as expressions. Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feature_exprs: Vec<FeatureExpr>,
     /// Move/Copy features. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub moves: Vec<crate::model::MoveFeature>,
@@ -455,6 +497,9 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             return Err(format!("parameter \"{}\": a bad or repeated name", p.name));
         }
     }
+    if doc.feature_exprs.iter().any(|e| !doc.timeline.contains(&e.feature)) {
+        return Err("an expression belongs to a feature that isn't there".into());
+    }
     for m in &doc.moves {
         let made = |id: &BodyId| match id.feature {
             Feature::Extrude(k) => k < doc.extrudes.len(),
@@ -705,6 +750,7 @@ mod tests {
             combines: Vec::new(),
             moves: Vec::new(),
             parameters: Vec::new(),
+            feature_exprs: Vec::new(),
             units: crate::units::Unit::Mm,
             version: Version(0),
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],
@@ -880,6 +926,21 @@ mod tests {
         assert_eq!(copy(0).after_maker_delete(Feature::Move(0)), None);
         assert_eq!(copy(2).after_maker_delete(Feature::Move(1)), Some(copy(1)));
         assert_eq!(body.after_maker_delete(Feature::Move(0)), Some(body));
+    }
+
+    #[test]
+    fn feature_expressions_save_and_renumber_on_delete() {
+        let mut doc = sample();
+        doc.feature_exprs.push(FeatureExpr { feature: Feature::Extrude(0), field: Field::Distance, text: "width / 2".into() });
+        assert_eq!(from_json(&to_json(&doc)).unwrap(), doc);
+        assert!(!to_json(&sample()).contains("feature_exprs"));
+        let mut bad = doc.clone();
+        bad.feature_exprs[0].feature = Feature::Extrude(3);
+        assert!(validate(&bad).is_err());
+        let e = |k| FeatureExpr { feature: Feature::Extrude(k), field: Field::Distance, text: "w".into() };
+        let mut list = vec![e(0), e(1), e(2), FeatureExpr { feature: Feature::Edge(1), ..e(0) }];
+        forget_feature_exprs(&mut list, Feature::Extrude(1));
+        assert_eq!(list.iter().map(|x| x.feature).collect::<Vec<_>>(), vec![Feature::Extrude(0), Feature::Extrude(1), Feature::Edge(1)]);
     }
 
     #[test]
