@@ -331,6 +331,54 @@ impl Sketch {
         Ok(ties)
     }
 
+    /// Offset spline `e` to the side `at` is on, `distance` away (or as far
+    /// as `at` is): a new spline through points moved square off its curve
+    /// (four per span), so it follows the original closely.
+    pub fn offset_spline(&mut self, e: EntityId, at: DVec2, distance: Option<f64>) -> Result<Vec<EntityId>, String> {
+        let Some(&Entity::Spline { s }) = self.entities.get(e) else { return Err("not a spline".into()) };
+        let curve = self.spline_curve(s);
+        let n = curve.len();
+        if n < 2 {
+            return Err("the spline is too short".into());
+        }
+        let closed = self.spline_closed(s);
+        let normal = |i: usize| {
+            let (a, b) = if closed && (i == 0 || i == n - 1) { (curve[n - 2], curve[1]) } else { (curve[i.saturating_sub(1)], curve[(i + 1).min(n - 1)]) };
+            (b - a).try_normalize().map(|t| t.perp())
+        };
+        // Which side, and how far: from the nearest point of the curve.
+        let pos = self.spline_position(s, at);
+        let i = (pos.round() as usize).min(n - 1);
+        let nrm = normal(i).ok_or("the spline has no direction there")?;
+        let side = if nrm.dot(at - curve[i]) >= 0.0 { 1.0 } else { -1.0 };
+        let dist = distance.map_or_else(|| at.distance(curve[i]), f64::abs);
+        if dist < 1e-9 {
+            return Err("move the cursor off the spline to set the distance".into());
+        }
+        let step = (self.per_span(s) / 4).max(1);
+        let mut picks: Vec<usize> = (0..n).step_by(step).collect();
+        if picks.last() != Some(&(n - 1)) {
+            picks.push(n - 1);
+        }
+        if closed {
+            picks.pop(); // the last is the first again
+        }
+        let mut list = Vec::new();
+        for k in picks {
+            let q = curve[k] + normal(k).ok_or("the spline has no direction there")? * (side * dist);
+            self.points.push(q);
+            list.push(self.points.len() - 1);
+        }
+        if closed {
+            list.push(list[0]);
+        }
+        self.splines.push(list);
+        self.entities.push(Entity::Spline { s: self.splines.len() - 1 });
+        let made = self.entities.len() - 1;
+        self.set_construction(made, self.is_construction(e));
+        Ok(vec![made])
+    }
+
     /// Where spline `s`'s end nearest `at` is, the way out of it, and whether it's the last end.
     pub(crate) fn spline_end_ray(&self, s: usize, at: DVec2) -> Option<(DVec2, DVec2, bool)> {
         let curve = self.spline_curve(s);
@@ -460,6 +508,21 @@ mod tests {
         let l = sk.entities.iter().position(|x| matches!(x, Entity::Line { .. })).unwrap();
         sk.break_at(l, DVec2::new(20.0, 10.0)).unwrap();
         assert_eq!(sk.entities.iter().filter(|x| matches!(x, Entity::Line { .. })).count(), 2);
+    }
+
+    #[test]
+    fn offset_copies_a_spline_the_same_distance_away() {
+        let mut sk = crossed();
+        let e = sk.entities.iter().position(|x| matches!(x, Entity::Spline { .. })).unwrap();
+        let made = sk.offset_spline(e, DVec2::new(20.0, 10.0), Some(3.0)).unwrap();
+        let Entity::Spline { s: copy } = sk.entities[made[0]] else { panic!("a spline") };
+        let Entity::Spline { s } = sk.entities[e] else { unreachable!() };
+        // Every point of the copy is 3 from the original (to within the sampling).
+        let original = sk.spline_fit(s);
+        for p in sk.spline_curve(copy).iter().step_by(7) {
+            let d = crate::spline::distance(&original, *p);
+            assert!((d - 3.0).abs() < 0.05, "{p} is {d} away");
+        }
     }
 
     #[test]

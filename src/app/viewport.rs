@@ -2734,7 +2734,12 @@ impl OpenCad {
                                     view.arc(&plane, c, r, a0, sweep, stroke);
                                 }
                             }
-                            Entity::Point { .. } | Entity::Spline { .. } | Entity::Ellipse { .. } => {}
+                            Entity::Spline { s } => {
+                                for w in p.spline_curve(s).windows(2) {
+                                    view.line(plane.to_world(w[0]), plane.to_world(w[1]), stroke);
+                                }
+                            }
+                            Entity::Point { .. } | Entity::Ellipse { .. } => {}
                         }
                     }
                 }

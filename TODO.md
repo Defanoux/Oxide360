@@ -11,7 +11,6 @@ the spec for each.
 **Core solid tools (the gaps you hit modelling a real part)**
 
 **Sketch gaps**
-10. **Break**, and Trim/Extend/Offset for splines.
 11. **Re-attach a sketch** to another plane/face (Redefine Sketch Plane).
 12. **Sketch Text** (font outlines → profiles, extrudable).
 
@@ -50,6 +49,8 @@ sheet metal, surfaces, CAM.
   load from the built model.
 
 ## Done
+
+- Break (sketch MODIFY): lines, circles (two crossings), arcs and splines split where crossed, every piece kept, dots show the split points; Trim, Extend and Offset on splines (pieces respline through the cut and their fit points — close to, not exactly, the original near a cut); lines extend to splines/ellipses, circles are cut by them. Not done: Offset keeping a spline copy dimensioned.
 
 - Dimension lines no longer block picking the sketch line behind them (only the number box does); with the Dimension tool on, clicking another dimension's number edits it.
 

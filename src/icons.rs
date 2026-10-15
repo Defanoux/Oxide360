@@ -598,10 +598,10 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             // A line crossed by another, split at the crossing (a small gap, two dots).
             line((0.5, 0.08), (0.5, 0.92), thin);
             let s = Stroke::new(thin.width * 1.4, orange);
-            line((0.08, 0.5), (0.42, 0.5), s);
-            line((0.58, 0.5), (0.92, 0.5), s);
-            dot(0.42, 0.5, orange);
-            dot(0.58, 0.5, orange);
+            line((0.06, 0.5), (0.34, 0.5), s);
+            line((0.66, 0.5), (0.94, 0.5), s);
+            dot(0.34, 0.5, orange);
+            dot(0.66, 0.5, orange);
         }
         Icon::Ellipse => {
             // A wide ellipse with its centre.

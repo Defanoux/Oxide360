@@ -305,6 +305,11 @@ impl Sketch {
     /// where an arc met a line smoothly the copies get a Tangent there; an
     /// arc or circle without two such joints gets a radius Offset.
     pub fn offset_constrained(&mut self, e: EntityId, at: DVec2, distance: Option<f64>) -> Result<Vec<Constraint>, String> {
+        // A spline: its offset copy (nothing ties it to the original yet).
+        if matches!(self.entities.get(e), Some(Entity::Spline { .. })) {
+            self.offset_spline(e, at, distance)?;
+            return Ok(Vec::new());
+        }
         let (pieces, _) = self.chain_of(e)?;
         let made = self.offset_chain(e, at, distance)?;
         // Each piece keeps its own side (the sign); they share the size.
@@ -340,8 +345,11 @@ impl Sketch {
     /// `distance` says. Returns the new entities. Corners are kept sharp where
     /// the moved pieces cross; the originals stay.
     pub fn offset_chain(&mut self, e: EntityId, at: DVec2, distance: Option<f64>) -> Result<Vec<EntityId>, String> {
-        if e >= self.entities.len() || matches!(self.entities[e], Entity::Point { .. } | Entity::Spline { .. }) {
-            return Err("Offset works on lines, arcs and circles (not splines yet)".into());
+        if matches!(self.entities.get(e), Some(Entity::Spline { .. })) {
+            return self.offset_spline(e, at, distance);
+        }
+        if e >= self.entities.len() || matches!(self.entities[e], Entity::Point { .. } | Entity::Ellipse { .. }) {
+            return Err("Offset works on lines, arcs, circles and splines".into());
         }
         let (pieces, closed) = self.chain_of(e)?;
         let at_piece = pieces.iter().copied().find(|p| p.e == e).expect("e is in its chain");
