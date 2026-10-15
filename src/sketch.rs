@@ -4347,6 +4347,13 @@ mod construction_tests {
         let Entity::Ellipse { center, major, minor } = sk.entities[e] else { unreachable!() };
         let (u, v) = (sk.points[major] - sk.points[center], sk.points[minor] - sk.points[center]);
         assert!((u.length() - 30.0).abs() < 1e-7 && u.dot(v).abs() < 1e-6, "{u} {v}");
+        assert!(u.normalize().dot(DVec2::X) > 1.0 - 1e-6, "it grows along its axis, not turning: {u}");
+        assert!((v.length() - 10.0).abs() < 1e-6, "the other axis stays: {v}");
+        // The short axis to 5: it shrinks across, the long one stays put.
+        let short = (0..sk.entities.len()).find(|&l| sk.is_construction(l) && sk.line_length(l).is_some_and(|d| (d - 10.0).abs() < 1e-6)).expect("the minor axis line");
+        crate::solver::add_constraints(&mut sk, &[Constraint::Length(short, 5.0)]).unwrap();
+        let (u, v) = (sk.points[major] - sk.points[center], sk.points[minor] - sk.points[center]);
+        assert!((u.length() - 30.0).abs() < 1e-6 && (v.length() - 5.0).abs() < 1e-6 && u.normalize().dot(DVec2::X) > 1.0 - 1e-6, "{u} {v}");
         assert_eq!(find_regions_count(&sk), 1);
     }
 

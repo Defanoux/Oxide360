@@ -423,7 +423,24 @@ fn norm2(v: &[f64]) -> f64 {
 /// Solve the sketch in place. `pinned` points are held exactly where they are.
 /// On error the sketch is left untouched.
 pub fn solve(sk: &mut Sketch, pinned: &[PointId]) -> Result<Solved, SolveError> {
-    solve_with(sk, pinned, None, None)
+    let w = ellipse_weights(sk);
+    solve_with(sk, pinned, None, w.as_deref())
+}
+
+/// Step weights that keep ellipses from turning: an ellipse's centre and
+/// second-axis point barely move, so changing its first axis grows it along
+/// that axis instead of sliding the centre and turning the whole ellipse to
+/// stay square. None when there are no ellipses.
+fn ellipse_weights(sk: &Sketch) -> Option<Vec<f64>> {
+    let held: Vec<PointId> = sk.entities.iter().flat_map(|e| if let Entity::Ellipse { center, minor, .. } = *e { vec![center, minor] } else { vec![] }).collect();
+    if held.is_empty() {
+        return None;
+    }
+    let mut w = vec![1.0; sk.points.len()];
+    for p in held {
+        w[p] = 1e-4;
+    }
+    Some(w)
 }
 
 /// Drag point `p` toward `target`, keeping every constraint.
