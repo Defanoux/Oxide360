@@ -1,3 +1,4 @@
+#include <Standard_ErrorHandler.hxx>
 #include <BRepFeat_MakeCylindricalHole.hxx>
 #include <BRepFeat_MakeDPrism.hxx>
 #include <LocOpe_DPrism.hxx>
@@ -24,6 +25,7 @@
 inline std::unique_ptr<TopoDS_Shape>
 tapered_prism_try(const TopoDS_Face &face, Standard_Real dx, Standard_Real dy, Standard_Real dz, Standard_Real offset) {
   try {
+    OCC_CATCH_SIGNALS
     BRepOffsetAPI_MakeOffset make_offset(face, GeomAbs_Intersection);
     make_offset.Perform(offset);
     if (!make_offset.IsDone()) {

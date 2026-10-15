@@ -40,3 +40,10 @@ pub enum Error {
     #[error("at least 2 points are required for creating a wire")]
     NotEnoughPoints,
 }
+
+/// opencad patch: from now on a crash inside OCCT during a `try_*` call comes
+/// back as a failure (`None`) instead of killing the process. Call once, early.
+pub fn catch_crashes() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(opencascade_sys::standard::opencad_catch_signals);
+}

@@ -1,3 +1,4 @@
+#include <Standard_ErrorHandler.hxx>
 #include <GeomAPI_Interpolate.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <Geom_BSplineCurve.hxx>
@@ -11,6 +12,7 @@ inline std::unique_ptr<Handle_Geom_BSplineCurve> GeomAPI_Interpolate_Curve(const
 // abort the app; this reports failure as a null handle instead.
 inline std::unique_ptr<Handle_Geom_BSplineCurve> GeomAPI_Interpolate_try_curve(const Handle_TColgp_HArray1OfPnt &points, bool periodic) {
   try {
+    OCC_CATCH_SIGNALS
     GeomAPI_Interpolate interp(points, periodic, 1.0e-7);
     interp.Perform();
     if (!interp.IsDone()) {
@@ -26,6 +28,7 @@ inline std::unique_ptr<Handle_Geom_BSplineCurve> GeomAPI_Interpolate_try_curve(c
 // along the curve, ends included. False if it fails.
 inline bool Geom_BSplineCurve_try_sample(const Handle_Geom_BSplineCurve &curve, rust::Slice<double> out) {
   try {
+    OCC_CATCH_SIGNALS
     if (curve.IsNull()) {
       return false;
     }

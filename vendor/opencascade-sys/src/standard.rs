@@ -8,5 +8,7 @@ mod inner {
         type Handle_Standard_Type;
         pub fn type_name(handle: &Handle_Standard_Type) -> String;
         pub fn IsNull(self: &Handle_Standard_Type) -> bool;
+
+        pub fn opencad_catch_signals();
     }
 }

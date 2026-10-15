@@ -96,7 +96,9 @@ fn main() {
 
     let mut build = cxx_build::bridges(rust_bridges);
 
-    if is_windows_gnu {
+    // opencad patch: on Linux too, so OCC_CATCH_SIGNALS in the try wrappers
+    // turns a crash inside OCCT into a caught exception.
+    if is_windows_gnu || cfg!(unix) {
         build.define("OCC_CONVERT_SIGNALS", "TRUE");
     }
 

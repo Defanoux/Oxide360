@@ -1,3 +1,4 @@
+#include <Standard_ErrorHandler.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
@@ -13,6 +14,7 @@
 inline std::unique_ptr<BRepPrimAPI_MakeRevol>
 BRepPrimAPI_MakeRevol_try_new(const TopoDS_Shape &shape, const gp_Ax1 &axis, Standard_Real angle) {
   try {
+    OCC_CATCH_SIGNALS
     auto make = std::unique_ptr<BRepPrimAPI_MakeRevol>(new BRepPrimAPI_MakeRevol(shape, axis, angle, false));
     if (!make->IsDone()) {
       return nullptr;

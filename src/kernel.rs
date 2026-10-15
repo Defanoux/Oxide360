@@ -1960,6 +1960,7 @@ pub struct Build {
 
 impl Build {
     pub fn start(inp: BuildInputs) -> Build {
+        opencascade::catch_crashes();
         let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, timeline: _ } = &inp;
         let _ = (extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, sketches, shells);
         let hole_errors: Vec<Option<String>> = vec![None; holes.len()];
@@ -3714,6 +3715,27 @@ mod tests {
         let mut b = Sketch::new("B".into(), OriginPlane::XY);
         rect(&mut b, 0.0, 0.0, 50.0, 30.0);
         build_all(&[b], &[ex(0, vec![0], h, Operation::NewBody)], &[], &[], &[], &[], &[], &[], &[], &[], &[sf], &[Feature::Sketch(0), Feature::Extrude(0), Feature::Shell(0)])
+    }
+
+    #[test]
+    fn a_fillet_that_crashes_occt_is_an_error() {
+        // A 2 mm round on the rim of a box with 2 mm walls segfaults inside
+        // OCCT's fillet builder; the wrapper turns that into a failure.
+        let open = ShellFeature { faces: vec![top_face(10.0)], ..Default::default() };
+        let m = shelled(10.0, open.clone());
+        let rim = m.bodies[0].edges.iter().map(|e| e.at).find(|r| r.dir.dot(DVec3::X).abs() > 0.99 && (r.mid - DVec3::new(25.0, 30.0, 10.0)).length() < 1e-6).expect("the back outer rim");
+        let mut b = Sketch::new("B".into(), OriginPlane::XY);
+        rect(&mut b, 0.0, 0.0, 50.0, 30.0);
+        let f = EdgeFeature { name: "F".into(), kind: EdgeKind::Fillet, size: 2.0, size2: None, angle: None, edges: vec![rim] };
+        let tl = [Feature::Sketch(0), Feature::Extrude(0), Feature::Shell(0), Feature::Edge(0)];
+        let m = build_all(&[b.clone()], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[], &[f.clone()], &[], &[], &[], &[], &[], &[], &[open.clone()], &tl);
+        assert!(m.edge_errors[0].is_some());
+        assert!(close(total(&m), 15000.0 - 46.0 * 26.0 * 8.0), "the box stays, unrounded: {}", total(&m));
+        // OCCT still works afterwards: a 1 mm round there is fine.
+        let f = EdgeFeature { size: 1.0, ..f };
+        let m = build_all(&[b], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[], &[f], &[], &[], &[], &[], &[], &[], &[open], &tl);
+        assert_eq!(m.edge_errors, vec![None]);
+        assert!(close(total(&m), 15000.0 - 46.0 * 26.0 * 8.0 - (1.0 - PI / 4.0) * 50.0), "{}", total(&m));
     }
 
     fn top_face(h: f64) -> crate::model::PickedFace {

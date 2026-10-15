@@ -1265,6 +1265,7 @@ fn tol_px(mm_per_px: f64) -> f64 {
 }
 
 fn main() -> eframe::Result {
+    opencascade::catch_crashes();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("opencad")

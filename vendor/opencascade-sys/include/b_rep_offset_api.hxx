@@ -1,3 +1,4 @@
+#include <Standard_ErrorHandler.hxx>
 #include <BRepOffsetAPI_MakeOffset.hxx>
 #include <BRepOffsetAPI_MakePipe.hxx>
 #include <BRepOffsetAPI_MakePipeShell.hxx>
@@ -38,6 +39,7 @@ inline std::unique_ptr<TopoDS_Shape> opencad_try_thread(double ox, double oy, do
                                                         double r_in, double r_out, double w_in, double w_out, double pitch, double length,
                                                         bool right_hand, double taper) {
   try {
+    OCC_CATCH_SIGNALS
     if (!(r_in > 0.0 && r_out > r_in && w_in > 0.0 && w_out > 0.0 && pitch > 0.0 && length > 0.0)) {
       return nullptr;
     }
@@ -129,6 +131,7 @@ inline bool opencad_good_solid(const TopoDS_Shape &s) {
 
 inline std::unique_ptr<TopoDS_Shape> opencad_try_thick_solid(const TopoDS_Shape &shape, rust::Slice<const int32_t> faces, double offset, bool rounded) {
   try {
+    OCC_CATCH_SIGNALS
     std::vector<TopoDS_Shape> all;
     for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
       all.push_back(ex.Current());
@@ -160,6 +163,7 @@ inline std::unique_ptr<TopoDS_Shape> opencad_try_thick_solid(const TopoDS_Shape 
 // corners sharp or rounded. nullptr on any failure.
 inline std::unique_ptr<TopoDS_Shape> opencad_try_offset_shape(const TopoDS_Shape &shape, double offset, bool rounded) {
   try {
+    OCC_CATCH_SIGNALS
     BRepOffsetAPI_MakeOffsetShape maker;
     maker.PerformByJoin(shape, offset, 1.0e-5, BRepOffset_Skin, true, false, rounded ? GeomAbs_Arc : GeomAbs_Intersection);
     if (!maker.IsDone()) {

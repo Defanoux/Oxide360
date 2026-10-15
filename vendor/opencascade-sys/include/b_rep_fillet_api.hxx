@@ -1,3 +1,4 @@
+#include <Standard_ErrorHandler.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepFilletAPI_MakeFillet2d.hxx>
@@ -29,6 +30,7 @@ BRepFilletAPI_MakeFillet2d_add_chamfer_angle(BRepFilletAPI_MakeFillet2d &make_fi
 // catch it and report failure instead.
 inline bool BRepFilletAPI_MakeFillet_try_build(BRepFilletAPI_MakeFillet &make) {
   try {
+    OCC_CATCH_SIGNALS
     make.Build();
     return make.IsDone();
   } catch (...) {
@@ -38,6 +40,7 @@ inline bool BRepFilletAPI_MakeFillet_try_build(BRepFilletAPI_MakeFillet &make) {
 
 inline bool BRepFilletAPI_MakeChamfer_try_build(BRepFilletAPI_MakeChamfer &make) {
   try {
+    OCC_CATCH_SIGNALS
     make.Build();
     return make.IsDone();
   } catch (...) {
@@ -51,6 +54,7 @@ inline bool BRepFilletAPI_MakeChamfer_try_add_two(BRepFilletAPI_MakeChamfer &mak
                                                   Standard_Real dist2, const TopoDS_Edge &edge,
                                                   const TopoDS_Face &face) {
   try {
+    OCC_CATCH_SIGNALS
     make.Add(dist1, dist2, edge, face);
     return true;
   } catch (...) {
@@ -62,6 +66,7 @@ inline bool BRepFilletAPI_MakeChamfer_try_add_two(BRepFilletAPI_MakeChamfer &mak
 inline bool BRepFilletAPI_MakeChamfer_try_add_da(BRepFilletAPI_MakeChamfer &make, Standard_Real dist, Standard_Real angle,
                                                  const TopoDS_Edge &edge, const TopoDS_Face &face) {
   try {
+    OCC_CATCH_SIGNALS
     make.AddDA(dist, angle, edge, face);
     return true;
   } catch (...) {

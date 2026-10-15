@@ -1,3 +1,4 @@
+#include <Standard_ErrorHandler.hxx>
 #include <TopTools_ListOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
@@ -29,6 +30,7 @@ struct TopoDS_Cast {
 #include <functional>
 inline uint64_t opencad_shape_hash(const TopoDS_Shape &shape) {
   try {
+    OCC_CATCH_SIGNALS
     return uint64_t(std::hash<TopoDS_Shape>{}(shape));
   } catch (...) {
     return 0;
