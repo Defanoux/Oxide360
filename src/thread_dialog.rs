@@ -92,13 +92,19 @@ impl ThreadDialog {
                 format!("{n} selected")
             };
             let rich = if self.picking { egui::RichText::new(text).strong() } else { egui::RichText::new(text) };
-            if ui
-                .add(egui::Button::selectable(self.picking, rich).min_size(egui::vec2(170.0, 0.0)))
-                .on_hover_text("Click a shaft or the inside of a hole; click one again to drop it")
-                .clicked()
-            {
-                self.picking = !self.picking;
-            }
+            ui.horizontal(|ui| {
+                if ui
+                    .add(egui::Button::selectable(self.picking, rich).min_size(egui::vec2(170.0, 0.0)))
+                    .on_hover_text("Click a shaft or the inside of a hole; click one again to drop it")
+                    .clicked()
+                {
+                    self.picking = !self.picking;
+                }
+                if n > 0 && ui.small_button("×").on_hover_text("Clear the faces").clicked() {
+                    self.thread.faces.clear();
+                    self.picking = true;
+                }
+            });
             ui.end_row();
             let t = &mut self.thread;
             ui.label("Modeled");

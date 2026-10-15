@@ -76,9 +76,18 @@ impl ShellDialog {
                     (false, n) => format!("{n} selected"),
                 };
                 let rich = if on { egui::RichText::new(text).strong() } else { egui::RichText::new(text) };
-                if ui.add(egui::Button::selectable(on, rich).min_size(egui::vec2(170.0, 0.0))).on_hover_text(tip).clicked() {
-                    self.picking = if on { None } else { Some(field) };
-                }
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::selectable(on, rich).min_size(egui::vec2(170.0, 0.0))).on_hover_text(tip).clicked() {
+                        self.picking = if on { None } else { Some(field) };
+                    }
+                    if what > 0 && ui.small_button("×").on_hover_text(format!("Clear the {}", label.to_lowercase())).clicked() {
+                        match field {
+                            Field::Faces => s.faces.clear(),
+                            Field::Bodies => s.bodies.clear(),
+                        }
+                        self.picking = Some(field);
+                    }
+                });
                 ui.end_row();
             }
             ui.label("Direction");
@@ -137,9 +146,49 @@ mod tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         let mut d = ShellDialog::new("Shell1".into());
         d.shell.direction = ShellDirection::Both;
+        d.shell.faces.push(PickedFace { face: FacePlane::from_face(DVec3::Z, DVec3::new(0.0, 0.0, 10.0)), anchor: [0.0; 2] });
+        d.picking = None;
         crate::ui_shot::shot(&format!("{dir}/shell.png"), [400, 330], |ui| {
             d.panel(ui, crate::units::Unit::Mm, None);
         });
+    }
+
+    /// Run the panel for a frame (with `events`), returning where each labelled widget is.
+    fn frame(ctx: &egui::Context, d: &mut ShellDialog, events: Vec<egui::Event>) -> Vec<(String, egui::Rect)> {
+        let input = egui::RawInput { events, screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 900.0))), ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            d.panel(ui, crate::units::Unit::Mm, None);
+        });
+        out.textures_delta.clear();
+        let tree = out.platform_output.accesskit_update.take().expect("accesskit on");
+        tree.nodes
+            .iter()
+            .filter_map(|(_, n)| {
+                let b = n.bounds()?;
+                Some((n.label().or(n.value())?.to_string(), egui::Rect::from_min_max(egui::pos2(b.x0 as f32, b.y0 as f32), egui::pos2(b.x1 as f32, b.y1 as f32))))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_cross_clears_the_faces() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut d = ShellDialog::new("Shell1".into());
+        for z in [10.0, 0.0] {
+            d.toggle_face(PickedFace { face: FacePlane::from_face(DVec3::Z, DVec3::new(0.0, 0.0, z)), anchor: [1.0, 2.0] });
+        }
+        d.picking = None;
+        let widgets = frame(&ctx, &mut d, vec![]);
+        let crosses: Vec<egui::Rect> = widgets.iter().filter(|(l, _)| l == "×").map(|(_, r)| *r).collect();
+        assert_eq!(crosses.len(), 1, "only the field with a selection has a cross: {widgets:?}");
+        let at = crosses[0].center();
+        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(&ctx, &mut d, vec![egui::Event::PointerMoved(at)]);
+        frame(&ctx, &mut d, vec![press(true)]);
+        frame(&ctx, &mut d, vec![press(false)]);
+        assert!(d.shell.faces.is_empty());
+        assert_eq!(d.picking, Some(Field::Faces), "back to picking faces");
     }
 
     #[test]

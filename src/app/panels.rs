@@ -1192,7 +1192,12 @@ impl OpenCad {
         let plane_names: Vec<String> = self.planes.iter().map(|p| p.name.clone()).collect();
         let Some(d) = self.dialog.as_mut() else { return };
         ui.heading(if d.editing.is_some() { "Edit Extrude" } else { "Extrude" });
-        ui.label(format!("Profiles: {} selected", d.profiles.len()));
+        ui.horizontal(|ui| {
+            ui.label(format!("Profiles: {} selected", d.profiles.len()));
+            if !d.profiles.is_empty() && ui.small_button("×").on_hover_text("Clear the profiles").clicked() {
+                d.profiles.clear();
+            }
+        });
         ui.weak("Click shaded regions to add or remove them.");
         ui.separator();
         let mut changed = false;
@@ -1301,7 +1306,12 @@ impl OpenCad {
         let axis_names: Vec<String> = self.axes.iter().map(|a| a.name.clone()).collect();
         let Some(d) = self.revolve_dialog.as_mut() else { return };
         ui.heading(if d.editing.is_some() { "Edit Revolve" } else { "Revolve" });
-        ui.label(format!("Profiles: {} selected", d.profiles.len()));
+        ui.horizontal(|ui| {
+            ui.label(format!("Profiles: {} selected", d.profiles.len()));
+            if !d.profiles.is_empty() && ui.small_button("×").on_hover_text("Clear the profiles").clicked() {
+                d.profiles.clear();
+            }
+        });
         ui.weak("Click shaded regions to add or remove them.");
         ui.separator();
         ui.label("Axis");
@@ -1392,7 +1402,12 @@ impl OpenCad {
                 }
             }
         });
-        ui.label(format!("Edges: {} selected", d.edges.len()));
+        ui.horizontal(|ui| {
+            ui.label(format!("Edges: {} selected", d.edges.len()));
+            if !d.edges.is_empty() && ui.small_button("×").on_hover_text("Clear the edges").clicked() {
+                d.edges.clear();
+            }
+        });
         ui.weak("Click edges (or a face, for all its edges) to add or remove them.");
         ui.checkbox(&mut d.tangent_chain, "Tangent Chain").on_hover_text("Picking an edge picks the edges running smoothly on from it");
         ui.separator();
