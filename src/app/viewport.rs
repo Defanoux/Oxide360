@@ -1489,7 +1489,7 @@ impl OpenCad {
                             let hidden_painter = painter.with_clip_rect(egui::Rect::NOTHING);
                             let hidden = View { painter: &hidden_painter, ..view };
                             let centroid = sketch_centroid(&view, sk, &plane, to_vec(rect.center()));
-                            let at_default = draw_dimension(&hidden, sk, &plane, &c, false, DVec2::ZERO, centroid, COL_DIM, self.units)
+                            let at_default = draw_dimension(&hidden, sk, &plane, &c, false, DVec2::ZERO, centroid, COL_DIM, self.units, false)
                                 .and_then(|r| {
                                     let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(to_vec(r.center()), min, size));
                                     plane.intersect(&ray)
@@ -2676,7 +2676,7 @@ impl OpenCad {
                         };
                         let trace = std::cell::RefCell::new(Vec::new());
                         let traced = View { trace: Some(&trace), ..view };
-                        let r = draw_dimension(&traced, sk, &plane, c, sk.is_driven(ci), sk.label_shift(ci), centroid, colour, sk.dim_unit(ci).unwrap_or(self.units));
+                        let r = draw_dimension(&traced, sk, &plane, c, sk.is_driven(ci), sk.label_shift(ci), centroid, colour, sk.dim_unit(ci).unwrap_or(self.units), sk.dim_expr(ci).is_some());
                         r.map(|r| (r, trace.into_inner()))
                     }
                     // Glyphs about a point sit at the point.
@@ -2700,7 +2700,7 @@ impl OpenCad {
             // The dimension being placed (Dimension tool), following the cursor.
             if let (Tool::Constrain("Dimension"), Some((c, shift))) = (self.editor.tool, self.dim_preview) {
                 if !self.editor.selection.is_empty() {
-                    draw_dimension(&view, sk, &plane, &c, false, shift, centroid, COL_DIM.gamma_multiply(0.7), self.units);
+                    draw_dimension(&view, sk, &plane, &c, false, shift, centroid, COL_DIM.gamma_multiply(0.7), self.units, false);
                 }
             }
             let glyph_colour = |ci: usize| {

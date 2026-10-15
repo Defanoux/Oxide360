@@ -19,6 +19,7 @@ impl OpenCad {
             offset_faces: self.offset_faces.clone(),
             combines: self.combines.clone(),
             moves: self.moves.clone(),
+            parameters: self.parameters.clone(),
             units: self.units,
             version: doc::Version(self.version),
             timeline: self.timeline.clone(),
@@ -259,6 +260,7 @@ impl OpenCad {
             || self.offset_faces != self.saved.offset_faces
             || self.combines != self.saved.combines
             || self.moves != self.saved.moves
+            || self.parameters != self.saved.parameters
             || self.units != self.saved.units
             || self.axes != self.saved.axes
             || self.planes != self.saved.planes
@@ -330,6 +332,8 @@ impl OpenCad {
         self.combine_dialog = None;
         self.moves = doc.moves.clone();
         self.move_dialog = None;
+        self.parameters = doc.parameters.clone();
+        self.params_seen = None;
         self.thread_dialog = None;
         self.hole_dialog = None;
         self.units = doc.units;
@@ -413,6 +417,8 @@ impl OpenCad {
         self.combine_dialog = None;
         self.moves = doc.moves;
         self.move_dialog = None;
+        self.parameters = doc.parameters;
+        self.params_seen = None;
         self.thread_dialog = None;
         self.hole_dialog = None;
         self.units = doc.units;

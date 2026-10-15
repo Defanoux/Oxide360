@@ -399,6 +399,10 @@ pub struct Sketch {
     /// in a mm design), by constraint index: it keeps showing in that unit.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dim_units: Vec<Option<crate::units::Unit>>,
+    /// A dimension typed as an expression ("width * 2"), by constraint
+    /// index: it follows the design's parameters when they change.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dim_exprs: Vec<Option<String>>,
     /// Entities that are construction geometry (by entity index): drawn
     /// dashed, ignored when finding regions to extrude, still constrainable.
     /// Missing entries mean normal geometry.
@@ -748,6 +752,7 @@ impl Sketch {
             label_shift: Vec::new(),
             driven: Vec::new(),
             dim_units: Vec::new(),
+            dim_exprs: Vec::new(),
             splines: Vec::new(),
             construction: Vec::new(),
         }
@@ -1414,7 +1419,8 @@ impl Sketch {
         let shifts = std::mem::take(&mut self.label_shift);
         let driven = std::mem::take(&mut self.driven);
         let units = std::mem::take(&mut self.dim_units);
-        let (mut kept, mut kept_driven, mut kept_units) = (Vec::new(), Vec::new(), Vec::new());
+        let exprs = std::mem::take(&mut self.dim_exprs);
+        let (mut kept, mut kept_driven, mut kept_units, mut kept_exprs) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut i = 0;
         self.constraints.retain(|c| {
             let k = keep(c);
@@ -1422,6 +1428,7 @@ impl Sketch {
                 kept.push(shifts.get(i).copied().unwrap_or(DVec2::ZERO));
                 kept_driven.push(driven.get(i).copied().unwrap_or(false));
                 kept_units.push(units.get(i).copied().flatten());
+                kept_exprs.push(exprs.get(i).cloned().flatten());
             }
             i += 1;
             k
@@ -1430,6 +1437,10 @@ impl Sketch {
             kept_units.pop();
         }
         self.dim_units = kept_units;
+        while kept_exprs.last() == Some(&None) {
+            kept_exprs.pop();
+        }
+        self.dim_exprs = kept_exprs;
         while kept.last() == Some(&DVec2::ZERO) {
             kept.pop();
         }
@@ -1450,6 +1461,9 @@ impl Sketch {
             }
             if ci < self.dim_units.len() {
                 self.dim_units.remove(ci);
+            }
+            if ci < self.dim_exprs.len() {
+                self.dim_exprs.remove(ci);
             }
             if ci < self.driven.len() {
                 self.driven.remove(ci);
@@ -1589,6 +1603,21 @@ impl Sketch {
     /// The unit dimension `ci` was typed in, if not the design's.
     pub fn dim_unit(&self, ci: usize) -> Option<crate::units::Unit> {
         self.dim_units.get(ci).copied().flatten()
+    }
+
+    /// The expression dimension `ci` was typed as, if any.
+    pub fn dim_expr(&self, ci: usize) -> Option<&str> {
+        self.dim_exprs.get(ci).and_then(|e| e.as_deref())
+    }
+
+    pub fn set_dim_expr(&mut self, ci: usize, text: Option<String>) {
+        if self.dim_exprs.len() <= ci {
+            self.dim_exprs.resize(ci + 1, None);
+        }
+        self.dim_exprs[ci] = text;
+        while self.dim_exprs.last() == Some(&None) {
+            self.dim_exprs.pop();
+        }
     }
 
     pub fn set_dim_unit(&mut self, ci: usize, unit: Option<crate::units::Unit>) {

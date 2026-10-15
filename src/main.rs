@@ -43,6 +43,8 @@ mod shell_dialog;
 mod offset_dialog;
 mod combine_dialog;
 mod move_dialog;
+mod expr;
+mod params_window;
 mod thread_dialog;
 mod rect_input;
 mod project;
@@ -268,6 +270,7 @@ fn draw_dimension(
     away_from: Vec2,
     color: Color32,
     unit: units::Unit,
+    fx: bool,
 ) -> Option<egui::Rect> {
     let line = |e: usize| match sk.entities.get(e)? {
         Entity::Line { a, b } => Some((sk.points[*a], sk.points[*b])),
@@ -275,7 +278,8 @@ fn draw_dimension(
     };
     // A driven dimension shows what the geometry measures now, in brackets.
     let d_of = |stored: f64| if driven { sk.measure(c).unwrap_or(stored) } else { stored };
-    let text = |s: String| if driven { format!("({s})") } else { s };
+    // Driven: in brackets; following a parameter expression: "fx: " first, as Fusion shows it.
+    let text = |s: String| if driven { format!("({s})") } else if fx { format!("fx: {s}") } else { s };
     match *c {
         Constraint::Length(e, d) => {
             let (a, b) = line(e)?;
@@ -674,6 +678,9 @@ struct OpenCad {
     combine_errors: Vec<Option<String>>,
     combine_hover: Option<BodyId>,             // the body a click would pick (Combine)
     moves: Vec<model::MoveFeature>,            // Move/Copy features
+    parameters: Vec<expr::UserParameter>,      // the design's user parameters
+    params_window: params_window::ParamsWindow,
+    params_seen: Option<Vec<expr::UserParameter>>, // what the dimensions last followed
     move_dialog: Option<MoveDialog>,
     move_errors: Vec<Option<String>>,
     move_hover: Option<BodyId>,                // the body a click would pick (Move/Copy)
@@ -855,6 +862,9 @@ impl Default for OpenCad {
             combine_errors: Vec::new(),
             combine_hover: None,
             moves: Vec::new(),
+            parameters: Vec::new(),
+            params_window: Default::default(),
+            params_seen: None,
             move_dialog: None,
             move_errors: Vec::new(),
             move_hover: None,
@@ -1030,6 +1040,7 @@ impl OpenCad {
             d.catch_up(busy);
         }
         let ctx = ui.ctx().clone();
+        self.follow_parameters(&ctx);
         // Enter finishes the open tool window (OK) when nothing else takes it:
         // no text box focused and no number box open (that has its own Enter).
         if self.active.is_none() && self.float.is_none() && !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {

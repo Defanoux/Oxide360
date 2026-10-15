@@ -710,6 +710,33 @@ fn virtual_sharps(sk: &Sketch) -> Vec<PointId> {
         .collect()
 }
 
+/// Dimensions typed as expressions take their values again (after the
+/// design's parameters changed — see `expr::set_scope`); `unit`: the
+/// design's. Returns the dimensions that couldn't, with why.
+pub fn follow_parameters(sk: &mut Sketch, unit: crate::units::Unit) -> Vec<(usize, String)> {
+    let mut failed = Vec::new();
+    for ci in 0..sk.constraints.len() {
+        let Some(text) = sk.dim_expr(ci).map(str::to_string) else { continue };
+        let is_angle = matches!(sk.constraints[ci], Constraint::Angle(..));
+        let kind = if is_angle { crate::expr::Kind::Angle } else { crate::expr::Kind::Length };
+        let v = match crate::expr::eval(&text, kind, sk.dim_unit(ci).unwrap_or(unit)) {
+            Ok(v) if is_angle && !(0.0..180.0).contains(&v) => Err("an angle from 0° up to 180°".to_string()),
+            Ok(v) if !is_angle && v <= 0.0 => Err("it must be greater than zero".to_string()),
+            other => other,
+        };
+        match v {
+            Ok(v) if sk.constraints[ci].value().is_some_and(|now| (now - v).abs() > 1e-9) => {
+                if set_dimension_value(sk, ci, v).is_err() {
+                    failed.push((ci, "the sketch can't take that value".to_string()));
+                }
+            }
+            Ok(_) => {}
+            Err(e) => failed.push((ci, e)),
+        }
+    }
+    failed
+}
+
 /// Change the value of dimension `ci` and re-solve. A chamfer's distances
 /// are measured from its virtual sharp, which stays put: only the chamfer's
 /// own end moves, instead of the whole corner sliding to make room.
@@ -829,6 +856,34 @@ mod tests {
             Entity::Circle { center: 6, radius: 3.0 },
         ]);
         sk
+    }
+
+    #[test]
+    fn dimensions_typed_as_expressions_follow_the_parameters() {
+        use crate::expr::{ParamUnit, UserParameter};
+        let param = |e: &str| vec![UserParameter { name: "width".into(), unit: ParamUnit::Mm, expression: e.into(), comment: String::new() }];
+        let mut sk = loose();
+        add_constraints(&mut sk, &[Length(0, 5.0), Length(1, 4.0)]).unwrap();
+        crate::expr::set_scope(&param("20"));
+        sk.set_dim_expr(0, Some("width / 2".into()));
+        assert!(follow_parameters(&mut sk, crate::units::Unit::Mm).is_empty());
+        let len = |sk: &Sketch, e: usize| match sk.entities[e] {
+            Entity::Line { a, b } => sk.points[a].distance(sk.points[b]),
+            _ => unreachable!(),
+        };
+        assert!((len(&sk, 0) - 10.0).abs() < 1e-9, "{}", len(&sk, 0));
+        crate::expr::set_scope(&param("30"));
+        follow_parameters(&mut sk, crate::units::Unit::Mm);
+        assert!((len(&sk, 0) - 15.0).abs() < 1e-9);
+        assert!((len(&sk, 1) - 4.0).abs() < 1e-9, "a plain dimension stays");
+        // A value it can't take: reported, the old one stays.
+        crate::expr::set_scope(&param("-4"));
+        assert_eq!(follow_parameters(&mut sk, crate::units::Unit::Mm).len(), 1);
+        assert!((len(&sk, 0) - 15.0).abs() < 1e-9);
+        // Deleting a constraint before it keeps the expression with its dimension.
+        sk.retain_constraints(|c| !matches!(c, Length(1, _)));
+        assert_eq!(sk.dim_expr(0), Some("width / 2"));
+        crate::expr::set_scope(&[]);
     }
 
     #[test]

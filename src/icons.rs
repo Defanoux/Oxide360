@@ -33,6 +33,7 @@ pub enum Icon {
     PressPull,
     Combine,
     Move,
+    Parameters,
     HoleSimple,
     HoleCounterbore,
     HoleCountersink,
@@ -417,6 +418,11 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             arrow_head((0.5, 0.96), (0.5, 0.76), ink);
             arrow_head((0.04, 0.5), (0.24, 0.5), ink);
             arrow_head((0.96, 0.5), (0.76, 0.5), ink);
+        }
+        Icon::Parameters => {
+            // "fx" in italics over a table line, Fusion's Change Parameters.
+            painter.text(p(0.5, 0.42), egui::Align2::CENTER_CENTER, "fx", egui::FontId::proportional(w * 0.62), orange);
+            line((0.12, 0.84), (0.88, 0.84), thin);
         }
         Icon::Combine => {
             // Two overlapping blocks: the target (blue) and a tool (orange outline) merging into it.
@@ -829,9 +835,9 @@ mod shot_tests {
     #[ignore]
     fn shots() {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
-        crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [260, 80], |ui| {
+        crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [340, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters] {
                     button(ui, icon, "", true, false);
                 }
             });

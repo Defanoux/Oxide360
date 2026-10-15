@@ -749,6 +749,9 @@ impl OpenCad {
                             self.open_move(None);
                         }
                     }
+                    if icons::button(ui, Icon::Parameters, "Change Parameters: named values (width, depth…) that dimensions and boxes can use", true, self.params_window.open).clicked() {
+                        self.params_window.open = !self.params_window.open;
+                    }
                     let combining = self.combine_dialog.is_some();
                     if icons::button(ui, Icon::Combine, "Combine: join, cut or intersect bodies — a target body and tool bodies", self.body_count > 1, combining).clicked() {
                         if combining {
@@ -1579,6 +1582,7 @@ impl OpenCad {
             _ => self.units,
         };
         let mut typed_unit = None; // the unit written in the box, when Enter was pressed
+        let mut typed_text = None; // and what was written
         let mut esc_hit = false;
         let mut commit: Option<Option<f64>> = None; // Some(parsed) when Enter was pressed
         let mut close = false;
@@ -1652,6 +1656,7 @@ impl OpenCad {
                                     if enter {
                                         commit = Some(parsed);
                                         typed_unit = units::typed_unit(&fe.text);
+                                        typed_text = Some(fe.text.clone());
                                     }
                                     close = true; // Esc or clicking away cancels
                                 }
@@ -1726,6 +1731,11 @@ impl OpenCad {
                 match commit {
                     Some(Some(v)) => {
                         self.set_dimension(ci, v);
+                        // An expression is kept: the dimension follows the parameters it uses.
+                        let text = typed_text.filter(|t| units::is_expression(t));
+                        if let Some(sk) = self.active.and_then(|i| self.sketches.get_mut(i)) {
+                            sk.set_dim_expr(ci, text);
+                        }
                         // Typed in another unit: the dimension keeps showing in it
                         // (typed in the design's: back to following the design).
                         if let (Some(u), Some(i), false) = (typed_unit, self.active, degrees) {

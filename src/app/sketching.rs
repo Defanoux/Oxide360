@@ -694,6 +694,41 @@ impl OpenCad {
         }
     }
 
+    /// The design's parameters for the boxes this frame (tabs share the
+    /// reader); when they changed, the dimensions using them follow. And
+    /// the Change Parameters window, when open.
+    pub(crate) fn follow_parameters(&mut self, ctx: &egui::Context) {
+        let sketches = &self.sketches;
+        let used_by = |name: &str| -> Vec<String> {
+            sketches.iter().filter(|sk| sk.dim_exprs.iter().flatten().any(|e| expr::uses(e, name))).map(|sk| sk.name.clone()).collect()
+        };
+        for change in self.params_window.show(ctx, &mut self.parameters, &used_by) {
+            let params_window::Change::Renamed { old, new } = change;
+            for sk in &mut self.sketches {
+                for e in sk.dim_exprs.iter_mut().flatten() {
+                    *e = expr::rename(e, &old, &new);
+                }
+            }
+        }
+        // (Half-typed in the window: wait until the box is left.)
+        let typing = self.params_window.open && ctx.text_edit_focused();
+        expr::set_scope(self.params_seen.as_deref().filter(|_| typing).unwrap_or(&self.parameters));
+        if typing || self.params_seen.as_ref() == Some(&self.parameters) {
+            return;
+        }
+        let unit = self.units;
+        let mut failed = Vec::new();
+        for sk in &mut self.sketches {
+            for (ci, why) in solver::follow_parameters(sk, unit) {
+                failed.push(format!("{} dimension {}: {why}", sk.name, ci + 1));
+            }
+        }
+        if !failed.is_empty() {
+            self.notify(format!("Some dimensions can't follow the parameters — {}", failed.join("; ")));
+        }
+        self.params_seen = Some(self.parameters.clone());
+    }
+
     pub(crate) fn set_dimension(&mut self, ci: usize, v: f64) {
         let Some(i) = self.active else { return };
         if self.sketches[i].is_driven(ci) {

@@ -184,6 +184,9 @@ pub struct Document {
     /// Combine features. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub combines: Vec<crate::model::CombineFeature>,
+    /// User parameters (Change Parameters). Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<crate::expr::UserParameter>,
     /// Move/Copy features. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub moves: Vec<crate::model::MoveFeature>,
@@ -447,6 +450,11 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             return Err(format!("{}: invalid face, body or thickness", sh.name));
         }
     }
+    for (i, p) in doc.parameters.iter().enumerate() {
+        if !crate::expr::good_name(&p.name) || doc.parameters[..i].iter().any(|q| q.name == p.name) {
+            return Err(format!("parameter \"{}\": a bad or repeated name", p.name));
+        }
+    }
     for m in &doc.moves {
         let made = |id: &BodyId| match id.feature {
             Feature::Extrude(k) => k < doc.extrudes.len(),
@@ -696,6 +704,7 @@ mod tests {
             offset_faces: Vec::new(),
             combines: Vec::new(),
             moves: Vec::new(),
+            parameters: Vec::new(),
             units: crate::units::Unit::Mm,
             version: Version(0),
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],

@@ -75,7 +75,7 @@ impl Unit {
     }
 
     /// The unit a word names, if any ("inches", "\"", "mm"…).
-    fn from_word(w: &str) -> Option<Unit> {
+    pub fn from_word(w: &str) -> Option<Unit> {
         Some(match w.to_ascii_lowercase().as_str() {
             "mm" | "millimetre" | "millimetres" | "millimeter" | "millimeters" => Unit::Mm,
             "cm" | "centimetre" | "centimetres" | "centimeter" | "centimeters" => Unit::Cm,
@@ -109,10 +109,20 @@ fn split(text: &str) -> Option<(f64, &str)> {
 
 /// A typed length in mm. A bare number is in `unit` (the design's units);
 /// a number with a unit is in that unit.
+/// Anything more is an expression (with the design's parameters): "width * 2".
 pub fn parse_length(text: &str, unit: Unit) -> Option<f64> {
-    let (v, word) = split(text)?;
-    let u = if word.is_empty() { unit } else { Unit::from_word(word)? };
-    Some(v * u.mm())
+    if let Some((v, word)) = split(text) {
+        let u = if word.is_empty() { Some(unit) } else { Unit::from_word(word) };
+        if let Some(u) = u {
+            return Some(v * u.mm());
+        }
+    }
+    crate::expr::eval(text, crate::expr::Kind::Length, unit).ok()
+}
+
+/// Is `text` more than a number (with a unit)? Then it's an expression.
+pub fn is_expression(text: &str) -> bool {
+    split(text).is_none_or(|(_, word)| !word.is_empty() && Unit::from_word(word).is_none() && !matches!(word.to_ascii_lowercase().as_str(), "°" | "deg" | "degree" | "degrees" | "rad" | "radian" | "radians"))
 }
 
 /// The unit written after a typed number, if any ("1 in" → In, "1" → None).
@@ -124,12 +134,14 @@ pub fn typed_unit(text: &str) -> Option<Unit> {
 /// A typed angle in degrees: "90", "90°", "90 deg", "1.5708 rad". Never
 /// scaled by the design's length units.
 pub fn parse_angle(text: &str) -> Option<f64> {
-    let (v, word) = split(text)?;
-    match word.to_ascii_lowercase().as_str() {
-        "" | "°" | "deg" | "degree" | "degrees" => Some(v),
-        "rad" | "radian" | "radians" => Some(v.to_degrees()),
-        _ => None,
+    if let Some((v, word)) = split(text) {
+        match word.to_ascii_lowercase().as_str() {
+            "" | "°" | "deg" | "degree" | "degrees" => return Some(v),
+            "rad" | "radian" | "radians" => return Some(v.to_degrees()),
+            _ => {}
+        }
     }
+    crate::expr::eval(text, crate::expr::Kind::Angle, Unit::Mm).ok()
 }
 
 #[cfg(test)]
