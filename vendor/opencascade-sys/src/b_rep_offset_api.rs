@@ -34,6 +34,8 @@ mod inner {
         pub fn opencad_try_thick_solid(shape: &TopoDS_Shape, faces: &[i32], offset: f64, rounded: bool) -> UniquePtr<TopoDS_Shape>;
         /// opencad patch: a solid grown or shrunk all round (null on failure).
         pub fn opencad_try_offset_shape(shape: &TopoDS_Shape, offset: f64, rounded: bool) -> UniquePtr<TopoDS_Shape>;
+        /// opencad patch: chosen faces moved along their normals (null on failure).
+        pub fn opencad_try_offset_faces(shape: &TopoDS_Shape, faces: &[i32], offsets: &[f64], intersection: bool) -> UniquePtr<TopoDS_Shape>;
 
         type BRepOffsetAPI_MakeOffset;
         #[cxx_name = "construct_unique"]

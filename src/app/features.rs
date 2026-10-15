@@ -8,6 +8,7 @@ impl OpenCad {
         self.angle_pick = false;
         self.hole_dialog = None;
         self.shell_dialog = None;
+        self.offset_dialog = None;
         self.thread_dialog = None;
         self.finish_sketch();
         self.cancel_edge_dialog();
@@ -109,7 +110,7 @@ impl OpenCad {
     /// Put the cursor back in the number box with its text selected.
     pub(crate) fn focus_distance(&mut self) {
         if let Some(fe) = self.float.as_mut() {
-            if matches!(fe.target, EditTarget::ExtrudeDistance | EditTarget::EdgeSize | EditTarget::RevolveAngle | EditTarget::PlaneOffset | EditTarget::PlaneAngle | EditTarget::Corner(_)) {
+            if matches!(fe.target, EditTarget::ExtrudeDistance | EditTarget::EdgeSize | EditTarget::RevolveAngle | EditTarget::PlaneOffset | EditTarget::PlaneAngle | EditTarget::OffsetDistance | EditTarget::Corner(_)) {
                 fe.focus = true;
             }
         }
@@ -150,6 +151,12 @@ impl OpenCad {
                 _ => (-p.face.normal(), d.shell.inside),
             };
             return vec![Handle::Line { line: LineHandle { origin: at, dir }, value, target: HandleTarget::ShellThickness }];
+        }
+        if let Some(d) = &self.offset_dialog {
+            // The distance arrow, out of the first face picked (from where it was).
+            let Some(p) = d.offset.faces.first() else { return Vec::new() };
+            let at = p.face.origin + p.face.u * p.anchor[0] + p.face.v * p.anchor[1];
+            return vec![Handle::Line { line: LineHandle { origin: at, dir: p.face.normal() }, value: d.offset.distance, target: HandleTarget::OffsetDistance }];
         }
         if let Some(d) = self.hole_dialog.as_ref().filter(|d| d.hole.extent == model::HoleExtent::Distance) {
             // The depth arrow, from the first place into the material.
@@ -334,6 +341,11 @@ impl OpenCad {
                     }
                 }
             }
+            HandleTarget::OffsetDistance => {
+                if let Some(d) = self.offset_dialog.as_mut() {
+                    d.offset.distance = v;
+                }
+            }
             HandleTarget::HoleDepth => {
                 if let Some(d) = self.hole_dialog.as_mut() {
                     d.hole.depth = v.max(0.01);
@@ -431,6 +443,7 @@ impl OpenCad {
         self.angle_pick = false;
         self.hole_dialog = None;
         self.shell_dialog = None;
+        self.offset_dialog = None;
         self.thread_dialog = None;
         self.finish_sketch();
         self.cancel_extrude();
@@ -519,6 +532,7 @@ impl OpenCad {
         self.angle_pick = false;
         self.hole_dialog = None;
         self.shell_dialog = None;
+        self.offset_dialog = None;
         self.thread_dialog = None;
         self.cancel_extrude();
         self.cancel_revolve();
@@ -631,6 +645,7 @@ impl OpenCad {
     pub(crate) fn cancel_hole(&mut self) {
         self.hole_dialog = None;
         self.shell_dialog = None;
+        self.offset_dialog = None;
         self.thread_dialog = None;
         self.hole_hover = None;
         self.arrows.clear();
@@ -813,6 +828,66 @@ impl OpenCad {
         self.cancel_shell();
     }
 
+    /// Open the Offset Face dialog (a new one — as Press Pull when
+    /// `press_pull` — or Offset Face `editing`), with the distance box ready.
+    pub(crate) fn open_offset(&mut self, editing: Option<usize>, press_pull: bool) {
+        self.finish_sketch();
+        self.cancel_all_dialogs();
+        self.message = None;
+        let d = match editing.and_then(|k| self.offset_faces.get(k).map(|f| (k, f))) {
+            Some((k, f)) => OffsetDialog::from_feature(k, f),
+            None => OffsetDialog::new(format!("Offset Face{}", self.offset_faces.len() + 1), press_pull),
+        };
+        self.float = Some(FloatEdit { target: EditTarget::OffsetDistance, text: self.units.plain(d.offset.distance), focus: true, keep_text: false });
+        self.offset_dialog = Some(d);
+    }
+
+    pub(crate) fn commit_offset(&mut self) {
+        let Some(d) = self.offset_dialog.as_ref() else { return };
+        if d.offset.faces.is_empty() {
+            self.message = Some("Pick the faces to move".into());
+            return;
+        }
+        if let Some(e) = self.dialog_error.clone() {
+            self.message = Some(format!("Can't move the face: {e}"));
+            return;
+        }
+        let f = d.offset.clone();
+        match d.editing {
+            Some(k) => self.offset_faces[k] = f,
+            None => {
+                self.offset_faces.push(f);
+                self.timeline_insert(Feature::OffsetFace(self.offset_faces.len() - 1));
+            }
+        }
+        self.cancel_offset();
+    }
+
+    pub(crate) fn cancel_offset(&mut self) {
+        self.offset_dialog = None;
+        self.offset_hover = None;
+        if self.float.as_ref().is_some_and(|f| f.target == EditTarget::OffsetDistance) {
+            self.float = None;
+        }
+        self.arrows.clear();
+    }
+
+    pub(crate) fn delete_offset(&mut self, k: usize) {
+        if k >= self.offset_faces.len() {
+            return;
+        }
+        self.offset_faces.remove(k);
+        self.timeline_remove(Feature::OffsetFace(k));
+        for f in &mut self.timeline {
+            if let Feature::OffsetFace(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+        self.cancel_offset();
+    }
+
     /// Open the Thread dialog (a new Thread, or Thread `editing`).
     pub(crate) fn open_thread(&mut self, editing: Option<usize>) {
         self.finish_sketch();
@@ -923,6 +998,7 @@ impl OpenCad {
     /// Close whichever tool dialog or pick mode is open.
     pub(crate) fn cancel_all_dialogs(&mut self) {
         self.cancel_shell();
+        self.cancel_offset();
         self.cancel_hole();
         self.cancel_thread();
         self.cancel_extrude();
@@ -935,6 +1011,7 @@ impl OpenCad {
         self.angle_pick = false;
         self.hole_dialog = None;
         self.shell_dialog = None;
+        self.offset_dialog = None;
         self.thread_dialog = None;
         self.face_pick = false;
     }
@@ -1169,6 +1246,7 @@ impl OpenCad {
         self.angle_pick = false;
         self.hole_dialog = None;
         self.shell_dialog = None;
+        self.offset_dialog = None;
         self.thread_dialog = None;
     }
 
@@ -1347,6 +1425,7 @@ impl OpenCad {
         self.angle_pick = false;
         self.hole_dialog = None;
         self.shell_dialog = None;
+        self.offset_dialog = None;
         self.thread_dialog = None;
         self.finish_sketch();
         self.cancel_extrude();
@@ -1459,6 +1538,11 @@ impl OpenCad {
             EditTarget::PlaneAngle => {
                 if let Some(a) = self.plane_dialog.as_ref().and_then(|d| d.angle) {
                     fe.text = format!("{:.1}", a.degrees);
+                }
+            }
+            EditTarget::OffsetDistance => {
+                if let Some(d) = self.offset_dialog.as_ref() {
+                    fe.text = unit.plain(d.offset.distance);
                 }
             }
             _ => {}

@@ -186,3 +186,47 @@ inline std::unique_ptr<TopoDS_Shape> opencad_try_offset_shape(const TopoDS_Shape
     return nullptr;
   }
 }
+
+// opencad patch: Offset Face / Press Pull — move the faces picked (indices in
+// TopExp_Explorer face order) along their normals by `offsets` (out is +),
+// the faces round them stretching to meet. nullptr on any failure.
+#include <BRepOffset_MakeOffset.hxx>
+inline std::unique_ptr<TopoDS_Shape> opencad_try_offset_faces(const TopoDS_Shape &shape, rust::Slice<const int32_t> faces, rust::Slice<const double> offsets, bool intersection) {
+  try {
+    OCC_CATCH_SIGNALS
+    if (faces.size() != offsets.size() || faces.size() == 0) {
+      return nullptr;
+    }
+    std::vector<TopoDS_Shape> all;
+    for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next()) {
+      all.push_back(ex.Current());
+    }
+    BRepOffset_MakeOffset maker;
+    maker.Initialize(shape, 0.0, 1.0e-5, BRepOffset_Skin, intersection, false, GeomAbs_Intersection, false, false);
+    for (size_t k = 0; k < faces.size(); ++k) {
+      int32_t i = faces[k];
+      if (i < 0 || size_t(i) >= all.size()) {
+        return nullptr;
+      }
+      maker.SetOffsetOnFace(TopoDS::Face(all[size_t(i)]), offsets[k]);
+    }
+    maker.MakeOffsetShape();
+    if (!maker.IsDone()) {
+      return nullptr;
+    }
+    TopoDS_Shape out = maker.Shape();
+    if (out.ShapeType() == TopAbs_SHELL) {
+      BRep_Builder b;
+      TopoDS_Solid solid;
+      b.MakeSolid(solid);
+      b.Add(solid, out);
+      out = solid;
+    }
+    if (!opencad_good_solid(out)) {
+      return nullptr;
+    }
+    return std::unique_ptr<TopoDS_Shape>(new TopoDS_Shape(out));
+  } catch (...) {
+    return nullptr;
+  }
+}

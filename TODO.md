@@ -9,8 +9,6 @@ has the full Fusion list; this is the slice to do now). Fusion's behaviour is
 the spec for each.
 
 **Core solid tools (the gaps you hit modelling a real part)**
-4. **Press/Pull (Q)** and **Offset Face** — drag a face; on a fillet face it
-   changes the radius, on a flat face it offsets.
 5. **Combine** — join / cut / intersect bodies, keep tools.
 6. **Move/Copy (M)** — bodies: free drag (arrows + rings), typed X/Y/Z and
    angles; as a timeline feature.
@@ -64,6 +62,8 @@ sheet metal, surfaces, CAM.
   load from the built model.
 
 ## Done
+
+- Press Pull (Q) / Offset Face (MODIFY, first): click flat faces, type or drag the distance (out is +), the faces round them stretch to meet (OCCT BRepOffset_MakeOffset per-face offsets, new exception-safe wrapper; exact-volume tests). Press Pull on a fillet face opens that Fillet (matched by radius and edge position), on a sketch profile starts Extrude with it. Not done: curved faces (hole walls), dragging a fillet radius in place.
 
 - Small fixes: × clears a selection field (Shell, Thread, Fillet/Chamfer, Extrude/Revolve); a new Extrude/Revolve picks the only profile when the shown sketches have just one; a segfault inside OCCT (thin-wall fillet) is caught as an error (OCC_CATCH_SIGNALS).
 

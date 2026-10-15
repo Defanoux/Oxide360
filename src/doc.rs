@@ -35,6 +35,8 @@ pub enum Feature {
     Thread(usize),
     /// Hollowed bodies (index into `shells`).
     Shell(usize),
+    /// Faces moved (index into `offset_faces`).
+    OffsetFace(usize),
 }
 
 /// Put `f` into the timeline at the rollback marker (the end when there is
@@ -71,6 +73,7 @@ pub fn forget_feature(list: &mut Vec<Feature>, gone: Feature) {
             (Feature::Hole(i), Feature::Hole(k)) if i > k => Feature::Hole(i - 1),
             (Feature::Thread(i), Feature::Thread(k)) if i > k => Feature::Thread(i - 1),
             (Feature::Shell(i), Feature::Shell(k)) if i > k => Feature::Shell(i - 1),
+            (Feature::OffsetFace(i), Feature::OffsetFace(k)) if i > k => Feature::OffsetFace(i - 1),
             (f, _) => f,
         };
     }
@@ -164,6 +167,9 @@ pub struct Document {
     /// Shells. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shells: Vec<crate::model::ShellFeature>,
+    /// Offset Face features. Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offset_faces: Vec<crate::model::OffsetFaceFeature>,
     /// The units the design is shown and typed in (Fusion's Document Settings
     /// → Units). Values are always *stored* in mm (see the file header);
     /// older files are mm.
@@ -422,6 +428,12 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             return Err(format!("{}: invalid face, body or thickness", sh.name));
         }
     }
+    for of in &doc.offset_faces {
+        let ok = of.distance.is_finite() && of.faces.iter().all(|f| f.face.origin.is_finite() && f.face.u.is_finite() && f.face.v.is_finite() && f.anchor.iter().all(|a| a.is_finite()));
+        if !ok {
+            return Err(format!("{}: invalid face or distance", of.name));
+        }
+    }
     for t in &doc.thread_features {
         let ok = !t.faces.is_empty()
             && t.faces.iter().all(|c| c.axis_point.is_finite() && c.axis.is_finite() && c.at.is_finite() && c.radius.is_finite() && c.radius > 0.0)
@@ -480,6 +492,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     let mut seen_h = vec![false; doc.holes.len()];
     let mut seen_t = vec![false; doc.thread_features.len()];
     let mut seen_sh = vec![false; doc.shells.len()];
+    let mut seen_of = vec![false; doc.offset_faces.len()];
     for f in &doc.timeline {
         let slot = match *f {
             Feature::Sketch(i) => seen_s.get_mut(i),
@@ -493,6 +506,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Feature::Hole(i) => seen_h.get_mut(i),
             Feature::Thread(i) => seen_t.get_mut(i),
             Feature::Shell(i) => seen_sh.get_mut(i),
+            Feature::OffsetFace(i) => seen_of.get_mut(i),
         };
         match slot {
             Some(s) if !*s => *s = true,
@@ -502,7 +516,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     if doc.suppressed.iter().any(|f| !doc.timeline.contains(f)) {
         return Err("a suppressed feature isn't in the timeline".into());
     }
-    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).chain(&seen_sh).any(|s| !s) {
+    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).chain(&seen_sh).chain(&seen_of).any(|s| !s) {
         return Err("timeline is missing a feature".into());
     }
     Ok(())
@@ -627,6 +641,7 @@ mod tests {
             holes: Vec::new(),
             thread_features: Vec::new(),
             shells: Vec::new(),
+            offset_faces: Vec::new(),
             units: crate::units::Unit::Mm,
             version: Version(0),
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],
@@ -749,6 +764,24 @@ mod tests {
         assert!(validate(&bad).is_err());
         bad.timeline.pop();
         assert!(validate(&bad).is_err(), "a shell missing from the timeline");
+    }
+
+    #[test]
+    fn offset_faces_save_and_bad_ones_are_refused() {
+        use crate::model::{OffsetFaceFeature, PickedFace};
+        use crate::sketch::FacePlane;
+        let mut doc = sample();
+        let top = PickedFace { face: FacePlane::from_face(glam::DVec3::Z, glam::DVec3::new(0.0, 0.0, 10.0)), anchor: [1.0, 2.0] };
+        doc.offset_faces.push(OffsetFaceFeature { faces: vec![top], distance: 5.0, ..Default::default() });
+        doc.timeline.push(Feature::OffsetFace(0));
+        assert_eq!(from_json(&to_json(&doc)).unwrap(), doc);
+        assert!(!to_json(&sample()).contains("offset_faces"));
+        let mut bad = doc.clone();
+        bad.offset_faces[0].distance = f64::NAN;
+        assert!(validate(&bad).is_err());
+        let mut bad = doc.clone();
+        bad.timeline.pop();
+        assert!(validate(&bad).is_err(), "an offset face missing from the timeline");
     }
 
     #[test]

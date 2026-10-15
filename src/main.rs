@@ -40,6 +40,7 @@ mod pattern;
 mod profile;
 mod hole_dialog;
 mod shell_dialog;
+mod offset_dialog;
 mod thread_dialog;
 mod rect_input;
 mod project;
@@ -68,6 +69,7 @@ use copy_dialog::{CopyDialog, Mode as CopyMode};
 use plane_dialog::PlaneDialog;
 use hole_dialog::HoleDialog;
 use shell_dialog::ShellDialog;
+use offset_dialog::OffsetDialog;
 use thread_dialog::ThreadDialog;
 use sketch_pattern::{Mode as SpMode, SketchPattern};
 use model::{PlaneFeature, AxisFeature, CopyFeature, EdgeFeature, EdgeKind, EdgeRef, Extrude, Mesh, Operation, Revolve, RevolveAxis};
@@ -156,6 +158,8 @@ impl OpenCad {
                 d.mode.title()
             } else if self.shell_dialog.is_some() {
                 "Shell"
+            } else if let Some(d) = &self.offset_dialog {
+                if d.press_pull && d.editing.is_none() { "Press Pull" } else { "Offset Face" }
             } else if self.thread_dialog.is_some() {
                 "Thread"
             } else if self.hole_dialog.is_some() {
@@ -397,6 +401,18 @@ enum EditTarget {
     PolygonSides,    // number of sides, asked after the polygon's first click
     PlaneOffset,     // Offset Plane distance
     PlaneAngle,      // Plane at Angle, degrees
+    OffsetDistance,  // Offset Face / Press Pull distance
+}
+
+/// What a click does while Offset Face / Press Pull picks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PressPullHover {
+    /// A flat face to move.
+    Face(model::PickedFace),
+    /// Press Pull: a fillet face — its Fillet feature opens.
+    Fillet(usize),
+    /// Press Pull: a sketch profile (sketch, region) — Extrude starts.
+    Profile(usize, usize),
 }
 
 struct FloatEdit {
@@ -503,6 +519,7 @@ enum HandleTarget {
     PlaneAngle,
     HoleDepth,
     ShellThickness,
+    OffsetDistance,
     /// A sketch pattern's spacing along X / Y, and its angle.
     SketchSpacing1,
     SketchSpacing2,
@@ -551,6 +568,7 @@ impl KernelCache {
             holes: Vec::new(),
             thread_features: Vec::new(),
             shells: Vec::new(),
+            offset_faces: Vec::new(),
             timeline: Vec::new(),
             model: kernel::Model::default(),
             stand_in: true,
@@ -570,6 +588,7 @@ struct KernelCache {
     holes: Vec<model::HoleFeature>,
     thread_features: Vec<model::ThreadFeature>,
     shells: Vec<model::ShellFeature>,
+    offset_faces: Vec<model::OffsetFaceFeature>,
     timeline: Vec<Feature>,
     model: kernel::Model,
     /// Nothing built yet (an empty model while the first build runs).
@@ -625,6 +644,10 @@ struct OpenCad {
     shell_dialog: Option<ShellDialog>,
     shell_errors: Vec<Option<String>>,
     shell_hover: Option<(Option<model::PickedFace>, Option<BodyId>)>, // a face or body a click would pick
+    offset_faces: Vec<model::OffsetFaceFeature>, // Offset Face features
+    offset_dialog: Option<OffsetDialog>,
+    offset_face_errors: Vec<Option<String>>,
+    offset_hover: Option<PressPullHover>,      // what a click would pick (Offset Face / Press Pull)
     thread_dialog: Option<thread_dialog::ThreadDialog>,
     thread_errors: Vec<Option<String>>,
     thread_hover: Option<(kernel::Cylinder, DVec3)>, // the cylindrical face under the cursor, and where
@@ -791,6 +814,10 @@ impl Default for OpenCad {
             shell_dialog: None,
             shell_errors: Vec::new(),
             shell_hover: None,
+            offset_faces: Vec::new(),
+            offset_dialog: None,
+            offset_face_errors: Vec::new(),
+            offset_hover: None,
             thread_dialog: None,
             thread_errors: Vec::new(),
             thread_hover: None,
@@ -966,6 +993,8 @@ impl OpenCad {
         if self.active.is_none() && self.float.is_none() && !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
             if self.shell_dialog.is_some() {
                 self.commit_shell();
+            } else if self.offset_dialog.is_some() {
+                self.commit_offset();
             } else if self.thread_dialog.is_some() {
                 self.commit_thread();
             } else if self.hole_dialog.is_some() {
@@ -1078,6 +1107,22 @@ impl OpenCad {
                     match d.panel(ui, design_units, error.as_deref()) {
                         copy_dialog::Action::Ok => self.commit_shell(),
                         copy_dialog::Action::Cancel => self.cancel_shell(),
+                        copy_dialog::Action::None => {}
+                    }
+                }
+            });
+        } else if self.offset_dialog.is_some() && self.active.is_none() {
+            float("offset").show(&ctx, |ui| {
+                let error = self.dialog_error.clone();
+                if let Some(d) = self.offset_dialog.as_mut() {
+                    let before = d.offset.distance;
+                    let action = d.panel(ui, design_units, error.as_deref());
+                    if d.offset.distance != before {
+                        self.set_distance_text();
+                    }
+                    match action {
+                        copy_dialog::Action::Ok => self.commit_offset(),
+                        copy_dialog::Action::Cancel => self.cancel_offset(),
                         copy_dialog::Action::None => {}
                     }
                 }

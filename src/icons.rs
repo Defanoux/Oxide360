@@ -30,6 +30,7 @@ pub enum Icon {
     Hole,
     Thread,
     Shell,
+    PressPull,
     HoleSimple,
     HoleCounterbore,
     HoleCountersink,
@@ -393,6 +394,16 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             let inner = [(0.24, 0.4), (0.5, 0.29), (0.76, 0.4), (0.5, 0.52)];
             outline(&inner, s);
             line((0.5, 0.52), (0.5, 0.78), Stroke::new(thin.width * 0.8, ink));
+        }
+        Icon::PressPull => {
+            // A block whose top face (orange) is pulled: arrows up and down off it.
+            poly(&[(0.04, 0.5), (0.38, 0.34), (0.72, 0.5), (0.38, 0.66)], Color32::from_rgb(235, 150, 60));
+            poly(&[(0.04, 0.5), (0.38, 0.66), (0.38, 0.96), (0.04, 0.8)], blue_dark);
+            poly(&[(0.38, 0.66), (0.72, 0.5), (0.72, 0.8), (0.38, 0.96)], Color32::from_rgb(60, 125, 205));
+            let s = Stroke::new(thin.width * 1.3, ink);
+            line((0.87, 0.14), (0.87, 0.6), s);
+            arrow_head((0.87, 0.04), (0.87, 0.28), ink);
+            arrow_head((0.87, 0.7), (0.87, 0.46), ink);
         }
         Icon::Thread => {
             // A bolt shank with slanted thread lines.
@@ -788,4 +799,23 @@ pub fn timeline_button(
         ui.painter().circle_filled(body.right_top() + egui::vec2(-4.0, 4.0), 4.0, Color32::from_rgb(230, 80, 80));
     }
     response.on_hover_text(tooltip)
+}
+
+#[cfg(test)]
+mod shot_tests {
+    use super::*;
+
+    /// A row of MODIFY icons, big, to look at (in the scratch dir).
+    #[test]
+    #[ignore]
+    fn shots() {
+        let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
+        crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [260, 80], |ui| {
+            ui.horizontal(|ui| {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell] {
+                    button(ui, icon, "", true, false);
+                }
+            });
+        });
+    }
 }

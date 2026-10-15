@@ -295,6 +295,14 @@ impl Shape {
         (!made.is_null()).then(|| Self::from_shape(&made))
     }
 
+    /// opencad patch: the faces at `faces` (explorer order) moved out along
+    /// their normals by `offsets` (negative: in), the faces round them
+    /// stretching to meet. `intersection`: OCCT's slower, sturdier mode.
+    pub fn try_offset_faces(&self, faces: &[i32], offsets: &[f64], intersection: bool) -> Option<Self> {
+        let made = ffi::b_rep_offset_api::opencad_try_offset_faces(&self.inner, faces, offsets, intersection);
+        (!made.is_null()).then(|| Self::from_shape(&made))
+    }
+
     /// opencad patch: the very same shape (not just an equal-looking one).
     pub fn is_same(&self, other: &Shape) -> bool {
         self.inner.IsEqual(&other.inner)

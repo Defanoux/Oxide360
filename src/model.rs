@@ -377,6 +377,22 @@ impl ShellFeature {
     }
 }
 
+/// Fusion's Offset Face (and Press Pull on a flat face): the faces picked
+/// move out along their normals by `distance` (negative: in), the faces
+/// round them stretching to meet.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OffsetFaceFeature {
+    pub name: String,
+    pub faces: Vec<PickedFace>,
+    pub distance: f64,
+}
+
+impl Default for OffsetFaceFeature {
+    fn default() -> Self {
+        OffsetFaceFeature { name: "Offset Face1".into(), faces: Vec::new(), distance: 0.0 }
+    }
+}
+
 /// A construction axis: along a straight edge of a body.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AxisFeature {

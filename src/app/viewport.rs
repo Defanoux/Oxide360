@@ -167,7 +167,7 @@ impl OpenCad {
             (pressed(A::Line), pressed(A::Rectangle), pressed(A::Circle), pressed(A::GridSnap), pressed(A::Dimension), pressed(A::Construction), pressed(A::Project));
         let (key_trim, key_extend, key_offset) = (pressed(A::Trim), pressed(A::Extend), pressed(A::Offset));
         let (key_n, key_e, key_f, key_i) = (pressed(A::NewSketch), pressed(A::Extrude), pressed(A::Fillet), pressed(A::Measure));
-        let key_h = pressed(A::Hole);
+        let (key_h, key_q) = (pressed(A::Hole), pressed(A::PressPull));
         let (esc, del, undo) = ui.input(|i| {
             (
                 i.key_pressed(egui::Key::Escape),
@@ -354,7 +354,8 @@ impl OpenCad {
                 && self.plane_dialog.is_none()
                 && self.hole_dialog.is_none()
                 && self.thread_dialog.is_none()
-                && self.shell_dialog.is_none();
+                && self.shell_dialog.is_none()
+                && self.offset_dialog.is_none();
             if let (Some(px), true) = (hover_px, free_view) {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 let face = self.pick_face(&ray);
@@ -478,6 +479,74 @@ impl OpenCad {
             }
         } else if self.shell_dialog.is_some() && esc && !typing {
             self.cancel_shell(); // Esc ends the command, as in Fusion
+        }
+
+        crate::mark("Offset Face / Press Pull: click faces");
+        // --- Offset Face / Press Pull: click flat faces to move; Press Pull also
+        // takes a fillet (edit it) or a sketch profile (extrude it) ---
+        self.offset_hover = None;
+        if self.offset_dialog.as_ref().is_some_and(|d| d.picking) && self.active.is_none() {
+            self.ensure_model(Slot::Committed);
+            let (press_pull, nothing_yet) = self.offset_dialog.as_ref().map_or((false, true), |d| (d.press_pull && d.editing.is_none(), d.offset.faces.is_empty()));
+            if let Some(px) = hover_px.filter(|_| near_arrow(hover_px, &self.arrows).is_none()) {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                let face = self.pick_face(&ray).map(|(t, _, face)| {
+                    let q = (ray.origin + ray.dir * t).as_dvec3();
+                    let face = sketch::FacePlane { follow: None, ..face };
+                    (t, PressPullHover::Face(model::PickedFace { face, anchor: [q.dot(face.u), q.dot(face.v)] }))
+                });
+                let mut best = face;
+                if press_pull && nothing_yet {
+                    // A rounded face a Fillet made, nearer than any flat face.
+                    let model = self.model(Slot::Committed);
+                    let hit = model
+                        .bodies
+                        .iter()
+                        .filter(|b| !self.hidden_bodies.contains(&b.id))
+                        .filter_map(|b| model::ray_hit_tri(&b.mesh, ray.origin, ray.dir).map(|(t, tri)| (t, tri, b)))
+                        .min_by(|x, y| x.0.total_cmp(&y.0));
+                    if let Some((t, tri, body)) = hit {
+                        let f = body.tri_face.get(tri).copied().unwrap_or(u32::MAX) as usize;
+                        if best.is_none_or(|(bt, _)| t < bt - 1e-4) {
+                            best = kernel::fillet_for_face(&self.edge_features, body, f).map(|k| (t, PressPullHover::Fillet(k)));
+                        }
+                    }
+                    // A sketch profile in front of (or on) the face.
+                    for s in (0..self.sketches.len()).filter(|&s| self.sketch_visible(s)) {
+                        let Some((t, p)) = self.plane_of(s).intersect_t(&ray) else { continue };
+                        let Some(ri) = regions.get(s).and_then(|rs| rs.iter().enumerate().filter(|(_, r)| r.contains(p)).min_by(|a, b| a.1.area().total_cmp(&b.1.area())).map(|(ri, _)| ri)) else { continue };
+                        if best.is_none_or(|(bt, _)| t <= bt + 1e-3) {
+                            best = Some((t, PressPullHover::Profile(s, ri)));
+                        }
+                    }
+                }
+                self.offset_hover = best.map(|(_, h)| h);
+            }
+            if response.clicked() {
+                match self.offset_hover {
+                    Some(PressPullHover::Face(f)) => {
+                        if let Some(d) = self.offset_dialog.as_mut() {
+                            d.toggle_face(f);
+                        }
+                        self.focus_distance();
+                    }
+                    Some(PressPullHover::Fillet(k)) => self.open_edge_dialog(Some(k), EdgeKind::Fillet),
+                    Some(PressPullHover::Profile(s, ri)) => {
+                        self.open_extrude(None);
+                        if let Some(d) = self.dialog.as_mut() {
+                            (d.sketch, d.profiles) = (Some(s), vec![ri]);
+                        }
+                    }
+                    None => {}
+                }
+            }
+            if esc && !typing {
+                if let Some(d) = self.offset_dialog.as_mut() {
+                    d.picking = false;
+                }
+            }
+        } else if self.offset_dialog.is_some() && esc && !typing {
+            self.cancel_offset();
         }
 
         crate::mark("Thread: click cylindrical faces (shaft");
@@ -783,6 +852,8 @@ impl OpenCad {
             self.open_edge_dialog(None, EdgeKind::Fillet);
         } else if !sketching && key_h && !typing && self.body_count > 0 {
             self.open_hole(None);
+        } else if !sketching && key_q && !typing {
+            self.open_offset(None, true);
         } else if !sketching && key_i && !typing {
             self.measure = if self.measure.is_some() { None } else { Some(measure::Measure::default()) };
         }
@@ -1783,7 +1854,7 @@ impl OpenCad {
 
         crate::mark("draw: bodies (from the kernel; with an");
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
-        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some();
+        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
         self.ensure_model(Slot::Committed);
         self.feature_errors = self.model(Slot::Committed).errors.clone();
@@ -1797,6 +1868,7 @@ impl OpenCad {
         self.hole_errors = self.model(Slot::Committed).hole_errors.clone();
         self.thread_errors = self.model(Slot::Committed).thread_errors.clone();
         self.shell_errors = self.model(Slot::Committed).shell_errors.clone();
+        self.offset_face_errors = self.model(Slot::Committed).offset_face_errors.clone();
         self.body_count = self.model(Slot::Committed).bodies.len();
         // With a body in the scene the origin gets out of the way (Create Sketch
         // and the browser's Origin box bring it back).
@@ -1813,6 +1885,9 @@ impl OpenCad {
         self.dialog_error = if let Some(d) = &self.shell_dialog {
             let k = d.editing.unwrap_or(self.shells.len());
             if d.shell.faces.is_empty() && d.shell.bodies.is_empty() { None } else { model.shell_errors.get(k).cloned().flatten() }
+        } else if let Some(d) = &self.offset_dialog {
+            let k = d.editing.unwrap_or(self.offset_faces.len());
+            if d.offset.faces.is_empty() { None } else { model.offset_face_errors.get(k).cloned().flatten() }
         } else if let Some(d) = &self.thread_dialog {
             let k = d.editing.unwrap_or(self.thread_features.len());
             if d.thread.faces.is_empty() { None } else { model.thread_errors.get(k).cloned().flatten() }
@@ -2005,6 +2080,58 @@ impl OpenCad {
                     egui::FontId::proportional(15.0),
                     Color32::from_gray(220),
                 );
+            }
+        }
+
+        crate::mark("draw: faces Offset Face moves");
+        // --- draw: faces Offset Face moves (and what a click would take) ---
+        if let Some(d) = &self.offset_dialog {
+            let model = self.model(Slot::Committed);
+            let mut overlay = egui::Mesh::default();
+            let mut paint_tris = |tris: &mut dyn Iterator<Item = [DVec3; 3]>, fill: Color32| {
+                for [a, b, c] in tris {
+                    if let (Some(pa), Some(pb), Some(pc)) = (view.project(a.as_vec3()), view.project(b.as_vec3()), view.project(c.as_vec3())) {
+                        let base = overlay.vertices.len() as u32;
+                        for q in [pa, pb, pc] {
+                            overlay.colored_vertex(to_pos(q), fill);
+                        }
+                        overlay.add_triangle(base, base + 1, base + 2);
+                    }
+                }
+            };
+            let hover_face = match self.offset_hover {
+                Some(PressPullHover::Face(f)) => Some(f),
+                _ => None,
+            };
+            let faces = d.offset.faces.iter().map(|f| (f, Color32::from_rgba_unmultiplied(70, 140, 230, 120))).chain(hover_face.iter().map(|f| (f, profile_fill(110))));
+            for (f, fill) in faces {
+                let at = f.face.origin + f.face.u * f.anchor[0] + f.face.v * f.anchor[1];
+                for body in &model.bodies {
+                    if let Some(k) = body.face_at(&f.face, at) {
+                        paint_tris(&mut body.face_tris(k), fill);
+                    }
+                }
+            }
+            if let Some(PressPullHover::Fillet(k)) = self.offset_hover {
+                // The rounded faces of that fillet: every cylinder face of its radius.
+                if let Some(ef) = self.edge_features.get(k) {
+                    for body in &model.bodies {
+                        for f in 0..body.faces.len() {
+                            if kernel::fillet_for_face(std::slice::from_ref(ef), body, f).is_some() {
+                                paint_tris(&mut body.face_tris(f), profile_fill(110));
+                            }
+                        }
+                    }
+                }
+            }
+            painter.add(egui::Shape::mesh(overlay));
+            if d.picking {
+                let hint = if d.press_pull && d.editing.is_none() && d.offset.faces.is_empty() {
+                    "Click a face to move it, a fillet to change it, or a sketch profile to extrude   (Esc when done)"
+                } else {
+                    "Click the faces to move; click one again to drop it   (Esc when done)"
+                };
+                painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
             }
         }
 
@@ -2208,6 +2335,15 @@ impl OpenCad {
                     } else {
                         35
                     };
+                    view.fill_region(&plane, r, profile_fill(alpha));
+                }
+            }
+        } else if self.offset_dialog.as_ref().is_some_and(|d| d.picking && d.press_pull && d.editing.is_none() && d.offset.faces.is_empty()) {
+            // Press Pull also takes profiles: show them, the one under the cursor stronger.
+            for s in (0..self.sketches.len()).filter(|&s| self.sketch_visible(s)) {
+                let plane = self.plane_of(s);
+                for (ri, r) in regions.get(s).into_iter().flatten().enumerate() {
+                    let alpha = if self.offset_hover == Some(PressPullHover::Profile(s, ri)) { 90 } else { 35 };
                     view.fill_region(&plane, r, profile_fill(alpha));
                 }
             }
@@ -2715,6 +2851,12 @@ impl OpenCad {
                 let reach = (d.extent[2] - d.extent[0]).abs().max(1.0) * 0.5;
                 let f = d.frame();
                 view.project((f.origin + f.v * reach).as_vec3()).map(|p| self.off_arrow(to_pos(p) + egui::vec2(16.0, -16.0)))
+            }),
+            Some(EditTarget::OffsetDistance) => self.offset_dialog.as_ref().and_then(|d| {
+                // By the arrow's tip.
+                let p = d.offset.faces.first()?;
+                let tip = p.face.origin + p.face.u * p.anchor[0] + p.face.v * p.anchor[1] + p.face.normal() * d.offset.distance;
+                view.project(tip.as_vec3()).map(|q| self.off_arrow(to_pos(q) + egui::vec2(16.0, -16.0)))
             }),
             Some(EditTarget::PlaneOffset) => self.plane_dialog.as_ref().and_then(|d| {
                 // By the arrow's tip.

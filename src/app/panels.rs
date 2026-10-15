@@ -716,6 +716,14 @@ impl OpenCad {
                 });
                 let edge_kind = self.edge_dialog.as_ref().map(|d| d.kind);
                 group(ui, "MODIFY", |ui| {
+                    let pulling = self.offset_dialog.is_some();
+                    if icons::button(ui, Icon::PressPull, "Press Pull (Q): drag a face to move it (Offset Face), a fillet to change its radius, or a sketch profile to extrude it", has_bodies || !self.sketches.is_empty(), pulling).clicked() {
+                        if pulling {
+                            self.cancel_offset();
+                        } else {
+                            self.open_offset(None, true);
+                        }
+                    }
                     if icons::button(ui, Icon::Fillet, "Fillet (F): round edges", has_bodies, edge_kind == Some(EdgeKind::Fillet))
                         .clicked()
                     {
@@ -1628,7 +1636,7 @@ impl OpenCad {
                                     close = true; // Esc or clicking away cancels
                                 }
                             }
-                            EditTarget::ExtrudeDistance | EditTarget::EdgeSize | EditTarget::RevolveAngle | EditTarget::PlaneOffset | EditTarget::PlaneAngle => {
+                            EditTarget::ExtrudeDistance | EditTarget::EdgeSize | EditTarget::RevolveAngle | EditTarget::PlaneOffset | EditTarget::PlaneAngle | EditTarget::OffsetDistance => {
                                 if changed {
                                     live = parsed;
                                 }
@@ -1739,6 +1747,19 @@ impl OpenCad {
                 } else if extrude_ok {
                     self.commit_plane();
                     if self.plane_dialog.is_some() {
+                        self.focus_distance();
+                    }
+                }
+            }
+            EditTarget::OffsetDistance => {
+                if let (Some(v), Some(d)) = (live, self.offset_dialog.as_mut()) {
+                    d.offset.distance = v;
+                }
+                if extrude_cancel {
+                    self.cancel_offset();
+                } else if extrude_ok {
+                    self.commit_offset();
+                    if self.offset_dialog.is_some() {
                         self.focus_distance();
                     }
                 }

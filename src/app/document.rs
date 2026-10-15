@@ -16,6 +16,7 @@ impl OpenCad {
             holes: self.holes.clone(),
             thread_features: self.thread_features.clone(),
             shells: self.shells.clone(),
+            offset_faces: self.offset_faces.clone(),
             units: self.units,
             version: doc::Version(self.version),
             timeline: self.timeline.clone(),
@@ -233,6 +234,7 @@ impl OpenCad {
             || self.holes != self.saved.holes
             || self.thread_features != self.saved.thread_features
             || self.shells != self.saved.shells
+            || self.offset_faces != self.saved.offset_faces
             || self.units != self.saved.units
             || self.axes != self.saved.axes
             || self.planes != self.saved.planes
@@ -298,6 +300,8 @@ impl OpenCad {
         self.thread_features = doc.thread_features.clone();
         self.shells = doc.shells.clone();
         self.shell_dialog = None;
+        self.offset_faces = doc.offset_faces.clone();
+        self.offset_dialog = None;
         self.thread_dialog = None;
         self.hole_dialog = None;
         self.units = doc.units;
@@ -375,6 +379,8 @@ impl OpenCad {
         self.thread_features = doc.thread_features;
         self.shells = doc.shells;
         self.shell_dialog = None;
+        self.offset_faces = doc.offset_faces;
+        self.offset_dialog = None;
         self.thread_dialog = None;
         self.hole_dialog = None;
         self.units = doc.units;
@@ -485,7 +491,7 @@ impl OpenCad {
     }
 
     /// The feature lists a slot is built from.
-    pub(crate) fn inputs(&self, slot: Slot) -> (Vec<Extrude>, Vec<Revolve>, Vec<EdgeFeature>, Vec<CopyFeature>, Vec<AxisFeature>, Vec<PlaneFeature>, Vec<model::HoleFeature>, Vec<model::ThreadFeature>, Vec<model::ShellFeature>, Vec<Feature>) {
+    pub(crate) fn inputs(&self, slot: Slot) -> kernel::BuildInputs {
         let (mut extrudes, mut revolves, mut edge_features, mut copies, mut timeline) =
             (self.extrudes.clone(), self.revolves.clone(), self.edge_features.clone(), self.copies.clone(), self.timeline.clone());
         let axes = self.axes.clone();
@@ -493,6 +499,7 @@ impl OpenCad {
         let mut holes = self.holes.clone();
         let mut thread_features = self.thread_features.clone();
         let mut shells = self.shells.clone();
+        let mut offset_faces = self.offset_faces.clone();
         timeline.truncate(self.applied()); // features after the marker aren't built
         timeline.retain(|f| !self.suppressed.contains(f));
         match slot {
@@ -547,6 +554,15 @@ impl OpenCad {
                         }
                     }
                 }
+                if let Some(d) = self.offset_dialog.as_ref().filter(|d| !d.offset.faces.is_empty()) {
+                    match d.editing {
+                        Some(k) => offset_faces[k] = d.offset.clone(),
+                        None => {
+                            offset_faces.push(d.offset.clone());
+                            timeline.push(Feature::OffsetFace(offset_faces.len() - 1));
+                        }
+                    }
+                }
                 if let Some(d) = self.thread_dialog.as_ref().filter(|d| !d.shown.faces.is_empty()) {
                     match d.editing {
                         Some(k) => thread_features[k] = d.shown.clone(),
@@ -584,37 +600,7 @@ impl OpenCad {
                 }
             }
         }
-        (extrudes, revolves, edge_features, copies, axes, planes, holes, thread_features, shells, timeline)
-    }
-
-    /// Make sure the kernel model for `slot` matches the current design.
-    /// Rebuilds only when its inputs changed.
-    pub(crate) fn ensure_model(&mut self, slot: Slot) {
-        let (extrudes, revolves, edge_features, copies, axes, planes, holes, thread_features, shells, timeline) = self.inputs(slot);
-        let fresh = self.caches[slot as usize].as_ref().is_some_and(|c| {
-            c.sketches.len() == self.sketches.len()
-                && c.sketches.iter().zip(&self.sketches).all(|(a, b)| a.same_shape(b))
-                && c.extrudes == extrudes
-                && c.revolves == revolves
-                && c.edge_features == edge_features
-                && c.copies == copies
-                && c.axes == axes
-                && c.planes == planes
-                && c.removes == self.removes
-                && c.holes == holes
-                && c.thread_features == thread_features
-                && c.shells == shells
-                && c.timeline == timeline
-        });
-        let i = slot as usize;
-        if fresh {
-            self.builds[i] = None;
-            return;
-        }
-        // Build a little each frame (the last model stays up meanwhile), so the
-        // window keeps drawing and shows how far it's got. A quick build is
-        // done within the frame, as before.
-        let inp = kernel::BuildInputs {
+        kernel::BuildInputs {
             sketches: self.sketches.clone(),
             extrudes,
             revolves,
@@ -626,8 +612,39 @@ impl OpenCad {
             holes,
             thread_features,
             shells,
+            offset_faces,
             timeline,
-        };
+        }
+    }
+
+    /// Make sure the kernel model for `slot` matches the current design.
+    /// Rebuilds only when its inputs changed.
+    pub(crate) fn ensure_model(&mut self, slot: Slot) {
+        let inp = self.inputs(slot);
+        let fresh = self.caches[slot as usize].as_ref().is_some_and(|c| {
+            c.sketches.len() == inp.sketches.len()
+                && c.sketches.iter().zip(&inp.sketches).all(|(a, b)| a.same_shape(b))
+                && c.extrudes == inp.extrudes
+                && c.revolves == inp.revolves
+                && c.edge_features == inp.edge_features
+                && c.copies == inp.copies
+                && c.axes == inp.axis_features
+                && c.planes == inp.plane_features
+                && c.removes == inp.removes
+                && c.holes == inp.holes
+                && c.thread_features == inp.thread_features
+                && c.shells == inp.shells
+                && c.offset_faces == inp.offset_faces
+                && c.timeline == inp.timeline
+        });
+        let i = slot as usize;
+        if fresh {
+            self.builds[i] = None;
+            return;
+        }
+        // Build a little each frame (the last model stays up meanwhile), so the
+        // window keeps drawing and shows how far it's got. A quick build is
+        // done within the frame, as before.
         let same = |b: &kernel::Build| {
             let a = b.inputs();
             a.sketches.len() == inp.sketches.len()
@@ -663,6 +680,7 @@ impl OpenCad {
             holes: inp.holes,
             thread_features: inp.thread_features,
             shells: inp.shells,
+            offset_faces: inp.offset_faces,
             timeline: inp.timeline,
             model,
             stand_in: false,
@@ -715,6 +733,7 @@ impl OpenCad {
             Feature::Hole(k) => self.holes.get(k).map(|h| h.name.clone()),
             Feature::Thread(k) => self.thread_features.get(k).map(|t| t.name.clone()),
             Feature::Shell(k) => self.shells.get(k).map(|s| s.name.clone()),
+            Feature::OffsetFace(k) => self.offset_faces.get(k).map(|f| f.name.clone()),
         }
         .unwrap_or_else(|| format!("{f:?}"))
     }
