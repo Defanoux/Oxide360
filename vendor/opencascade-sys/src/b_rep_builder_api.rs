@@ -21,6 +21,12 @@ mod inner {
         type Handle_Geom2d_Curve = crate::geom2d::Handle_Geom2d_Curve;
         type Handle_Poly_Triangulation = crate::poly::Handle_Poly_Triangulation;
 
+        /// opencad patch: an ellipse edge, whole or from u1 to u2 (null on failure).
+        pub fn opencad_try_ellipse_edge(
+            cx: f64, cy: f64, cz: f64, nx: f64, ny: f64, nz: f64, xx: f64, xy: f64, xz: f64,
+            major: f64, minor: f64, u1: f64, u2: f64, whole: bool,
+        ) -> UniquePtr<TopoDS_Edge>;
+
         type BRepBuilderAPI_MakeVertex;
         #[cxx_name = "construct_unique"]
         pub fn BRepBuilderAPI_MakeVertex_gp_Pnt(

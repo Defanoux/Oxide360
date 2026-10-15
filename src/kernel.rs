@@ -360,12 +360,74 @@ fn frame_for(sk: &Sketch, now: Option<FacePlane>) -> Result<Frame, String> {
 
 /// One profile loop as a wire of exact edges. Runs of segments that came
 /// from the same circle become a single true arc; collinear line pieces merge.
+/// Where on an ellipse (centre `c`, longer semi-axis vector `axis`, shorter
+/// `minor`) point `p` is: its parameter, counter-clockwise from the axis.
+fn ellipse_param(c: DVec2, axis: DVec2, minor: f64, p: DVec2) -> f64 {
+    let a = axis.length();
+    let (x, y) = (axis / a, (axis / a).perp());
+    let d = p - c;
+    (d.dot(y) / minor).atan2(d.dot(x) / a)
+}
+
+fn ellipse_point(c: DVec2, axis: DVec2, minor: f64, t: f64) -> DVec2 {
+    let a = axis.length();
+    let (x, y) = (axis / a, (axis / a).perp());
+    c + x * (a * t.cos()) + y * (minor * t.sin())
+}
+
+/// Where the line through `far` and `near` really meets the ellipse: the
+/// crossing nearest `near` (which is only on the ellipse's polyline).
+fn line_meets_ellipse(c: DVec2, axis: DVec2, minor: f64, far: DVec2, near: DVec2) -> Option<DVec2> {
+    let a = axis.length();
+    let (x, y) = (axis / a, (axis / a).perp());
+    // In the ellipse's own frame, scaled so it's the unit circle.
+    let to = |p: DVec2| DVec2::new((p - c).dot(x) / a, (p - c).dot(y) / minor);
+    let (p, q) = (to(far), to(near));
+    let d = q - p;
+    let (qa, qb, qc) = (d.dot(d), 2.0 * p.dot(d), p.dot(p) - 1.0);
+    let disc = qb * qb - 4.0 * qa * qc;
+    if qa < 1e-30 || disc < 0.0 {
+        return None;
+    }
+    let t = [(-qb - disc.sqrt()) / (2.0 * qa), (-qb + disc.sqrt()) / (2.0 * qa)].into_iter().min_by(|s, u| (s - 1.0).abs().total_cmp(&(u - 1.0).abs()))?;
+    Some(far + (near - far) * t)
+}
+
 fn loop_wire(plane: &Frame, pts: &[DVec2], curves: &[Curve]) -> Result<Wire, String> {
     let n = pts.len();
     if n < 2 || curves.len() != n {
         return Err("malformed profile".into());
     }
+    // An ellipse is profiled as straight pieces, so where something meets it
+    // is only near the true curve: move those corners onto it (a line's onto
+    // where the line really crosses it), so the exact edges join up.
+    let mut pts = pts.to_vec();
+    for k in 0..n {
+        let (before, after) = (curves[(k + n - 1) % n], curves[k]);
+        if before == after {
+            continue;
+        }
+        let ell = [before, after].into_iter().find(|c| matches!(c, Curve::Ellipse { .. }));
+        let Some(Curve::Ellipse { center, axis, minor }) = ell else { continue };
+        let far = match (before, after) {
+            (Curve::Line, _) => Some(pts[(k + n - 1) % n]),
+            (_, Curve::Line) => Some(pts[(k + 1) % n]),
+            _ => None,
+        };
+        let on = far.and_then(|f| line_meets_ellipse(center, axis, minor, f, pts[k]));
+        pts[k] = on.unwrap_or_else(|| ellipse_point(center, axis, minor, ellipse_param(center, axis, minor, pts[k])));
+    }
+    let pts = &pts[..];
     let p3 = |p: DVec2| kv(world(plane, p));
+    // A loop that is entirely one ellipse: a closed ellipse edge.
+    if let Curve::Ellipse { center, axis, minor } = curves[0] {
+        if curves.iter().all(|c| *c == curves[0]) {
+            let turn = if signed_area(pts) >= 0.0 { 1.0 } else { -1.0 };
+            let x = (world(plane, center + axis) - world(plane, center)).normalize();
+            let edge = Edge::try_ellipse(kv(world(plane, center)), kv(plane.normal() * turn), kv(x), axis.length(), minor, None).ok_or("the kernel couldn't make this ellipse")?;
+            return Ok(Wire::from_edges(&[edge]));
+        }
+    }
     // A loop that is entirely one circle: a full-circle edge, turning the same
     // way as the loop (counter-clockwise outer, clockwise hole).
     if let Curve::Arc { center, radius } = curves[0] {
@@ -414,6 +476,23 @@ fn loop_wire(plane: &Frame, pts: &[DVec2], curves: &[Curve]) -> Result<Wire, Str
                     center + ((a - center) + (b - center)).normalize() * radius
                 };
                 edges.push(Edge::arc(p3(a), p3(mid), p3(b)));
+                i = j;
+            }
+            // A run of one ellipse's pieces: that stretch of the exact ellipse.
+            ell @ Curve::Ellipse { center, axis, minor } => {
+                let mut j = i + 1;
+                while j < n && curve(j) == ell {
+                    j += 1;
+                }
+                let tau = std::f64::consts::TAU;
+                let param = |p: DVec2| ellipse_param(center, axis, minor, p);
+                let (ua, ub, um) = (param(at(i)), param(at(j)), param(at(i + (j - i) / 2).lerp(at(i + (j - i).div_ceil(2)), 0.5)));
+                let ccw = |from: f64, to: f64| (to - from).rem_euclid(tau);
+                // Counter-clockwise about the sketch's normal from one end to the other, through the middle.
+                let (u1, u2) = if ccw(ua, um) <= ccw(ua, ub) { (ua, ua + ccw(ua, ub)) } else { (ub, ub + ccw(ub, ua)) };
+                let x = (world(plane, center + axis) - world(plane, center)).normalize();
+                let edge = Edge::try_ellipse(kv(world(plane, center)), kv(plane.normal()), kv(x), axis.length(), minor, Some((u1, u2))).ok_or("the kernel couldn't make part of this ellipse")?;
+                edges.push(edge);
                 i = j;
             }
             // A whole loop of one spline (a closed spline): smooth all the way round.
@@ -1304,6 +1383,7 @@ fn sketch_anchor(sk: &Sketch) -> DVec2 {
             crate::sketch::Entity::Point { .. } => vec![],
             crate::sketch::Entity::Arc { center, a, b } => vec![sk.points[center], sk.points[a], sk.points[b]],
             crate::sketch::Entity::Spline { s } => sk.spline_fit(s),
+            crate::sketch::Entity::Ellipse { center, .. } => vec![sk.points[center]],
         })
         .collect();
     if used.is_empty() { DVec2::ZERO } else { used.iter().copied().sum::<DVec2>() / used.len() as f64 }
@@ -3113,6 +3193,52 @@ mod tests {
         rect(&mut on1b, 0.0, 0.0, 2.0, 2.0);
         let m = build_with(&[base2, Sketch::on_plane("A".into(), xy, 0), on1b], &[ex(0, vec![0], 9.0, Operation::NewBody), ex(2, vec![0], 1.0, Operation::NewBody)], &[], &[], &[], &[], &planes, &[Feature::Sketch(0), Feature::Extrude(0), Feature::Plane(1), Feature::Sketch(2), Feature::Extrude(1)]);
         assert!((m.planes[1].unwrap().origin.z - 12.0).abs() < 1e-9, "{:?}", m.planes[1]);
+    }
+
+    fn ellipse(sk: &mut Sketch, c: (f64, f64), major: (f64, f64), b: f64) {
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Ellipse);
+        ed.click(sk, free(c.0, c.1));
+        ed.click(sk, free(c.0 + major.0, c.1 + major.1));
+        let n = DVec2::new(major.0, major.1).normalize().perp();
+        ed.click(sk, Anchor::Free(DVec2::new(c.0, c.1) + n * b));
+    }
+
+    #[test]
+    fn ellipses_extrude_exactly_whole_as_holes_and_cut_by_lines() {
+        // Whole: π a b h.
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        ellipse(&mut sk, (0.0, 0.0), (20.0, 0.0), 10.0);
+        let regions = find_regions(&sk);
+        assert_eq!(regions.len(), 1, "one closed region");
+        let m = build4(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &timeline(1, 1));
+        assert_eq!(m.errors, vec![None]);
+        assert!(close(total(&m), PI * 20.0 * 10.0 * 5.0), "{}", total(&m));
+        // Turned 30°, the shorter axis drawn first: the same.
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let d = DVec2::from_angle(30f64.to_radians()) * 6.0;
+        ellipse(&mut sk, (5.0, 5.0), (d.x, d.y), 15.0);
+        let m = build4(&[sk], &[ex(0, vec![0], 2.0, Operation::NewBody)], &[], &timeline(1, 1));
+        assert!(close(total(&m), PI * 15.0 * 6.0 * 2.0), "{}", total(&m));
+        // A hole in a plate.
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk, -30.0, -20.0, 30.0, 20.0);
+        ellipse(&mut sk, (0.0, 0.0), (20.0, 0.0), 10.0);
+        let ring = find_regions(&sk).iter().position(|r| r.holes.len() == 1).expect("the plate round the ellipse");
+        let m = build4(&[sk], &[ex(0, vec![ring], 4.0, Operation::NewBody)], &[], &timeline(1, 1));
+        assert!(close(total(&m), (60.0 * 40.0 - PI * 200.0) * 4.0), "{}", total(&m));
+        // Cut in half by a line across it (through the middle, along the short axis).
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        ellipse(&mut sk, (0.0, 0.0), (20.0, 0.0), 10.0);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Line);
+        ed.click(&mut sk, free(0.0, -15.0));
+        ed.click(&mut sk, free(0.0, 15.0));
+        let halves: Vec<usize> = find_regions(&sk).iter().enumerate().filter(|(_, r)| r.area() > 100.0).map(|(i, _)| i).collect();
+        assert_eq!(halves.len(), 2, "the line splits it");
+        let m = build4(&[sk], &[ex(0, vec![halves[0]], 3.0, Operation::NewBody)], &[], &timeline(1, 1));
+        assert_eq!(m.errors, vec![None]);
+        assert!(close(total(&m), PI * 200.0 / 2.0 * 3.0), "{}", total(&m));
     }
 
     #[test]

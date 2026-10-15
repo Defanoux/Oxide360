@@ -1695,6 +1695,7 @@ impl OpenCad {
                 | Tool::Arc3Point
                 | Tool::ArcCenter
                 | Tool::ArcTangent
+                | Tool::Ellipse
                 | Tool::Slot
                 | Tool::PolygonCircumscribed
                 | Tool::PolygonInscribed
@@ -2621,6 +2622,15 @@ impl OpenCad {
                             }
                         }
                     }
+                    Entity::Ellipse { .. } => {
+                        let curve = sk.ellipse_curve(e);
+                        for (k, w) in curve.windows(2).enumerate() {
+                            // Dashed: every other piece.
+                            if !dashed || k % 2 == 0 {
+                                view.line(plane.to_world(w[0]), plane.to_world(w[1]), stroke);
+                            }
+                        }
+                    }
                 }
             }
             if active && self.acquired.0 == Some(j) && !matches!(self.editor.tool, Tool::Select | Tool::Constrain(_)) {
@@ -2671,7 +2681,7 @@ impl OpenCad {
                                     view.arc(&plane, c, r, a0, sweep, stroke);
                                 }
                             }
-                            Entity::Point { .. } | Entity::Spline { .. } => {}
+                            Entity::Point { .. } | Entity::Spline { .. } | Entity::Ellipse { .. } => {}
                         }
                     }
                 }
@@ -2833,6 +2843,12 @@ impl OpenCad {
                             if let (Some(pc), Some(pm)) = (projected[center], view.project(plane.to_world(mid))) {
                                 place(g, pm, (pm - pc).normalize_or_zero(), 6.0);
                             }
+                        }
+                    }
+                    Entity::Ellipse { .. } => {
+                        let curve = sk.ellipse_curve(e);
+                        if let Some(px) = curve.get(curve.len() / 8).and_then(|&m| view.project(plane.to_world(m))) {
+                            place(g, px, Vec2::new(0.7, -0.7), 8.0);
                         }
                     }
                     // Beside the middle of the curve.
@@ -3221,6 +3237,25 @@ impl OpenCad {
                             let tangent = matches!(at, Anchor::OnLine(e, q) if sk.line_foot(e, from).is_some_and(|f| f.distance(q) < 1e-9 * (1.0 + r)));
                             format!("Ø {}{}   (or type the diameter)", u.show(2.0 * r), if tangent { "  tangent" } else { "" })
                         }
+                        Tool::Ellipse => match self.editor.ellipse_preview(sk, here) {
+                            Some((c, ax, bx)) => {
+                                let pts: Vec<DVec2> = (0..=96).map(|k| {
+                                    let t = std::f64::consts::TAU * k as f64 / 96.0;
+                                    c + ax * t.cos() + bx * t.sin()
+                                }).collect();
+                                for w in pts.windows(2) {
+                                    view.line(plane.to_world(w[0]), plane.to_world(w[1]), preview);
+                                }
+                                view.dashed(plane.to_world(c), plane.to_world(c + ax), preview);
+                                view.dashed(plane.to_world(c), plane.to_world(c + bx), preview);
+                                format!("{} × {}", u.show(2.0 * ax.length().max(bx.length())), u.show(2.0 * ax.length().min(bx.length())))
+                            }
+                            None => {
+                                // The first axis so far, from the centre.
+                                view.dashed(plane.to_world(from), plane.to_world(here), preview);
+                                format!("{} (half the axis)", u.show(from.distance(here)))
+                            }
+                        },
                         Tool::Arc3Point | Tool::ArcCenter | Tool::ArcTangent => match self.editor.arc_preview(sk, here) {
                             Some(a) => {
                                 view.arc(&plane, a.center, a.radius, a.start, a.sweep, preview);

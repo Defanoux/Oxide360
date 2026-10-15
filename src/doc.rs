@@ -376,6 +376,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
                 Entity::Point { p } => p < np,
                 Entity::Arc { center, a, b } => center < np && a < np && b < np && a != b && a != center && b != center,
                 Entity::Spline { s } => sk.splines.get(s).is_some_and(|l| l.len() >= 2 && l.iter().all(|&p| p < np) && l.windows(2).all(|w| w[0] != w[1])),
+                Entity::Ellipse { center, major, minor } => center < np && major < np && minor < np && center != major && center != minor && major != minor,
             };
             if !ok {
                 return Err(err(format!("entity {ei} is invalid")));

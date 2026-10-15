@@ -30,6 +30,9 @@ pub enum Curve {
     /// Part of spline `s` (its index in the sketch's splines); the kernel
     /// rebuilds a smooth curve through a run of these.
     Spline { s: usize },
+    /// Part of an ellipse round `center`: `axis` its longer semi-axis (as a
+    /// vector), `minor` the shorter one's length.
+    Ellipse { center: DVec2, axis: DVec2, minor: f64 },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -326,6 +329,18 @@ fn arrangement(sk: &Sketch) -> (Graph, Vec<(DVec2, f64)>) {
                     if w[0].distance(w[1]) > TOL {
                         lines.push((w[0], w[1]));
                         line_tags.push(Curve::Spline { s });
+                    }
+                }
+            }
+            // An ellipse goes in as its short segments, tagged with its exact shape.
+            Entity::Ellipse { .. } => {
+                if let Some((c, x, a, b)) = sk.ellipse_geometry(i) {
+                    let tag = Curve::Ellipse { center: c, axis: x * a, minor: b };
+                    for w in sk.ellipse_curve(i).windows(2) {
+                        if w[0].distance(w[1]) > TOL {
+                            lines.push((w[0], w[1]));
+                            line_tags.push(tag);
+                        }
                     }
                 }
             }

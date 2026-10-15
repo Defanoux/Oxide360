@@ -27,6 +27,7 @@ pub enum Icon {
     Midpoint,
     Symmetric,
     ArcTangent,
+    Ellipse,
     Plane,
     PlaneAngle,
     Hole,
@@ -592,6 +593,15 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             dot(0.5, 0.24, ink);
             dot(0.88, 0.62, ink);
         }
+        Icon::Ellipse => {
+            // A wide ellipse with its centre.
+            let pts: Vec<Pos2> = (0..=32).map(|k| {
+                let t = std::f32::consts::TAU * k as f32 / 32.0;
+                p(0.5 + 0.42 * t.cos(), 0.5 + 0.26 * t.sin())
+            }).collect();
+            painter.add(egui::Shape::line(pts, Stroke::new(thin.width * 1.2, orange)));
+            dot(0.5, 0.5, ink);
+        }
         Icon::ArcTangent => {
             // A line running into an arc that leaves it smoothly.
             line((0.08, 0.8), (0.45, 0.8), Stroke::new(thin.width * 1.2, ink));
@@ -859,7 +869,7 @@ mod shot_tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [420, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse] {
                     button(ui, icon, "", true, false);
                 }
             });

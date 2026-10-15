@@ -11,8 +11,6 @@ the spec for each.
 **Core solid tools (the gaps you hit modelling a real part)**
 
 **Sketch gaps**
-9. **Tangent arc** (from a line end, Fusion's drag-off-the-end arc too) and
-   **Ellipse**.
 10. **Break**, and Trim/Extend/Offset for splines.
 11. **Re-attach a sketch** to another plane/face (Redefine Sketch Plane).
 12. **Sketch Text** (font outlines → profiles, extrudable).
@@ -53,6 +51,8 @@ sheet metal, surfaces, CAM.
   load from the built model.
 
 ## Done
+
+- Tangent Arc (arc menu; from a line or arc end, Tangent constraint to a line) and the Line tool's drag-off-the-end arc; Ellipse (CREATE): centre, axis end, width; construction axis lines to dimension, axes kept square by the solver; exact OCCT ellipse edges (whole, or the stretch between crossings, corners moved onto the true curve); exact-volume tests. Not done: Trim/Extend/Offset on ellipses, ellipse arcs.
 
 - Symmetric constraint (CONSTRAINTS): two points, two lines (ends paired by nearest mirror image; a shared end goes onto the mirror) or two circles/arcs (centres + Equal), then the line or origin axis to mirror about; Sym glyph at the points; solver test.
 

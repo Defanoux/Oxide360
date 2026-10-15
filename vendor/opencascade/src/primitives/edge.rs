@@ -112,7 +112,17 @@ impl Edge {
         Self::from_make_edge(make_edge)
     }
 
-    pub fn ellipse() {}
+    /// opencad patch: an ellipse round `center` in the plane square to
+    /// `normal`, its `major` semi-axis along `x_dir` (major >= minor): whole
+    /// (`span` None) or from parameter u1 to u2 (counter-clockwise about
+    /// `normal`). None if OpenCASCADE refuses.
+    pub fn try_ellipse(center: DVec3, normal: DVec3, x_dir: DVec3, major: f64, minor: f64, span: Option<(f64, f64)>) -> Option<Self> {
+        let (u1, u2) = span.unwrap_or((0.0, 0.0));
+        let made = ffi::b_rep_builder_api::opencad_try_ellipse_edge(
+            center.x, center.y, center.z, normal.x, normal.y, normal.z, x_dir.x, x_dir.y, x_dir.z, major, minor, u1, u2, span.is_none(),
+        );
+        (!made.is_null()).then(|| Self::from_edge(&made))
+    }
 
     /// opencad patch: the interpolated spline through `points` (as
     /// `spline_from_points` without tangents), or None if OpenCASCADE can't

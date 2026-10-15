@@ -208,6 +208,15 @@ pub fn grid_lines(plane: &Plane, center: DVec2, g: GridSpec, half_lines: i64) ->
 
 // ---------- Sketch data ----------
 
+/// How many straight pieces an ellipse is drawn and profiled with (the kernel
+/// makes the exact curve).
+pub const ELLIPSE_SEGMENTS: usize = 96;
+
+/// How far `p` is from a polyline.
+pub fn polyline_distance(pts: &[DVec2], p: DVec2) -> f64 {
+    pts.windows(2).map(|w| dist_to_segment(p, w[0], w[1])).fold(f64::INFINITY, f64::min)
+}
+
 pub type PointId = usize;
 pub type EntityId = usize;
 
@@ -223,6 +232,9 @@ pub enum Entity {
     /// A fit-point spline: the smooth curve through `Sketch::splines[s]`
     /// (ordinary sketch points, so they drag and take constraints).
     Spline { s: usize },
+    /// An ellipse round `center`: one semi-axis out to `major`, the other
+    /// out to `minor` (the solver keeps the two square to each other).
+    Ellipse { center: PointId, major: PointId, minor: PointId },
 }
 
 /// Geometric constraints. Each (except Fix) is one equation for the solver.
@@ -884,8 +896,32 @@ impl Sketch {
             Some(&Entity::Arc { center, a, b }) => vec![center, a, b],
             Some(&Entity::Point { p }) => vec![p],
             Some(&Entity::Spline { s }) => self.splines.get(s).cloned().unwrap_or_default(),
+            Some(&Entity::Ellipse { center, major, minor }) => vec![center, major, minor],
             None => Vec::new(),
         }
+    }
+
+    /// An ellipse's shape: (centre, unit direction of its *longer* axis,
+    /// the longer and shorter semi-axes). None for anything else.
+    pub fn ellipse_geometry(&self, e: EntityId) -> Option<(DVec2, DVec2, f64, f64)> {
+        let Some(&Entity::Ellipse { center, major, minor }) = self.entities.get(e) else { return None };
+        let c = self.points[center];
+        let (u, v) = (self.points[major] - c, self.points[minor] - c);
+        let (a, b) = (u.length(), v.length());
+        if a < 1e-12 || b < 1e-12 {
+            return None;
+        }
+        Some(if a >= b { (c, u / a, a, b) } else { (c, v / b, b, a) })
+    }
+
+    /// Points round ellipse `e` (closed: the first repeated at the end).
+    pub fn ellipse_curve(&self, e: EntityId) -> Vec<DVec2> {
+        let Some((c, x, a, b)) = self.ellipse_geometry(e) else { return Vec::new() };
+        let y = x.perp();
+        (0..=ELLIPSE_SEGMENTS).map(|k| {
+            let t = std::f64::consts::TAU * k as f64 / ELLIPSE_SEGMENTS as f64;
+            c + x * (a * t.cos()) + y * (b * t.sin())
+        }).collect()
     }
 
     /// Where a spline's fit points are now.
@@ -941,6 +977,7 @@ impl Sketch {
                     Entity::Circle { center, radius } => (p.distance(self.points[center]) - radius).abs(),
                     Entity::Point { .. } => f64::INFINITY, // picked as its point
                     Entity::Spline { s } => crate::spline::distance(&self.spline_fit(s), p),
+                    Entity::Ellipse { .. } => polyline_distance(&self.ellipse_curve(id), p),
                     Entity::Arc { .. } => {
                         let (c, r, a0, sweep) = self.arc_geometry(id).expect("an arc");
                         let ang = (p - c).y.atan2((p - c).x);
@@ -995,6 +1032,10 @@ impl Sketch {
                         inside(c - DVec2::splat(radius)) && inside(c + DVec2::splat(radius))
                     }
                 }
+                Entity::Ellipse { .. } => {
+                    let pts = self.ellipse_curve(e);
+                    if crossing { pts.windows(2).any(|w| segment_touches_rect(w[0], w[1], lo, hi)) } else { pts.iter().all(|&p| inside(p)) }
+                }
                 Entity::Arc { .. } => {
                     let Some((c, r, a0, sweep)) = self.arc_geometry(e) else { continue };
                     let pts: Vec<DVec2> = (0..=48).map(|i| c + DVec2::from_angle(a0 + sweep * i as f64 / 48.0) * r).collect();
@@ -1031,6 +1072,7 @@ impl Sketch {
                 Entity::Point { p } => vec![p],
                 Entity::Arc { center, a, b } => vec![center, a, b],
                 Entity::Spline { s } => self.splines.get(s).cloned().unwrap_or_default(),
+                Entity::Ellipse { center, major, minor } => vec![center, major, minor],
             }
         };
         let mut ents: Vec<EntityId> = Vec::new();
@@ -1100,6 +1142,7 @@ impl Sketch {
                 Entity::Point { p } => dead_pts[p],
                 Entity::Arc { center, a, b } => dead_pts[center] || dead_pts[a] || dead_pts[b],
                 Entity::Spline { s } => self.splines.get(s).is_none_or(|l| l.len() < 2),
+                Entity::Ellipse { center, major, minor } => dead_pts[center] || dead_pts[major] || dead_pts[minor],
             };
             if uses_dead {
                 dead_ents[i] = true;
@@ -1151,6 +1194,11 @@ impl Sketch {
                         used[p] = true;
                     }
                 }
+                Entity::Ellipse { center, major, minor } => {
+                    for p in [center, major, minor] {
+                        used[p] = true;
+                    }
+                }
             }
         }
         // A Fix or distance on a point that no longer has geometry is meaningless.
@@ -1180,6 +1228,11 @@ impl Sketch {
                     *b = pt_map[*b];
                 }
                 Entity::Spline { .. } => {}
+                Entity::Ellipse { center, major, minor } => {
+                    *center = pt_map[*center];
+                    *major = pt_map[*major];
+                    *minor = pt_map[*minor];
+                }
             }
         }
         // Splines: keep the lists still used (renumbered), their points renumbered.
@@ -1252,6 +1305,7 @@ impl Sketch {
                 Entity::Line { a, b } => Some(self.points[a].midpoint(self.points[b])).filter(|&m| on_outline(m)),
                 Entity::Circle { center, radius } => Some(self.points[center]).filter(|c| c.distance(p) < radius),
                 Entity::Arc { center, .. } => self.arc_geometry(e).and_then(|(_, r, _, _)| Some(self.points[center]).filter(|c| c.distance(p) < r)),
+                Entity::Ellipse { center, .. } => Some(self.points[center]).filter(|_| self.ellipse_curve(e).len() > 2 && crate::profile::point_in_polygon(p, &self.ellipse_curve(e))),
                 Entity::Point { .. } | Entity::Spline { .. } => None,
             })
             .filter(|r| r.distance(p) > tol) // not when already on it
@@ -1377,6 +1431,7 @@ impl Sketch {
             Entity::Circle { center, radius } => (p.distance(self.points[center]) - radius).abs(),
             Entity::Point { p: q } => p.distance(self.points[q]),
             Entity::Spline { s } => crate::spline::distance(&self.spline_fit(s), p),
+            Entity::Ellipse { .. } => polyline_distance(&self.ellipse_curve(e), p),
             Entity::Arc { .. } => {
                 let Some((c, r, a0, sweep)) = self.arc_geometry(e) else { return f64::INFINITY };
                 let ang = (p - c).y.atan2((p - c).x);
@@ -1404,6 +1459,7 @@ impl Sketch {
             Entity::Arc { .. } => self.arc_geometry(e).map_or(0.0, |(_, r, _, sweep)| r * sweep),
             Entity::Point { .. } => 0.0,
             Entity::Spline { s } => self.spline_curve(s).windows(2).map(|w| w[0].distance(w[1])).sum(),
+            Entity::Ellipse { .. } => self.ellipse_curve(e).windows(2).map(|w| w[0].distance(w[1])).sum(),
         };
         let mut out = Vec::new();
         match (ents.as_slice(), pts.as_slice()) {
@@ -1425,6 +1481,16 @@ impl Sketch {
                     }
                 }
                 Entity::Spline { .. } => out.push(("Length", length(*e), Length)),
+                Entity::Ellipse { .. } => {
+                    if let Some((_, _, a, b)) = self.ellipse_geometry(*e) {
+                        out.extend([
+                            ("Major radius", a, Length),
+                            ("Minor radius", b, Length),
+                            ("Circumference", length(*e), Length),
+                            ("Area", std::f64::consts::PI * a * b, Area),
+                        ]);
+                    }
+                }
                 Entity::Point { p } => {
                     let q = self.points[p];
                     out.extend([("X", q.x, Length), ("Y", q.y, Length)]);
@@ -1716,6 +1782,11 @@ impl Sketch {
                     n[b] += 1;
                 }
                 Entity::Circle { center, .. } => n[center] += 1,
+                Entity::Ellipse { center, major, minor } => {
+                    for p in [center, major, minor] {
+                        n[p] += 1;
+                    }
+                }
                 Entity::Point { .. } => {}
                 Entity::Arc { a, b, center } => {
                     n[a] += 1;
@@ -1769,6 +1840,8 @@ impl Sketch {
                 Entity::Circle { .. } | Entity::Arc { .. } => {}
                 Entity::Spline { s } if self.splines.get(s).is_some_and(|l| l.first() == Some(&p) || l.last() == Some(&p)) => return None,
                 Entity::Spline { .. } => {}
+                Entity::Ellipse { center, .. } if center == p => return None,
+                Entity::Ellipse { .. } => {}
             }
         }
         match found.as_slice() {
@@ -1981,6 +2054,21 @@ impl Sketch {
                         }
                     }
                 }
+                // An ellipse cuts where its curve crosses.
+                Entity::Ellipse { .. } => {
+                    for w in self.ellipse_curve(i).windows(2) {
+                        let f = w[1] - w[0];
+                        let denom = d.perp_dot(f);
+                        if denom.abs() < 1e-12 * len * f.length().max(1e-12) {
+                            continue;
+                        }
+                        let t = (w[0] - pa).perp_dot(f) / denom;
+                        let u = (w[0] - pa).perp_dot(d) / denom;
+                        if t > t_lo && t < t_hi && (0.0..=1.0).contains(&u) {
+                            cuts.push((t, pa + d * t, i, None));
+                        }
+                    }
+                }
                 Entity::Point { .. } => {}
             }
         }
@@ -2131,7 +2219,7 @@ impl Sketch {
                         offer(x, i, None);
                     }
                 }
-                Entity::Spline { .. } => {} // (curves cut by splines: not yet)
+                Entity::Spline { .. } | Entity::Ellipse { .. } => {} // (curves cut by splines, ellipses: not yet)
                 Entity::Arc { a, b, .. } => {
                     let Some((c2, r2, b0, sw2)) = self.arc_geometry(i) else { continue };
                     for x in circle_circle(c, r, c2, r2) {
@@ -2548,6 +2636,8 @@ pub enum Tool {
     Circle3Tangent,
     /// Fit-point spline: click its points; Enter (or clicking the last again) finishes.
     Spline,
+    /// Centre, the end of one axis, then how wide the other way.
+    Ellipse,
     /// Pick geometry for a constraint ("Dimension", "Parallel", …): the
     /// constraint is added as soon as the picks are enough for it.
     Constrain(&'static str),
@@ -2576,6 +2666,7 @@ impl Tool {
             Tool::RectangleCenter => "Center Rectangle",
             Tool::Point => "Point",
             Tool::Spline => "Spline",
+            Tool::Ellipse => "Ellipse",
             Tool::Circle => "Center Diameter Circle",
             Tool::Circle2Point => "2-Point Circle",
             Tool::Circle3Point => "3-Point Circle",
@@ -2764,6 +2855,18 @@ impl Editor {
     fn circle_preview_from(&self, sk: &Sketch, start: Anchor, second: Option<Anchor>, at: DVec2) -> Option<(DVec2, f64)> {
         let probe = Editor { start: Some(start), second, ..Editor { tool: self.tool, ..Default::default() } };
         probe.circle_preview(sk, at).filter(|&(_, r)| r >= MIN_SIZE)
+    }
+
+    /// The ellipse the Ellipse tool would make with the cursor at `at` (its
+    /// third click): centre, one semi-axis (as a vector), the other's length
+    /// (toward the cursor's side).
+    pub fn ellipse_preview(&self, sk: &Sketch, at: DVec2) -> Option<(DVec2, DVec2, DVec2)> {
+        let pos = |a: Anchor| sk.is_valid_anchor(a).then(|| sk.pos(a));
+        let (Tool::Ellipse, Some(c), Some(m)) = (self.tool, self.start.and_then(pos), self.second.and_then(pos)) else { return None };
+        let u = m - c;
+        let n = u.try_normalize()?.perp();
+        let b = n.dot(at - c);
+        (b.abs() >= MIN_SIZE).then_some((c, u, n * b))
     }
 
     /// The arc an arc tool would make with the cursor at `at` (third click;
@@ -3064,6 +3167,7 @@ impl Editor {
                     Entity::Circle { center: c, .. } => c == center,
                     Entity::Arc { center: c, a, b } => c == center || a == center || b == center,
                     Entity::Spline { s } => sk.splines.get(s).is_some_and(|l| l.contains(&center)),
+                    Entity::Ellipse { center: c, major, minor } => [c, major, minor].contains(&center),
                 });
                 if !used {
                     sk.entities.push(Entity::Point { p: center });
@@ -3193,6 +3297,7 @@ impl Editor {
                         Entity::Arc { center: c, a, b } => c == center || a == center || b == center,
                         Entity::Point { .. } => false,
                         Entity::Spline { s } => sk.splines.get(s).is_some_and(|l| l.contains(&center)),
+                        Entity::Ellipse { center: c, major, minor } => [c, major, minor].contains(&center),
                     })
                 {
                     sk.entities.push(Entity::Point { p: center });
@@ -3295,6 +3400,28 @@ impl Editor {
                 // From a line: kept tangent to it (the solver's shared-end form).
                 if sk.is_line(from) {
                     ties.push(Constraint::Tangent(from, e));
+                }
+                ties
+            }
+            Tool::Ellipse if self.second.is_none() => {
+                if size >= MIN_SIZE {
+                    self.second = Some(at);
+                }
+                Vec::new()
+            }
+            Tool::Ellipse => {
+                let Some((_, _, v)) = self.ellipse_preview(sk, sk.pos(at)) else { return Vec::new() };
+                let second = self.second.take().expect("checked above");
+                self.start = None;
+                let center = resolve(sk, start);
+                let major = resolve(sk, second);
+                let minor = sk.resolve(Anchor::Free(sk.points[center] + v));
+                sk.entities.push(Entity::Ellipse { center, major, minor });
+                // Its axes, as construction lines (Fusion's), to dimension.
+                for end in [major, minor] {
+                    sk.entities.push(Entity::Line { a: center, b: end });
+                    let e = sk.entities.len() - 1;
+                    sk.set_construction(e, true);
                 }
                 ties
             }
@@ -4201,6 +4328,30 @@ mod construction_tests {
         let (dir, from) = sk.tangent_from(sk.entities.len().checked_sub(1).map(|_| match sk.entities[1] { Entity::Arc { b, .. } => b, _ => unreachable!() }).unwrap()).unwrap();
         assert_eq!(from, 1);
         assert!(dir.distance(DVec2::Y) < 1e-6, "{dir}");
+    }
+
+    #[test]
+    fn an_ellipse_keeps_its_axes_square_when_dimensioned() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Ellipse);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(0.0, 0.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(20.0, 0.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(3.0, 10.0)));
+        let e = sk.entities.iter().position(|x| matches!(x, Entity::Ellipse { .. })).expect("an ellipse");
+        let (c, x, a, b) = sk.ellipse_geometry(e).unwrap();
+        assert!(c.length() < 1e-9 && (a - 20.0).abs() < 1e-9 && (b - 10.0).abs() < 1e-9 && x.distance(DVec2::X) < 1e-9);
+        // Its axes are construction lines: dimension the long one to 30, turn it 30°.
+        let axis = (0..sk.entities.len()).find(|&l| sk.is_construction(l) && sk.line_length(l).is_some_and(|d| (d - 20.0).abs() < 1e-9)).expect("the major axis line");
+        crate::solver::add_constraints(&mut sk, &[Constraint::Length(axis, 30.0)]).unwrap();
+        let Entity::Ellipse { center, major, minor } = sk.entities[e] else { unreachable!() };
+        let (u, v) = (sk.points[major] - sk.points[center], sk.points[minor] - sk.points[center]);
+        assert!((u.length() - 30.0).abs() < 1e-7 && u.dot(v).abs() < 1e-6, "{u} {v}");
+        assert_eq!(find_regions_count(&sk), 1);
+    }
+
+    fn find_regions_count(sk: &Sketch) -> usize {
+        crate::profile::find_regions(sk).len()
     }
 
     #[test]

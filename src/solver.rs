@@ -180,6 +180,11 @@ impl Eval<'_> {
             }
             Radius(e, r) => self.circle(e)?.1 - r,
             ArcEnds(e) => match *self.sk.entities.get(e)? {
+                Entity::Ellipse { center, major, minor } => {
+                    let c = self.pt(center);
+                    let (u, v) = (self.pt(major) - c, self.pt(minor) - c);
+                    u.dot(v) / (u.length() * v.length()).max(1e-12)
+                }
                 Entity::Arc { center, a, b } => {
                     let c = self.pt(center);
                     self.pt(a).distance(c) - self.pt(b).distance(c)
@@ -308,7 +313,8 @@ fn equations(sk: &Sketch) -> Vec<(Constraint, u8)> {
         .entities
         .iter()
         .enumerate()
-        .filter(|(_, e)| matches!(e, Entity::Arc { .. }))
+        // (An ellipse's: its two axes kept square.)
+        .filter(|(_, e)| matches!(e, Entity::Arc { .. } | Entity::Ellipse { .. }))
         .map(|(i, _)| (Constraint::ArcEnds(i), 0));
     sk.constraints
         .iter()
@@ -480,6 +486,7 @@ fn collapsed(before: &Sketch, after: &Sketch) -> bool {
         Entity::Arc { .. } => sk.arc_geometry(e).map_or(0.0, |(_, r, _, _)| r),
         Entity::Point { .. } => 0.0,
         Entity::Spline { s } => sk.spline_fit(s).windows(2).map(|w| w[0].distance(w[1])).sum(),
+        Entity::Ellipse { .. } => sk.ellipse_geometry(e).map_or(0.0, |(_, _, _, b)| b),
     };
     (0..before.entities.len().min(after.entities.len())).any(|e| {
         let (b, a) = (size(before, e), size(after, e));
@@ -688,6 +695,7 @@ fn solve_with(sk: &mut Sketch, pinned: &[PointId], soft: Option<PointId>, stiff:
             Entity::Arc { .. } => out.arc_geometry(e).map_or(0.0, |(_, r, _, _)| r),
             Entity::Point { .. } => continue,
             Entity::Spline { s } => out.spline_fit(s).windows(2).map(|w| w[0].distance(w[1])).sum(),
+            Entity::Ellipse { .. } => out.ellipse_geometry(e).map_or(0.0, |(_, _, _, b)| b),
         };
         if size < MIN_GEOM {
             return Err(SolveError::Degenerate);
