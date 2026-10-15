@@ -31,6 +31,7 @@ pub enum Icon {
     Thread,
     Shell,
     PressPull,
+    Combine,
     HoleSimple,
     HoleCounterbore,
     HoleCountersink,
@@ -404,6 +405,12 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             line((0.87, 0.14), (0.87, 0.6), s);
             arrow_head((0.87, 0.04), (0.87, 0.28), ink);
             arrow_head((0.87, 0.7), (0.87, 0.46), ink);
+        }
+        Icon::Combine => {
+            // Two overlapping blocks: the target (blue) and a tool (orange outline) merging into it.
+            poly(&[(0.06, 0.38), (0.6, 0.38), (0.6, 0.94), (0.06, 0.94)], Color32::from_rgb(60, 125, 205));
+            poly(&[(0.4, 0.06), (0.94, 0.06), (0.94, 0.6), (0.4, 0.6)], Color32::from_rgba_unmultiplied(235, 150, 60, 150));
+            outline(&[(0.4, 0.06), (0.94, 0.06), (0.94, 0.6), (0.4, 0.6)], Stroke::new(thin.width * 1.2, Color32::from_rgb(235, 150, 60)));
         }
         Icon::Thread => {
             // A bolt shank with slanted thread lines.
@@ -812,7 +819,7 @@ mod shot_tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [260, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine] {
                     button(ui, icon, "", true, false);
                 }
             });

@@ -37,6 +37,8 @@ pub enum Feature {
     Shell(usize),
     /// Faces moved (index into `offset_faces`).
     OffsetFace(usize),
+    /// Bodies combined (index into `combines`).
+    Combine(usize),
 }
 
 /// Put `f` into the timeline at the rollback marker (the end when there is
@@ -74,6 +76,7 @@ pub fn forget_feature(list: &mut Vec<Feature>, gone: Feature) {
             (Feature::Thread(i), Feature::Thread(k)) if i > k => Feature::Thread(i - 1),
             (Feature::Shell(i), Feature::Shell(k)) if i > k => Feature::Shell(i - 1),
             (Feature::OffsetFace(i), Feature::OffsetFace(k)) if i > k => Feature::OffsetFace(i - 1),
+            (Feature::Combine(i), Feature::Combine(k)) if i > k => Feature::Combine(i - 1),
             (f, _) => f,
         };
     }
@@ -170,6 +173,9 @@ pub struct Document {
     /// Offset Face features. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub offset_faces: Vec<crate::model::OffsetFaceFeature>,
+    /// Combine features. Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub combines: Vec<crate::model::CombineFeature>,
     /// The units the design is shown and typed in (Fusion's Document Settings
     /// → Units). Values are always *stored* in mm (see the file header);
     /// older files are mm.
@@ -428,6 +434,18 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             return Err(format!("{}: invalid face, body or thickness", sh.name));
         }
     }
+    for c in &doc.combines {
+        let made = |id: &BodyId| match id.feature {
+            Feature::Extrude(k) => k < doc.extrudes.len(),
+            Feature::Revolve(k) => k < doc.revolves.len(),
+            Feature::Copy(k) => k < doc.copies.len(),
+            _ => false,
+        };
+        let ok = c.op != crate::model::Operation::NewBody && c.target.iter().all(made) && c.tools.iter().all(made);
+        if !ok {
+            return Err(format!("{}: invalid body or operation", c.name));
+        }
+    }
     for of in &doc.offset_faces {
         let ok = of.distance.is_finite() && of.faces.iter().all(|f| f.face.origin.is_finite() && f.face.u.is_finite() && f.face.v.is_finite() && f.anchor.iter().all(|a| a.is_finite()));
         if !ok {
@@ -493,6 +511,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     let mut seen_t = vec![false; doc.thread_features.len()];
     let mut seen_sh = vec![false; doc.shells.len()];
     let mut seen_of = vec![false; doc.offset_faces.len()];
+    let mut seen_cb = vec![false; doc.combines.len()];
     for f in &doc.timeline {
         let slot = match *f {
             Feature::Sketch(i) => seen_s.get_mut(i),
@@ -507,6 +526,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Feature::Thread(i) => seen_t.get_mut(i),
             Feature::Shell(i) => seen_sh.get_mut(i),
             Feature::OffsetFace(i) => seen_of.get_mut(i),
+            Feature::Combine(i) => seen_cb.get_mut(i),
         };
         match slot {
             Some(s) if !*s => *s = true,
@@ -516,7 +536,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     if doc.suppressed.iter().any(|f| !doc.timeline.contains(f)) {
         return Err("a suppressed feature isn't in the timeline".into());
     }
-    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).chain(&seen_sh).chain(&seen_of).any(|s| !s) {
+    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).chain(&seen_sh).chain(&seen_of).chain(&seen_cb).any(|s| !s) {
         return Err("timeline is missing a feature".into());
     }
     Ok(())
@@ -642,6 +662,7 @@ mod tests {
             thread_features: Vec::new(),
             shells: Vec::new(),
             offset_faces: Vec::new(),
+            combines: Vec::new(),
             units: crate::units::Unit::Mm,
             version: Version(0),
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Edge(0)],
@@ -782,6 +803,23 @@ mod tests {
         let mut bad = doc.clone();
         bad.timeline.pop();
         assert!(validate(&bad).is_err(), "an offset face missing from the timeline");
+    }
+
+    #[test]
+    fn combines_save_and_bad_ones_are_refused() {
+        use crate::model::{CombineFeature, Operation};
+        let mut doc = sample();
+        let body = BodyId { feature: Feature::Extrude(0), piece: 0 };
+        doc.combines.push(CombineFeature { target: Some(body), tools: vec![body], op: Operation::Cut, ..Default::default() });
+        doc.timeline.push(Feature::Combine(0));
+        assert_eq!(from_json(&to_json(&doc)).unwrap(), doc);
+        assert!(!to_json(&sample()).contains("combines"));
+        let mut bad = doc.clone();
+        bad.combines[0].op = Operation::NewBody;
+        assert!(validate(&bad).is_err());
+        let mut bad = doc.clone();
+        bad.combines[0].tools = vec![BodyId { feature: Feature::Extrude(7), piece: 0 }];
+        assert!(validate(&bad).is_err());
     }
 
     #[test]

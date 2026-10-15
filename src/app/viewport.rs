@@ -366,7 +366,8 @@ impl OpenCad {
                 && self.hole_dialog.is_none()
                 && self.thread_dialog.is_none()
                 && self.shell_dialog.is_none()
-                && self.offset_dialog.is_none();
+                && self.offset_dialog.is_none()
+                && self.combine_dialog.is_none();
             if let (Some(px), true) = (hover_px, free_view) {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 let face = self.pick_face(&ray);
@@ -490,6 +491,34 @@ impl OpenCad {
             }
         } else if self.shell_dialog.is_some() && esc && !typing {
             self.cancel_shell(); // Esc ends the command, as in Fusion
+        }
+
+        crate::mark("Combine: click the target, then tool bodies");
+        // --- Combine: click the target body, then the tool bodies ---
+        self.combine_hover = None;
+        if self.combine_dialog.as_ref().is_some_and(|d| d.picking.is_some()) && self.active.is_none() {
+            self.ensure_model(Slot::Committed);
+            if let Some(px) = hover_px {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                let model = self.model(Slot::Committed);
+                self.combine_hover = model
+                    .bodies
+                    .iter()
+                    .filter(|b| !self.hidden_bodies.contains(&b.id))
+                    .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir).map(|t| (b.id, t)))
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(id, _)| id);
+            }
+            if let (true, Some(id), Some(d)) = (response.clicked(), self.combine_hover, self.combine_dialog.as_mut()) {
+                d.click(id);
+            }
+            if esc && !typing {
+                if let Some(d) = self.combine_dialog.as_mut() {
+                    d.picking = None;
+                }
+            }
+        } else if self.combine_dialog.is_some() && esc && !typing {
+            self.cancel_combine();
         }
 
         crate::mark("Offset Face / Press Pull: click faces");
@@ -1864,7 +1893,7 @@ impl OpenCad {
 
         crate::mark("draw: bodies (from the kernel; with an");
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
-        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some();
+        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
         self.ensure_model(Slot::Committed);
         self.feature_errors = self.model(Slot::Committed).errors.clone();
@@ -1879,6 +1908,7 @@ impl OpenCad {
         self.thread_errors = self.model(Slot::Committed).thread_errors.clone();
         self.shell_errors = self.model(Slot::Committed).shell_errors.clone();
         self.offset_face_errors = self.model(Slot::Committed).offset_face_errors.clone();
+        self.combine_errors = self.model(Slot::Committed).combine_errors.clone();
         self.body_count = self.model(Slot::Committed).bodies.len();
         // With a body in the scene the origin gets out of the way (Create Sketch
         // and the browser's Origin box bring it back).
@@ -1895,6 +1925,9 @@ impl OpenCad {
         self.dialog_error = if let Some(d) = &self.shell_dialog {
             let k = d.editing.unwrap_or(self.shells.len());
             if d.shell.faces.is_empty() && d.shell.bodies.is_empty() { None } else { model.shell_errors.get(k).cloned().flatten() }
+        } else if let Some(d) = &self.combine_dialog {
+            let k = d.editing.unwrap_or(self.combines.len());
+            if d.ready() { model.combine_errors.get(k).cloned().flatten() } else { None }
         } else if let Some(d) = &self.offset_dialog {
             let k = d.editing.unwrap_or(self.offset_faces.len());
             if d.offset.faces.is_empty() { None } else { model.offset_face_errors.get(k).cloned().flatten() }
@@ -1938,8 +1971,9 @@ impl OpenCad {
                 let c = if previewing { body_color } else { self.body_color(b.id) };
                 // Bodies selected in the browser (or picked for a mirror / pattern)
                 // are tinted with the selection colour; the one under the cursor lighter.
-                let picked = self.copy_dialog.as_ref().is_some_and(|d| d.bodies.contains(&b.id)) || self.shell_dialog.as_ref().is_some_and(|d| d.shell.bodies.contains(&b.id));
-                let hovered = self.copy_body_hover == Some(b.id) || self.shell_hover.and_then(|h| h.1) == Some(b.id);
+                let picked = self.copy_dialog.as_ref().is_some_and(|d| d.bodies.contains(&b.id)) || self.shell_dialog.as_ref().is_some_and(|d| d.shell.bodies.contains(&b.id))
+                    || self.combine_dialog.as_ref().is_some_and(|d| d.combine.target == Some(b.id) || d.combine.tools.contains(&b.id));
+                let hovered = self.copy_body_hover == Some(b.id) || self.shell_hover.and_then(|h| h.1) == Some(b.id) || self.combine_hover == Some(b.id);
                 let c = if hovered && !picked {
                     let mix = |x: u8, y: u8| ((x as u16 * 3 + y as u16) / 4) as u8;
                     Color32::from_rgb(mix(c.r(), COL_HOVER.r()), mix(c.g(), COL_HOVER.g()), mix(c.b(), COL_HOVER.b()))
@@ -2091,6 +2125,14 @@ impl OpenCad {
                     Color32::from_gray(220),
                 );
             }
+        }
+
+        if let Some(field) = self.combine_dialog.as_ref().and_then(|d| d.picking) {
+            let hint = match field {
+                combine_dialog::Field::Target => "Click the target body (the one kept)   (Esc when done)",
+                combine_dialog::Field::Tools => "Click the tool bodies; click one again to drop it   (Esc when done)",
+            };
+            painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
         }
 
         crate::mark("draw: faces Offset Face moves");

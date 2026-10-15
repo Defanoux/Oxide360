@@ -393,6 +393,24 @@ impl Default for OffsetFaceFeature {
     }
 }
 
+/// Fusion's Combine: the tool bodies joined to, cut from or intersected with
+/// the target body. The target keeps its identity; the tools go, unless kept.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CombineFeature {
+    pub name: String,
+    pub target: Option<crate::doc::BodyId>,
+    pub tools: Vec<crate::doc::BodyId>,
+    /// Join, Cut or Intersect (never New Body).
+    pub op: Operation,
+    pub keep_tools: bool,
+}
+
+impl Default for CombineFeature {
+    fn default() -> Self {
+        CombineFeature { name: "Combine1".into(), target: None, tools: Vec::new(), op: Operation::Join, keep_tools: false }
+    }
+}
+
 /// A construction axis: along a straight edge of a body.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AxisFeature {

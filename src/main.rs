@@ -41,6 +41,7 @@ mod profile;
 mod hole_dialog;
 mod shell_dialog;
 mod offset_dialog;
+mod combine_dialog;
 mod thread_dialog;
 mod rect_input;
 mod project;
@@ -70,6 +71,7 @@ use plane_dialog::PlaneDialog;
 use hole_dialog::HoleDialog;
 use shell_dialog::ShellDialog;
 use offset_dialog::OffsetDialog;
+use combine_dialog::CombineDialog;
 use thread_dialog::ThreadDialog;
 use sketch_pattern::{Mode as SpMode, SketchPattern};
 use model::{PlaneFeature, AxisFeature, CopyFeature, EdgeFeature, EdgeKind, EdgeRef, Extrude, Mesh, Operation, Revolve, RevolveAxis};
@@ -158,6 +160,8 @@ impl OpenCad {
                 d.mode.title()
             } else if self.shell_dialog.is_some() {
                 "Shell"
+            } else if self.combine_dialog.is_some() {
+                "Combine"
             } else if let Some(d) = &self.offset_dialog {
                 if d.press_pull && d.editing.is_none() { "Press Pull" } else { "Offset Face" }
             } else if self.thread_dialog.is_some() {
@@ -569,6 +573,7 @@ impl KernelCache {
             thread_features: Vec::new(),
             shells: Vec::new(),
             offset_faces: Vec::new(),
+            combines: Vec::new(),
             timeline: Vec::new(),
             model: kernel::Model::default(),
             stand_in: true,
@@ -589,6 +594,7 @@ struct KernelCache {
     thread_features: Vec<model::ThreadFeature>,
     shells: Vec<model::ShellFeature>,
     offset_faces: Vec<model::OffsetFaceFeature>,
+    combines: Vec<model::CombineFeature>,
     timeline: Vec<Feature>,
     model: kernel::Model,
     /// Nothing built yet (an empty model while the first build runs).
@@ -649,6 +655,10 @@ struct OpenCad {
     offset_face_errors: Vec<Option<String>>,
     offset_hover: Option<PressPullHover>,      // what a click would pick (Offset Face / Press Pull)
     press_pull_go: Option<PressPullHover>,     // a fillet / profile Press Pull hands on to (next frame)
+    combines: Vec<model::CombineFeature>,      // Combine features
+    combine_dialog: Option<CombineDialog>,
+    combine_errors: Vec<Option<String>>,
+    combine_hover: Option<BodyId>,             // the body a click would pick (Combine)
     thread_dialog: Option<thread_dialog::ThreadDialog>,
     thread_errors: Vec<Option<String>>,
     thread_hover: Option<(kernel::Cylinder, DVec3)>, // the cylindrical face under the cursor, and where
@@ -820,6 +830,10 @@ impl Default for OpenCad {
             offset_face_errors: Vec::new(),
             offset_hover: None,
             press_pull_go: None,
+            combines: Vec::new(),
+            combine_dialog: None,
+            combine_errors: Vec::new(),
+            combine_hover: None,
             thread_dialog: None,
             thread_errors: Vec::new(),
             thread_hover: None,
@@ -997,6 +1011,8 @@ impl OpenCad {
                 self.commit_shell();
             } else if self.offset_dialog.is_some() {
                 self.commit_offset();
+            } else if self.combine_dialog.is_some() {
+                self.commit_combine();
             } else if self.thread_dialog.is_some() {
                 self.commit_thread();
             } else if self.hole_dialog.is_some() {
@@ -1113,6 +1129,8 @@ impl OpenCad {
                     }
                 }
             });
+        } else if self.combine_dialog.is_some() && self.active.is_none() {
+            float("combine").show(&ctx, |ui| self.combine_panel(ui));
         } else if self.offset_dialog.is_some() && self.active.is_none() {
             float("offset").show(&ctx, |ui| {
                 let error = self.dialog_error.clone();

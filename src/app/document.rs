@@ -17,6 +17,7 @@ impl OpenCad {
             thread_features: self.thread_features.clone(),
             shells: self.shells.clone(),
             offset_faces: self.offset_faces.clone(),
+            combines: self.combines.clone(),
             units: self.units,
             version: doc::Version(self.version),
             timeline: self.timeline.clone(),
@@ -109,6 +110,10 @@ impl OpenCad {
         for sh in &mut self.shells {
             sh.bodies = sh.bodies.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
         }
+        for c in &mut self.combines {
+            c.target = c.target.and_then(|id| id.after_delete(revolve, k));
+            c.tools = c.tools.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
+        }
         self.selected_bodies.clear();
         self.renaming = None;
         self.prune_removes();
@@ -127,6 +132,10 @@ impl OpenCad {
         }
         for sh in &mut self.shells {
             sh.bodies = sh.bodies.iter().filter_map(|id| id.after_copy_delete(k)).collect();
+        }
+        for c in &mut self.combines {
+            c.target = c.target.and_then(|id| id.after_copy_delete(k));
+            c.tools = c.tools.iter().filter_map(|id| id.after_copy_delete(k)).collect();
         }
         self.selected_bodies.clear();
         self.renaming = None;
@@ -235,6 +244,7 @@ impl OpenCad {
             || self.thread_features != self.saved.thread_features
             || self.shells != self.saved.shells
             || self.offset_faces != self.saved.offset_faces
+            || self.combines != self.saved.combines
             || self.units != self.saved.units
             || self.axes != self.saved.axes
             || self.planes != self.saved.planes
@@ -302,6 +312,8 @@ impl OpenCad {
         self.shell_dialog = None;
         self.offset_faces = doc.offset_faces.clone();
         self.offset_dialog = None;
+        self.combines = doc.combines.clone();
+        self.combine_dialog = None;
         self.thread_dialog = None;
         self.hole_dialog = None;
         self.units = doc.units;
@@ -381,6 +393,8 @@ impl OpenCad {
         self.shell_dialog = None;
         self.offset_faces = doc.offset_faces;
         self.offset_dialog = None;
+        self.combines = doc.combines;
+        self.combine_dialog = None;
         self.thread_dialog = None;
         self.hole_dialog = None;
         self.units = doc.units;
@@ -500,6 +514,7 @@ impl OpenCad {
         let mut thread_features = self.thread_features.clone();
         let mut shells = self.shells.clone();
         let mut offset_faces = self.offset_faces.clone();
+        let mut combines = self.combines.clone();
         timeline.truncate(self.applied()); // features after the marker aren't built
         timeline.retain(|f| !self.suppressed.contains(f));
         match slot {
@@ -551,6 +566,15 @@ impl OpenCad {
                         None => {
                             shells.push(d.shell.clone());
                             timeline.push(Feature::Shell(shells.len() - 1));
+                        }
+                    }
+                }
+                if let Some(d) = self.combine_dialog.as_ref().filter(|d| d.ready()) {
+                    match d.editing {
+                        Some(k) => combines[k] = d.combine.clone(),
+                        None => {
+                            combines.push(d.combine.clone());
+                            timeline.push(Feature::Combine(combines.len() - 1));
                         }
                     }
                 }
@@ -613,6 +637,7 @@ impl OpenCad {
             thread_features,
             shells,
             offset_faces,
+            combines,
             timeline,
         }
     }
@@ -635,6 +660,7 @@ impl OpenCad {
                 && c.thread_features == inp.thread_features
                 && c.shells == inp.shells
                 && c.offset_faces == inp.offset_faces
+                && c.combines == inp.combines
                 && c.timeline == inp.timeline
         });
         let i = slot as usize;
@@ -681,6 +707,7 @@ impl OpenCad {
             thread_features: inp.thread_features,
             shells: inp.shells,
             offset_faces: inp.offset_faces,
+            combines: inp.combines,
             timeline: inp.timeline,
             model,
             stand_in: false,
@@ -734,6 +761,7 @@ impl OpenCad {
             Feature::Thread(k) => self.thread_features.get(k).map(|t| t.name.clone()),
             Feature::Shell(k) => self.shells.get(k).map(|s| s.name.clone()),
             Feature::OffsetFace(k) => self.offset_faces.get(k).map(|f| f.name.clone()),
+            Feature::Combine(k) => self.combines.get(k).map(|c| c.name.clone()),
         }
         .unwrap_or_else(|| format!("{f:?}"))
     }

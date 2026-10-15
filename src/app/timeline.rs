@@ -389,6 +389,7 @@ impl OpenCad {
             Feature::Thread(k) => &mut self.thread_features.get_mut(k)?.name,
             Feature::Shell(k) => &mut self.shells.get_mut(k)?.name,
             Feature::OffsetFace(k) => &mut self.offset_faces.get_mut(k)?.name,
+            Feature::Combine(k) => &mut self.combines.get_mut(k)?.name,
         })
     }
 
@@ -500,6 +501,7 @@ impl OpenCad {
                     Feature::Thread(k) => (self.thread_features[k].name.clone(), self.thread_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
                     Feature::Shell(k) => (self.shells[k].name.clone(), self.shell_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
                     Feature::OffsetFace(k) => (self.offset_faces[k].name.clone(), self.offset_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
+                    Feature::Combine(k) => (self.combines[k].name.clone(), self.combine_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
                 };
                 let error = match *f {
                     Feature::Extrude(k) => self.feature_errors.get(k).cloned().flatten(),
@@ -514,6 +516,7 @@ impl OpenCad {
                     Feature::Thread(k) => self.thread_errors.get(k).cloned().flatten(),
                     Feature::Shell(k) => self.shell_errors.get(k).cloned().flatten(),
                     Feature::OffsetFace(k) => self.offset_face_errors.get(k).cloned().flatten(),
+                    Feature::Combine(k) => self.combine_errors.get(k).cloned().flatten(),
                 };
                 let icon = match *f {
                     Feature::Sketch(_) => Icon::Sketch,
@@ -526,6 +529,7 @@ impl OpenCad {
                     Feature::Thread(_) => Icon::Thread,
                     Feature::Shell(_) => Icon::Shell,
                     Feature::OffsetFace(_) => Icon::PressPull,
+                    Feature::Combine(_) => Icon::Combine,
                     Feature::Copy(k) => match self.copies[k].kind {
                         model::CopyKind::Mirror(_) | model::CopyKind::MirrorPlane(_) => Icon::Mirror,
                         model::CopyKind::Rectangular { .. } => Icon::RectPattern,
@@ -648,6 +652,7 @@ impl OpenCad {
             Some(Feature::Thread(k)) => self.delete_thread(k),
             Some(Feature::Shell(k)) => self.delete_shell(k),
             Some(Feature::OffsetFace(k)) => self.delete_offset(k),
+            Some(Feature::Combine(k)) => self.delete_combine(k),
             None => {}
         }
         if delete.is_some() {
@@ -661,6 +666,7 @@ impl OpenCad {
             Some(Feature::Thread(k)) => self.open_thread(Some(k)),
             Some(Feature::Shell(k)) => self.open_shell(Some(k)),
             Some(Feature::OffsetFace(k)) => self.open_offset(Some(k), false),
+            Some(Feature::Combine(k)) => self.open_combine(Some(k)),
             Some(Feature::Axis(_) | Feature::Remove(_)) => {}
             Some(Feature::Plane(k)) => {
                 self.cancel_all_dialogs();

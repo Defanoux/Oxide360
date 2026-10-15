@@ -741,6 +741,14 @@ impl OpenCad {
                             self.open_shell(None);
                         }
                     }
+                    let combining = self.combine_dialog.is_some();
+                    if icons::button(ui, Icon::Combine, "Combine: join, cut or intersect bodies — a target body and tool bodies", self.body_count > 1, combining).clicked() {
+                        if combining {
+                            self.cancel_combine();
+                        } else {
+                            self.open_combine(None);
+                        }
+                    }
                 });
                 group(ui, "INSPECT", |ui| {
                     if icons::button(ui, Icon::Measure, "Measure: click a corner, edge, face, body or sketch geometry — one for its size, two for distance and angle", has_bodies || !self.sketches.is_empty(), self.measure.is_some()).clicked() {

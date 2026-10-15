@@ -9,6 +9,7 @@ impl OpenCad {
         self.hole_dialog = None;
         self.shell_dialog = None;
         self.offset_dialog = None;
+        self.combine_dialog = None;
         self.thread_dialog = None;
         self.finish_sketch();
         self.cancel_edge_dialog();
@@ -444,6 +445,7 @@ impl OpenCad {
         self.hole_dialog = None;
         self.shell_dialog = None;
         self.offset_dialog = None;
+        self.combine_dialog = None;
         self.thread_dialog = None;
         self.finish_sketch();
         self.cancel_extrude();
@@ -533,6 +535,7 @@ impl OpenCad {
         self.hole_dialog = None;
         self.shell_dialog = None;
         self.offset_dialog = None;
+        self.combine_dialog = None;
         self.thread_dialog = None;
         self.cancel_extrude();
         self.cancel_revolve();
@@ -646,6 +649,7 @@ impl OpenCad {
         self.hole_dialog = None;
         self.shell_dialog = None;
         self.offset_dialog = None;
+        self.combine_dialog = None;
         self.thread_dialog = None;
         self.hole_hover = None;
         self.arrows.clear();
@@ -888,6 +892,74 @@ impl OpenCad {
         self.cancel_offset();
     }
 
+    /// Open the Combine dialog (a new one — bodies selected in the browser
+    /// fill it — or Combine `editing`).
+    pub(crate) fn open_combine(&mut self, editing: Option<usize>) {
+        let selected: Vec<BodyId> = self.selected_bodies.iter().copied().collect();
+        self.finish_sketch();
+        self.cancel_all_dialogs();
+        self.message = None;
+        self.combine_dialog = Some(match editing.and_then(|k| self.combines.get(k).map(|c| (k, c))) {
+            Some((k, c)) => CombineDialog::from_feature(k, c),
+            None => CombineDialog::new(format!("Combine{}", self.combines.len() + 1), &selected),
+        });
+    }
+
+    pub(crate) fn commit_combine(&mut self) {
+        let Some(d) = self.combine_dialog.as_ref() else { return };
+        if !d.ready() {
+            self.message = Some("Pick the target body and the tool bodies".into());
+            return;
+        }
+        if let Some(e) = self.dialog_error.clone() {
+            self.message = Some(format!("Can't combine: {e}"));
+            return;
+        }
+        let c = d.combine.clone();
+        match d.editing {
+            Some(k) => self.combines[k] = c,
+            None => {
+                self.combines.push(c);
+                self.timeline_insert(Feature::Combine(self.combines.len() - 1));
+            }
+        }
+        self.cancel_combine();
+    }
+
+    pub(crate) fn cancel_combine(&mut self) {
+        self.combine_dialog = None;
+        self.combine_hover = None;
+    }
+
+    pub(crate) fn delete_combine(&mut self, k: usize) {
+        if k >= self.combines.len() {
+            return;
+        }
+        self.combines.remove(k);
+        self.timeline_remove(Feature::Combine(k));
+        for f in &mut self.timeline {
+            if let Feature::Combine(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+        self.cancel_combine();
+    }
+
+    pub(crate) fn combine_panel(&mut self, ui: &mut egui::Ui) {
+        let error = self.dialog_error.clone();
+        let Some(d) = self.combine_dialog.as_ref() else { return };
+        let ids: Vec<BodyId> = self.body_ids.iter().copied().chain(d.combine.target).chain(d.combine.tools.iter().copied()).collect();
+        let names: Vec<(BodyId, String)> = ids.into_iter().map(|id| (id, self.body_name(id))).collect();
+        let Some(d) = self.combine_dialog.as_mut() else { return };
+        match d.panel(ui, &names, error.as_deref()) {
+            copy_dialog::Action::Ok => self.commit_combine(),
+            copy_dialog::Action::Cancel => self.cancel_combine(),
+            copy_dialog::Action::None => {}
+        }
+    }
+
     /// Open the Thread dialog (a new Thread, or Thread `editing`).
     pub(crate) fn open_thread(&mut self, editing: Option<usize>) {
         self.finish_sketch();
@@ -999,6 +1071,7 @@ impl OpenCad {
     pub(crate) fn cancel_all_dialogs(&mut self) {
         self.cancel_shell();
         self.cancel_offset();
+        self.cancel_combine();
         self.cancel_hole();
         self.cancel_thread();
         self.cancel_extrude();
@@ -1012,6 +1085,7 @@ impl OpenCad {
         self.hole_dialog = None;
         self.shell_dialog = None;
         self.offset_dialog = None;
+        self.combine_dialog = None;
         self.thread_dialog = None;
         self.face_pick = false;
     }
@@ -1247,6 +1321,7 @@ impl OpenCad {
         self.hole_dialog = None;
         self.shell_dialog = None;
         self.offset_dialog = None;
+        self.combine_dialog = None;
         self.thread_dialog = None;
     }
 
@@ -1426,6 +1501,7 @@ impl OpenCad {
         self.hole_dialog = None;
         self.shell_dialog = None;
         self.offset_dialog = None;
+        self.combine_dialog = None;
         self.thread_dialog = None;
         self.finish_sketch();
         self.cancel_extrude();

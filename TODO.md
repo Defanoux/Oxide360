@@ -9,7 +9,6 @@ has the full Fusion list; this is the slice to do now). Fusion's behaviour is
 the spec for each.
 
 **Core solid tools (the gaps you hit modelling a real part)**
-5. **Combine** — join / cut / intersect bodies, keep tools.
 6. **Move/Copy (M)** — bodies: free drag (arrows + rings), typed X/Y/Z and
    angles; as a timeline feature.
 
@@ -62,6 +61,8 @@ sheet metal, surfaces, CAM.
   load from the built model.
 
 ## Done
+
+- Combine (MODIFY, after Shell): Target Body, Tool Bodies, Join / Cut / Intersect, Keep Tools; the target keeps its identity, used tools disappear; bodies selected in the browser fill it; exact-volume tests. Not done: editing a Combine can't re-pick a tool it already used up (the × and the names still work).
 
 - Press Pull (Q) / Offset Face (MODIFY, first): click flat faces, type or drag the distance (out is +), the faces round them stretch to meet (OCCT BRepOffset_MakeOffset per-face offsets, new exception-safe wrapper; exact-volume tests). Press Pull on a fillet face opens that Fillet (matched by radius and edge position), on a sketch profile starts Extrude with it. Not done: curved faces (hole walls), dragging a fillet radius in place.
 

@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{OffsetFaceFeature, ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{CombineFeature, OffsetFaceFeature, ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::measure::{self, Geom};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
@@ -164,6 +164,7 @@ impl Model {
             + n(&self.thread_errors)
             + n(&self.shell_errors)
             + n(&self.offset_face_errors)
+            + n(&self.combine_errors)
     }
 }
 
@@ -202,6 +203,8 @@ pub struct Model {
     pub shell_errors: Vec<Option<String>>,
     /// One entry per Offset Face.
     pub offset_face_errors: Vec<Option<String>>,
+    /// One entry per Combine.
+    pub combine_errors: Vec<Option<String>>,
     /// Threads shown on holes (not cut): drawn as a helix.
     pub threads: Vec<CosmeticThread>,
     /// Far-end faces of the extrudes/revolves, to tag what's picked there.
@@ -1643,6 +1646,62 @@ fn face_index(shape: &Shape, face: &FacePlane, anchor: DVec2) -> Option<usize> {
     })
 }
 
+/// Combine: the tools joined to, cut from or intersected with the target
+/// (each piece of it). The result keeps the target's id; the tools go unless
+/// kept.
+fn apply_combine(current: Tagged, c: &CombineFeature) -> Result<(Tagged, Option<BodyId>), String> {
+    let target = c.target.ok_or("pick the target body")?;
+    if c.op == Operation::NewBody {
+        return Err("Combine joins, cuts or intersects".into());
+    }
+    let tools: Vec<BodyId> = c.tools.iter().copied().filter(|t| *t != target).collect();
+    if tools.is_empty() {
+        return Err("pick the tool bodies".into());
+    }
+    let target_shapes: Vec<Shape> = current.iter().filter(|(_, id)| *id == target).map(|(s, _)| s.clone()).collect();
+    if target_shapes.is_empty() {
+        return Err("the target body is gone — edit it and pick again".into());
+    }
+    if tools.iter().any(|t| !current.iter().any(|(_, id)| id == t)) {
+        return Err("a tool body is gone — edit it and pick again".into());
+    }
+    let tool_shapes: Vec<Shape> = current.iter().filter(|(_, id)| tools.contains(id)).map(|(s, _)| s.clone()).collect();
+    let failed = || format!("the kernel couldn't {} these bodies", c.op.name().to_lowercase());
+    let mut made: Vec<Shape> = Vec::new();
+    for t in target_shapes {
+        let mut acc = t;
+        for tool in &tool_shapes {
+            acc = match c.op {
+                Operation::Join => acc.try_union(tool),
+                Operation::Cut => acc.try_subtract(tool),
+                _ => acc.try_intersect(tool),
+            }
+            .ok_or_else(failed)?;
+        }
+        made.extend(acc.solids().into_iter().filter(|s| s.volume() > MIN_VOLUME));
+    }
+    if made.is_empty() {
+        return Err(match c.op {
+            Operation::Intersect => "the bodies don't overlap".into(),
+            _ => "nothing of the target is left".into(),
+        });
+    }
+    // The result where the target was in the list; the tools dropped unless kept.
+    let mut out: Tagged = Vec::new();
+    let mut placed = false;
+    for (s, id) in current {
+        if id == target {
+            if !placed {
+                out.extend(made.iter().map(|m| (m.clone(), target)));
+                placed = true;
+            }
+        } else if !tools.contains(&id) || c.keep_tools {
+            out.push((s, id));
+        }
+    }
+    Ok((uniquify(out), Some(target)))
+}
+
 /// Offset Face: the faces picked move out along their normals by the
 /// distance (in, when negative), each body's faces in one go; OCCT's faster
 /// mode first, its sturdier intersecting mode when that fails.
@@ -2091,6 +2150,7 @@ pub struct BuildInputs {
     pub thread_features: Vec<ThreadFeature>,
     pub shells: Vec<ShellFeature>,
     pub offset_faces: Vec<OffsetFaceFeature>,
+    pub combines: Vec<CombineFeature>,
     pub timeline: Vec<Feature>,
 }
 
@@ -2104,6 +2164,7 @@ pub struct Build {
     thread_errors: Vec<Option<String>>,
     shell_errors: Vec<Option<String>>,
     offset_face_errors: Vec<Option<String>>,
+    combine_errors: Vec<Option<String>>,
     threads: Vec<CosmeticThread>,
     remove_errors: Vec<Option<String>>,
     planes: Vec<Option<FacePlane>>,
@@ -2128,9 +2189,10 @@ pub struct Build {
 impl Build {
     pub fn start(inp: BuildInputs) -> Build {
         opencascade::catch_crashes();
-        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, timeline: _ } = &inp;
+        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, timeline: _ } = &inp;
         let _ = (extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, sketches, shells);
         let offset_face_errors: Vec<Option<String>> = vec![None; offset_faces.len()];
+        let combine_errors: Vec<Option<String>> = vec![None; combines.len()];
         let hole_errors: Vec<Option<String>> = vec![None; holes.len()];
         let thread_errors: Vec<Option<String>> = vec![None; thread_features.len()];
         let shell_errors: Vec<Option<String>> = vec![None; shells.len()];
@@ -2154,7 +2216,7 @@ impl Build {
         let timing = std::env::var_os("OPENCAD_TIMING").is_some();
         let started = std::time::Instant::now();
         let step = std::time::Instant::now();
-        Build { next: 0, hole_errors, thread_errors, shell_errors, offset_face_errors, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, step, inp }
+        Build { next: 0, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, step, inp }
     }
 
     /// How far it's got: (entries built, all of them, the one being built next).
@@ -2172,8 +2234,8 @@ impl Build {
     pub fn step(&mut self, budget: std::time::Duration) -> bool {
         let began = std::time::Instant::now();
         let first = self.next;
-        let Build { inp, next, hole_errors, thread_errors, shell_errors, offset_face_errors, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, step } = self;
-        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, timeline } = &*inp;
+        let Build { inp, next, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, step } = self;
+        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, timeline } = &*inp;
         let _ = (&timing, &started);
         loop {
             if *next >= timeline.len() {
@@ -2199,6 +2261,7 @@ impl Build {
                 Feature::Copy(k) => copies.get(k).map(|c| format!("{f:?}|{c:?}|{axes:?}|{planes:?}")),
                 Feature::Shell(k) => shells.get(k).map(|sf| format!("{f:?}|{sf:?}")),
                 Feature::OffsetFace(k) => offset_faces.get(k).map(|of| format!("{f:?}|{of:?}")),
+                Feature::Combine(k) => combines.get(k).map(|c| format!("{f:?}|{c:?}")),
                 _ => None,
             }
             .map(|inputs| key_of(&format!("{}|{inputs}", bodies_key(&current))));
@@ -2417,6 +2480,14 @@ impl Build {
                     let r = catch_unwind(AssertUnwindSafe(|| apply_offset_faces(current, of)));
                     (r, &mut offset_face_errors[k])
                 }
+                Feature::Combine(k) => {
+                    let Some(c) = combines.get(k) else {
+                        *shapes = current;
+                        continue;
+                    };
+                    let r = catch_unwind(AssertUnwindSafe(|| apply_combine(current, c)));
+                    (r, &mut combine_errors[k])
+                }
                 Feature::Remove(k) => {
                     // Take the bodies out; the rest carry on.
                     if let Some(rf) = removes.get(k) {
@@ -2479,7 +2550,7 @@ impl Build {
 
     /// The model built (bodies analysed for picking and Measure).
     pub fn finish(self) -> Model {
-        let Build { inp: _, next: _, hole_errors, thread_errors, shell_errors, offset_face_errors, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, mut step } = self;
+        let Build { inp: _, next: _, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, mut step } = self;
     if timing {
         eprintln!("  {:>8.1} ms  last feature; analysing bodies…", step.elapsed().as_secs_f64() * 1e3);
         step = std::time::Instant::now();
@@ -2507,7 +2578,7 @@ impl Build {
         eprintln!("  {:>8.1} ms  bodies; build {:.1} ms in all", step.elapsed().as_secs_f64() * 1e3, started.elapsed().as_secs_f64() * 1e3);
     }
     let caps = caps_of(&extrude_ends, &revolve_ends);
-    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, threads, caps, touched: touched_by }
+    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, threads, caps, touched: touched_by }
     }
 }
 
@@ -2542,6 +2613,7 @@ pub fn build_all(
         thread_features: thread_features.to_vec(),
         shells: shells.to_vec(),
         offset_faces: Vec::new(),
+        combines: Vec::new(),
         timeline: timeline.to_vec(),
     });
     while b.step(std::time::Duration::MAX) {}
@@ -3938,6 +4010,56 @@ mod tests {
         }
         assert!(b.shape.try_offset_faces(&[99], &[1.0], false).is_none(), "a face that isn't there");
         assert!(b.shape.try_offset_faces(&[top], &[-10.0], false).is_none_or(|s| s.volume() < 1e-6), "pushed right through");
+    }
+
+    /// A 50×30×10 plate (body Extrude 0) and a 10×10×20 post through it from
+    /// z −5 to 15 (body Extrude 1; 1000 of it inside the plate), then Combine `c`.
+    fn combined(c: CombineFeature) -> Model {
+        let mut a = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut a, 0.0, 0.0, 50.0, 30.0);
+        let mut b = Sketch::new("B".into(), OriginPlane::XY);
+        rect(&mut b, 20.0, 10.0, 30.0, 20.0);
+        let post = Extrude { extent: crate::model::Extent::TwoSides, distance2: 5.0, ..ex(1, vec![0], 15.0, Operation::NewBody) };
+        let mut build = Build::start(BuildInputs {
+            sketches: vec![a, b],
+            extrudes: vec![ex(0, vec![0], 10.0, Operation::NewBody), post],
+            combines: vec![c],
+            timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Sketch(1), Feature::Extrude(1), Feature::Combine(0)],
+            ..Default::default()
+        });
+        while build.step(std::time::Duration::MAX) {}
+        build.finish()
+    }
+
+    #[test]
+    fn combine_joins_cuts_and_intersects_exactly() {
+        let plate = BodyId { feature: Feature::Extrude(0), piece: 0 };
+        let post = BodyId { feature: Feature::Extrude(1), piece: 0 };
+        let c = CombineFeature { target: Some(plate), tools: vec![post], ..Default::default() };
+        // Without tools it's an error and both bodies stay: 15000 + 2000.
+        let m = combined(CombineFeature { tools: Vec::new(), ..c.clone() });
+        assert!(m.combine_errors[0].is_some(), "no tools");
+        assert!(close(total(&m), 17000.0), "{}", total(&m));
+        let m = combined(c.clone());
+        assert_eq!(m.combine_errors, vec![None]);
+        assert_eq!(m.bodies.len(), 1);
+        assert_eq!(m.bodies[0].id, plate, "the target keeps its identity");
+        assert!(close(total(&m), 16000.0), "{}", total(&m));
+        let m = combined(CombineFeature { op: Operation::Cut, ..c.clone() });
+        assert_eq!(m.bodies.len(), 1);
+        assert!(close(total(&m), 14000.0), "{}", total(&m));
+        let m = combined(CombineFeature { op: Operation::Cut, keep_tools: true, ..c.clone() });
+        assert_eq!(m.bodies.len(), 2, "the post is kept");
+        assert!(close(total(&m), 16000.0), "{}", total(&m));
+        let m = combined(CombineFeature { op: Operation::Intersect, ..c.clone() });
+        assert!(close(total(&m), 1000.0), "{}", total(&m));
+        // The post as the target: the plate cut from it leaves its two ends.
+        let m = combined(CombineFeature { target: Some(post), tools: vec![plate], op: Operation::Cut, ..c.clone() });
+        assert_eq!(m.bodies.len(), 2);
+        assert!(m.bodies.iter().all(|b| b.id.feature == Feature::Extrude(1)));
+        assert!(close(total(&m), 1000.0), "{}", total(&m));
+        let gone = CombineFeature { tools: vec![BodyId { feature: Feature::Extrude(5), piece: 0 }], ..c };
+        assert!(combined(gone).combine_errors[0].as_deref().is_some_and(|e| e.contains("gone")));
     }
 
     /// The plate (sketch 0, extrude 0) `h` thick, then offset face `of`.
