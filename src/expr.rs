@@ -473,6 +473,28 @@ pub fn rename(text: &str, old: &str, new: &str) -> String {
     out
 }
 
+/// The name being typed at the end of `text` and the parameter names it
+/// could be (those holding its letters, the ones starting with them first;
+/// at most `max`): (where the word starts, the names). None when the end
+/// isn't a name being typed (a number, an operator, a whole name already).
+pub fn suggestions(text: &str, names: &[String], max: usize) -> Option<(usize, Vec<String>)> {
+    let start = text.char_indices().rev().take_while(|(_, c)| c.is_alphanumeric() || *c == '_').last().map(|(i, _)| i)?;
+    let word = &text[start..];
+    // A unit after a number ("10 mm") or a number's exponent isn't a name.
+    let before = text[..start].trim_end();
+    if !word.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') || before.ends_with(|c: char| c.is_ascii_digit() || c == ')') {
+        return None;
+    }
+    if names.iter().any(|n| n == word) {
+        return None; // typed in full
+    }
+    let low = word.to_lowercase();
+    let mut found: Vec<&String> = names.iter().filter(|n| n.to_lowercase().contains(&low) && *n != word).collect();
+    found.sort_by_key(|n| (!n.to_lowercase().starts_with(&low), n.len()));
+    let found: Vec<String> = found.into_iter().take(max).cloned().collect();
+    (!found.is_empty()).then_some((start, found))
+}
+
 /// Does `text` use the name `name`?
 pub fn uses(text: &str, name: &str) -> bool {
     tokens(text).is_ok_and(|t| t.iter().any(|k| *k == Tok::Name(name.to_string())))
@@ -549,6 +571,19 @@ mod tests {
         assert!(v[0].is_err() && v[1].is_err());
         assert_eq!(v[2], Ok(5.0));
         assert!(evaluate(&[p("x", ParamUnit::Mm, "nope + 1")])[0].as_ref().is_err_and(|e| e.contains("nope")));
+    }
+
+    #[test]
+    fn typing_a_name_suggests_the_parameters_holding_it() {
+        let names: Vec<String> = ["width", "depth", "wall", "lid_width", "w2"].iter().map(|s| s.to_string()).collect();
+        let (at, found) = suggestions("span / wi", &names, 6).unwrap();
+        assert_eq!(at, 7);
+        assert_eq!(found, vec!["width", "lid_width"], "starting with it first");
+        assert_eq!(suggestions("w", &names, 2).unwrap().1, vec!["w2", "wall"], "at most 2");
+        assert!(suggestions("10 m", &names, 6).is_none(), "a unit after a number");
+        assert!(suggestions("width", &names, 6).is_none(), "typed in full");
+        assert!(suggestions("3 + ", &names, 6).is_none());
+        assert!(suggestions("zz", &names, 6).is_none());
     }
 
     #[test]

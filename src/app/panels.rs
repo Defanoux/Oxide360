@@ -1592,6 +1592,41 @@ impl OpenCad {
         let mut edge_sizes: Option<(f64, Option<f64>)> = None;
         let mut extrude_ok = false;
         let mut extrude_cancel = false;
+        // Parameter names for what's being typed (a list under the box, as
+        // Fusion shows): ↑/↓ choose, Tab or a click puts the name in.
+        let names: Vec<String> = self.parameters.iter().map(|p| p.name.clone()).collect();
+        let takes_names = !matches!(target, EditTarget::PolygonSides | EditTarget::Corner(_) | EditTarget::NewCircle);
+        let suggest = expr::suggestions(&fe.text, &names, 6).filter(|_| takes_names);
+        let pick_id = egui::Id::new("float_suggest");
+        let (mut pick, rows): (usize, Vec<egui::Rect>) = ctx.data(|d| d.get_temp(pick_id)).unwrap_or_default();
+        let mut chosen: Option<String> = None;
+        if let Some((_, found)) = &suggest {
+            pick = pick.min(found.len() - 1);
+            let (tab, up, down, press) = ctx.input_mut(|i| {
+                (i.consume_key(egui::Modifiers::NONE, egui::Key::Tab), i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp), i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown), i.pointer.primary_released().then(|| i.pointer.interact_pos()).flatten())
+            });
+            if up {
+                pick = pick.saturating_sub(1);
+            }
+            if down {
+                pick = (pick + 1).min(found.len() - 1);
+            }
+            let clicked = press.and_then(|p| rows.iter().position(|r| r.contains(p)));
+            if let Some(k) = clicked.filter(|k| *k < found.len()) {
+                chosen = Some(found[k].clone());
+            } else if tab {
+                chosen = Some(found[pick].clone());
+            }
+        } else {
+            pick = 0;
+        }
+        if let (Some(name), Some((start, _))) = (&chosen, &suggest) {
+            fe.text.truncate(*start);
+            fe.text.push_str(name);
+            fe.focus = true;
+            fe.keep_text = true;
+        }
+        let mut new_rows = Vec::new();
         egui::Area::new(egui::Id::new("float_edit")).order(egui::Order::Foreground).fixed_pos(anchor).show(
             ctx,
             |ui| {
@@ -1608,7 +1643,8 @@ impl OpenCad {
                         } else {
                             unit.name()
                         });
-                        let (lost, changed, id) = (out.response.lost_focus(), out.response.changed(), out.response.id);
+                        // (A click on a suggested name isn't leaving the box.)
+                        let (lost, changed, id) = (out.response.lost_focus() && chosen.is_none(), out.response.changed() || chosen.is_some(), out.response.id);
                         if fe.focus {
                             // Focus and select everything, so typing replaces the value.
                             out.response.request_focus();
@@ -1678,9 +1714,17 @@ impl OpenCad {
                             }
                         }
                     });
+                    if let (Some((_, found)), None) = (&suggest, &chosen) {
+                        for (k, name) in found.iter().enumerate() {
+                            let value = self.parameters.iter().zip(expr::evaluate(&self.parameters)).find(|(p, _)| &p.name == name).and_then(|(p, v)| v.ok().map(|v| p.unit.show(v))).unwrap_or_default();
+                            let r = ui.add(egui::Button::selectable(k == pick, format!("{name}   {value}")).min_size(egui::vec2(160.0, 0.0)).sense(egui::Sense::hover()));
+                            new_rows.push(r.rect);
+                        }
+                    }
                 });
             },
         );
+        ctx.data_mut(|d| d.insert_temp(pick_id, (pick, new_rows)));
         match target {
             EditTarget::Corner(p) => {
                 if let Some(text) = corner_text {
@@ -1745,7 +1789,12 @@ impl OpenCad {
                             }
                         }
                     }
-                    Some(None) => self.message = Some("Type a number".into()),
+                    Some(None) => {
+                        // Say what's wrong with an expression ("no parameter called widht").
+                        let kind = if degrees { expr::Kind::Angle } else { expr::Kind::Length };
+                        let why = typed_text.as_deref().and_then(|t| expr::eval(t, kind, unit).err());
+                        self.message = Some(why.map_or("Type a number".into(), |w| format!("Can't use that: {w}")));
+                    }
                     None => {}
                 }
                 if close {

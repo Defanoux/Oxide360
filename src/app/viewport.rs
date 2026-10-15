@@ -2671,6 +2671,12 @@ impl OpenCad {
                             COL_HOVER
                         } else if sk.is_driven(ci) {
                             COL_DRIVEN
+                        } else if sk.dim_expr(ci).is_some_and(|e| {
+                            let kind = if matches!(c, Constraint::Angle(..)) { expr::Kind::Angle } else { expr::Kind::Length };
+                            expr::eval(e, kind, sk.dim_unit(ci).unwrap_or(self.units)).is_err()
+                        }) {
+                            // Its expression no longer works (a parameter gone): red, as Fusion shows it.
+                            Color32::from_rgb(230, 80, 70)
                         } else {
                             COL_DIM
                         };

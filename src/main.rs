@@ -201,6 +201,10 @@ impl OpenCad {
     /// in degrees.
     fn value_text(&self, i: usize, ci: usize) -> String {
         let Some(c) = self.sketches.get(i).and_then(|sk| sk.constraints.get(ci)) else { return String::new() };
+        // Typed as an expression: edited as one ("width / 2"), not its number.
+        if let Some(e) = self.sketches[i].dim_expr(ci) {
+            return e.to_string();
+        }
         match (c, c.value()) {
             (Constraint::Angle(..), Some(d)) => format!("{d:.2}"),
             (_, Some(d)) => self.dim_unit(i, ci).plain(d),
