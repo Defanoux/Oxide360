@@ -1694,6 +1694,7 @@ impl OpenCad {
                 | Tool::Circle3Point
                 | Tool::Arc3Point
                 | Tool::ArcCenter
+                | Tool::ArcTangent
                 | Tool::Slot
                 | Tool::PolygonCircumscribed
                 | Tool::PolygonInscribed
@@ -3176,7 +3177,7 @@ impl OpenCad {
                             let tangent = matches!(at, Anchor::OnLine(e, q) if sk.line_foot(e, from).is_some_and(|f| f.distance(q) < 1e-9 * (1.0 + r)));
                             format!("Ø {}{}   (or type the diameter)", u.show(2.0 * r), if tangent { "  tangent" } else { "" })
                         }
-                        Tool::Arc3Point | Tool::ArcCenter => match self.editor.arc_preview(sk, here) {
+                        Tool::Arc3Point | Tool::ArcCenter | Tool::ArcTangent => match self.editor.arc_preview(sk, here) {
                             Some(a) => {
                                 view.arc(&plane, a.center, a.radius, a.start, a.sweep, preview);
                                 // Centre snapped? Mark it (idempotent on the snapped point).
@@ -3354,6 +3355,8 @@ impl OpenCad {
             }
             if let (Some(msg), Some(_)) = (&self.message, self.active) {
                 painter.text(rect.center_top() + egui::vec2(0.0, 58.0), egui::Align2::CENTER_TOP, msg.as_str(), egui::FontId::proportional(13.0), COL_FIXED);
+            } else if let (Tool::ArcTangent, None, Some(_)) = (self.editor.tool, self.editor.start, self.active) {
+                painter.text(rect.center_top() + egui::vec2(0.0, 58.0), egui::Align2::CENTER_TOP, "Click the end of a line or arc to start from", egui::FontId::proportional(15.0), Color32::from_gray(220));
             } else if let (Tool::Constrain("Symmetric"), Some(i)) = (self.editor.tool, self.active) {
                 // What to pick next, in order.
                 let step = self.sketches[i].symmetric_step(&self.editor.selection);

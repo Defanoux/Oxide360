@@ -531,7 +531,11 @@ impl OpenCad {
                     // Arc: the last arc tool used, ▾ for the other.
                     let arc_tool = self.arc_tool;
                     let tip = format!("{}", arc_tool.name());
-                    let arc_icon = |t: Tool| if t == Tool::ArcCenter { Icon::ArcCenter } else { Icon::Arc3Point };
+                    let arc_icon = |t: Tool| match t {
+                        Tool::ArcCenter => Icon::ArcCenter,
+                        Tool::ArcTangent => Icon::ArcTangent,
+                        _ => Icon::Arc3Point,
+                    };
                     if icons::button(ui, arc_icon(arc_tool), &tip, true, self.editor.tool == arc_tool).clicked() {
                         self.editor.set_tool(arc_tool);
                     }

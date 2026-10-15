@@ -26,6 +26,7 @@ pub enum Icon {
     Mirror,
     Midpoint,
     Symmetric,
+    ArcTangent,
     Plane,
     PlaneAngle,
     Hole,
@@ -591,6 +592,13 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             dot(0.5, 0.24, ink);
             dot(0.88, 0.62, ink);
         }
+        Icon::ArcTangent => {
+            // A line running into an arc that leaves it smoothly.
+            line((0.08, 0.8), (0.45, 0.8), Stroke::new(thin.width * 1.2, ink));
+            arc(0.45, 0.45, 0.35, std::f32::consts::FRAC_PI_2, 0.0, Stroke::new(thin.width * 1.2, orange));
+            dot(0.45, 0.8, ink);
+            dot(0.8, 0.45, ink);
+        }
         Icon::ArcCenter => {
             arc(0.3, 0.7, 0.55, -std::f32::consts::FRAC_PI_2, 0.0, Stroke::new(thin.width * 1.2, orange));
             line((0.3, 0.7), (0.85, 0.7), Stroke::new(thin.width * 0.7, ink));
@@ -849,9 +857,9 @@ mod shot_tests {
     #[ignore]
     fn shots() {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
-        crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [340, 80], |ui| {
+        crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [420, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric] {
                     button(ui, icon, "", true, false);
                 }
             });

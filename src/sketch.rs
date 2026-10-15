@@ -1264,6 +1264,52 @@ impl Sketch {
     }
 }
 
+/// The arc leaving `s` along `dir` (unit) that ends at `e`: its centre is on
+/// the normal at `s`, as far from `e` as from `s`. None when `e` is straight
+/// ahead (or behind): no arc does that.
+pub fn tangent_arc(s: DVec2, dir: DVec2, e: DVec2) -> Option<ArcShape> {
+    let n = dir.perp();
+    let chord = e - s;
+    let across = 2.0 * n.dot(chord);
+    if across.abs() < 1e-9 * chord.length().max(1.0) || chord.length() < MIN_SIZE {
+        return None;
+    }
+    // Signed: positive turns left (counter-clockwise), negative right.
+    let r = chord.length_squared() / across;
+    let center = s + n * r;
+    let angle = |x: DVec2| (x - center).y.atan2((x - center).x);
+    let (as_, ae) = (angle(s), angle(e));
+    let ccw = |from: f64, to: f64| (to - from).rem_euclid(std::f64::consts::TAU);
+    Some(if r > 0.0 {
+        ArcShape { center, radius: r, start: as_, sweep: ccw(as_, ae), end_angle: ae, flipped: false }
+    } else {
+        ArcShape { center, radius: -r, start: ae, sweep: ccw(ae, as_), end_angle: ae, flipped: true }
+    })
+}
+
+impl Sketch {
+    /// The way out of point `p` as the free end of exactly one line or arc
+    /// (along the line, or round the arc): the direction and that entity.
+    pub fn tangent_from(&self, p: PointId) -> Option<(DVec2, EntityId)> {
+        let mut found = None;
+        for (e, ent) in self.entities.iter().enumerate() {
+            let dir = match *ent {
+                Entity::Line { a, b } if b == p => (self.points[b] - self.points[a]).try_normalize(),
+                Entity::Line { a, b } if a == p => (self.points[a] - self.points[b]).try_normalize(),
+                // Counter-clockwise from a to b: on past b, or back past a.
+                Entity::Arc { center, b, .. } if b == p => (self.points[b] - self.points[center]).perp().try_normalize(),
+                Entity::Arc { center, a, .. } if a == p => (-(self.points[a] - self.points[center]).perp()).try_normalize(),
+                _ => continue,
+            };
+            if found.is_some() {
+                return None; // a corner: no one way out
+            }
+            found = Some((dir?, e));
+        }
+        found
+    }
+}
+
 // ---------- Perpendicular guides from line middles ----------
 
 impl Sketch {
@@ -2478,6 +2524,8 @@ pub enum Tool {
     Arc3Point,
     /// Arc: centre, start (sets the radius), then where it ends.
     ArcCenter,
+    /// Arc: from the end of a line or arc, leaving it smoothly, to where it ends.
+    ArcTangent,
     /// Round a corner where two lines meet (pick the corner, type a radius).
     SketchFillet,
     /// Bevel a corner where two lines meet.
@@ -2507,7 +2555,7 @@ pub enum Tool {
 
 impl Tool {
     /// The arc tools, in the order of the toolbar's arc menu.
-    pub const ARCS: [Tool; 2] = [Tool::Arc3Point, Tool::ArcCenter];
+    pub const ARCS: [Tool; 3] = [Tool::Arc3Point, Tool::ArcCenter, Tool::ArcTangent];
 
     /// The polygon tools, in the order of the toolbar's polygon menu.
     pub const POLYGONS: [Tool; 3] = [Tool::PolygonCircumscribed, Tool::PolygonInscribed, Tool::PolygonEdge];
@@ -2535,6 +2583,7 @@ impl Tool {
             Tool::Circle3Tangent => "3-Tangent Circle",
             Tool::Arc3Point => "3-Point Arc",
             Tool::ArcCenter => "Center Point Arc",
+            Tool::ArcTangent => "Tangent Arc",
             Tool::SketchFillet => "Fillet",
             Tool::SketchChamfer => "Chamfer",
             Tool::Trim => "Trim",
@@ -2717,9 +2766,14 @@ impl Editor {
         probe.circle_preview(sk, at).filter(|&(_, r)| r >= MIN_SIZE)
     }
 
-    /// The arc an arc tool would make with the cursor at `at` (third click).
+    /// The arc an arc tool would make with the cursor at `at` (third click;
+    /// the second for a tangent arc).
     pub fn arc_preview(&self, sk: &Sketch, at: DVec2) -> Option<ArcShape> {
         let pos = |a: Anchor| sk.is_valid_anchor(a).then(|| sk.pos(a));
+        if let (Tool::ArcTangent, Some(Anchor::Point(p))) = (self.tool, self.start) {
+            let (dir, _) = sk.tangent_from(p)?;
+            return tangent_arc(sk.points[p], dir, at);
+        }
         let (p, q) = (pos(self.start?)?, pos(self.second?)?);
         let angle = |c: DVec2, x: DVec2| (x - c).y.atan2((x - c).x);
         match self.tool {
@@ -2944,6 +2998,15 @@ impl Editor {
                 sk.entities.push(Entity::Point { p });
             }
             return ties;
+        }
+        // Tangent arc: it starts only from the free end of a line or arc.
+        if let (Tool::ArcTangent, None) = (self.tool, self.start) {
+            if let Anchor::Point(p) = at {
+                if sk.tangent_from(p).is_some() {
+                    self.start = Some(at);
+                }
+            }
+            return Vec::new();
         }
         let Some(start) = self.start else {
             self.start = Some(at);
@@ -3217,6 +3280,23 @@ impl Editor {
                     return Vec::new();
                 };
                 add_circle_through(sk, c, r, &[start, second, at])
+            }
+            Tool::ArcTangent => {
+                let Anchor::Point(p) = start else { return Vec::new() };
+                self.start = None;
+                let (Some((dir, from)), true) = (sk.tangent_from(p), size >= MIN_SIZE) else { return Vec::new() };
+                let Some(arc) = tangent_arc(sk.points[p], dir, sk.pos(at)) else { return Vec::new() };
+                let end = resolve(sk, at);
+                let c = resolve(sk, Anchor::Free(arc.center));
+                // Stored counter-clockwise from a to b.
+                let (a, b) = if arc.flipped { (end, p) } else { (p, end) };
+                sk.entities.push(Entity::Arc { center: c, a, b });
+                let e = sk.entities.len() - 1;
+                // From a line: kept tangent to it (the solver's shared-end form).
+                if sk.is_line(from) {
+                    ties.push(Constraint::Tangent(from, e));
+                }
+                ties
             }
             Tool::Arc3Point | Tool::ArcCenter if self.second.is_none() => {
                 if size >= MIN_SIZE {
@@ -4087,6 +4167,40 @@ mod construction_tests {
         assert!(sk.symmetric_step(&[Sel::Entity(1)]).contains("other line"));
         assert!(sk.symmetric_step(&[Sel::Entity(3)]).contains("circle"));
         assert!(sk.symmetric_step(&[Sel::Point(p), Sel::Point(q)]).contains("mirror about"));
+    }
+
+    #[test]
+    fn a_tangent_arc_leaves_a_line_smoothly() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Line);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(0.0, 0.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(10.0, 0.0)));
+        ed.cancel();
+        let end = 2; // the line's far end
+        assert_eq!(sk.tangent_from(end), Some((DVec2::X, 0)));
+        // Up and ahead to (20, 10): a quarter circle, radius 10, centre (10, 10).
+        ed.set_tool(Tool::ArcTangent);
+        assert!(ed.click(&mut sk, Anchor::Free(DVec2::new(3.0, 3.0))).is_empty() && ed.start.is_none(), "only from a line's end");
+        ed.click(&mut sk, Anchor::Point(end));
+        let shape = ed.arc_preview(&sk, DVec2::new(20.0, 10.0)).expect("an arc");
+        assert!((shape.radius - 10.0).abs() < 1e-9 && shape.center.distance(DVec2::new(10.0, 10.0)) < 1e-9);
+        assert!((shape.sweep - std::f64::consts::FRAC_PI_2).abs() < 1e-9 && !shape.flipped, "turning left");
+        let ties = ed.click(&mut sk, Anchor::Free(DVec2::new(20.0, 10.0)));
+        assert_eq!(ties, vec![Constraint::Tangent(0, 1)]);
+        crate::solver::add_constraints(&mut sk, &ties).unwrap();
+        let Entity::Arc { center, a, b } = sk.entities[1] else { panic!("an arc") };
+        assert_eq!(a, end, "counter-clockwise from the line's end");
+        assert!(sk.points[center].distance(DVec2::new(10.0, 10.0)) < 1e-6 && sk.points[b].distance(DVec2::new(20.0, 10.0)) < 1e-6);
+        // Down instead: it turns right (stored the other way round).
+        let shape = tangent_arc(DVec2::new(10.0, 0.0), DVec2::X, DVec2::new(20.0, -10.0)).unwrap();
+        assert!(shape.flipped && shape.center.distance(DVec2::new(10.0, -10.0)) < 1e-9);
+        // Straight ahead: no arc.
+        assert!(tangent_arc(DVec2::ZERO, DVec2::X, DVec2::new(5.0, 0.0)).is_none());
+        // On from the arc's end: the way round it.
+        let (dir, from) = sk.tangent_from(sk.entities.len().checked_sub(1).map(|_| match sk.entities[1] { Entity::Arc { b, .. } => b, _ => unreachable!() }).unwrap()).unwrap();
+        assert_eq!(from, 1);
+        assert!(dir.distance(DVec2::Y) < 1e-6, "{dir}");
     }
 
     #[test]
