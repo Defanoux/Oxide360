@@ -931,6 +931,40 @@ fn apply_edges(tagged: Tagged, f: &EdgeFeature, ext: &[Option<End>], rev: &[Opti
         if two.is_some_and(|d2| !d2.is_finite() || d2 <= 0.0) {
             return Err("chamfer distance must be greater than zero".into());
         }
+        // How far it reaches across each face beside an edge (on the face the
+        // pick faced, on the other): wider than a face, OCCT may run it on
+        // through the wall beyond, which Fusion refuses. So does this.
+        let setback = |r: &EdgeRef| -> (f64, f64) {
+            match (f.kind, two, f.angle) {
+                (EdgeKind::Fillet, ..) => {
+                    let bend = r.faces[0].angle_between(r.faces[1]);
+                    let s = f.size * (bend / 2.0).tan();
+                    (s, s)
+                }
+                (EdgeKind::Chamfer, _, Some(a)) => (f.size, f.size * a.to_radians().tan()),
+                (EdgeKind::Chamfer, Some(d2), None) => (f.size, d2),
+                (EdgeKind::Chamfer, None, None) => (f.size, f.size),
+            }
+        };
+        let tol = shape_tol(&b);
+        for &(j, want) in &picked[i] {
+            let r = &all[j].2;
+            let first = if r.faces[0].dot(want) >= r.faces[1].dot(want) { 0 } else { 1 };
+            let (near, far) = setback(r);
+            for (k, need) in [(first, near), (1 - first, far)] {
+                let Some(face) = edge_face(&b, r, r.faces[k]) else { continue };
+                if let Some(w) = face_width(&face, &edge_points(&all[j].1), tol) {
+                    if need > w * (1.0 + 1e-6) + tol {
+                        return Err(format!(
+                            "{} {} is wider than the face beside the edge ({})",
+                            f.kind.size_label().to_lowercase(),
+                            f.size,
+                            crate::units::Unit::Mm.plain(w)
+                        ));
+                    }
+                }
+            }
+        }
         let attempt = |k: f64| -> Result<Option<Shape>, String> {
             let shape = match (f.kind, two, f.angle) {
                 (EdgeKind::Chamfer, _, Some(a)) => b.try_chamfer_edges_da(f.size * k, a.to_radians(), faces_for(&b)?),
@@ -951,6 +985,59 @@ fn apply_edges(tagged: Tagged, f: &EdgeFeature, ext: &[Option<End>], rev: &[Opti
     }
     let touched = (0..ids.len()).find(|&i| !picked[i].is_empty()).map(|i| ids[i]);
     Ok((uniquify(out), touched))
+}
+
+/// How far a flat face (normal `n`, boundary `segments`) runs in from the
+/// point `p` on its edge running along `t`: the distance, across the face, to
+/// the other side. `None` when neither way crosses the face.
+fn width_across(n: DVec3, segments: &[(DVec3, DVec3)], p: DVec3, t: DVec3) -> Option<f64> {
+    let side = n.cross(t).normalize_or_zero();
+    if side == DVec3::ZERO {
+        return None;
+    }
+    let scale = segments.iter().map(|(a, b)| a.distance(*b)).sum::<f64>().max(1e-9);
+    let skip = scale * 1e-9;
+    // Crossings of the ray p + s·dir with the boundary, as distances s.
+    let hits = |dir: DVec3| -> Vec<f64> {
+        let mut out = Vec::new();
+        for &(a, b) in segments {
+            // In the face's plane: p + s·dir = a + u·(b − a).
+            let e = b - a;
+            let denom = dir.cross(e).dot(n);
+            if denom.abs() < 1e-15 {
+                continue;
+            }
+            let w = a - p;
+            let s = w.cross(e).dot(n) / denom;
+            let u = w.cross(dir).dot(n) / denom;
+            if s > skip && (-1e-12..1.0 - 1e-12).contains(&u) {
+                out.push(s);
+            }
+        }
+        out
+    };
+    // Into the face is the way that crosses its boundary an odd number of times.
+    [side, -side].into_iter().map(hits).find(|h| h.len() % 2 == 1).and_then(|h| h.into_iter().reduce(f64::min))
+}
+
+/// The narrowest a flat face is across from points along `edge` (one of its
+/// edges); `None` for a curved face.
+fn face_width(face: &Face, edge: &[DVec3], tol: f64) -> Option<f64> {
+    let (n, _, _) = face_flat(face, tol)?;
+    let segments: Vec<(DVec3, DVec3)> = face.edges().flat_map(|e| edge_points(&e).windows(2).map(|w| (w[0], w[1])).collect::<Vec<_>>()).collect();
+    let k = edge.len().saturating_sub(1);
+    if k == 0 {
+        return None;
+    }
+    // A few points along the edge (not its ends, where other faces meet it).
+    [0.25, 0.5, 0.75]
+        .into_iter()
+        .filter_map(|f: f64| {
+            let i = ((k as f64 * f) as usize).min(k - 1);
+            let (a, b) = (edge[i], edge[i + 1]);
+            width_across(n, &segments, a.lerp(b, 0.5), (b - a).normalize_or_zero())
+        })
+        .reduce(f64::min)
 }
 
 /// The face of `shape` that has `edge` as one of its edges and whose outward
@@ -3750,6 +3837,38 @@ mod tests {
         assert!(close(total(&m), box_volume), "the box stays, unrounded: {}", total(&m));
         // A plain one is exact.
         assert!(close(total(&rounded(EdgeKind::Fillet, 1.0)), box_volume - (1.0 - PI / 4.0) * 50.0));
+    }
+
+    #[test]
+    fn a_round_wider_than_the_rim_is_refused_even_where_occt_would_make_it() {
+        // Open at the top and the front: the left wall's top edge runs out
+        // to the open end, and OCCT would run a 13 mm round on through the
+        // wall. Fusion refuses a round wider than the face beside it.
+        let front = {
+            let face = FacePlane::from_face(DVec3::NEG_Y, DVec3::ZERO);
+            let q = DVec3::new(20.0, 0.0, 20.0);
+            crate::model::PickedFace { face, anchor: [q.dot(face.u), q.dot(face.v)] }
+        };
+        let open = ShellFeature { faces: vec![top_face(40.0), front], ..Default::default() };
+        let m = shelled(40.0, open.clone());
+        assert_eq!(m.shell_errors, vec![None]);
+        let box_volume = total(&m);
+        let wall = m.bodies[0].edges.iter().map(|e| e.at).find(|r| (r.mid - DVec3::new(0.0, 15.0, 40.0)).length() < 1e-6).expect("the left wall's outer top edge");
+        let mut b = Sketch::new("B".into(), OriginPlane::XY);
+        rect(&mut b, 0.0, 0.0, 50.0, 30.0);
+        let tl = [Feature::Sketch(0), Feature::Extrude(0), Feature::Shell(0), Feature::Edge(0)];
+        let rounded = |kind, size: f64| {
+            let f = EdgeFeature { name: "F".into(), kind, size, size2: None, angle: None, edges: vec![wall] };
+            build_all(&[b.clone()], &[ex(0, vec![0], 40.0, Operation::NewBody)], &[], &[f], &[], &[], &[], &[], &[], &[], &[open.clone()], &tl)
+        };
+        for (kind, size) in [(EdgeKind::Fillet, 13.3), (EdgeKind::Fillet, 2.1), (EdgeKind::Chamfer, 3.0)] {
+            let m = rounded(kind, size);
+            assert!(m.edge_errors[0].as_deref().is_some_and(|e| e.contains("wider than the face")), "{size}: {:?}", m.edge_errors);
+            assert!(close(total(&m), box_volume));
+        }
+        let m = rounded(EdgeKind::Fillet, 2.0);
+        assert_eq!(m.edge_errors, vec![None]);
+        assert!((total(&m) - (box_volume - 4.0 * (1.0 - PI / 4.0) * 30.0)).abs() < 1e-3, "{}", box_volume - total(&m));
     }
 
     fn top_face(h: f64) -> crate::model::PickedFace {
