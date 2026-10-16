@@ -2123,6 +2123,7 @@ impl OpenCad {
         let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some() || self.move_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
         self.ensure_model(Slot::Committed);
+        self.adopt_linked_sketches();
         self.feature_errors = self.model(Slot::Committed).errors.clone();
         self.edge_feature_errors = self.model(Slot::Committed).edge_errors.clone();
         self.sketch_errors = self.model(Slot::Committed).sketch_errors.clone();
@@ -2688,6 +2689,7 @@ impl OpenCad {
             } else {
                 COL_UNDER
             };
+            let lost = self.caches[Slot::Committed as usize].as_ref().and_then(|c| c.model.projection_lost.get(j)).cloned().unwrap_or_default();
             let colour_of = |s: Sel| {
                 if !active {
                     base
@@ -2705,6 +2707,10 @@ impl OpenCad {
                 let mut col = colour_of(Sel::Entity(e));
                 if col == base && sk.is_projected(e) {
                     col = COL_PROJECTED;
+                }
+                // Linked to an edge that's gone: red, as in Fusion.
+                if col == base && lost.contains(&e) {
+                    col = COL_FIXED;
                 }
                 let stroke = Stroke::new(if active { 2.0 } else { 1.5 }, col);
                 let dashed = sk.is_construction(e);

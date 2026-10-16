@@ -218,6 +218,12 @@ pub struct Model {
     /// For each extrude / revolve / fillet that was built: the body it made or
     /// changed (the first, if several). The timeline colours its icon by it.
     pub touched: HashMap<Feature, BodyId>,
+    /// One entry per sketch: the sketch with its linked projections moved to
+    /// where their edges are in this build (None when none moved). The app
+    /// takes these in so projected lines follow the part.
+    pub linked_sketches: Vec<Option<Sketch>>,
+    /// One entry per sketch: projected entities whose edge can't be found.
+    pub projection_lost: Vec<Vec<usize>>,
 }
 
 fn kv(p: DVec3) -> KVec {
@@ -2303,6 +2309,40 @@ pub struct BuildInputs {
     pub timeline: Vec<Feature>,
 }
 
+/// Sketch `sk`'s linked projections against the bodies built so far
+/// (`frame`: where a face or construction-plane sketch is in this build).
+fn relink(sk: &Sketch, frame: Option<FacePlane>, bodies: &Tagged, ext: &[Option<End>], rev: &[Option<End>]) -> (Option<Sketch>, Vec<usize>, Option<String>) {
+    if sk.projections.is_empty() {
+        return (None, Vec::new(), None);
+    }
+    let Ok(plane) = (if sk.plane_ref.is_some() { frame.map(Frame::from_face).ok_or(()) } else { frame_for(sk, frame).map_err(|_| ()) }) else {
+        return (None, Vec::new(), None); // (the sketch's own error says why)
+    };
+    let found = catch_unwind(AssertUnwindSafe(|| {
+        let mut all: Vec<(usize, Edge, EdgeRef)> = Vec::new();
+        let mut pts: Vec<Vec<DVec3>> = Vec::new();
+        for (i, (b, _)) in bodies.iter().enumerate() {
+            for (e, r, p) in shape_edges(b) {
+                all.push((i, e, r));
+                pts.push(p);
+            }
+        }
+        sk.projections
+            .iter()
+            .map(|(_, r)| {
+                let moved = r.follow.and_then(|fl| motion_for(fl, ext, rev)).map(|m| move_edge(r, m));
+                let r = moved.as_ref().unwrap_or(r);
+                let hit = find_edge(&all, r, f64::INFINITY)?;
+                let idx = all.iter().position(|c| std::ptr::eq(c, hit))?;
+                Some(pts[idx].clone())
+            })
+            .collect::<Vec<_>>()
+    }))
+    .unwrap_or_default();
+    let find = |r: &EdgeRef| sk.projections.iter().position(|(_, q)| q == r).and_then(|i| found.get(i).cloned().flatten());
+    crate::project::follow_links(sk, plane.origin, plane.u, plane.v, find)
+}
+
 /// A build of the timeline that can be run a little at a time (so the window
 /// keeps drawing — and shows how far it's got — while a slow part is built).
 pub struct Build {
@@ -2331,6 +2371,10 @@ pub struct Build {
     revolve_ends: Vec<Option<End>>,
     frames: Vec<Option<FacePlane>>,
     sketch_errors: Vec<Option<String>>,
+    /// The sketches as built: linked projections moved with the part.
+    live: Vec<Sketch>,
+    linked: Vec<Option<Sketch>>,
+    lost: Vec<Vec<usize>>,
     touched_by: HashMap<Feature, BodyId>,
     timing: bool,
     started: std::time::Instant,
@@ -2364,11 +2408,12 @@ impl Build {
         let frames: Vec<Option<FacePlane>> = sketches.iter().map(|s| s.face).collect();
         let sketch_errors: Vec<Option<String>> = vec![None; sketches.len()];
         let touched_by: HashMap<Feature, BodyId> = HashMap::new();
+        let (live, linked, lost) = (sketches.clone(), vec![None; sketches.len()], vec![Vec::new(); sketches.len()]);
         // OPENCAD_TIMING=1: how long each feature takes (to find what's slow).
         let timing = std::env::var_os("OPENCAD_TIMING").is_some();
         let started = std::time::Instant::now();
         let step = std::time::Instant::now();
-        Build { next: 0, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, step, inp }
+        Build { next: 0, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step, inp }
     }
 
     /// How far it's got: (entries built, all of them, the one being built next).
@@ -2386,8 +2431,8 @@ impl Build {
     pub fn step(&mut self, budget: std::time::Duration) -> bool {
         let began = std::time::Instant::now();
         let first = self.next;
-        let Build { inp, next, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, step } = self;
-        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, moves, timeline } = &*inp;
+        let Build { inp, next, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step } = self;
+        let BuildInputs { sketches: _, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, moves, timeline } = &*inp;
         let _ = (&timing, &started);
         loop {
             if *next >= timeline.len() {
@@ -2398,6 +2443,7 @@ impl Build {
             }
             let f = &timeline[*next];
             *next += 1;
+            let sketches: &[Sketch] = live;
             if *timing {
                 eprintln!("  {:>8.1} ms  before {f:?}", step.elapsed().as_secs_f64() * 1e3);
                 *step = std::time::Instant::now();
@@ -2470,6 +2516,15 @@ impl Build {
                             sketch_errors[k] = Some("the plane it is on couldn't be built".into());
                         }
                     }
+                    let (moved, gone, err) = relink(&sketches[k], frames[k], &current, extrude_ends, revolve_ends);
+                    lost[k] = gone;
+                    if let Some(e) = err {
+                        sketch_errors[k].get_or_insert(e);
+                    }
+                    if let Some(m) = moved {
+                        live[k] = m.clone();
+                        linked[k] = Some(m);
+                    }
                     *shapes = current;
                     continue;
                 }
@@ -2490,6 +2545,17 @@ impl Build {
                                 frames[k] = None;
                                 sketch_errors[k] = Some("the face it was on is gone".into());
                             }
+                        }
+                    }
+                    if let Some(sk) = sketches.get(k) {
+                        let (moved, gone, err) = relink(sk, frames[k], &current, extrude_ends, revolve_ends);
+                        lost[k] = gone;
+                        if let Some(e) = err {
+                            sketch_errors[k].get_or_insert(e);
+                        }
+                        if let Some(m) = moved {
+                            live[k] = m.clone();
+                            linked[k] = Some(m);
                         }
                     }
                     *shapes = current;
@@ -2719,7 +2785,7 @@ impl Build {
 
     /// The model built (bodies analysed for picking and Measure).
     pub fn finish(self) -> Model {
-        let Build { inp: _, next: _, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, touched_by, timing, started, mut step } = self;
+        let Build { inp: _, next: _, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live: _, linked, lost, touched_by, timing, started, mut step } = self;
     if timing {
         eprintln!("  {:>8.1} ms  last feature; analysing bodies…", step.elapsed().as_secs_f64() * 1e3);
         step = std::time::Instant::now();
@@ -2747,7 +2813,7 @@ impl Build {
         eprintln!("  {:>8.1} ms  bodies; build {:.1} ms in all", step.elapsed().as_secs_f64() * 1e3, started.elapsed().as_secs_f64() * 1e3);
     }
     let caps = caps_of(&extrude_ends, &revolve_ends);
-    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, caps, touched: touched_by }
+    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, caps, touched: touched_by, linked_sketches: linked, projection_lost: lost }
     }
 }
 
@@ -2798,7 +2864,7 @@ pub fn write_step(path: &Path, bodies: &[Body]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sketch::{Anchor, Editor, OriginPlane, Tool};
+    use crate::sketch::{Anchor, Editor, Entity, OriginPlane, Tool};
     use std::f64::consts::PI;
 
     /// Timelines without revolves.
@@ -3263,6 +3329,83 @@ mod tests {
         let m = build4(&[sk], &[ex(0, vec![0], 2.0, Operation::NewBody)], &[], &timeline(1, 1));
         assert_eq!(m.errors, vec![None]);
         assert!((total(&m) - 420.0 * 2.0).abs() < 1e-3, "{}", total(&m));
+    }
+
+    /// A block, and a second sketch with the block's front edge projected
+    /// (linked) and a 10 × 10 square hanging off its right end.
+    fn projected_square(width: f64) -> (Sketch, Sketch) {
+        let mut a = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut a, 0.0, 0.0, width, 10.0);
+        let base = build4(&[a.clone()], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &timeline(1, 1));
+        let front = base.bodies[0].edges.iter().find(|e| e.at.mid.distance(DVec3::new(width / 2.0, 0.0, 5.0)) < 1e-6).expect("top-front edge");
+        let pts: Vec<DVec3> = front.points.iter().map(|p| p.as_dvec3()).collect();
+        let mut b = Sketch::new("B".into(), OriginPlane::XY);
+        rect(&mut b, width, 0.0, width + 10.0, 10.0);
+        {
+            use crate::sketch::Constraint::*;
+            for c in [Horizontal(0), Vertical(1), Horizontal(2), Vertical(3), Length(0, 10.0), Length(3, 10.0)] {
+                crate::solver::add_constraints(&mut b, &[c]).unwrap();
+            }
+        }
+        let corner = 1; // the square's first corner, at (width, 0)
+        assert!(b.points[corner].distance(DVec2::new(width, 0.0)) < 1e-9);
+        assert_eq!(crate::project::project_all(&mut b, DVec3::ZERO, DVec3::X, DVec3::Y, &[(Some(front.at), pts)]), 1);
+        // The square's corner becomes the projected line's right end.
+        let line = b.entities.len() - 1;
+        let Entity::Line { a: p, b: q } = b.entities[line] else { panic!() };
+        let end = if b.points[p].x > b.points[q].x { p } else { q };
+        for e in &mut b.entities[..line] {
+            if let Entity::Line { a, b } = e {
+                for x in [a, b] {
+                    if *x == corner {
+                        *x = end;
+                    }
+                }
+            }
+        }
+        crate::solver::solve(&mut b, &[]).unwrap();
+        (a, b)
+    }
+
+    #[test]
+    fn linked_projections_follow_the_edge_and_carry_what_is_drawn_on_them() {
+        let (mut a, b) = projected_square(20.0);
+        let t = [Feature::Sketch(0), Feature::Extrude(0), Feature::Sketch(1), Feature::Extrude(1)];
+        let exs = [ex(0, vec![0], 5.0, Operation::NewBody), ex(1, vec![0], 3.0, Operation::NewBody)];
+        let m = build4(&[a.clone(), b.clone()], &exs, &[], &t);
+        assert_eq!(m.linked_sketches, vec![None, None], "nothing moved");
+        assert_eq!(m.projection_lost, vec![Vec::<usize>::new(), Vec::new()]);
+        assert!(close(total(&m), 20.0 * 10.0 * 5.0 + 10.0 * 10.0 * 3.0));
+        // The block gets 10 mm wider: the projected edge, and the square on its end, move with it.
+        for p in &mut a.points {
+            if (p.x - 20.0).abs() < 1e-9 {
+                p.x = 30.0;
+            }
+        }
+        let m = build4(&[a.clone(), b.clone()], &exs, &[], &t);
+        let moved = m.linked_sketches[1].as_ref().expect("the second sketch follows");
+        let xs: Vec<f64> = moved.points.iter().skip(1).filter(|p| p.y.abs() < 1e-9).map(|p| p.x).collect();
+        assert!(xs.iter().any(|x| (x - 30.0).abs() < 1e-9) && xs.iter().any(|x| (x - 40.0).abs() < 1e-9), "{xs:?}");
+        // And what's built from the sketch is built from it as moved: the square's extrude starts at x = 30.
+        assert!(close(total(&m), 30.0 * 10.0 * 5.0 + 10.0 * 10.0 * 3.0));
+        let square = m.bodies.iter().find(|bd| bd.id.feature == Feature::Extrude(1)).expect("square body");
+        let (lo, hi) = bbox(square);
+        assert!((lo.x - 30.0).abs() < 1e-6 && (hi.x - 40.0).abs() < 1e-6, "{lo} {hi}");
+        // Taken in, the sketch builds the same with nothing more to move.
+        let m2 = build4(&[a.clone(), moved.clone()], &exs, &[], &t);
+        assert_eq!(m2.linked_sketches, vec![None, None]);
+        assert!(close(total(&m2), total(&m)));
+    }
+
+    #[test]
+    fn a_projection_whose_edge_is_gone_is_lost_and_stays_put() {
+        let (a, b) = projected_square(20.0);
+        // Without the block (its extrude not in the timeline) the edge isn't there.
+        let m = build4(&[a, b.clone()], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[Feature::Sketch(0), Feature::Sketch(1)]);
+        let line = b.projections[0].0;
+        assert_eq!(m.projection_lost[1], vec![line]);
+        assert_eq!(m.linked_sketches[1], None);
+        assert_eq!(m.sketch_errors[1], None, "a warning, not an error");
     }
 
     #[test]

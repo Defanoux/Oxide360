@@ -49,6 +49,7 @@ sheet metal, surfaces, CAM.
 
 ## Done
 
+- Linked Project (Gavin asked): projected lines remember their edge and are projected again every build, so they (and what is constrained to them) follow upstream changes and plane redefines; an edge that is gone leaves them red where they were; edges made after the sketch in the timeline are refused.
 - Redefine Sketch Plane (right-click a sketch in the browser or timeline): click an origin plane, construction plane or flat face; the sketch keeps its own coordinates there and what's built from it follows; a face that doesn't exist yet at the sketch's place in the timeline is refused (put back with a message).
 
 - Break (sketch MODIFY): lines, circles (two crossings), arcs and splines split where crossed, every piece kept, dots show the split points; Trim, Extend and Offset on splines (pieces respline through the cut and their fit points — close to, not exactly, the original near a cut); lines extend to splines/ellipses, circles are cut by them. Not done: Offset keeping a spline copy dimensioned.

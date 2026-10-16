@@ -572,7 +572,7 @@ impl OpenCad {
         }
     }
 
-    /// Project tool: bring the body edge `r` into sketch `i`.
+    /// Project tool: bring the body edge `r` into sketch `i`, linked to it.
     pub(crate) fn project_edge_into(&mut self, i: usize, r: EdgeRef) {
         let Some(points) = self
             .model(Slot::Committed)
@@ -590,11 +590,15 @@ impl OpenCad {
             Ok(p) => p,
             Err(e) => return self.notify(format!("Can't project: {e}")),
         };
+        // An edge on the far end of an extrude/revolve moves with it.
+        let r = EdgeRef { follow: kernel::follow_for_edge(&self.model(Slot::Committed).caps, r.mid, r.dir, FOLLOW_TOL), ..r };
+        let before = self.sketches[i].clone();
         let mut why = None;
         let res = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
             let mut trial = sk.clone();
             match trial.add_projected(projected) {
                 Ok(fixes) => {
+                    trial.projections.push((trial.entities.len() - 1, r));
                     for c in fixes {
                         let mut t = trial.clone();
                         if solver::add_constraints(&mut t, &[c]).is_ok() {
@@ -606,27 +610,60 @@ impl OpenCad {
                 Err(e) => why = Some(e),
             }
         });
-        match why {
-            Some(e) => self.notify(e),
-            None => self.report(res),
+        if let Some(e) = why {
+            return self.notify(e);
         }
+        if !self.links_hold(i, &before) {
+            return;
+        }
+        self.report(res);
     }
 
     /// Project tool, clicked on a body: every edge of it that can be projected.
     pub(crate) fn project_body_into(&mut self, i: usize, body: usize) {
-        let Some(edges) = self.model(Slot::Committed).bodies.get(body).map(|b| {
-            b.edges.iter().map(|e| e.points.iter().map(|p| p.as_dvec3()).collect::<Vec<_>>()).collect::<Vec<_>>()
-        }) else {
+        let m = self.model(Slot::Committed);
+        let Some(edges) = m
+            .bodies
+            .get(body)
+            .map(|b| b.edges.iter().map(|e| (Some(EdgeRef { follow: kernel::follow_for_edge(&m.caps, e.at.mid, e.at.dir, FOLLOW_TOL), ..e.at }), e.points.iter().map(|p| p.as_dvec3()).collect::<Vec<_>>())).collect::<Vec<_>>())
+        else {
             return;
         };
         let plane = self.plane_of(i);
         let (o, u, v) = (plane.origin.as_dvec3(), plane.u.as_dvec3(), plane.v.as_dvec3());
+        let before = self.sketches[i].clone();
         let mut added = 0;
         let res = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
             added = project::project_all(sk, o, u, v, &edges);
         });
+        if added > 0 && !self.links_hold(i, &before) {
+            return;
+        }
         self.notify(if added == 0 { "Nothing new to project from that body".into() } else { format!("Projected {added} edges") });
         self.report(res);
+    }
+
+    /// After projecting into sketch `i`: do the new links find their edges
+    /// where the sketch is in the timeline? An edge made later (by a feature
+    /// after the sketch, perhaps one built from it) can't be, as in Fusion;
+    /// then the sketch goes back to `before`.
+    fn links_hold(&mut self, i: usize, before: &Sketch) -> bool {
+        self.build_now(Slot::Committed);
+        let m = self.model(Slot::Committed);
+        let sk = &self.sketches[i];
+        let new: Vec<usize> = sk.projections.iter().map(|&(e, _)| e).filter(|&e| !before.projections.iter().any(|&(f, _)| f == e)).collect();
+        let lost = m.projection_lost.get(i).is_some_and(|l| l.iter().any(|e| new.contains(e)));
+        let moved = m.linked_sketches.get(i).cloned().flatten().is_some_and(|ms| {
+            new.iter().any(|&e| sk.entity_points(e).iter().any(|&p| ms.points.get(p).is_none_or(|q| q.distance(sk.points[p]) > 1e-6)))
+        });
+        if lost || moved {
+            self.sketches[i] = before.clone();
+            self.undo.pop();
+            self.build_now(Slot::Committed);
+            self.notify("Can't project that: it's made by a feature after this sketch in the timeline".into());
+            return false;
+        }
+        true
     }
 
     /// The Mirror button: the current selection is what gets copied; next click picks the line.

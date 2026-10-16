@@ -424,6 +424,11 @@ pub struct Sketch {
     /// them. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub control_splines: Vec<(usize, u8)>,
+    /// Projected geometry still linked to the body edge it came from (by
+    /// entity): every build projects that edge again, so the lines follow
+    /// the part. Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projections: Vec<(EntityId, crate::model::EdgeRef)>,
     /// A unit a dimension was typed in that differs from the design's ("1 in"
     /// in a mm design), by constraint index: it keeps showing in that unit.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -787,6 +792,7 @@ impl Sketch {
             splines: Vec::new(),
             spline_tangents: Vec::new(),
             control_splines: Vec::new(),
+            projections: Vec::new(),
             construction: Vec::new(),
         }
     }
@@ -1234,6 +1240,7 @@ impl Sketch {
             }
         }
         self.entities = kept;
+        self.projections = self.projections.iter().filter(|(e, _)| ent_map.get(*e).is_some_and(|&m| m != usize::MAX)).map(|&(e, r)| (ent_map[e], r)).collect();
         let old_construction = std::mem::take(&mut self.construction);
         self.construction = (0..dead_ents.len())
             .filter(|&i| !dead_ents[i])
@@ -1842,6 +1849,7 @@ impl Sketch {
             && self.constraints == other.constraints
             && self.driven == other.driven
             && self.construction == other.construction
+            && self.projections == other.projections
     }
 
     /// How many lines/circles use each point: 2 or more means it's a joint

@@ -664,6 +664,16 @@ impl History {
         }
     }
 
+    /// A sketch was moved by the build (its linked projections followed the
+    /// part): make the same change to the last recorded version, so it isn't
+    /// a step of its own (undoing it would only be redone by the next build).
+    pub fn adopt_sketch(&mut self, k: usize, from: &Sketch, to: &Sketch) {
+        if let Some(s) = self.base.sketches.get_mut(k).filter(|s| s.same_shape(from)) {
+            s.points = to.points.clone();
+            s.entities = to.entities.clone();
+        }
+    }
+
     pub fn can_undo(&self, current: &Document) -> bool {
         !self.past.is_empty() || *current != self.base
     }

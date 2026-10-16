@@ -1,7 +1,8 @@
 //! Project: body edges into a sketch. A straight edge becomes a line, a
 //! circular one a circle or arc (as seen straight down onto the sketch plane).
 
-use crate::sketch::{Constraint, Entity, Sketch};
+use crate::model::EdgeRef;
+use crate::sketch::{Constraint, Entity, EntityId, Sketch};
 use glam::{DVec2, DVec3};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -110,12 +111,16 @@ impl Sketch {
 /// Project every edge that can be (the ones seen edge-on, ellipses and
 /// repeats are skipped), locked and as construction geometry. Returns how many
 /// were added.
-pub fn project_all(sk: &mut Sketch, origin: DVec3, u: DVec3, v: DVec3, edges: &[Vec<DVec3>]) -> usize {
+/// With an edge reference, each stays linked to its edge (see `follow_links`).
+pub fn project_all(sk: &mut Sketch, origin: DVec3, u: DVec3, v: DVec3, edges: &[(Option<EdgeRef>, Vec<DVec3>)]) -> usize {
     let mut added = 0;
-    for pts in edges {
+    for (link, pts) in edges {
         let Ok(pr) = project_edge(origin, u, v, pts) else { continue };
         let mut trial = sk.clone();
         let Ok(fixes) = trial.add_projected(pr) else { continue };
+        if let Some(r) = link {
+            trial.projections.push((trial.entities.len() - 1, *r));
+        }
         for c in fixes {
             let mut t = trial.clone();
             if crate::solver::add_constraints(&mut t, &[c]).is_ok() {
@@ -126,6 +131,91 @@ pub fn project_all(sk: &mut Sketch, origin: DVec3, u: DVec3, v: DVec3, edges: &[
         added += 1;
     }
     added
+}
+
+/// Linked projections as the part is now: each link's edge (found by
+/// `find`, as points along it) projected again onto the plane through
+/// `origin` spanned by `u`, `v`, and the sketch solved so what's constrained
+/// to them follows. Returns the moved sketch (None when nothing moved), the
+/// entities whose edge is gone (or no longer projects to the same kind of
+/// curve; they stay where they were), and an error if the moved sketch
+/// can't be solved (then it isn't moved).
+pub fn follow_links(
+    sk: &Sketch,
+    origin: DVec3,
+    u: DVec3,
+    v: DVec3,
+    find: impl Fn(&EdgeRef) -> Option<Vec<DVec3>>,
+) -> (Option<Sketch>, Vec<EntityId>, Option<String>) {
+    const MOVED: f64 = 1e-9;
+    let mut out = sk.clone();
+    let mut lost = Vec::new();
+    let mut moved = false;
+    for &(e, r) in &sk.projections {
+        let now = find(&r).and_then(|pts| project_edge(origin, u, v, &pts).ok());
+        let mut set = |p: usize, to: DVec2| {
+            if out.points[p].distance(to) > MOVED {
+                out.points[p] = to;
+                moved = true;
+            }
+        };
+        match (sk.entities.get(e).copied(), now) {
+            (Some(Entity::Line { a, b }), Some(Projected::Line(p, q))) => {
+                // The edge may list its ends the other way round this time.
+                let (x, y) = (sk.points[a], sk.points[b]);
+                let (p, q) = if x.distance(p) + y.distance(q) <= x.distance(q) + y.distance(p) { (p, q) } else { (q, p) };
+                set(a, p);
+                set(b, q);
+            }
+            (Some(Entity::Circle { center, radius }), Some(Projected::Circle(c, r))) => {
+                set(center, c);
+                if (radius - r).abs() > MOVED {
+                    out.entities[e] = Entity::Circle { center, radius: r };
+                    moved = true;
+                }
+            }
+            (Some(Entity::Arc { center, a, b }), Some(Projected::Arc { center: c, start, end })) => {
+                set(center, c);
+                set(a, start);
+                set(b, end);
+            }
+            _ => lost.push(e),
+        }
+    }
+    if !moved {
+        return (None, lost, None);
+    }
+    // A big move solved in one go can start from collapsed geometry (a
+    // corner dragged onto the next): then take it in smaller steps.
+    let mut last = None;
+    for steps in [1, 8, 32] {
+        match follow_in_steps(sk, &out, steps) {
+            Ok(s) => return (Some(s), lost, None),
+            Err(e) => last = Some(e),
+        }
+    }
+    let e = last.expect("tried");
+    (None, lost, Some(format!("its projected lines moved with the part and the sketch can't follow: {e}")))
+}
+
+/// `from` solved again with its points (and circle radii) eased toward
+/// `to`'s in `steps` steps: the projected ones are fixed, the rest follow.
+fn follow_in_steps(from: &Sketch, to: &Sketch, steps: usize) -> Result<Sketch, crate::solver::SolveError> {
+    let moving: Vec<usize> = (0..from.points.len()).filter(|&p| from.points[p] != to.points[p]).collect();
+    let mut sk = from.clone();
+    for k in 1..=steps {
+        let t = k as f64 / steps as f64;
+        for &p in &moving {
+            sk.points[p] = from.points[p].lerp(to.points[p], t);
+        }
+        for (e, ent) in to.entities.iter().enumerate() {
+            if let (Entity::Circle { radius: r1, .. }, Some(Entity::Circle { center, radius: r0 })) = (*ent, from.entities.get(e).copied()) {
+                sk.entities[e] = Entity::Circle { center, radius: r0 + (r1 - r0) * t };
+            }
+        }
+        crate::solver::solve(&mut sk, &[])?;
+    }
+    Ok(sk)
 }
 
 #[cfg(test)]
@@ -180,7 +270,7 @@ mod tests {
         // A 4 × 3 × 2 box: 12 edges. Seen from above the verticals are points and the
         // top and bottom edges coincide, leaving 4 lines.
         let c = |x: f64, y: f64, z: f64| DVec3::new(x, y, z);
-        let mut edges = Vec::new();
+        let mut edges: Vec<Vec<DVec3>> = Vec::new();
         for z in [0.0, 2.0] {
             edges.extend([
                 vec![c(0.0, 0.0, z), c(4.0, 0.0, z)],
@@ -194,6 +284,7 @@ mod tests {
         }
         let (o, u, v) = flat_xy();
         let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let edges: Vec<(Option<EdgeRef>, Vec<DVec3>)> = edges.into_iter().map(|e| (None, e)).collect();
         assert_eq!(project_all(&mut sk, o, u, v, &edges), 4);
         assert_eq!(sk.entities.len(), 4);
         assert!((0..4).all(|e| sk.is_construction(e)));
@@ -227,5 +318,48 @@ mod tests {
         let arc = Projected::Arc { center: DVec2::ZERO, start: DVec2::new(3.0, 0.0), end: DVec2::new(0.0, 3.0) };
         assert_eq!(sk.add_projected(arc).unwrap().len(), 3);
         assert_eq!(sk.entities.len(), 2);
+    }
+
+    fn linked_line() -> (Sketch, EdgeRef) {
+        let r = EdgeRef { mid: DVec3::new(5.0, 0.0, 0.0), dir: DVec3::X, ..Default::default() };
+        let (o, u, v) = flat_xy();
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let edges = vec![(Some(r), vec![DVec3::ZERO, DVec3::new(10.0, 0.0, 0.0)])];
+        assert_eq!(project_all(&mut sk, o, u, v, &edges), 1);
+        assert_eq!(sk.projections, vec![(0, r)]);
+        (sk, r)
+    }
+
+    #[test]
+    fn a_link_follows_its_edge_whichever_way_the_edge_runs() {
+        let (sk, _) = linked_line();
+        let (o, u, v) = flat_xy();
+        // Unmoved: nothing to do.
+        let (m, lost, err) = follow_links(&sk, o, u, v, |_| Some(vec![DVec3::ZERO, DVec3::new(10.0, 0.0, 0.0)]));
+        assert!(m.is_none() && lost.is_empty() && err.is_none());
+        // Longer, and listed end first: each end goes to its nearer new end.
+        let (m, _, _) = follow_links(&sk, o, u, v, |_| Some(vec![DVec3::new(14.0, 0.0, 3.0), DVec3::ZERO]));
+        let m = m.expect("moved");
+        let Entity::Line { a, b } = m.entities[0] else { panic!() };
+        assert_eq!((m.points[a], m.points[b]), (DVec2::ZERO, DVec2::new(14.0, 0.0)));
+        // Gone, or now a circle: lost, left where it was.
+        let (m, lost, _) = follow_links(&sk, o, u, v, |_| None);
+        assert!(m.is_none());
+        assert_eq!(lost, vec![0]);
+    }
+
+    #[test]
+    fn deleting_geometry_renumbers_the_links() {
+        let (mut sk, r) = linked_line();
+        // A line drawn after it, another projected one, then the first deleted.
+        sk.points.extend([DVec2::new(0.0, 5.0), DVec2::new(5.0, 5.0)]);
+        let n = sk.points.len();
+        sk.entities.push(Entity::Line { a: n - 2, b: n - 1 });
+        let (o, u, v) = flat_xy();
+        let edges = vec![(Some(EdgeRef { mid: DVec3::new(0.0, 3.0, 0.0), ..r }), vec![DVec3::new(0.0, 1.0, 0.0), DVec3::new(0.0, 5.0, 0.0)])];
+        assert_eq!(project_all(&mut sk, o, u, v, &edges), 1);
+        assert_eq!(sk.projections.iter().map(|p| p.0).collect::<Vec<_>>(), vec![0, 2]);
+        sk.delete(&[crate::sketch::Sel::Entity(0)]);
+        assert_eq!(sk.projections.iter().map(|p| p.0).collect::<Vec<_>>(), vec![1], "the first link went with its line; the other shifted down");
     }
 }

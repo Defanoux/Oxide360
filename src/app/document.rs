@@ -756,6 +756,26 @@ impl OpenCad {
         });
     }
 
+    /// Take in the sketches the last committed build moved (linked
+    /// projections following the part), unless they've been edited since.
+    pub(crate) fn adopt_linked_sketches(&mut self) {
+        let Some(c) = self.caches[Slot::Committed as usize].as_ref() else { return };
+        let mut moved = Vec::new();
+        for (k, m) in c.model.linked_sketches.iter().enumerate() {
+            let (Some(m), Some(built), Some(now)) = (m, c.sketches.get(k), self.sketches.get(k)) else { continue };
+            if now.same_shape(built) && !now.same_shape(m) {
+                moved.push((k, built.clone(), m.clone()));
+            }
+        }
+        for (k, built, m) in moved {
+            let sk = &mut self.sketches[k];
+            sk.points = m.points.clone();
+            sk.entities = m.entities.clone();
+            let to = sk.clone();
+            self.history.adopt_sketch(k, &built, &to);
+        }
+    }
+
     /// Finish `slot`'s build now, however long it takes (export needs the real thing).
     pub(crate) fn build_now(&mut self, slot: Slot) {
         let i = slot as usize;
