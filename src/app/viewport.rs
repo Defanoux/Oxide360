@@ -1341,7 +1341,51 @@ impl OpenCad {
             match self.editor.tool {
                 _ if self.sketch_pattern.is_some() => {}
                 Tool::Select => {
+                    // A selected spline's tangent handles: the end under the cursor.
+                    let handle_end = |app: &Self, q: DVec2| -> Option<(sketch::PointId, f64, usize)> {
+                        let sk = &app.sketches[i];
+                        let tol = SNAP_PX as f64 * mm_per_px;
+                        app.editor.selection.iter().find_map(|sel| {
+                            let Sel::Entity(e) = *sel else { return None };
+                            let Some(&Entity::Spline { s }) = sk.entities.get(e) else { return None };
+                            sk.spline_handles(s).into_iter().find_map(|(p, fwd, _)| {
+                                let back = sk.points[p] * 2.0 - fwd;
+                                if fwd.distance(q) <= tol {
+                                    Some((p, 1.0, s))
+                                } else if back.distance(q) <= tol {
+                                    Some((p, -1.0, s))
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                    };
+                    if response.double_clicked() {
+                        // Double-click a handle's end: back to the curve's own way.
+                        if let Some((p, _, _)) = raw_hover.and_then(|q| handle_end(self, q)) {
+                            self.undo.push(self.sketches[i].clone());
+                            self.sketches[i].set_spline_tangent(p, None);
+                        }
+                    }
                     if response.drag_started_by(egui::PointerButton::Primary) {
+                        if let Some(h) = raw_press.and_then(|q| handle_end(self, q)) {
+                            self.undo.push(self.sketches[i].clone());
+                            self.handle_drag = Some(h);
+                        }
+                    }
+                    if let (Some((p, sign, s)), Some(now)) = (self.handle_drag, raw_hover) {
+                        if response.dragged_by(egui::PointerButton::Primary) {
+                            let sk = &mut self.sketches[i];
+                            let base = sk.handle_base(s).max(1e-9);
+                            sk.set_spline_tangent(p, Some((now - sk.points[p]) * sign / base));
+                        }
+                    }
+                    if self.handle_drag.is_some() && response.drag_stopped() {
+                        self.handle_drag = None;
+                    }
+                    if self.handle_drag.is_some() {
+                        // (The handle has the drag.)
+                    } else if response.drag_started_by(egui::PointerButton::Primary) {
                         let sk = &self.sketches[i];
                         if let (Some(ci), Some(q)) = (over_label.filter(|&ci| sk.constraints.get(ci).is_some_and(|c| c.value().is_some())), raw_press) {
                             // Grab a dimension's label to move it out of the way.
@@ -2654,6 +2698,29 @@ impl OpenCad {
                             // Dashed: every other piece.
                             if !dashed || k % 2 == 0 {
                                 view.line(plane.to_world(w[0]), plane.to_world(w[1]), stroke);
+                            }
+                        }
+                    }
+                }
+            }
+            if active && self.editor.tool == Tool::Select {
+                // A selected spline's tangent handles (Fusion's): a line through each
+                // fit point; its ends hollow while the curve takes its own way, filled once set.
+                let handle_col = Color32::from_rgb(120, 200, 255);
+                for sel in &self.editor.selection {
+                    let Sel::Entity(e) = *sel else { continue };
+                    let Some(&Entity::Spline { s }) = sk.entities.get(e) else { continue };
+                    for (p, fwd, set) in sk.spline_handles(s) {
+                        let back = sk.points[p] * 2.0 - fwd;
+                        let stroke = Stroke::new(1.2, handle_col);
+                        view.line(plane.to_world(back), plane.to_world(fwd), stroke);
+                        for end in [back, fwd] {
+                            if let Some(px) = view.project(plane.to_world(end)) {
+                                if set {
+                                    painter.circle_filled(to_pos(px), 4.0, handle_col);
+                                } else {
+                                    painter.circle_stroke(to_pos(px), 4.0, stroke);
+                                }
                             }
                         }
                     }

@@ -737,6 +737,7 @@ struct OpenCad {
     cut_preview: Option<(Tool, sketch::TrimPiece)>, // what Trim would cut / Extend would add, under the cursor
     break_marks: Vec<DVec2>,                  // where Break would split what's under the cursor
     line_up: Option<(Option<DVec2>, Option<DVec2>, DVec2)>, // inference: lined up above/beside these, at this point
+    handle_drag: Option<(sketch::PointId, f64, usize)>, // a spline tangent handle being dragged: fit point, which end (±1), spline
     line_arc: Option<sketch::PointId>,        // Line tool: dragging a tangent arc off this end (Fusion's)
     line_length_text: Option<String>,         // the line length as typed (an expression links its dimension)
     acquired: (Option<usize>, Vec<sketch::EntityId>), // line middles the cursor rested on (sketch, lines; newest last)
@@ -929,6 +930,7 @@ impl Default for OpenCad {
             break_marks: Vec::new(),
             cut_preview: None,
             line_up: None,
+            handle_drag: None,
             line_arc: None,
             line_length_text: None,
             acquired: (None, Vec::new()),

@@ -414,6 +414,11 @@ pub struct Sketch {
     /// Each spline's fit points, in order (see `Entity::Spline`). Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub splines: Vec<Vec<PointId>>,
+    /// Tangent handles set on spline fit points (by point): the curve leaves
+    /// that point this way, this strongly (1: its natural speed). Points with
+    /// none take the curve's own. Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spline_tangents: Vec<(PointId, DVec2)>,
     /// A unit a dimension was typed in that differs from the design's ("1 in"
     /// in a mm design), by constraint index: it keeps showing in that unit.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -775,6 +780,7 @@ impl Sketch {
             dim_units: Vec::new(),
             dim_exprs: Vec::new(),
             splines: Vec::new(),
+            spline_tangents: Vec::new(),
             construction: Vec::new(),
         }
     }
@@ -933,7 +939,21 @@ impl Sketch {
 
     /// Points along spline `s` (see `spline::polyline`).
     pub fn spline_curve(&self, s: usize) -> Vec<DVec2> {
-        crate::spline::polyline(&self.spline_fit(s))
+        let tangents: Vec<Option<DVec2>> = self.splines.get(s).map_or(Vec::new(), |l| l.iter().map(|&p| self.spline_tangent(p)).collect());
+        crate::spline::polyline_with(&self.spline_fit(s), &tangents)
+    }
+
+    /// The tangent handle set on fit point `p`, if any.
+    pub fn spline_tangent(&self, p: PointId) -> Option<DVec2> {
+        self.spline_tangents.iter().find(|(q, _)| *q == p).map(|(_, t)| *t)
+    }
+
+    /// Set (or, with None, let go of) the tangent handle on fit point `p`.
+    pub fn set_spline_tangent(&mut self, p: PointId, t: Option<DVec2>) {
+        self.spline_tangents.retain(|(q, _)| *q != p);
+        if let Some(t) = t.filter(|t| t.length() > 1e-9) {
+            self.spline_tangents.push((p, t));
+        }
     }
 
     /// Geometry brought in by Project: construction, and locked where it lies.
@@ -1237,6 +1257,8 @@ impl Sketch {
                 }
             }
         }
+        // Tangent handles follow their points.
+        self.spline_tangents = self.spline_tangents.iter().filter_map(|&(p, t)| (pt_map.get(p).copied().unwrap_or(usize::MAX) != usize::MAX).then(|| (pt_map[p], t))).collect();
         // Splines: keep the lists still used (renumbered), their points renumbered.
         let mut spline_map = vec![usize::MAX; self.splines.len()];
         let mut lists = Vec::new();

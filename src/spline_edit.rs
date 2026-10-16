@@ -331,52 +331,167 @@ impl Sketch {
         Ok(ties)
     }
 
+    /// The curve's own direction at fit point index `k` of spline `s` (unit;
+    /// as it runs), from its samples.
+    fn fit_direction(&self, s: usize, k: usize) -> Option<DVec2> {
+        let curve = self.spline_curve(s);
+        let n = curve.len();
+        let i = (k * self.per_span(s)).min(n - 1);
+        let closed = self.spline_closed(s);
+        let (a, b) = if closed && (i == 0 || i == n - 1) { (curve[n - 2], curve[1]) } else { (curve[i.saturating_sub(1)], curve[(i + 1).min(n - 1)]) };
+        (b - a).try_normalize()
+    }
+
+    /// How long a natural-strength handle is drawn on spline `s`: a third of
+    /// its average span.
+    pub fn handle_base(&self, s: usize) -> f64 {
+        let fit = self.spline_fit(s);
+        let spans = fit.len().saturating_sub(1).max(1);
+        fit.windows(2).map(|w| w[0].distance(w[1])).sum::<f64>() / spans as f64 / 3.0
+    }
+
+    /// Fusion's tangent handles on spline `s`, one per fit point: (the fit
+    /// point, where the handle's forward end is, whether one is set).
+    pub fn spline_handles(&self, s: usize) -> Vec<(PointId, DVec2, bool)> {
+        let Some(list) = self.splines.get(s) else { return Vec::new() };
+        let n = if self.spline_closed(s) { list.len() - 1 } else { list.len() };
+        let base = self.handle_base(s);
+        (0..n)
+            .filter_map(|k| {
+                let p = list[k];
+                let (t, set) = match self.spline_tangent(p) {
+                    Some(t) => (t, true),
+                    None => (self.fit_direction(s, k)?, false),
+                };
+                Some((p, self.points[p] + t * base, set))
+            })
+            .collect()
+    }
+
     /// Offset spline `e` to the side `at` is on, `distance` away (or as far
-    /// as `at` is): a new spline through points moved square off its curve
-    /// (four per span), so it follows the original closely.
+    /// as `at` is): a new spline through its fit points moved square off the
+    /// curve, each leaving the same way the original does there — so it has
+    /// the same points and follows the original closely.
     pub fn offset_spline(&mut self, e: EntityId, at: DVec2, distance: Option<f64>) -> Result<Vec<EntityId>, String> {
         let Some(&Entity::Spline { s }) = self.entities.get(e) else { return Err("not a spline".into()) };
         let curve = self.spline_curve(s);
-        let n = curve.len();
-        if n < 2 {
+        if curve.len() < 2 {
             return Err("the spline is too short".into());
         }
         let closed = self.spline_closed(s);
-        let normal = |i: usize| {
-            let (a, b) = if closed && (i == 0 || i == n - 1) { (curve[n - 2], curve[1]) } else { (curve[i.saturating_sub(1)], curve[(i + 1).min(n - 1)]) };
-            (b - a).try_normalize().map(|t| t.perp())
-        };
         // Which side, and how far: from the nearest point of the curve.
         let pos = self.spline_position(s, at);
-        let i = (pos.round() as usize).min(n - 1);
-        let nrm = normal(i).ok_or("the spline has no direction there")?;
+        let i = (pos.round() as usize).min(curve.len() - 1);
+        let near = |i: usize| (curve[(i + 1).min(curve.len() - 1)] - curve[i.saturating_sub(1)]).try_normalize();
+        let nrm = near(i).ok_or("the spline has no direction there")?.perp();
         let side = if nrm.dot(at - curve[i]) >= 0.0 { 1.0 } else { -1.0 };
         let dist = distance.map_or_else(|| at.distance(curve[i]), f64::abs);
         if dist < 1e-9 {
             return Err("move the cursor off the spline to set the distance".into());
         }
-        let step = (self.per_span(s) / 4).max(1);
-        let mut picks: Vec<usize> = (0..n).step_by(step).collect();
-        if picks.last() != Some(&(n - 1)) {
-            picks.push(n - 1);
+        let list = self.splines[s].clone();
+        let n = if closed { list.len() - 1 } else { list.len() };
+        let per = self.per_span(s);
+        let last = curve.len() - 1;
+        // Square to the curve at sample i, and the point that far off it.
+        let normal_at = |i: usize| {
+            let (a, b) = if closed && (i == 0 || i == last) { (curve[last - 1], curve[1]) } else { (curve[i.saturating_sub(1)], curve[(i + 1).min(last)]) };
+            (b - a).try_normalize().map(|t| t.perp())
+        };
+        let target = |i: usize| normal_at(i).map(|nn| curve[i] + nn * (side * dist));
+        // Start at the fit points; add a point mid-span wherever the copy
+        // strays from the true offset by more than 0.02 (a few rounds).
+        let mut at_samples: Vec<usize> = (0..n).map(|k| k * per).collect();
+        let build = |idx: &[usize]| -> Option<Vec<DVec2>> {
+            let mut pts: Vec<DVec2> = idx.iter().map(|&i| target(i)).collect::<Option<_>>()?;
+            if closed {
+                pts.push(pts[0]);
+            }
+            Some(pts)
+        };
+        // The original's parameter (chord length) at sample i.
+        let fit: Vec<DVec2> = list.iter().map(|&p| self.points[p]).collect();
+        let mut cum = vec![0.0];
+        for w in fit.windows(2) {
+            cum.push(cum.last().copied().unwrap_or(0.0) + w[0].distance(w[1]));
         }
+        let u_orig = |i: usize| {
+            let k = (i / per).min(cum.len().saturating_sub(2));
+            cum[k] + (cum[k + 1] - cum[k]) * (i - k * per) as f64 / per as f64
+        };
+        // Each point leaves the way the true offset curve does there, as fast
+        // as it runs against the copy's own (chord-length) parameter.
+        let ways = |idx: &[usize]| -> Vec<Option<DVec2>> {
+            let pts: Vec<DVec2> = idx.iter().filter_map(|&i| target(i)).collect();
+            let m = idx.len();
+            let mut v: Vec<Option<DVec2>> = (0..m)
+                .map(|j| {
+                    let i = idx[j];
+                    // How the offset curve moves per unit of the original's parameter.
+                    let (a, b) = if closed && i == 0 { (last - 1, 1) } else { (i.saturating_sub(1), (i + 1).min(last)) };
+                    let du = if closed && i == 0 { u_orig(last) - u_orig(last - 1) + u_orig(1) } else { u_orig(b) - u_orig(a) };
+                    let d_orig = (target(b)? - target(a)?) / du.max(1e-12);
+                    // The copy's parameter against the original's, round this point.
+                    let mut ratio = (0.0, 0.0);
+                    for (x, y) in [(j.checked_sub(1), Some(j)), (Some(j), Some(j + 1))] {
+                        let (Some(x), Some(y)) = (x, y) else { continue };
+                        let (x, y) = if closed { (x % m, y % m) } else { (x, y) };
+                        if y >= m && !closed || x >= m || y >= m {
+                            continue;
+                        }
+                        let (ix, iy) = (idx[x], if closed && y == 0 { last } else { idx[y] });
+                        let orig = (u_orig(iy) - u_orig(ix)).abs();
+                        let copy = pts[x].distance(pts[y]);
+                        if orig > 1e-12 {
+                            ratio = (ratio.0 + copy, ratio.1 + orig);
+                        }
+                    }
+                    let rate = if ratio.1 > 0.0 { ratio.1 / ratio.0.max(1e-12) } else { 1.0 };
+                    Some(d_orig * rate)
+                })
+                .collect();
+            if closed {
+                v.push(v[0]);
+            }
+            v
+        };
+        for _ in 0..4 {
+            let pts = build(&at_samples).ok_or("the spline has no direction there")?;
+            let copy = crate::spline::polyline_with(&pts, &ways(&at_samples));
+            let mut ends: Vec<usize> = at_samples.clone();
+            ends.push(if closed { last } else { *at_samples.last().unwrap_or(&0) });
+            let mut add = Vec::new();
+            for w in ends.windows(2).filter(|w| w[1] > w[0] + 1) {
+                let worst = (w[0]..=w[1]).step_by(((w[1] - w[0]) / 8).max(1)).filter_map(target).map(|q| crate::sketch::polyline_distance(&copy, q)).fold(0.0, f64::max);
+                if worst > 0.02 {
+                    add.push((w[0] + w[1]) / 2);
+                }
+            }
+            if add.is_empty() {
+                break;
+            }
+            at_samples.extend(add);
+            at_samples.sort_unstable();
+            at_samples.dedup();
+        }
+        let pts = build(&at_samples).ok_or("the spline has no direction there")?;
+        let mut made = Vec::new();
+        for q in pts.iter().take(at_samples.len()) {
+            self.points.push(*q);
+            made.push(self.points.len() - 1);
+        }
+        let handles: Vec<(PointId, DVec2)> = made.iter().copied().zip(ways(&at_samples).into_iter().flatten()).collect();
         if closed {
-            picks.pop(); // the last is the first again
+            made.push(made[0]);
         }
-        let mut list = Vec::new();
-        for k in picks {
-            let q = curve[k] + normal(k).ok_or("the spline has no direction there")? * (side * dist);
-            self.points.push(q);
-            list.push(self.points.len() - 1);
+        self.splines.push(made);
+        for (p, t) in handles {
+            self.set_spline_tangent(p, Some(t));
         }
-        if closed {
-            list.push(list[0]);
-        }
-        self.splines.push(list);
         self.entities.push(Entity::Spline { s: self.splines.len() - 1 });
-        let made = self.entities.len() - 1;
-        self.set_construction(made, self.is_construction(e));
-        Ok(vec![made])
+        let new = self.entities.len() - 1;
+        self.set_construction(new, self.is_construction(e));
+        Ok(vec![new])
     }
 
     /// Where spline `s`'s end nearest `at` is, the way out of it, and whether it's the last end.
@@ -521,8 +636,46 @@ mod tests {
         let original = sk.spline_fit(s);
         for p in sk.spline_curve(copy).iter().step_by(7) {
             let d = crate::spline::distance(&original, *p);
-            assert!((d - 3.0).abs() < 0.05, "{p} is {d} away");
+            assert!((d - 3.0).abs() < 0.02, "{p} is {d} away");
         }
+        // A gentle curve (an arch like the one in the app): the copy needs
+        // no more points than the original, not a crowd.
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Spline);
+        for p in [(0.0, 0.0), (15.0, 12.0), (30.0, 15.0), (45.0, 12.0), (60.0, 0.0)] {
+            ed.click(&mut sk, Anchor::Free(DVec2::new(p.0, p.1)));
+        }
+        ed.click(&mut sk, Anchor::Free(DVec2::new(60.0, 0.0)));
+        let made = sk.offset_spline(0, DVec2::new(30.0, 20.0), Some(4.0)).unwrap();
+        let Entity::Spline { s: copy } = sk.entities[made[0]] else { panic!("a spline") };
+        assert!(sk.splines[copy].len() <= 7, "about as many points as the original (5): {}", sk.splines[copy].len());
+        for p in sk.spline_curve(copy).iter().step_by(5) {
+            let d = crate::spline::distance(&sk.spline_fit(0), *p);
+            assert!((d - 4.0).abs() < 0.02, "{p} is {d} away");
+        }
+    }
+
+    #[test]
+    fn a_tangent_handle_turns_the_curve_and_follows_its_point() {
+        let mut sk = crossed();
+        let Entity::Spline { s } = sk.entities[0] else { panic!("the spline is first") };
+        let handles = sk.spline_handles(s);
+        assert_eq!(handles.len(), 4, "one per fit point");
+        assert!(handles.iter().all(|h| !h.2), "none set yet");
+        // Set the second fit point's handle straight down: the curve leaves it downward.
+        let p = sk.splines[s][1];
+        sk.set_spline_tangent(p, Some(DVec2::new(0.0, -1.0)));
+        let curve = sk.spline_curve(s);
+        let i = crate::spline::PER_SPAN;
+        assert!((curve[i + 1] - curve[i - 1]).normalize().dot(-DVec2::Y) > 0.99);
+        assert!(sk.spline_handles(s)[1].2, "now set");
+        // Deleting a line earlier in the list renumbers points: the handle follows its point.
+        let at = sk.points[p];
+        let l = sk.entities.iter().position(|x| matches!(x, Entity::Line { .. })).unwrap();
+        sk.delete(&[crate::sketch::Sel::Entity(l)]);
+        let q = sk.points.iter().position(|x| *x == at).unwrap();
+        assert_eq!(sk.spline_tangent(q), Some(DVec2::new(0.0, -1.0)));
     }
 
     #[test]
