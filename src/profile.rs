@@ -527,6 +527,55 @@ fn circle_loop(c: DVec2, r: f64) -> Vec<DVec2> {
 
 /// All extrudable regions of a sketch, in a stable order.
 pub fn find_regions(sk: &Sketch) -> Vec<Region> {
+    // Asked for many times a frame for the same sketch: the last few answers
+    // are kept, by everything the regions depend on.
+    let key = region_key(sk);
+    if let Some(hit) = REGIONS.with(|c| c.borrow().iter().find(|(k, _)| *k == key).map(|(_, r)| r.clone())) {
+        return hit;
+    }
+    let out = find_regions_now(sk);
+    REGIONS.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 16 {
+            c.remove(0);
+        }
+        c.push((key, out.clone()));
+    });
+    out
+}
+
+thread_local! {
+    static REGIONS: std::cell::RefCell<Vec<(Vec<u64>, Vec<Region>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Everything a sketch's regions depend on, as numbers.
+fn region_key(sk: &Sketch) -> Vec<u64> {
+    let mut k: Vec<u64> = Vec::with_capacity(4 * sk.points.len() + 4 * sk.entities.len() + 8);
+    k.extend(sk.points.iter().flat_map(|p| [p.x.to_bits(), p.y.to_bits()]));
+    k.push(u64::MAX);
+    for (i, e) in sk.entities.iter().enumerate() {
+        let (tag, a, b, c) = match *e {
+            Entity::Line { a, b } => (0, a as u64, b as u64, 0),
+            Entity::Circle { center, radius } => (1, center as u64, radius.to_bits(), 0),
+            Entity::Point { p } => (2, p as u64, 0, 0),
+            Entity::Arc { center, a, b } => (3, center as u64, a as u64, b as u64),
+            Entity::Spline { s } => (4, s as u64, 0, 0),
+            Entity::Ellipse { center, major, minor } => (5, center as u64, major as u64, minor as u64),
+        };
+        k.extend([tag, a, b, c, sk.is_construction(i) as u64]);
+    }
+    k.push(u64::MAX);
+    for list in &sk.splines {
+        k.extend(list.iter().map(|&p| p as u64));
+        k.push(u64::MAX - 1);
+    }
+    k.extend(sk.spline_tangents.iter().flat_map(|&(p, t)| [p as u64, t.x.to_bits(), t.y.to_bits()]));
+    k.push(u64::MAX);
+    k.extend(sk.control_splines.iter().flat_map(|&(s, d)| [s as u64, d as u64]));
+    k
+}
+
+fn find_regions_now(sk: &Sketch) -> Vec<Region> {
     let (graph, whole_circles) = arrangement(sk);
     let tagged = {
         let mut t = graph_faces(&graph);

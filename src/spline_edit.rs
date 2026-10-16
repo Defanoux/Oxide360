@@ -379,6 +379,24 @@ impl Sketch {
             .collect()
     }
 
+    /// The tangent handles to show for what's selected: every handle of a
+    /// selected spline, and the handle of a selected fit point. (spline,
+    /// fit point, forward end, set.)
+    pub fn shown_handles(&self, sel: &[crate::sketch::Sel]) -> Vec<(usize, PointId, DVec2, bool)> {
+        use crate::sketch::Sel;
+        let mut out: Vec<(usize, PointId, DVec2, bool)> = Vec::new();
+        for (e, ent) in self.entities.iter().enumerate() {
+            let Entity::Spline { s } = *ent else { continue };
+            let whole = sel.contains(&Sel::Entity(e));
+            for (p, fwd, set) in self.spline_handles(s) {
+                if (whole || sel.contains(&Sel::Point(p))) && !out.iter().any(|h| h.1 == p) {
+                    out.push((s, p, fwd, set));
+                }
+            }
+        }
+        out
+    }
+
     /// Offset spline `e` to the side `at` is on, `distance` away (or as far
     /// as `at` is): a new spline through its fit points moved square off the
     /// curve, each leaving the same way the original does there — so it has
@@ -702,5 +720,47 @@ mod tests {
         sk.extend_spline(e, DVec2::new(39.0, 0.0)).unwrap();
         let ends = spline_ends(&sk);
         assert!((ends[0].1.x - 50.0).abs() < 1e-6, "{ends:?}");
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use crate::sketch::{Anchor, Editor, OriginPlane, Tool};
+
+    #[test]
+    #[ignore]
+    fn time_an_arch_and_its_offset() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::Spline);
+        for p in [(0.0, 0.0), (15.0, 12.0), (30.0, 15.0), (45.0, 12.0), (60.0, 0.0)] {
+            ed.click(&mut sk, Anchor::Free(DVec2::new(p.0, p.1)));
+        }
+        ed.click(&mut sk, Anchor::Free(DVec2::new(60.0, 0.0)));
+        ed.set_tool(Tool::Line);
+        ed.click(&mut sk, Anchor::Free(DVec2::new(-5.0, 3.0)));
+        ed.click(&mut sk, Anchor::Free(DVec2::new(65.0, 3.0)));
+        let t = std::time::Instant::now();
+        sk.offset_spline(0, DVec2::new(30.0, 20.0), Some(4.0)).unwrap();
+        eprintln!("offset: {:?}", t.elapsed());
+        for _ in 0..2 {
+            let t = std::time::Instant::now();
+            let r = crate::profile::find_regions(&sk);
+            eprintln!("find_regions: {:?} ({} regions)", t.elapsed(), r.len());
+            let t = std::time::Instant::now();
+            for e in 0..sk.entities.len() {
+                if let Entity::Spline { s } = sk.entities[e] {
+                    let _ = sk.spline_curve(s);
+                }
+            }
+            eprintln!("curves: {:?}", t.elapsed());
+            let t = std::time::Instant::now();
+            let _ = sk.hit(DVec2::new(30.0, 10.0), 0.5);
+            eprintln!("hit: {:?}", t.elapsed());
+            let t = std::time::Instant::now();
+            let _ = crate::solver::solve(&mut sk.clone(), &[]);
+            eprintln!("solve: {:?}", t.elapsed());
+        }
     }
 }

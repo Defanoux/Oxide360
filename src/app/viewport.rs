@@ -1345,19 +1345,15 @@ impl OpenCad {
                     let handle_end = |app: &Self, q: DVec2| -> Option<(sketch::PointId, f64, usize)> {
                         let sk = &app.sketches[i];
                         let tol = SNAP_PX as f64 * mm_per_px;
-                        app.editor.selection.iter().find_map(|sel| {
-                            let Sel::Entity(e) = *sel else { return None };
-                            let Some(&Entity::Spline { s }) = sk.entities.get(e) else { return None };
-                            sk.spline_handles(s).into_iter().find_map(|(p, fwd, _)| {
-                                let back = sk.points[p] * 2.0 - fwd;
-                                if fwd.distance(q) <= tol {
-                                    Some((p, 1.0, s))
-                                } else if back.distance(q) <= tol {
-                                    Some((p, -1.0, s))
-                                } else {
-                                    None
-                                }
-                            })
+                        sk.shown_handles(&app.editor.selection).into_iter().find_map(|(s, p, fwd, _)| {
+                            let back = sk.points[p] * 2.0 - fwd;
+                            if fwd.distance(q) <= tol {
+                                Some((p, 1.0, s))
+                            } else if back.distance(q) <= tol {
+                                Some((p, -1.0, s))
+                            } else {
+                                None
+                            }
                         })
                     };
                     if response.double_clicked() {
@@ -1776,6 +1772,13 @@ impl OpenCad {
                     if matches!(self.editor.tool, Tool::Spline | Tool::ControlSpline) && !typing && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         self.finish_spline();
                     }
+                    // The ✓ by the last point finishes the spline (Fusion's).
+                    let drawing_spline = matches!(self.editor.tool, Tool::Spline | Tool::ControlSpline) && self.editor.spline.len() >= 2;
+                    let on_check = drawing_spline && self.spline_check.zip(hover_px).is_some_and(|(r, px)| r.contains(to_pos(px)));
+                    if on_check && response.clicked() && matches!(self.editor.tool, Tool::Spline | Tool::ControlSpline) {
+                        self.finish_spline();
+                        self.spline_check = None;
+                    }
                     // Control Point Spline: ↑/↓ switch its degree between 3 and 5.
                     if self.editor.tool == Tool::ControlSpline && !typing {
                         let (up, down) = ui.input(|i| (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown)));
@@ -1842,7 +1845,7 @@ impl OpenCad {
                             }
                         }
                     }
-                    if response.clicked() || std::mem::take(&mut self.rect_place) {
+                    if (response.clicked() && !on_check) || std::mem::take(&mut self.rect_place) {
                         if let Some(at) = cursor {
                             let ed = &mut self.editor;
                             let length = self.line_length.filter(|_| ed.tool == Tool::Line && ed.start.is_some());
@@ -2727,10 +2730,8 @@ impl OpenCad {
                 // A selected spline's tangent handles (Fusion's): a line through each
                 // fit point; its ends hollow while the curve takes its own way, filled once set.
                 let handle_col = Color32::from_rgb(120, 200, 255);
-                for sel in &self.editor.selection {
-                    let Sel::Entity(e) = *sel else { continue };
-                    let Some(&Entity::Spline { s }) = sk.entities.get(e) else { continue };
-                    for (p, fwd, set) in sk.spline_handles(s) {
+                {
+                    for (_, p, fwd, set) in sk.shown_handles(&self.editor.selection) {
                         let back = sk.points[p] * 2.0 - fwd;
                         let stroke = Stroke::new(1.2, handle_col);
                         view.line(plane.to_world(back), plane.to_world(fwd), stroke);
@@ -3299,6 +3300,18 @@ impl OpenCad {
                         if let Some(px) = view.project(plane.to_world(*q)) {
                             painter.circle_filled(to_pos(px), 3.5, COL_PREVIEW);
                         }
+                    }
+                    // A ✓ just above and to the left of the last point: click it to finish.
+                    self.spline_check = None;
+                    if let Some(px) = placed.last().filter(|_| placed.len() >= 2).and_then(|q| view.project(plane.to_world(*q))) {
+                        let c = to_pos(px) + egui::vec2(-18.0, -18.0);
+                        let r = egui::Rect::from_center_size(c, egui::vec2(18.0, 18.0));
+                        let hot = hover_px.is_some_and(|h| r.contains(to_pos(h)));
+                        painter.circle_filled(c, 9.0, if hot { Color32::from_rgb(90, 200, 110) } else { Color32::from_rgb(60, 160, 80) });
+                        let s = Stroke::new(2.0, Color32::WHITE);
+                        painter.line_segment([c + egui::vec2(-4.5, 0.0), c + egui::vec2(-1.5, 3.5)], s);
+                        painter.line_segment([c + egui::vec2(-1.5, 3.5), c + egui::vec2(4.5, -3.5)], s);
+                        self.spline_check = Some(r);
                     }
                     let control = self.editor.tool == Tool::ControlSpline;
                     if control {
