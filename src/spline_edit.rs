@@ -23,6 +23,14 @@ fn seg_seg(p: DVec2, q: DVec2, a: DVec2, b: DVec2) -> Option<(f64, DVec2)> {
 }
 
 impl Sketch {
+    /// Refused for a Control Point Spline (these tools work on fit-point ones).
+    fn fit_only(&self, s: usize) -> Result<(), String> {
+        match self.control_degree(s) {
+            Some(_) => Err("that works on fit point splines (not control point ones yet)".into()),
+            None => Ok(()),
+        }
+    }
+
     /// How many samples a spline's span (between two fit points) has.
     fn per_span(&self, s: usize) -> usize {
         if self.splines.get(s).is_some_and(|l| l.len() >= 3) { crate::spline::PER_SPAN } else { 1 }
@@ -216,6 +224,7 @@ impl Sketch {
     /// crossings goes (nothing crossing: the whole spline).
     pub fn trim_spline(&mut self, e: EntityId, at: DVec2) -> Result<Vec<Constraint>, String> {
         let Some(&Entity::Spline { s }) = self.entities.get(e) else { return Err("not a spline".into()) };
+        self.fit_only(s)?;
         let (lo, hi, _, cuts) = self.spline_span(e, at).ok_or("not a spline")?;
         let closed = self.spline_closed(s);
         let list = self.splines[s].clone();
@@ -263,6 +272,7 @@ impl Sketch {
     /// Break spline `e` at the nearest crossings either side of the click.
     pub(crate) fn break_spline(&mut self, e: EntityId, at: DVec2) -> Result<Vec<Constraint>, String> {
         let Some(&Entity::Spline { s }) = self.entities.get(e) else { return Err("not a spline".into()) };
+        self.fit_only(s)?;
         let (lo, hi, _, cuts) = self.spline_span(e, at).ok_or("not a spline")?;
         let closed = self.spline_closed(s);
         let list = self.splines[s].clone();
@@ -314,6 +324,7 @@ impl Sketch {
     /// fit point added there).
     pub fn extend_spline(&mut self, e: EntityId, at: DVec2) -> Result<Vec<Constraint>, String> {
         let Some(&Entity::Spline { s }) = self.entities.get(e) else { return Err("not a spline".into()) };
+        self.fit_only(s)?;
         if self.spline_closed(s) {
             return Err("a closed spline has no end to extend".into());
         }
@@ -353,7 +364,7 @@ impl Sketch {
     /// Fusion's tangent handles on spline `s`, one per fit point: (the fit
     /// point, where the handle's forward end is, whether one is set).
     pub fn spline_handles(&self, s: usize) -> Vec<(PointId, DVec2, bool)> {
-        let Some(list) = self.splines.get(s) else { return Vec::new() };
+        let Some(list) = self.splines.get(s).filter(|_| self.control_degree(s).is_none()) else { return Vec::new() };
         let n = if self.spline_closed(s) { list.len() - 1 } else { list.len() };
         let base = self.handle_base(s);
         (0..n)
@@ -374,6 +385,7 @@ impl Sketch {
     /// the same points and follows the original closely.
     pub fn offset_spline(&mut self, e: EntityId, at: DVec2, distance: Option<f64>) -> Result<Vec<EntityId>, String> {
         let Some(&Entity::Spline { s }) = self.entities.get(e) else { return Err("not a spline".into()) };
+        self.fit_only(s)?;
         let curve = self.spline_curve(s);
         if curve.len() < 2 {
             return Err("the spline is too short".into());

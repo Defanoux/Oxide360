@@ -419,6 +419,11 @@ pub struct Sketch {
     /// none take the curve's own. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spline_tangents: Vec<(PointId, DVec2)>,
+    /// Splines that are Control Point Splines (by spline index), with their
+    /// degree: the curve is pulled toward their points instead of through
+    /// them. Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub control_splines: Vec<(usize, u8)>,
     /// A unit a dimension was typed in that differs from the design's ("1 in"
     /// in a mm design), by constraint index: it keeps showing in that unit.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -781,6 +786,7 @@ impl Sketch {
             dim_exprs: Vec::new(),
             splines: Vec::new(),
             spline_tangents: Vec::new(),
+            control_splines: Vec::new(),
             construction: Vec::new(),
         }
     }
@@ -939,8 +945,16 @@ impl Sketch {
 
     /// Points along spline `s` (see `spline::polyline`).
     pub fn spline_curve(&self, s: usize) -> Vec<DVec2> {
+        if let Some(d) = self.control_degree(s) {
+            return crate::spline::bspline(&self.spline_fit(s), d as usize, crate::spline::PER_SPAN);
+        }
         let tangents: Vec<Option<DVec2>> = self.splines.get(s).map_or(Vec::new(), |l| l.iter().map(|&p| self.spline_tangent(p)).collect());
         crate::spline::polyline_with(&self.spline_fit(s), &tangents)
+    }
+
+    /// Spline `s`'s degree when it's a Control Point Spline (None: a fit-point one).
+    pub fn control_degree(&self, s: usize) -> Option<u8> {
+        self.control_splines.iter().find(|(c, _)| *c == s).map(|(_, d)| *d)
     }
 
     /// The tangent handle set on fit point `p`, if any.
@@ -1272,6 +1286,7 @@ impl Sketch {
             }
         }
         self.splines = lists;
+        self.control_splines = self.control_splines.iter().filter_map(|&(s, d)| spline_map.get(s).filter(|&&m| m != usize::MAX).map(|&m| (m, d))).collect();
         use Constraint::*;
         for c in &mut self.constraints {
             *c = match *c {
@@ -2828,6 +2843,8 @@ pub enum Tool {
     Circle3Tangent,
     /// Fit-point spline: click its points; Enter (or clicking the last again) finishes.
     Spline,
+    /// Control-point spline: the curve is pulled toward the points clicked.
+    ControlSpline,
     /// Centre, the end of one axis, then how wide the other way.
     Ellipse,
     /// Pick geometry for a constraint ("Dimension", "Parallel", …): the
@@ -2857,7 +2874,8 @@ impl Tool {
             Tool::Rectangle3Point => "3-Point Rectangle",
             Tool::RectangleCenter => "Center Rectangle",
             Tool::Point => "Point",
-            Tool::Spline => "Spline",
+            Tool::Spline => "Fit Point Spline",
+            Tool::ControlSpline => "Control Point Spline",
             Tool::Ellipse => "Ellipse",
             Tool::Circle => "Center Diameter Circle",
             Tool::Circle2Point => "2-Point Circle",
@@ -2911,6 +2929,8 @@ pub struct Editor {
     pub polygon_sides: usize,
     /// Spline tool: the fit points clicked so far.
     pub spline: Vec<Anchor>,
+    /// The Control Point Spline tool's degree (3 or 5; 0 means 3).
+    pub cp_degree: u8,
 }
 
 /// A slot: the two end-cap centres and half the width.
@@ -2960,7 +2980,15 @@ impl Editor {
         if pts.last().is_none_or(|l| l.distance(here) > MIN_SIZE) {
             pts.push(here);
         }
+        if self.tool == Tool::ControlSpline {
+            return crate::spline::bspline(&pts, self.degree() as usize, crate::spline::PER_SPAN);
+        }
         crate::spline::polyline(&pts)
+    }
+
+    /// The Control Point Spline tool's degree (3 unless set to 5).
+    pub fn degree(&self) -> u8 {
+        if self.cp_degree == 5 { 5 } else { 3 }
     }
 
     /// Finish the spline being drawn: its points become sketch points (tied
@@ -2995,6 +3023,9 @@ impl Editor {
             pts.push(pts[0]);
         }
         sk.splines.push(pts);
+        if self.tool == Tool::ControlSpline {
+            sk.control_splines.push((sk.splines.len() - 1, self.degree()));
+        }
         sk.entities.push(Entity::Spline { s: sk.splines.len() - 1 });
         if self.construction {
             sk.set_construction(sk.entities.len() - 1, true);
@@ -3277,13 +3308,13 @@ impl Editor {
             p
         };
         // Spline: each click is a fit point; the last one clicked again finishes.
-        if self.tool == Tool::Spline {
+        if matches!(self.tool, Tool::Spline | Tool::ControlSpline) {
             if self.spline.last().is_some_and(|&l| sk.is_valid_anchor(l) && sk.pos(l).distance(sk.pos(at)) < MIN_SIZE) {
                 return self.finish_spline(sk);
             }
             // Back on the first point (with three or more placed): a closed shape, done.
             let back_to_start = self.spline.first().is_some_and(|&f| sk.is_valid_anchor(f) && (f == at || sk.pos(f).distance(sk.pos(at)) < MIN_SIZE));
-            if self.spline.len() >= 3 && back_to_start {
+            if self.spline.len() >= 3 && back_to_start && self.tool == Tool::Spline {
                 return self.make_spline(sk, true);
             }
             self.spline.push(at);
@@ -3646,7 +3677,7 @@ impl Editor {
                 sk.entities.push(Entity::Arc { center: c, a, b });
                 ties
             }
-            Tool::Circle2Tangent | Tool::Circle3Tangent | Tool::Constrain(_) | Tool::Point | Tool::Spline => Vec::new(),
+            Tool::Circle2Tangent | Tool::Circle3Tangent | Tool::Constrain(_) | Tool::Point | Tool::Spline | Tool::ControlSpline => Vec::new(),
             Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Break | Tool::Extend | Tool::Offset | Tool::Mirror | Tool::Project => Vec::new(),
             Tool::Select => Vec::new(),
         }

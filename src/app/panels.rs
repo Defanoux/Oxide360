@@ -572,8 +572,11 @@ impl OpenCad {
                     if icons::button(ui, Icon::Slot, "Slot: click the two end centres, then the width", true, self.editor.tool == Tool::Slot).clicked() {
                         self.editor.set_tool(Tool::Slot);
                     }
-                    if icons::button(ui, Icon::Spline, "Spline: click the points it goes through; Enter (or click the last point again) finishes", true, self.editor.tool == Tool::Spline).clicked() {
+                    if icons::button(ui, Icon::Spline, "Fit Point Spline: click the points it goes through; Enter (or click the last point again) finishes. Select it to drag its tangent handles", true, self.editor.tool == Tool::Spline).clicked() {
                         self.editor.set_tool(Tool::Spline);
+                    }
+                    if icons::button(ui, Icon::ControlSpline, "Control Point Spline: click its control points (the curve is pulled toward them); ↑/↓ for degree 3 or 5; Enter finishes", true, self.editor.tool == Tool::ControlSpline).clicked() {
+                        self.editor.set_tool(Tool::ControlSpline);
                     }
                     if icons::button(ui, Icon::Ellipse, "Ellipse: click the centre, the end of one axis, then how wide", true, self.editor.tool == Tool::Ellipse).clicked() {
                         self.editor.set_tool(Tool::Ellipse);

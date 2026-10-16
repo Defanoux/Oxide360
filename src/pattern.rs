@@ -98,6 +98,9 @@ fn copy_chosen(
             Entity::Spline { s } => {
                 let list: Vec<PointId> = sk.splines[s].clone().into_iter().map(|p| image(sk, p)).collect();
                 sk.splines.push(list);
+                if let Some(d) = sk.control_degree(s) {
+                    sk.control_splines.push((sk.splines.len() - 1, d));
+                }
                 Entity::Spline { s: sk.splines.len() - 1 }
             }
         };

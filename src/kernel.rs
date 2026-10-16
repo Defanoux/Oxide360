@@ -3242,6 +3242,30 @@ mod tests {
     }
 
     #[test]
+    fn a_control_point_spline_bounds_a_profile() {
+        // An arch pulled toward (10, 20) and (30, 20), closed by a line along the bottom.
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = Editor::default();
+        ed.set_tool(Tool::ControlSpline);
+        for p in [(0.0, 0.0), (10.0, 20.0), (30.0, 20.0), (40.0, 0.0)] {
+            ed.click(&mut sk, free(p.0, p.1));
+        }
+        ed.finish_spline(&mut sk);
+        assert_eq!(sk.control_splines, vec![(0, 3)]);
+        ed.set_tool(Tool::Line);
+        let ends: Vec<Anchor> = sk.splines[0].iter().map(|&p| Anchor::Point(p)).collect();
+        ed.click(&mut sk, ends[3]);
+        ed.click(&mut sk, ends[0]);
+        let regions = find_regions(&sk);
+        assert_eq!(regions.len(), 1);
+        // Four points, degree 3: a cubic Bézier, y = 60 t (1 − t); the area
+        // under it (∫ y dx) is exactly 420.
+        let m = build4(&[sk], &[ex(0, vec![0], 2.0, Operation::NewBody)], &[], &timeline(1, 1));
+        assert_eq!(m.errors, vec![None]);
+        assert!((total(&m) - 420.0 * 2.0).abs() < 1e-3, "{}", total(&m));
+    }
+
+    #[test]
     fn plate_with_hole_is_exact() {
         let mut sk = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk, 0.0, 0.0, 50.0, 30.0);

@@ -54,6 +54,42 @@ pub fn polyline_with(pts: &[DVec2], tangents: &[Option<DVec2>]) -> Vec<DVec2> {
     made
 }
 
+/// Points along the clamped B-spline with control points `ctrl` (Fusion's
+/// Control Point Spline): it starts and ends on the first and last, and is
+/// pulled toward the rest. `degree` 3 or 5 (less with too few points);
+/// `per_span` samples per control point gap.
+pub fn bspline(ctrl: &[DVec2], degree: usize, per_span: usize) -> Vec<DVec2> {
+    let n = ctrl.len();
+    if n < 3 {
+        return ctrl.to_vec();
+    }
+    let p = degree.clamp(1, n - 1);
+    // Clamped, evenly spaced knots: p + 1 at each end.
+    let m = n + p + 1;
+    let knots: Vec<f64> = (0..m)
+        .map(|i| if i <= p { 0.0 } else if i >= n { 1.0 } else { (i - p) as f64 / (n - p) as f64 })
+        .collect();
+    let count = per_span * (n - 1) + 1;
+    (0..count)
+        .map(|j| {
+            let t = j as f64 / (count - 1) as f64;
+            // The knot span t is in (the last one for t = 1).
+            let k = (p..n).rev().find(|&k| knots[k] <= t && (t < knots[k + 1] || k == n - 1)).unwrap_or(p);
+            // de Boor.
+            let mut d: Vec<DVec2> = (0..=p).map(|r| ctrl[k - p + r]).collect();
+            for r in 1..=p {
+                for jj in (r..=p).rev() {
+                    let i = k - p + jj;
+                    let den = knots[i + p + 1 - r] - knots[i];
+                    let a = if den.abs() < 1e-15 { 0.0 } else { (t - knots[i]) / den };
+                    d[jj] = d[jj - 1].lerp(d[jj], a);
+                }
+            }
+            d[p]
+        })
+        .collect()
+}
+
 /// A closed spline: at least three different points, the last one the first again.
 pub fn is_closed(pts: &[DVec2]) -> bool {
     pts.len() >= 4 && pts[0].distance(pts[pts.len() - 1]) < 1e-9
@@ -84,6 +120,20 @@ mod tests {
         let dir = (bent[m + 1] - bent[m - 1]).normalize();
         assert!(dir.dot(DVec2::Y) > 0.999, "{dir}");
         assert!(bent[m].distance(PTS[2]) < 1e-9);
+    }
+
+    #[test]
+    fn a_control_point_spline_starts_and_ends_on_its_ends_and_is_pulled_by_the_rest() {
+        let ctrl = [DVec2::new(0.0, 0.0), DVec2::new(10.0, 20.0), DVec2::new(30.0, 20.0), DVec2::new(40.0, 0.0)];
+        let c = bspline(&ctrl, 3, PER_SPAN);
+        assert_eq!(c.len(), PER_SPAN * 3 + 1);
+        assert!(c[0].distance(ctrl[0]) < 1e-12 && c.last().unwrap().distance(ctrl[3]) < 1e-12);
+        // Four points, degree 3: a Bézier; its middle is (P0 + 3P1 + 3P2 + P3) / 8.
+        let mid = (ctrl[0] + ctrl[1] * 3.0 + ctrl[2] * 3.0 + ctrl[3]) / 8.0;
+        assert!(c[c.len() / 2].distance(mid) < 1e-9, "{} vs {mid}", c[c.len() / 2]);
+        assert!(c.iter().all(|q| q.y < 20.0), "it doesn't reach the control points");
+        // Degree 5 with only four points: the most it can be (3).
+        assert_eq!(bspline(&ctrl, 5, PER_SPAN), c);
     }
 
     #[test]

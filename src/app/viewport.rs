@@ -1238,7 +1238,7 @@ impl OpenCad {
                     self.delete_selection();
                 }
                 if esc {
-                    if self.editor.tool == Tool::Spline && self.editor.spline.len() >= 2 {
+                    if matches!(self.editor.tool, Tool::Spline | Tool::ControlSpline) && self.editor.spline.len() >= 2 {
                         self.finish_spline(); // Esc keeps the spline drawn so far
                     } else if self.editor.busy() {
                         self.editor.cancel();
@@ -1770,10 +1770,21 @@ impl OpenCad {
                 | Tool::PolygonCircumscribed
                 | Tool::PolygonInscribed
                 | Tool::PolygonEdge
-                | Tool::Spline => {
+                | Tool::Spline
+                | Tool::ControlSpline => {
                     // Spline: Enter finishes it (as Esc does, keeping the points so far).
-                    if self.editor.tool == Tool::Spline && !typing && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    if matches!(self.editor.tool, Tool::Spline | Tool::ControlSpline) && !typing && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         self.finish_spline();
+                    }
+                    // Control Point Spline: ↑/↓ switch its degree between 3 and 5.
+                    if self.editor.tool == Tool::ControlSpline && !typing {
+                        let (up, down) = ui.input(|i| (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown)));
+                        if up {
+                            self.editor.cp_degree = 5;
+                        }
+                        if down {
+                            self.editor.cp_degree = 3;
+                        }
                     }
                     // After the centre (circle), the first point (line) or the two centres (slot),
                     // typing a number sets the diameter / length / width.
@@ -2703,6 +2714,15 @@ impl OpenCad {
                     }
                 }
             }
+            if active {
+                // Control Point Splines show their control frame, dashed.
+                for &(s, _) in &sk.control_splines {
+                    let pts = sk.spline_fit(s);
+                    for w in pts.windows(2) {
+                        view.dashed(plane.to_world(w[0]), plane.to_world(w[1]), Stroke::new(1.0, Color32::from_rgb(120, 200, 255)));
+                    }
+                }
+            }
             if active && self.editor.tool == Tool::Select {
                 // A selected spline's tangent handles (Fusion's): a line through each
                 // fit point; its ends hollow while the curve takes its own way, filled once set.
@@ -3269,17 +3289,25 @@ impl OpenCad {
                 }
                 status = format!("x {}  y {}", u.show(here.x), u.show(here.y));
                 // The spline being drawn: through its points and the cursor.
-                if self.editor.tool == Tool::Spline && !self.editor.spline.is_empty() {
+                if matches!(self.editor.tool, Tool::Spline | Tool::ControlSpline) && !self.editor.spline.is_empty() {
                     let curve = self.editor.spline_preview(sk, here);
                     for w in curve.windows(2) {
                         view.line(plane.to_world(w[0]), plane.to_world(w[1]), Stroke::new(1.5, COL_PREVIEW));
                     }
-                    for a in self.editor.spline.iter().filter(|a| sk.is_valid_anchor(**a)) {
-                        if let Some(px) = view.project(plane.to_world(sk.pos(*a))) {
+                    let placed: Vec<DVec2> = self.editor.spline.iter().filter(|a| sk.is_valid_anchor(**a)).map(|a| sk.pos(*a)).collect();
+                    for q in &placed {
+                        if let Some(px) = view.project(plane.to_world(*q)) {
                             painter.circle_filled(to_pos(px), 3.5, COL_PREVIEW);
                         }
                     }
-                    let closing = self.editor.spline.len() >= 3 && cursor == self.editor.spline.first().copied();
+                    let control = self.editor.tool == Tool::ControlSpline;
+                    if control {
+                        // The control frame, dashed, on to the cursor.
+                        for w in placed.iter().copied().chain(std::iter::once(here)).collect::<Vec<_>>().windows(2) {
+                            view.dashed(plane.to_world(w[0]), plane.to_world(w[1]), Stroke::new(1.0, COL_PREVIEW));
+                        }
+                    }
+                    let closing = !control && self.editor.spline.len() >= 3 && cursor == self.editor.spline.first().copied();
                     if closing {
                         if let Some(px) = view.project(plane.to_world(here)) {
                             painter.circle_stroke(to_pos(px), 8.0, Stroke::new(2.0, COL_SNAP));
@@ -3287,6 +3315,8 @@ impl OpenCad {
                     }
                     status = if closing {
                         "click to close the spline".to_string()
+                    } else if control {
+                        format!("{} control point{} · degree {} (↑/↓) — click more, Enter (or the last point again) to finish", self.editor.spline.len(), if self.editor.spline.len() == 1 { "" } else { "s" }, self.editor.degree())
                     } else {
                         format!(
                             "{} point{} — click more, the first point to close it, or Enter (or the last point again) to finish",

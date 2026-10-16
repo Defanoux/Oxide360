@@ -29,6 +29,7 @@ pub enum Icon {
     ArcTangent,
     Ellipse,
     Break,
+    ControlSpline,
     Plane,
     PlaneAngle,
     Hole,
@@ -594,6 +595,24 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             dot(0.5, 0.24, ink);
             dot(0.88, 0.62, ink);
         }
+        Icon::ControlSpline => {
+            // A curve pulled toward a dashed frame of points.
+            let frame = [(0.08, 0.85), (0.3, 0.15), (0.7, 0.15), (0.92, 0.85)];
+            for w in frame.windows(2) {
+                line(w[0], w[1], Stroke::new(thin.width * 0.6, ink));
+            }
+            for &(x, y) in &frame {
+                dot(x, y, ink);
+            }
+            let pts: Vec<Pos2> = (0..=24).map(|k| {
+                let t = k as f32 / 24.0;
+                let u = 1.0 - t;
+                let x = u * u * u * 0.08 + 3.0 * u * u * t * 0.3 + 3.0 * u * t * t * 0.7 + t * t * t * 0.92;
+                let y = u * u * u * 0.85 + 3.0 * u * u * t * 0.15 + 3.0 * u * t * t * 0.15 + t * t * t * 0.85;
+                p(x, y)
+            }).collect();
+            painter.add(egui::Shape::line(pts, Stroke::new(thin.width * 1.3, orange)));
+        }
         Icon::Break => {
             // A line crossed by another, split at the crossing (a small gap, two dots).
             line((0.5, 0.08), (0.5, 0.92), thin);
@@ -877,9 +896,9 @@ mod shot_tests {
     #[ignore]
     fn shots() {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
-        crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [480, 80], |ui| {
+        crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [520, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline] {
                     button(ui, icon, "", true, false);
                 }
             });
