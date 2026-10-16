@@ -534,6 +534,20 @@ impl View<'_> {
         ));
     }
 
+    /// A curved arrow round `center` (the view cube's roll arrows): an arc of
+    /// `radius` from screen angle `from` to `to` (radians, y down, so
+    /// increasing is clockwise), with its head at `to`.
+    pub fn roll_arrow(painter: &egui::Painter, center: egui::Pos2, radius: f32, from: f32, to: f32, color: Color32) {
+        let at = |a: f32| center + egui::vec2(a.cos(), a.sin()) * radius;
+        let pts: Vec<egui::Pos2> = (0..=16).map(|k| at(from + (to - from) * k as f32 / 16.0)).collect();
+        painter.add(egui::Shape::line(pts, Stroke::new(2.5, color)));
+        // The head: along the arc's direction at its end.
+        let dir = egui::vec2(-to.sin(), to.cos()) * (to - from).signum();
+        let side = egui::vec2(-dir.y, dir.x);
+        let tip = at(to) + dir * 7.0;
+        painter.add(egui::Shape::convex_polygon(vec![tip, at(to) + side * 5.0, at(to) - side * 5.0], color, Stroke::NONE));
+    }
+
     /// Small downward triangle (menu button).
     pub fn menu_icon(painter: &egui::Painter, r: egui::Rect, color: Color32) {
         let c = r.center();
@@ -642,5 +656,27 @@ mod progress_tests {
     fn progress_card_shot() {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/progress.png"), [300, 90], |ui| super::progress_card(ui, "Building Hole1", 0.45));
+    }
+}
+
+#[cfg(test)]
+mod roll_shots {
+    #[test]
+    #[ignore]
+    fn shots() {
+        let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
+        for (name, roll) in [("cube_top", 0f32), ("cube_top_rolled", 45f32)] {
+            let cam = crate::camera::OrbitCamera { yaw: -90f32.to_radians(), pitch: 89.99f32.to_radians(), roll: roll.to_radians(), ..Default::default() };
+            crate::ui_shot::shot(&format!("{dir}/{name}.png"), [240, 220], |ui| {
+                let painter = ui.painter().clone();
+                let view = super::View { painter: &painter, vp: glam::Mat4::IDENTITY, min: glam::Vec2::ZERO, size: glam::Vec2::new(240.0, 220.0), trace: None };
+                let c = egui::pos2(120.0, 120.0);
+                view.view_cube(&cam, &crate::camera::cube_cells(), glam::Vec2::new(c.x, c.y), 34.0, None, true);
+                let icon = egui::Color32::from_gray(215);
+                for (from, to) in [(-50f32, -85f32), (-40f32, -5f32)] {
+                    super::View::roll_arrow(&painter, c, 34.0 * 1.75, from.to_radians(), to.to_radians(), icon);
+                }
+            });
+        }
     }
 }

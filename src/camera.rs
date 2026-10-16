@@ -40,6 +40,8 @@ pub struct OrbitCamera {
     pub distance: f32,
     pub yaw: f32,   // around world Z, radians
     pub pitch: f32, // up/down from the XY plane, radians
+    /// Turned about the view direction (the view cube's roll arrows), radians.
+    pub roll: f32,
     pub projection: Projection,
 }
 
@@ -51,6 +53,7 @@ impl Default for OrbitCamera {
             // Home looks from the front-right-top corner, like Fusion.
             yaw: -45f32.to_radians(),
             pitch: 30f32.to_radians(),
+            roll: 0.0,
             projection: Projection::default(),
         }
     }
@@ -71,7 +74,9 @@ impl OrbitCamera {
         let (sy, cy) = self.yaw.sin_cos();
         let right = Vec3::new(-sy, cy, 0.0);
         let up = right.cross(forward);
-        (forward, right, up)
+        // Rolled: the screen's right and up turn about the view direction.
+        let (sr, cr) = self.roll.sin_cos();
+        (forward, right * cr + up * sr, up * cr - right * sr)
     }
 
     fn near_far(&self) -> (f32, f32) {
@@ -143,6 +148,9 @@ impl OrbitCamera {
 
     pub fn orbit(&mut self, dx: f32, dy: f32) {
         const SENS: f32 = 0.008; // radians per pixel
+        // A rolled view: the drag measured along the unrolled screen axes.
+        let (sr, cr) = self.roll.sin_cos();
+        let (dx, dy) = (dx * cr + dy * sr, dy * cr - dx * sr);
         self.yaw -= dx * SENS;
         self.pitch = (self.pitch + dy * SENS).clamp(-MAX_PITCH, MAX_PITCH);
     }
@@ -349,6 +357,7 @@ pub fn shortest_turn(a: f32, b: f32) -> f32 {
 pub struct Pose {
     pub yaw: f32,
     pub pitch: f32,
+    pub roll: f32,
     pub target: Vec3,
     pub distance: f32,
 }
@@ -360,6 +369,7 @@ impl Pose {
         Pose {
             yaw: a.yaw + shortest_turn(a.yaw, b.yaw) * t,
             pitch: a.pitch + (b.pitch - a.pitch) * t,
+            roll: a.roll + shortest_turn(a.roll, b.roll) * t,
             target: a.target.lerp(b.target, t),
             distance: a.distance * (b.distance / a.distance).powf(t),
         }
@@ -368,11 +378,12 @@ impl Pose {
 
 impl OrbitCamera {
     pub fn pose(&self) -> Pose {
-        Pose { yaw: self.yaw, pitch: self.pitch, target: self.target, distance: self.distance }
+        Pose { yaw: self.yaw, pitch: self.pitch, roll: self.roll, target: self.target, distance: self.distance }
     }
 
     pub fn set_pose(&mut self, p: Pose) {
         self.yaw = p.yaw;
+        self.roll = p.roll;
         self.pitch = p.pitch.clamp(-MAX_PITCH, MAX_PITCH);
         self.target = p.target;
         self.distance = p.distance;
@@ -384,6 +395,20 @@ impl OrbitCamera {
     pub fn cube_point(&self, p: Vec3) -> (Vec2, f32) {
         let (f, r, u) = self.basis();
         (Vec2::new(p.dot(r), -p.dot(u)), p.dot(f))
+    }
+
+    /// Looking straight at one face of the cube (front, top, …): the view
+    /// cube then offers to roll the view.
+    pub fn face_on(&self) -> bool {
+        self.basis().0.abs().max_element() > 0.5f32.to_radians().cos()
+    }
+
+    /// The pose rolled a step (45°) about the view direction: `clockwise` as
+    /// seen on screen. Snaps to whole steps.
+    pub fn rolled(&self, clockwise: bool) -> Pose {
+        let step = std::f32::consts::FRAC_PI_4;
+        let k = (self.roll / step).round() + if clockwise { 1.0 } else { -1.0 };
+        Pose { roll: (k * step).rem_euclid(std::f32::consts::TAU), ..self.pose() }
     }
 
     /// Is this cube face turned toward the viewer?
@@ -626,8 +651,8 @@ mod tests {
 
     #[test]
     fn pose_animation_ends_exactly_and_zooms_evenly() {
-        let a = Pose { yaw: 3.0, pitch: 0.2, target: Vec3::ZERO, distance: 100.0 };
-        let b = Pose { yaw: -3.0, pitch: -0.4, target: Vec3::new(10.0, 0.0, 0.0), distance: 400.0 };
+        let a = Pose { yaw: 3.0, pitch: 0.2, roll: 0.0, target: Vec3::ZERO, distance: 100.0 };
+        let b = Pose { yaw: -3.0, pitch: -0.4, roll: 0.0, target: Vec3::new(10.0, 0.0, 0.0), distance: 400.0 };
         let mid = Pose::lerp(a, b, 0.5);
         assert!((mid.distance - 200.0).abs() < 1e-3, "geometric middle of 100 and 400");
         assert!(mid.yaw > 3.0, "goes the short way across ±180°");
@@ -711,5 +736,36 @@ mod tests {
         assert!(a.w > 0.0 && b.w > 0.0);
         assert!(a.z.abs() < 1e-4);
         assert!(clip_segment(&vp, Vec3::new(-5.0, -100.0, 0.0), Vec3::new(5.0, -100.0, 0.0)).is_none());
+    }
+
+    #[test]
+    fn rolling_turns_the_view_45_degrees_clockwise_on_screen() {
+        let mut c = OrbitCamera { yaw: -90f32.to_radians(), pitch: 0.0, ..Default::default() };
+        assert!(c.face_on(), "the front view");
+        let x = c.cube_point(Vec3::X).0;
+        assert!((x - Vec2::new(1.0, 0.0)).length() < 1e-5, "X points right: {x}");
+        c.set_pose(c.rolled(true));
+        assert!(c.face_on(), "still straight at the front");
+        let x = c.cube_point(Vec3::X).0;
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((x - Vec2::new(h, h)).length() < 1e-5, "X turned clockwise, to right-and-down (screen y is down): {x}");
+        // Back the other way, twice: 45° the other side.
+        c.set_pose(c.rolled(false));
+        c.set_pose(c.rolled(false));
+        assert!((c.cube_point(Vec3::X).0 - Vec2::new(h, -h)).length() < 1e-5);
+        // Orbiting a rolled view: a drag moves what faces you the way the
+        // mouse went on screen, as it does unrolled.
+        let moved = |c: &OrbitCamera, dx: f32, dy: f32| {
+            let mut d = OrbitCamera { ..*c };
+            let p = Vec3::new(0.3, -1.0, 0.2);
+            let before = d.cube_point(p).0;
+            d.orbit(dx, dy);
+            d.cube_point(p).0 - before
+        };
+        let flat = OrbitCamera { yaw: -90f32.to_radians(), pitch: 0.0, ..Default::default() };
+        for (dx, dy) in [(4.0, 0.0), (0.0, 4.0), (3.0, -2.0)] {
+            let (a, b) = (moved(&flat, dx, dy), moved(&c, dx, dy));
+            assert!(a.normalize().dot(b.normalize()) > 0.99, "{dx},{dy}: {a} unrolled vs {b} rolled");
+        }
     }
 }

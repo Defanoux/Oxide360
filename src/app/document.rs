@@ -214,7 +214,7 @@ impl OpenCad {
         self.sketch_shown = v.sketch_shown.iter().filter(|(i, _)| *i < self.sketches.len()).copied().collect();
         self.marker = v.marker.filter(|&n| n < self.timeline.len());
         self.home = match v.home {
-            Some(h) => Pose { yaw: h.yaw, pitch: h.pitch, target: Vec3::from_array(h.target), distance: h.distance },
+            Some(h) => Pose { yaw: h.yaw, pitch: h.pitch, roll: 0.0, target: Vec3::from_array(h.target), distance: h.distance },
             None => OrbitCamera::default().pose(),
         };
     }

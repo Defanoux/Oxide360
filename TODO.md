@@ -49,6 +49,7 @@ sheet metal, surfaces, CAM.
 
 ## Done
 
+- Projection follow-ups and view roll (Gavin asked): projected geometry alone can't be dimensioned (to your own lines it can); a sketch whose face is gone shows its projections red; looking straight at a face, the view cube shows two arrows that roll the view 45° each way.
 - Measure (Gavin asked): a third pick replaces the second and keeps the first; a body shows its volume, surface area and centre of mass (exact, from OpenCASCADE).
 - Linked Project (Gavin asked): projected lines remember their edge and are projected again every build, so they (and what is constrained to them) follow upstream changes and plane redefines; an edge that is gone leaves them red where they were; edges made after the sketch in the timeline are refused.
 - Redefine Sketch Plane (right-click a sketch in the browser or timeline): click an origin plane, construction plane or flat face; the sketch keeps its own coordinates there and what's built from it follows; a face that doesn't exist yet at the sketch's place in the timeline is refused (put back with a message).

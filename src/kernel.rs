@@ -2333,7 +2333,8 @@ fn relink(sk: &Sketch, frame: Option<FacePlane>, bodies: &Tagged, ext: &[Option<
         return (None, Vec::new(), None);
     }
     let Ok(plane) = (if sk.plane_ref.is_some() { frame.map(Frame::from_face).ok_or(()) } else { frame_for(sk, frame).map_err(|_| ()) }) else {
-        return (None, Vec::new(), None); // (the sketch's own error says why)
+        // The sketch's face or plane is gone (its own error says so): none of its edges can be found either.
+        return (None, sk.projections.iter().map(|&(e, _)| e).collect(), None);
     };
     let found = catch_unwind(AssertUnwindSafe(|| {
         let mut all: Vec<(usize, Edge, EdgeRef)> = Vec::new();
@@ -3423,6 +3424,17 @@ mod tests {
         assert_eq!(m.projection_lost[1], vec![line]);
         assert_eq!(m.linked_sketches[1], None);
         assert_eq!(m.sketch_errors[1], None, "a warning, not an error");
+    }
+
+    #[test]
+    fn a_sketch_whose_face_is_gone_has_all_its_projections_lost() {
+        let (a, mut b) = projected_square(20.0);
+        let line = b.projections[0].0;
+        // On a face that isn't there (as when the extrude making it is deleted).
+        b.face = Some(crate::sketch::FacePlane { origin: DVec3::new(0.0, 0.0, 100.0), u: DVec3::X, v: DVec3::Y, follow: None });
+        let m = build4(&[a, b], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &timeline(2, 1));
+        assert!(m.sketch_errors[1].is_some());
+        assert_eq!(m.projection_lost[1], vec![line]);
     }
 
     #[test]

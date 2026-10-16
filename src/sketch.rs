@@ -2688,6 +2688,19 @@ impl Sketch {
         }
     }
 
+    /// Does constraint `c` touch only projected geometry (and the origin)?
+    pub fn only_projected(&self, c: &Constraint) -> bool {
+        let mut pts = c.points();
+        for e in c.entities() {
+            if !self.is_projected(e) {
+                return false;
+            }
+            pts.extend(self.entity_points(e));
+        }
+        let projected_point = |p: PointId| (0..self.entities.len()).any(|e| self.is_projected(e) && self.entity_points(e).contains(&p));
+        pts.iter().any(|&p| p != Self::ORIGIN) && pts.iter().all(|&p| p == Self::ORIGIN || projected_point(p))
+    }
+
     /// What Symmetric wants next, given what's picked so far.
     pub fn symmetric_step(&self, sel: &[Sel]) -> &'static str {
         match sel {
@@ -2795,6 +2808,11 @@ impl Sketch {
         }
         if lines.is_empty() && circles.is_empty() {
             out.push(("Fix", points.iter().filter(|&&p| p != Self::ORIGIN).map(|&p| Fix(p)).collect()));
+        }
+        // Projected geometry is placed by its edge: nothing to dimension
+        // there (as in Fusion). Dimensions from it to your own lines are fine.
+        if let Some((_, cs)) = out.iter_mut().find(|(l, _)| *l == "Dimension") {
+            cs.retain(|c| !self.only_projected(c));
         }
         for (_, cs) in &mut out {
             cs.retain(|c| !self.has_similar(c));

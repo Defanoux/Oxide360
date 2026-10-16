@@ -177,7 +177,7 @@ impl OpenCad {
     /// Look At (Fusion's): glide round to look straight at a plane, from
     /// (yaw, pitch) in degrees, centred on `target` if given.
     pub(crate) fn look_at(&mut self, (yaw, pitch): (f32, f32), target: Option<Vec3>) {
-        let mut to = Pose { yaw: yaw.to_radians(), pitch: pitch.to_radians(), ..self.camera.pose() };
+        let mut to = Pose { yaw: yaw.to_radians(), pitch: pitch.to_radians(), roll: 0.0, ..self.camera.pose() };
         if let Some(t) = target {
             to.target = t;
         }
@@ -204,7 +204,7 @@ impl OpenCad {
         self.dof = solver::solve(&mut self.sketches[i].clone(), &[]).ok().map(|s| s.dof);
         // Turn to face the plane slowly (kinder than snapping): the viewport animates it.
         let (yaw, pitch) = self.sketches[i].view_angles();
-        self.pending_turn = Some(Pose { yaw: yaw.to_radians(), pitch: pitch.to_radians(), ..self.camera.pose() });
+        self.pending_turn = Some(Pose { yaw: yaw.to_radians(), pitch: pitch.to_radians(), roll: 0.0, ..self.camera.pose() });
         self.turn = None;
     }
 

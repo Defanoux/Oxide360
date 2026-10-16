@@ -35,7 +35,7 @@ impl OpenCad {
                 // Already looking straight at it? Then flip to the opposite side.
                 let dir = cube_click_target(-self.camera.basis().0, dir);
                 let (yaw, pitch) = angles_for_dir(dir);
-                let to = Pose { yaw: yaw.to_radians(), pitch: pitch.to_radians(), ..self.camera.pose() };
+                let to = Pose { yaw: yaw.to_radians(), pitch: pitch.to_radians(), roll: 0.0, ..self.camera.pose() };
                 self.move_camera(to, now);
             }
         }
@@ -3689,6 +3689,22 @@ impl OpenCad {
         View::house_icon(ui.painter(), home_rect.shrink2(egui::vec2(7.0, 6.0)), icon);
         if home.clicked() {
             self.move_camera(self.home, now);
+        }
+        // Looking straight at a face: arrows to roll the view 45° at a time (as in Fusion).
+        if self.camera.face_on() {
+            let radius = CUBE_SCALE * 1.75;
+            for (clockwise, from, to, tip) in [(false, -50f32, -85f32, "Rotate view 45° counter-clockwise"), (true, -40f32, -5f32, "Rotate view 45° clockwise")] {
+                let (from, to) = (from.to_radians(), to.to_radians());
+                let mid = (from + to) / 2.0;
+                let spot = egui::Rect::from_center_size(cube_center + egui::vec2(mid.cos(), mid.sin()) * radius, egui::vec2(30.0, 30.0));
+                let r = ui.interact(spot, ui.id().with(("roll", clockwise)), egui::Sense::click()).on_hover_text(tip);
+                let col = if r.hovered() { COL_ARROW_HOT } else { icon };
+                View::roll_arrow(ui.painter(), cube_center, radius, from, to, col);
+                if r.clicked() {
+                    let to = self.camera.rolled(clockwise);
+                    self.move_camera(to, now);
+                }
+            }
         }
         let menu_rect = egui::Rect::from_center_size(cube_center + egui::vec2(CUBE_MARGIN * 0.82, CUBE_MARGIN * 0.82), egui::vec2(26.0, 24.0));
         let menu = ui.put(menu_rect, egui::Button::new("")).on_hover_text("View options");

@@ -362,4 +362,20 @@ mod tests {
         sk.delete(&[crate::sketch::Sel::Entity(0)]);
         assert_eq!(sk.projections.iter().map(|p| p.0).collect::<Vec<_>>(), vec![1], "the first link went with its line; the other shifted down");
     }
+
+    #[test]
+    fn projected_geometry_cant_be_dimensioned_on_its_own() {
+        use crate::sketch::Sel;
+        let (mut sk, _) = linked_line();
+        assert!(sk.is_projected(0), "locked by project_all");
+        sk.points.extend([DVec2::new(0.0, 5.0), DVec2::new(8.0, 9.0)]);
+        sk.entities.push(Entity::Line { a: 3, b: 4 });
+        let dims = |sel: &[Sel]| sk.constraint_options(sel).into_iter().filter(|(l, _)| *l == "Dimension").count();
+        assert_eq!(dims(&[Sel::Entity(0)]), 0, "the projected line");
+        assert_eq!(dims(&[Sel::Point(1), Sel::Point(2)]), 0, "its two ends");
+        assert_eq!(dims(&[Sel::Point(1), Sel::Point(0)]), 0, "its end and the origin");
+        assert_eq!(dims(&[Sel::Entity(1)]), 1, "your own line");
+        assert_eq!(dims(&[Sel::Point(2), Sel::Point(4)]), 1, "from it to your own point");
+        assert_eq!(dims(&[Sel::Entity(0), Sel::Entity(1)]), 1, "between it and your line");
+    }
 }
