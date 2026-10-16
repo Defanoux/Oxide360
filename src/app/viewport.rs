@@ -3329,7 +3329,7 @@ impl OpenCad {
                     status = if closing {
                         "click to close the spline".to_string()
                     } else if control {
-                        format!("{} control point{} · degree {} (↑/↓) — click more, Enter (or the last point again) to finish", self.editor.spline.len(), if self.editor.spline.len() == 1 { "" } else { "s" }, self.editor.degree())
+                        format!("{} control point{} · degree {} (Up/Down arrow keys) — click more, Enter (or the last point again) to finish", self.editor.spline.len(), if self.editor.spline.len() == 1 { "" } else { "s" }, self.editor.degree())
                     } else {
                         format!(
                             "{} point{} — click more, the first point to close it, or Enter (or the last point again) to finish",
@@ -3390,7 +3390,7 @@ impl OpenCad {
                                     for k in 0..n {
                                         view.line(plane.to_world(p.verts[k]), plane.to_world(p.verts[(k + 1) % n]), preview);
                                     }
-                                    format!("{n} sides   side {}   (↑/↓ changes the sides)", u.show(p.verts[0].distance(p.verts[1])))
+                                    format!("{n} sides   side {}   (Up/Down arrow keys change the sides)", u.show(p.verts[0].distance(p.verts[1])))
                                 }
                                 None => {
                                     // Edge polygon, first edge so far.

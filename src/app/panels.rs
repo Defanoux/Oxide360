@@ -575,7 +575,7 @@ impl OpenCad {
                     if icons::button(ui, Icon::Spline, "Fit Point Spline: click the points it goes through; Enter (or click the last point again) finishes. Select it to drag its tangent handles", true, self.editor.tool == Tool::Spline).clicked() {
                         self.editor.set_tool(Tool::Spline);
                     }
-                    if icons::button(ui, Icon::ControlSpline, "Control Point Spline: click its control points (the curve is pulled toward them); ↑/↓ for degree 3 or 5; Enter finishes", true, self.editor.tool == Tool::ControlSpline).clicked() {
+                    if icons::button(ui, Icon::ControlSpline, "Control Point Spline: click its control points (the curve is pulled toward them); the Up/Down arrow keys for degree 3 or 5; Enter finishes", true, self.editor.tool == Tool::ControlSpline).clicked() {
                         self.editor.set_tool(Tool::ControlSpline);
                     }
                     if icons::button(ui, Icon::Ellipse, "Ellipse: click the centre, the end of one axis, then how wide", true, self.editor.tool == Tool::Ellipse).clicked() {
@@ -620,7 +620,7 @@ impl OpenCad {
                         let (icon, tip) = match label {
                             "Dimension" => (
                                 Icon::Dimension,
-                                "Dimension (D): one line → length · circle → diameter · two lines → angle · two points → distance",
+                                "Dimension (D): one line: its length · a circle: its diameter · two lines: the angle · two points: the distance",
                             ),
                             "Coincident" => (Icon::Coincident, "Coincident: two points together, or a point onto a line, circle, arc or axis"),
                             "Collinear" => (Icon::Collinear, "Collinear: two lines (or a line and an axis) on one straight line"),
