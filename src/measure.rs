@@ -47,8 +47,8 @@ pub enum Geom {
     /// A cylindrical face (or part of one: a fillet).
     Cylinder { axis: DVec3, radius: f64, area: f64, loop_length: f64 },
     Surface { area: f64, loop_length: f64 },
-    /// A whole body: no readings of its own, only distances.
-    Body,
+    /// A whole body: its volume, surface area and centre of mass.
+    Body { volume: f64, area: f64, center: DVec3 },
 }
 
 /// The pieces a pick is made of, for distances: corners, edge segments, face triangles.
@@ -90,7 +90,7 @@ impl Picked {
             (Geom::Plane { .. }, _) => "Face (flat)",
             (Geom::Cylinder { .. }, _) => "Face (cylindrical)",
             (Geom::Surface { .. }, _) => "Face",
-            (Geom::Body, _) => "Body",
+            (Geom::Body { .. }, _) => "Body",
         }
     }
 }
@@ -99,6 +99,7 @@ impl Picked {
 pub enum Kind {
     Length,
     Area,
+    Volume,
     Angle,
 }
 
@@ -153,14 +154,13 @@ pub struct Measure {
 }
 
 impl Measure {
-    /// A click: picking something already picked drops it; a third pick starts over.
+    /// A click: picking something already picked drops it; a third pick
+    /// replaces the second (the first stays, to measure other things from).
     pub fn click(&mut self, p: Picked) {
         if let Some(i) = self.picks.iter().position(|q| q.pick == p.pick) {
             self.picks.remove(i);
         } else {
-            if self.picks.len() >= 2 {
-                self.picks.clear();
-            }
+            self.picks.truncate(1);
             self.picks.push(p);
         }
         self.update();
@@ -225,7 +225,13 @@ pub fn describe(g: &Geom, i: usize) -> Vec<Row> {
             row("Loop length", loop_length, Length, Show::Pick(i)),
         ],
         Geom::Surface { area, loop_length } => vec![row("Area", area, Area, Show::Pick(i)), row("Loop length", loop_length, Length, Show::Pick(i))],
-        Geom::Body => Vec::new(),
+        Geom::Body { volume, area, center } => vec![
+            row("Volume", volume, Volume, Show::Pick(i)),
+            row("Area", area, Area, Show::Pick(i)),
+            row("Center of mass X", center.x, Length, Show::Pick(i)),
+            row("Center of mass Y", center.y, Length, Show::Pick(i)),
+            row("Center of mass Z", center.z, Length, Show::Pick(i)),
+        ],
     }
 }
 
@@ -512,6 +518,7 @@ impl Unit {
         match kind {
             Kind::Length => format!("{:.d$} {}", value / self.mm(), self.name()),
             Kind::Area => format!("{:.d$} {}²", value / (self.mm() * self.mm()), self.name()),
+            Kind::Volume => format!("{:.d$} {}³", value / self.mm().powi(3), self.name()),
             Kind::Angle if second => format!("{:.d$} rad", value.to_radians()),
             Kind::Angle => format!("{value:.d$}°"),
         }
@@ -549,10 +556,15 @@ mod tests {
         // Selection 1 and 2 each keep their own X/Y/Z, like Fusion.
         assert_eq!(m.rows.iter().filter(|r| r.section == Section::Selection(1)).count(), 3);
         assert_eq!(results(&m), [("Distance", 5.0), ("ΔX", 3.0), ("ΔY", 4.0), ("ΔZ", 0.0)]);
+        // A third pick replaces the second; the first stays.
         m.click(point(DVec3::ZERO));
-        assert_eq!(m.picks.len(), 1);
-        // Clicking it again drops it.
+        assert_eq!(m.picks.len(), 2);
+        assert_eq!(m.picks[0].geom, Geom::Point(DVec3::new(1.0, 2.0, 3.0)));
+        assert_eq!(results(&m)[0].0, "Distance");
+        assert!((results(&m)[0].1 - 14f64.sqrt()).abs() < 1e-12);
+        // Clicking one again drops it.
         m.click(point(DVec3::ZERO));
+        m.click(point(DVec3::new(1.0, 2.0, 3.0)));
         assert!(m.picks.is_empty() && m.rows.is_empty());
     }
 
@@ -612,7 +624,7 @@ mod tests {
         assert_eq!(labels(disc), ["Area", "Loop length", "Center X", "Center Y", "Center Z"]);
         let cyl = Geom::Cylinder { axis: DVec3::Z, radius: 2.0, area: 1.0, loop_length: 1.0 };
         assert_eq!(labels(cyl), ["Radius", "Diameter", "Area", "Loop length"]);
-        assert!(labels(Geom::Body).is_empty());
+        assert_eq!(labels(Geom::Body { volume: 1.0, area: 6.0, center: DVec3::ZERO }), ["Volume", "Area", "Center of mass X", "Center of mass Y", "Center of mass Z"]);
     }
 
     #[test]
@@ -681,6 +693,8 @@ mod tests {
         assert_eq!(Unit::In.format(12.7, Kind::Length, false, 4), "0.5000 in");
         assert_eq!(Unit::In.format(12.7, Kind::Length, false, 1), "0.5 in");
         assert_eq!(Unit::Cm.format(250.0, Kind::Area, false, 2), "2.50 cm²");
+        assert_eq!(Unit::Cm.format(1500.0, Kind::Volume, false, 2), "1.50 cm³");
+        assert_eq!(Unit::Mm.format(1500.0, Kind::Volume, false, 0), "1500 mm³");
         assert_eq!(Unit::In.format(645.16, Kind::Area, false, 3), "1.000 in²");
         assert_eq!(Unit::Mm.format(90.0, Kind::Angle, false, 0), "90°");
         assert_eq!(Unit::Mm.format(180.0, Kind::Angle, true, 5), "3.14159 rad");

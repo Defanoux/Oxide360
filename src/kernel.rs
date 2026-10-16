@@ -2051,6 +2051,23 @@ thread_local! {
     static BODIES: std::cell::RefCell<Vec<(Shape, BodyData)>> = const { std::cell::RefCell::new(Vec::new()) };
     static GROOVES: std::cell::RefCell<Vec<(String, Shape)>> = const { std::cell::RefCell::new(Vec::new()) };
     static FACES_FOUND: std::cell::RefCell<Vec<(String, Option<FacePlane>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    static PROPERTIES: std::cell::RefCell<Vec<(Shape, (f64, f64, DVec3))>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A body's volume (mm³), surface area (mm²) and centre of mass, exactly
+/// (remembered per shape: Measure asks every frame the cursor is over it).
+pub fn body_properties(shape: &Shape) -> (f64, f64, DVec3) {
+    if let Some(p) = PROPERTIES.with(|c| c.borrow().iter().find(|(k, _)| k.is_same(shape)).map(|(_, p)| *p)) {
+        return p;
+    }
+    let (volume, c) = shape.volume_and_centre();
+    let p = (volume, shape.surface_area(), DVec3::new(c.x, c.y, c.z));
+    PROPERTIES.with(|c| {
+        let mut c = c.borrow_mut();
+        c.push((shape.clone(), p));
+        bounded(&mut c);
+    });
+    p
 }
 
 /// Keep at most MEMO entries (dropping the oldest).
@@ -3406,6 +3423,18 @@ mod tests {
         assert_eq!(m.projection_lost[1], vec![line]);
         assert_eq!(m.linked_sketches[1], None);
         assert_eq!(m.sketch_errors[1], None, "a warning, not an error");
+    }
+
+    #[test]
+    fn body_properties_are_exact() {
+        let mut a = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut a, 0.0, 0.0, 20.0, 10.0);
+        let m = build4(&[a], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &timeline(1, 1));
+        let (v, area, c) = body_properties(&m.bodies[0].shape);
+        assert!(close(v, 1000.0));
+        assert!(close(area, 2.0 * (200.0 + 50.0 + 100.0)));
+        assert!(c.distance(DVec3::new(10.0, 5.0, 2.5)) < 1e-9);
+        assert_eq!(body_properties(&m.bodies[0].shape), (v, area, c), "remembered");
     }
 
     #[test]

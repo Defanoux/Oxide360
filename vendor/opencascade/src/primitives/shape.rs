@@ -825,6 +825,21 @@ impl Shape {
         props.Mass()
     }
 
+    /// opencad patch: exact volume and centre of mass (from the B-rep).
+    pub fn volume_and_centre(&self) -> (f64, DVec3) {
+        let mut props = ffi::g_prop::GProps_new();
+        ffi::b_rep_g_prop::BRepGProp::VolumeProperties(&self.inner, props.pin_mut(), false, false, false);
+        let c = ffi::g_prop::GProp_GProps_CentreOfMass(&props);
+        (props.Mass(), dvec3(c.X(), c.Y(), c.Z()))
+    }
+
+    /// opencad patch: exact surface area of all its faces.
+    pub fn surface_area(&self) -> f64 {
+        let mut props = ffi::g_prop::GProps_new();
+        ffi::b_rep_g_prop::BRepGProp::SurfaceProperties(&self.inner, props.pin_mut(), false, false);
+        props.Mass()
+    }
+
     /// opencad patch: the separate solids inside this shape — e.g. the two
     /// pieces left after a cut splits a part, or each body of a compound.
     pub fn solids(&self) -> Vec<Shape> {

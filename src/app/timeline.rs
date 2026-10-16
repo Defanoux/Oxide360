@@ -72,7 +72,8 @@ impl OpenCad {
             Pick::Body { body } => {
                 let b = model.bodies.get(body)?;
                 let triangles = b.mesh.tris.iter().map(|t| t.map(|i| b.mesh.positions[i as usize].as_dvec3())).collect();
-                (Geom::Body, Samples { triangles, ..Default::default() })
+                let (volume, area, center) = kernel::body_properties(&b.shape);
+                (Geom::Body { volume, area, center }, Samples { triangles, ..Default::default() })
             }
             Pick::SketchPoint { sketch, point } => {
                 let (o, u, v) = self.sketch_frame(sketch);
