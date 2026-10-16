@@ -181,6 +181,8 @@ impl OpenCad {
                 "Plane at Angle — click a line, edge or axis"
             } else if self.plane_dialog.is_some() || self.plane_pick {
                 "Offset Plane"
+            } else if self.face_pick && self.redefine.is_some() {
+                "Redefine Sketch Plane — click a plane or face"
             } else if self.face_pick {
                 "Create Sketch — click a plane or face"
             } else if self.axis_pick {
@@ -783,6 +785,7 @@ struct OpenCad {
     dim_preview: Option<(Constraint, DVec2)>,  // Dimension tool: what a click would place, and its label shift
     face_pick_point: Option<DVec3>,          // where the cursor ray met the face being hovered while picking
     face_pick: bool,                         // waiting for a click on an origin plane or a flat face to sketch on
+    redefine: Option<usize>,                 // …to move this sketch onto (Redefine Sketch Plane)
     mirror_objects: Vec<Sel>,                // what the Mirror tool will copy
     origin_shown: origin::Shown,             // the browser's Origin folder: what the 3D view shows
     origin_hover: Option<OriginPlane>,       // the origin plane under the mouse
@@ -977,6 +980,7 @@ impl Default for OpenCad {
             dim_preview: None,
             face_pick_point: None,
             face_pick: false,
+            redefine: None,
             mirror_objects: Vec::new(),
             origin_shown: origin::Shown::default(),
             origin_hover: None,

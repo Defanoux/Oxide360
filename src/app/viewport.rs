@@ -294,6 +294,19 @@ impl OpenCad {
                         self.cancel_all_dialogs();
                         self.open_plane_dialog(PlaneDialog::new(base, on_origin, anchor, extent));
                     }
+                } else if let Some(i) = self.redefine.take() {
+                    // Redefine Sketch Plane: the sketch moves onto what was clicked.
+                    let onto = if let Some(op) = self.origin_hover {
+                        Some(Sketch::new(String::new(), op))
+                    } else if let Some(k) = self.cplane_hover {
+                        self.caches[Slot::Committed as usize].as_ref().and_then(|c| c.model.planes.get(k).copied().flatten()).map(|f| Sketch::on_plane(String::new(), f, k))
+                    } else {
+                        self.face_hover.map(|(_, face)| Sketch::on_face(String::new(), face))
+                    };
+                    match onto {
+                        Some(onto) => self.redefine_sketch_plane(i, &onto),
+                        None => self.redefine = Some(i), // missed: still waiting
+                    }
                 } else if let Some(op) = self.origin_hover {
                     self.start_sketch(op);
                 } else if let Some(k) = self.cplane_hover {
@@ -305,6 +318,7 @@ impl OpenCad {
             if esc && !typing {
                 self.face_pick = false;
                 self.plane_pick = false;
+                self.redefine = None;
             }
         }
 

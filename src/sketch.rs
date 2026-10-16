@@ -801,6 +801,15 @@ impl Sketch {
         Self { face: Some(FacePlane { follow: None, ..frame }), plane_ref: Some(k), ..Self::new(name, OriginPlane::XY) }
     }
 
+    /// Redefine Sketch Plane (Fusion's): put this sketch on the plane `onto`
+    /// is on (an origin plane, a face or a construction plane). Its geometry
+    /// keeps its own coordinates, so it lands the same way round there.
+    pub fn redefine_plane(&mut self, onto: &Sketch) {
+        self.plane = onto.plane;
+        self.face = onto.face;
+        self.plane_ref = onto.plane_ref;
+    }
+
     /// The plane this sketch lies on (for drawing and picking).
     pub fn sketch_plane(&self) -> Plane {
         match self.face {

@@ -124,6 +124,39 @@ impl OpenCad {
             self.sketch_shown.drain().filter(|&(k, _)| k != i).map(|(k, v)| (if k > i { k - 1 } else { k }, v)).collect();
     }
 
+    /// Redefine Sketch Plane: wait for a click on the plane or face to move sketch `i` onto.
+    pub(crate) fn start_redefine(&mut self, i: usize) {
+        if i >= self.sketches.len() {
+            return;
+        }
+        self.finish_sketch();
+        self.cancel_all_dialogs();
+        self.face_pick = true;
+        self.redefine = Some(i);
+    }
+
+    /// Move sketch `i` onto the plane `onto` is on. Refused (put back) when
+    /// that makes it fail to build — a face that only exists later in the
+    /// timeline, such as one made from this very sketch.
+    pub(crate) fn redefine_sketch_plane(&mut self, i: usize, onto: &Sketch) {
+        let before = self.sketches[i].clone();
+        let errors_before = self.model(Slot::Committed).error_count();
+        self.sketches[i].redefine_plane(onto);
+        self.build_now(Slot::Committed);
+        let m = self.model(Slot::Committed);
+        if m.sketch_errors.get(i).cloned().flatten().is_some() || m.error_count() > errors_before {
+            self.sketches[i] = before;
+            self.build_now(Slot::Committed);
+            self.notify("Can't put the sketch there: that face doesn't exist yet where the sketch is in the timeline (or the features using it break)".into());
+            return;
+        }
+        if let Some(k) = onto.plane_ref {
+            self.plane_hidden.insert(k); // used: hidden, as in Fusion
+        }
+        self.face_pick = false;
+        self.notify(format!("{} is on {} now", self.sketches[i].name, self.sketches[i].plane_name()));
+    }
+
     /// Start a new sketch on a flat face of a body.
     pub(crate) fn start_sketch_on_face(&mut self, face: FacePlane) {
         self.dialog = None;

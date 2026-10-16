@@ -3266,6 +3266,30 @@ mod tests {
     }
 
     #[test]
+    fn redefining_a_sketch_plane_moves_what_is_built_from_it() {
+        let mut a = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut a, 0.0, 0.0, 50.0, 30.0);
+        let m = build4(&[a.clone()], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[], &timeline(1, 1));
+        let (lo, hi) = bbox(&m.bodies[0]);
+        assert!((hi.z - lo.z - 10.0).abs() < 1e-6, "up out of XY");
+        // Onto XZ: the same rectangle, now standing up, extruded along Y.
+        a.redefine_plane(&Sketch::new(String::new(), OriginPlane::XZ));
+        let m = build4(&[a.clone()], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[], &timeline(1, 1));
+        assert_eq!(m.sketch_errors, vec![None]);
+        assert!(close(total(&m), 15000.0));
+        let (lo, hi) = bbox(&m.bodies[0]);
+        assert!((hi.y - lo.y - 10.0).abs() < 1e-6 && (hi.z - lo.z - 30.0).abs() < 1e-6, "{lo} {hi}");
+        // Onto the top of what it makes itself: there's no such face yet when
+        // the sketch is built — an error the app refuses.
+        let top = FacePlane::from_face(DVec3::Z, DVec3::new(0.0, 0.0, 10.0));
+        let mut b = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut b, 0.0, 0.0, 50.0, 30.0);
+        b.redefine_plane(&Sketch::on_face(String::new(), top));
+        let m = build4(&[b], &[ex(0, vec![0], 10.0, Operation::NewBody)], &[], &timeline(1, 1));
+        assert!(m.sketch_errors[0].is_some() || m.error_count() > 0);
+    }
+
+    #[test]
     fn plate_with_hole_is_exact() {
         let mut sk = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk, 0.0, 0.0, 50.0, 30.0);

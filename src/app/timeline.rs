@@ -450,6 +450,7 @@ impl OpenCad {
         let mut delete = None;
         let mut rename: Option<Feature> = None;
         let mut toggle_suppress: Option<Feature> = None;
+        let mut redefine: Option<usize> = None;
         let mut shift: Option<(usize, usize)> = None;
         let mut goto: Option<usize> = None;
         let len = self.timeline.len();
@@ -579,6 +580,12 @@ impl OpenCad {
                         action = Some(*f);
                         ui.close();
                     }
+                    if let (Feature::Sketch(k), false) = (*f, future) {
+                        if ui.button("Redefine Sketch Plane").on_hover_text("Move this sketch onto another plane or face").clicked() {
+                            redefine = Some(k);
+                            ui.close();
+                        }
+                    }
                     if ui.button("Rename…").clicked() {
                         rename = Some(*f);
                         ui.close();
@@ -631,6 +638,9 @@ impl OpenCad {
         });
         if let Some(n) = goto {
             self.set_marker(n);
+        }
+        if let Some(k) = redefine {
+            self.start_redefine(k);
         }
         if let Some(f) = rename {
             let text = self.feature_name_mut(f).map(|n| n.clone()).unwrap_or_default();
