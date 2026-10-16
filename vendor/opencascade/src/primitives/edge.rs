@@ -242,6 +242,23 @@ pub fn try_spline_samples(points: &[DVec3], count: usize, periodic: bool) -> Opt
     ffi::geom_api::Geom_BSplineCurve_try_sample(&curve, &mut out).then(|| out.chunks_exact(3).map(|c| dvec3(c[0], c[1], c[2])).collect())
 }
 
+/// opencad patch: points along the spline through `points` (each at its
+/// chord-length parameter; a set tangent at those with one), `per_span` to
+/// each span between two points, so point k is sample k * per_span. Closed
+/// smoothly round when `periodic` (the points don't repeat the first).
+pub fn try_spline_samples_with(points: &[DVec3], tangents: &[Option<DVec3>], periodic: bool, per_span: usize) -> Option<Vec<DVec3>> {
+    let n = points.len();
+    if tangents.len() != n || n < 2 {
+        return None;
+    }
+    let pts: Vec<f64> = points.iter().flat_map(|p| [p.x, p.y, p.z]).collect();
+    let tv: Vec<f64> = tangents.iter().flat_map(|t| t.map_or([0.0; 3], |t| [t.x, t.y, t.z])).collect();
+    let has: Vec<u8> = tangents.iter().map(|t| t.is_some() as u8).collect();
+    let spans = if periodic { n } else { n - 1 };
+    let mut out = vec![0.0; 3 * (spans * per_span + 1)];
+    ffi::geom_api::opencad_spline_samples(&pts, &tv, &has, periodic, per_span, &mut out).then(|| out.chunks_exact(3).map(|c| dvec3(c[0], c[1], c[2])).collect())
+}
+
 pub struct ApproximationSegmentIterator {
     count: usize,
     approximator: UniquePtr<ffi::gc_pnts::GCPnts_TangentialDeflection>,

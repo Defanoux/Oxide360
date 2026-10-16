@@ -19,24 +19,29 @@ thread_local! {
 /// Points along the spline through `pts`, ends included. Straight lines
 /// between the points if the kernel can't make the curve (e.g. two fit
 /// points in the same place). A closed spline (its last point is its first)
-/// runs smoothly round, with no corner where it closes.
+/// runs smoothly round, with no corner where it closes. Fit point k is
+/// sample k * PER_SPAN exactly (for three or more points).
 pub fn polyline(pts: &[DVec2]) -> Vec<DVec2> {
-    if pts.len() < 3 {
+    polyline_with(pts, &[])
+}
+
+/// As `polyline`, with a set tangent at the fit points that have one
+/// (`tangents[k]` for `pts[k]`; missing or None: the curve's own).
+pub fn polyline_with(pts: &[DVec2], tangents: &[Option<DVec2>]) -> Vec<DVec2> {
+    if pts.len() < 3 && tangents.iter().all(Option::is_none) {
         return pts.to_vec(); // two points: a straight line
     }
-    let key: Vec<[u64; 2]> = pts.iter().map(|p| [p.x.to_bits(), p.y.to_bits()]).collect();
+    let mut key: Vec<[u64; 2]> = pts.iter().map(|p| [p.x.to_bits(), p.y.to_bits()]).collect();
+    key.extend(tangents.iter().map(|t| t.map_or([u64::MAX; 2], |t| [t.x.to_bits(), t.y.to_bits()])));
     if let Some(hit) = CACHE.with(|c| c.borrow().get(&key).cloned()) {
         return hit;
     }
     let closed = is_closed(pts);
-    let fit = if closed { &pts[..pts.len() - 1] } else { pts };
-    let too_close = fit.windows(2).any(|w| w[0].distance(w[1]) < 1e-6);
-    let made = (!too_close)
-        .then(|| {
-            let k: Vec<KVec> = fit.iter().map(|p| KVec::new(p.x, p.y, 0.0)).collect();
-            opencascade::primitives::try_spline_samples(&k, PER_SPAN * (pts.len() - 1) + 1, closed)
-        })
-        .flatten()
+    let n = if closed { pts.len() - 1 } else { pts.len() };
+    let fit = &pts[..n];
+    let k: Vec<KVec> = fit.iter().map(|p| KVec::new(p.x, p.y, 0.0)).collect();
+    let t: Vec<Option<KVec>> = (0..n).map(|i| tangents.get(i).copied().flatten().map(|v| KVec::new(v.x, v.y, 0.0))).collect();
+    let made = opencascade::primitives::try_spline_samples_with(&k, &t, closed, PER_SPAN)
         .map(|v| v.into_iter().map(|q| DVec2::new(q.x, q.y)).collect::<Vec<_>>())
         .unwrap_or_else(|| pts.to_vec());
     CACHE.with(|c| {
@@ -64,6 +69,22 @@ mod tests {
     use super::*;
 
     const PTS: [DVec2; 5] = [DVec2::new(0.0, 0.0), DVec2::new(10.0, 6.0), DVec2::new(20.0, -3.0), DVec2::new(35.0, 4.0), DVec2::new(40.0, 0.0)];
+
+    #[test]
+    fn fit_point_k_is_sample_k_per_span_and_a_tangent_turns_the_curve() {
+        let line = polyline(&PTS);
+        for (k, p) in PTS.iter().enumerate() {
+            assert!(line[k * PER_SPAN].distance(*p) < 1e-9, "fit point {k}");
+        }
+        // A tangent straight up at the middle point: the curve leaves it upward.
+        let mut t = vec![None; PTS.len()];
+        t[2] = Some(DVec2::new(0.0, 1.0));
+        let bent = polyline_with(&PTS, &t);
+        let m = 2 * PER_SPAN;
+        let dir = (bent[m + 1] - bent[m - 1]).normalize();
+        assert!(dir.dot(DVec2::Y) > 0.999, "{dir}");
+        assert!(bent[m].distance(PTS[2]) < 1e-9);
+    }
 
     #[test]
     fn it_runs_from_first_to_last_through_every_fit_point() {

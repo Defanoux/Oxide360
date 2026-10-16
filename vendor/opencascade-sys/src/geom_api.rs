@@ -31,6 +31,9 @@ mod inner {
         // opencad patch: exception-safe interpolation and sampling (see include/geom_api.hxx).
         pub fn GeomAPI_Interpolate_try_curve(points: &Handle_TColgp_HArray1OfPnt, periodic: bool) -> UniquePtr<Handle_Geom_BSplineCurve>;
         pub fn Geom_BSplineCurve_try_sample(curve: &Handle_Geom_BSplineCurve, out: &mut [f64]) -> bool;
+        /// opencad patch: the spline through points (chord-length spaced, set
+        /// tangents where flagged), sampled `per_span` to a span.
+        pub fn opencad_spline_samples(pts: &[f64], tangents: &[f64], has: &[u8], periodic: bool, per_span: usize, out: &mut [f64]) -> bool;
 
         type GeomAPI_ProjectPointOnSurf;
         #[cxx_name = "construct_unique"]
