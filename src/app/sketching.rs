@@ -135,26 +135,28 @@ impl OpenCad {
         self.redefine = Some(i);
     }
 
-    /// Move sketch `i` onto the plane `onto` is on. Refused (put back) when
-    /// that makes it fail to build — a face that only exists later in the
-    /// timeline, such as one made from this very sketch.
-    pub(crate) fn redefine_sketch_plane(&mut self, i: usize, onto: &Sketch) {
-        let before = self.sketches[i].clone();
+    /// Replace sketch `i` with `new` (it on another plane). Refused (put
+    /// back) when that makes it fail to build — a face that only exists
+    /// later in the timeline, such as one made from this very sketch.
+    /// Returns whether it took.
+    pub(crate) fn redefine_sketch_plane(&mut self, i: usize, new: Sketch) -> bool {
         let errors_before = self.model(Slot::Committed).error_count();
-        self.sketches[i].redefine_plane(onto);
+        let plane_ref = new.plane_ref;
+        let before = std::mem::replace(&mut self.sketches[i], new);
         self.build_now(Slot::Committed);
         let m = self.model(Slot::Committed);
         if m.sketch_errors.get(i).cloned().flatten().is_some() || m.error_count() > errors_before {
             self.sketches[i] = before;
             self.build_now(Slot::Committed);
             self.notify("Can't put the sketch there: that face doesn't exist yet where the sketch is in the timeline (or the features using it break)".into());
-            return;
+            return false;
         }
-        if let Some(k) = onto.plane_ref {
+        if let Some(k) = plane_ref {
             self.plane_hidden.insert(k); // used: hidden, as in Fusion
         }
         self.face_pick = false;
         self.notify(format!("{} is on {} now", self.sketches[i].name, self.sketches[i].plane_name()));
+        true
     }
 
     /// Start a new sketch on a flat face of a body.

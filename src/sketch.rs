@@ -810,6 +810,31 @@ impl Sketch {
         self.plane_ref = onto.plane_ref;
     }
 
+    /// Redefine onto a face, landing where it was clicked (`at`, on the
+    /// face): its geometry moves so its middle sits there, so what's built
+    /// from it grows out of that face. Not when it's tied to the sketch's
+    /// origin or axes (moving it would break those): then it keeps its
+    /// coordinates, as in Fusion. Returns whether it moved.
+    pub fn redefine_onto_face_at(&mut self, face: FacePlane, at: glam::DVec3) -> bool {
+        self.redefine_plane(&Sketch::on_face(String::new(), face));
+        let tied = self.constraints.iter().any(|c| matches!(c, Constraint::OnAxis(..) | Constraint::SymmetricAxis(..)) || c.points().contains(&Self::ORIGIN))
+            || (0..self.entities.len()).any(|e| self.entity_points(e).contains(&Self::ORIGIN));
+        let used: Vec<PointId> = (0..self.entities.len()).flat_map(|e| self.entity_points(e)).collect();
+        if tied || used.is_empty() {
+            return false;
+        }
+        let (lo, hi) = used.iter().fold((DVec2::splat(f64::MAX), DVec2::splat(f64::MIN)), |(lo, hi), &p| (lo.min(self.points[p]), hi.max(self.points[p])));
+        // A face sketch's coordinates are positions along the face's axes.
+        let target = DVec2::new(at.dot(face.u), at.dot(face.v));
+        let shift = target - (lo + hi) * 0.5;
+        for (p, q) in self.points.iter_mut().enumerate() {
+            if p != Self::ORIGIN {
+                *q += shift;
+            }
+        }
+        true
+    }
+
     /// The plane this sketch lies on (for drawing and picking).
     pub fn sketch_plane(&self) -> Plane {
         match self.face {

@@ -295,17 +295,31 @@ impl OpenCad {
                         self.open_plane_dialog(PlaneDialog::new(base, on_origin, anchor, extent));
                     }
                 } else if let Some(i) = self.redefine.take() {
-                    // Redefine Sketch Plane: the sketch moves onto what was clicked.
-                    let onto = if let Some(op) = self.origin_hover {
-                        Some(Sketch::new(String::new(), op))
+                    // Redefine Sketch Plane: the sketch moves onto what was clicked
+                    // (on a face, centred where it was clicked).
+                    let mut new = self.sketches[i].clone();
+                    let mut tied_note = false;
+                    let picked = if let Some(op) = self.origin_hover {
+                        new.redefine_plane(&Sketch::new(String::new(), op));
+                        true
                     } else if let Some(k) = self.cplane_hover {
-                        self.caches[Slot::Committed as usize].as_ref().and_then(|c| c.model.planes.get(k).copied().flatten()).map(|f| Sketch::on_plane(String::new(), f, k))
+                        let frame = self.caches[Slot::Committed as usize].as_ref().and_then(|c| c.model.planes.get(k).copied().flatten());
+                        if let Some(f) = frame {
+                            new.redefine_plane(&Sketch::on_plane(String::new(), f, k));
+                        }
+                        frame.is_some()
+                    } else if let Some((_, face)) = self.face_hover {
+                        tied_note = !new.redefine_onto_face_at(face, self.face_pick_point.unwrap_or(face.origin));
+                        true
                     } else {
-                        self.face_hover.map(|(_, face)| Sketch::on_face(String::new(), face))
+                        false
                     };
-                    match onto {
-                        Some(onto) => self.redefine_sketch_plane(i, &onto),
-                        None => self.redefine = Some(i), // missed: still waiting
+                    if picked {
+                        if self.redefine_sketch_plane(i, new) && tied_note {
+                            self.notify("It's tied to the sketch's origin or axes, so it keeps its coordinates on the new face (edit the sketch to move it)".into());
+                        }
+                    } else {
+                        self.redefine = Some(i); // missed: still waiting
                     }
                 } else if let Some(op) = self.origin_hover {
                     self.start_sketch(op);

@@ -3279,6 +3279,21 @@ mod tests {
         assert!(close(total(&m), 15000.0));
         let (lo, hi) = bbox(&m.bodies[0]);
         assert!((hi.y - lo.y - 10.0).abs() < 1e-6 && (hi.z - lo.z - 30.0).abs() < 1e-6, "{lo} {hi}");
+        // Onto a side of another block, clicked at a spot: it lands centred
+        // there, so its extrusion grows out of that face (and joins it).
+        let mut base = Sketch::new("B".into(), OriginPlane::XY);
+        rect(&mut base, 0.0, 0.0, 60.0, 40.0);
+        let mut c = Sketch::new("C".into(), OriginPlane::XY);
+        rect(&mut c, 100.0, 100.0, 110.0, 110.0); // far away at first
+        let side = FacePlane::from_face(DVec3::NEG_Y, DVec3::new(0.0, 0.0, 0.0));
+        c.redefine_onto_face_at(side, DVec3::new(30.0, 0.0, 20.0));
+        let tl = vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Sketch(1), Feature::Extrude(1)];
+        let m = build4(&[base, c], &[ex(0, vec![0], 40.0, Operation::NewBody), ex(1, vec![0], 5.0, Operation::Join)], &[], &tl);
+        assert_eq!(m.errors, vec![None, None]);
+        assert_eq!(m.bodies.len(), 1, "joined to the block");
+        assert!(close(total(&m), 60.0 * 40.0 * 40.0 + 10.0 * 10.0 * 5.0), "{}", total(&m));
+        let (lo, hi) = bbox(&m.bodies[0]);
+        assert!((lo.y + 5.0).abs() < 1e-6 && hi.y > 39.0, "it sticks out of the front face: {lo} {hi}");
         // Onto the top of what it makes itself: there's no such face yet when
         // the sketch is built — an error the app refuses.
         let top = FacePlane::from_face(DVec3::Z, DVec3::new(0.0, 0.0, 10.0));
