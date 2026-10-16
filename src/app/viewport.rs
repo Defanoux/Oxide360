@@ -3633,6 +3633,30 @@ impl OpenCad {
                 painter.rect_filled(egui::Rect::from_min_size(at, galley.size()).expand(6.0), 6.0, Color32::from_rgba_unmultiplied(28, 28, 28, 210));
                 painter.galley(at, galley, Color32::WHITE);
             }
+            // A sketch whose references are gone says so (as Fusion's sketch warning does).
+            if let Some(i) = self.active {
+                let lost = self.caches[Slot::Committed as usize].as_ref().and_then(|c| c.model.projection_lost.get(i)).map_or(0, |l| l.len());
+                let mut lines: Vec<String> = Vec::new();
+                if let Some(e) = self.sketch_errors.get(i).cloned().flatten() {
+                    lines.push(format!("This sketch has a problem: {e}"));
+                }
+                if lost > 0 {
+                    lines.push(format!(
+                        "{lost} projected {} lost the body edge {} came from (shown red): delete {} or project again",
+                        if lost == 1 { "line" } else { "lines" },
+                        if lost == 1 { "it" } else { "they" },
+                        if lost == 1 { "it" } else { "them" },
+                    ));
+                }
+                let busy = self.message.is_some() || matches!(self.editor.tool, Tool::ArcTangent | Tool::Constrain("Symmetric"));
+                for (k, text) in lines.iter().enumerate() {
+                    let y = if busy { 82.0 } else { 58.0 } + 22.0 * k as f32;
+                    let galley = painter.layout_no_wrap(text.clone(), egui::FontId::proportional(14.0), COL_FIXED);
+                    let at = rect.center_top() + egui::vec2(-galley.size().x / 2.0, y);
+                    painter.rect_filled(egui::Rect::from_min_size(at, galley.size()).expand(5.0), 5.0, Color32::from_rgba_unmultiplied(40, 20, 20, 225));
+                    painter.galley(at, galley, COL_FIXED);
+                }
+            }
             if let (Some(msg), Some(_)) = (&self.message, self.active) {
                 painter.text(rect.center_top() + egui::vec2(0.0, 58.0), egui::Align2::CENTER_TOP, msg.as_str(), egui::FontId::proportional(13.0), COL_FIXED);
             } else if let (Tool::ArcTangent, None, Some(_)) = (self.editor.tool, self.editor.start, self.active) {

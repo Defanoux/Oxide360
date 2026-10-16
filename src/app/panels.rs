@@ -28,11 +28,14 @@ struct ToolItem {
 ///
 /// Tools on the toolbar can be dragged into another order within their group;
 /// `order` keeps the arrangement (names, earlier first).
-fn tool_group(ui: &mut egui::Ui, label: &str, items: &[ToolItem], hidden: &mut Vec<String>, order: &mut Vec<String>) -> Option<&'static str> {
+/// `scope` keeps its names apart from another group's tools of the same
+/// name in the settings ("Solid " for the model's groups).
+fn tool_group(ui: &mut egui::Ui, label: &str, scope: &str, items: &[ToolItem], hidden: &mut Vec<String>, order: &mut Vec<String>) -> Option<&'static str> {
+    let key = |n: &str| format!("{scope}{n}");
     let mut chosen = None;
     let mut toggle: Option<&'static str> = None;
     // The group's tools in the saved order (new ones where they're listed).
-    let rank = |name: &str, k: usize| order.iter().position(|o| o == name).unwrap_or(1000 + k);
+    let rank = |name: &str, k: usize| order.iter().position(|o| *o == key(name)).unwrap_or(1000 + k);
     let mut sorted: Vec<(usize, &ToolItem)> = items.iter().enumerate().collect();
     sorted.sort_by_key(|&(k, it)| rank(it.name, k));
     let items: Vec<&ToolItem> = sorted.into_iter().map(|(_, it)| it).collect();
@@ -42,7 +45,7 @@ fn tool_group(ui: &mut egui::Ui, label: &str, items: &[ToolItem], hidden: &mut V
     ui.vertical(|ui| {
         let row = ui
             .horizontal(|ui| {
-                let shown: Vec<&ToolItem> = items.iter().copied().filter(|it| !hidden.iter().any(|h| h == it.name)).collect();
+                let shown: Vec<&ToolItem> = items.iter().copied().filter(|it| !hidden.iter().any(|h| *h == key(it.name))).collect();
                 let mut rects: Vec<egui::Rect> = Vec::new();
                 for it in &shown {
                     let r = icons::button(ui, it.icon, it.tip, it.enabled, it.on);
@@ -82,83 +85,114 @@ fn tool_group(ui: &mut egui::Ui, label: &str, items: &[ToolItem], hidden: &mut V
                     }
                     // The whole group's order: the tools on the toolbar as dropped, then the rest.
                     let rest: Vec<&'static str> = items.iter().map(|it| it.name).filter(|n| !names.contains(n)).collect();
-                    order.retain(|o| !items.iter().any(|it| it.name == o));
-                    order.extend(names.into_iter().chain(rest).map(String::from));
+                    order.retain(|o| !items.iter().any(|it| *o == key(it.name)));
+                    order.extend(names.into_iter().chain(rest).map(key));
                 }
             })
             .response
             .rect
             .width();
         ui.ctx().data_mut(|d| d.insert_temp(drag_id, dragging));
-        // The group's name with a ▾: every tool, with names.
-        let font = egui::FontId::proportional(11.0);
-        let galley = ui.painter().layout_no_wrap(label.to_string(), font, Color32::from_gray(150));
-        let width = row.max(galley.size().x + 18.0);
-        let (rect, r) = ui.allocate_exact_size(egui::vec2(width, 14.0), egui::Sense::click());
-        let ink = if r.hovered() { Color32::from_gray(230) } else { Color32::from_gray(150) };
-        let text_at = rect.center() - egui::vec2((galley.size().x + 12.0) / 2.0, galley.size().y / 2.0);
-        ui.painter().galley_with_override_text_color(text_at, galley.clone(), ink);
-        let c = egui::pos2(text_at.x + galley.size().x + 8.0, rect.center().y);
-        ui.painter().add(egui::Shape::convex_polygon(vec![c + egui::vec2(-4.0, -2.0), c + egui::vec2(4.0, -2.0), c + egui::vec2(0.0, 3.0)], ink, Stroke::NONE));
-        let r = r.on_hover_text("More tools in this group (right-click a tool on the toolbar to take it off)");
-        // As wide as its rows need, not as wide as the whole group above it.
-        egui::Popup::menu(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(240.0).show(|ui| {
-            ui.set_min_width(230.0);
-            let tucked: Vec<&ToolItem> = items.iter().copied().filter(|it| hidden.iter().any(|h| h == it.name)).collect();
-            if tucked.is_empty() {
-                ui.weak("Every tool here is on the toolbar.");
-            }
-            for it in tucked {
-                // The whole row is the button; ⋯ at its end pins it to the toolbar.
-                let (row, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), if it.enabled { egui::Sense::click() } else { egui::Sense::hover() });
-                let more = egui::Rect::from_min_size(row.right_top() - egui::vec2(26.0, 0.0), egui::vec2(24.0, 24.0));
-                let over_more = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| more.contains(p));
-                if (resp.hovered() && !over_more) || it.on {
-                    ui.painter().rect_filled(row, 4.0, Color32::from_gray(if it.on { 70 } else { 55 }));
-                }
-                icons::paint(ui.painter(), egui::Rect::from_min_size(row.min + egui::vec2(4.0, 4.0), egui::vec2(16.0, 16.0)), it.icon, it.enabled);
-                let ink = if it.enabled { Color32::from_gray(225) } else { Color32::from_gray(110) };
-                ui.painter().text(row.left_center() + egui::vec2(28.0, 0.0), egui::Align2::LEFT_CENTER, it.name, egui::FontId::proportional(14.0), ink);
-                if resp.clicked() && !over_more {
-                    chosen = Some(it.name);
-                    ui.close();
-                }
-                let dots = ui.put(more, egui::Button::new("").frame(over_more)).on_hover_text("More");
-                for k in -1..=1 {
-                    ui.painter().circle_filled(more.center() + egui::vec2(k as f32 * 5.0, 0.0), 1.6, Color32::from_gray(200));
-                }
-                // ⋯ opens this row's options just under it (in the same list).
-                let open_id = egui::Id::new(("tool_more", label));
-                let open: Option<&'static str> = ui.ctx().data(|d| d.get_temp(open_id)).flatten();
-                if dots.clicked() {
-                    let next = if open == Some(it.name) { None } else { Some(it.name) };
-                    ui.ctx().data_mut(|d| d.insert_temp(open_id, next));
-                }
-                if open == Some(it.name) {
-                    ui.horizontal(|ui| {
-                        ui.add_space(26.0);
-                        if ui.button("Pin to toolbar").clicked() {
-                            toggle = Some(it.name);
-                            ui.ctx().data_mut(|d| d.insert_temp(open_id, None::<&'static str>));
-                        }
-                    });
-                }
-                if !over_more {
-                    resp.on_hover_text(it.tip);
-                }
-            }
-        });
+        let tucked: Vec<&ToolItem> = items.iter().copied().filter(|it| hidden.iter().any(|h| *h == key(it.name))).collect();
+        let (picked, pin) = group_menu(ui, label, row, &tucked, true);
+        chosen = chosen.or(picked);
+        toggle = toggle.or(pin);
     });
     ui.separator();
     if let Some(name) = toggle {
-        match hidden.iter().position(|h| h == name) {
+        match hidden.iter().position(|h| *h == key(name)) {
             Some(k) => {
                 hidden.remove(k);
             }
-            None => hidden.push(name.to_string()),
+            None => hidden.push(key(name)),
         }
     }
     chosen
+}
+
+/// A toolbar group's name with a ▾ under its icons (`row`: their width):
+/// it lists `tucked`, the group's tools that aren't on the toolbar. With
+/// `pinnable`, each row's ⋯ can pin it to the toolbar. Returns the tool
+/// clicked and the one to pin.
+fn group_menu(ui: &mut egui::Ui, label: &str, row: f32, tucked: &[&ToolItem], pinnable: bool) -> (Option<&'static str>, Option<&'static str>) {
+    let mut chosen = None;
+    let mut toggle: Option<&'static str> = None;
+    // The group's name with a ▾: every tool, with names.
+    let font = egui::FontId::proportional(11.0);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font, Color32::from_gray(150));
+    let width = row.max(galley.size().x + 18.0);
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(width, 14.0), egui::Sense::click());
+    let ink = if r.hovered() { Color32::from_gray(230) } else { Color32::from_gray(150) };
+    let text_at = rect.center() - egui::vec2((galley.size().x + 12.0) / 2.0, galley.size().y / 2.0);
+    ui.painter().galley_with_override_text_color(text_at, galley.clone(), ink);
+    let c = egui::pos2(text_at.x + galley.size().x + 8.0, rect.center().y);
+    ui.painter().add(egui::Shape::convex_polygon(vec![c + egui::vec2(-4.0, -2.0), c + egui::vec2(4.0, -2.0), c + egui::vec2(0.0, 3.0)], ink, Stroke::NONE));
+    let r = r.on_hover_text("More tools in this group (right-click a tool on the toolbar to take it off)");
+    // As wide as its rows need, not as wide as the whole group above it.
+    egui::Popup::menu(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(240.0).show(|ui| {
+        ui.set_min_width(230.0);
+        if tucked.is_empty() {
+            ui.weak("Every tool here is on the toolbar.");
+        }
+        for &it in tucked {
+            // The whole row is the button; ⋯ at its end pins it to the toolbar.
+            let (row, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), if it.enabled { egui::Sense::click() } else { egui::Sense::hover() });
+            let more = egui::Rect::from_min_size(row.right_top() - egui::vec2(26.0, 0.0), egui::vec2(24.0, 24.0));
+            let over_more = pinnable && ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| more.contains(p));
+            if (resp.hovered() && !over_more) || it.on {
+                ui.painter().rect_filled(row, 4.0, Color32::from_gray(if it.on { 70 } else { 55 }));
+            }
+            icons::paint(ui.painter(), egui::Rect::from_min_size(row.min + egui::vec2(4.0, 4.0), egui::vec2(16.0, 16.0)), it.icon, it.enabled);
+            let ink = if it.enabled { Color32::from_gray(225) } else { Color32::from_gray(110) };
+            ui.painter().text(row.left_center() + egui::vec2(28.0, 0.0), egui::Align2::LEFT_CENTER, it.name, egui::FontId::proportional(14.0), ink);
+            if resp.clicked() && !over_more {
+                chosen = Some(it.name);
+                ui.close();
+            }
+            if !pinnable {
+                resp.on_hover_text(it.tip);
+                continue;
+            }
+            let dots = ui.put(more, egui::Button::new("").frame(over_more)).on_hover_text("More");
+            for k in -1..=1 {
+                ui.painter().circle_filled(more.center() + egui::vec2(k as f32 * 5.0, 0.0), 1.6, Color32::from_gray(200));
+            }
+            // ⋯ opens this row's options just under it (in the same list).
+            let open_id = egui::Id::new(("tool_more", label));
+            let open: Option<&'static str> = ui.ctx().data(|d| d.get_temp(open_id)).flatten();
+            if dots.clicked() {
+                let next = if open == Some(it.name) { None } else { Some(it.name) };
+                ui.ctx().data_mut(|d| d.insert_temp(open_id, next));
+            }
+            if open == Some(it.name) {
+                ui.horizontal(|ui| {
+                    ui.add_space(26.0);
+                    if ui.button("Pin to toolbar").clicked() {
+                        toggle = Some(it.name);
+                        ui.ctx().data_mut(|d| d.insert_temp(open_id, None::<&'static str>));
+                    }
+                });
+            }
+            if !over_more {
+                resp.on_hover_text(it.tip);
+            }
+        }
+    });
+    (chosen, toggle)
+}
+
+/// A toolbar group drawn by `add`, whose name's ▾ lists `listed` (tools
+/// not on the toolbar as buttons of their own). Returns the one clicked there.
+fn group_listing(ui: &mut egui::Ui, label: &str, listed: &[ToolItem], add: impl FnOnce(&mut egui::Ui)) -> Option<&'static str> {
+    let picked = ui
+        .vertical(|ui| {
+            let row = ui.horizontal(add).response.rect.width();
+            let listed: Vec<&ToolItem> = listed.iter().collect();
+            group_menu(ui, label, row, &listed, false).0
+        })
+        .inner;
+    ui.separator();
+    picked
 }
 
 impl OpenCad {
@@ -475,7 +509,23 @@ impl OpenCad {
         ui.horizontal(|ui| {
             if let Some(i) = self.active {
                 // --- sketch mode ---
-                group(ui, "CREATE", |ui| {
+                // The CREATE ▾ lists the other kinds of rectangle, circle, arc
+                // and polygon (each button there is the kind used last).
+                let arc_icon = |t: Tool| match t {
+                    Tool::ArcCenter => Icon::ArcCenter,
+                    Tool::ArcTangent => Icon::ArcTangent,
+                    _ => Icon::Arc3Point,
+                };
+                let families: Vec<(Tool, Icon)> = Tool::RECTANGLES
+                    .into_iter()
+                    .filter(|&t| t != self.rect_tool)
+                    .map(|t| (t, rect_icon(t)))
+                    .chain(Tool::CIRCLES.into_iter().filter(|&t| t != self.circle_tool).map(|t| (t, circle_icon(t))))
+                    .chain(Tool::ARCS.into_iter().filter(|&t| t != self.arc_tool).map(|t| (t, arc_icon(t))))
+                    .chain(Tool::POLYGONS.into_iter().filter(|&t| t != self.poly_tool).map(|t| (t, Icon::Polygon)))
+                    .collect();
+                let listed: Vec<ToolItem> = families.iter().map(|&(t, icon)| ToolItem { name: t.name(), icon, tip: t.name(), enabled: true, on: self.editor.tool == t }).collect();
+                let picked = group_listing(ui, "CREATE", &listed, |ui| {
                     for (tool, icon, tip) in [(Tool::Select, Icon::Select, "Select (Esc)"), (Tool::Line, Icon::Line, "Line (L)")] {
                         if icons::button(ui, icon, tip, true, self.editor.tool == tool).clicked() {
                             self.editor.set_tool(tool);
@@ -532,11 +582,6 @@ impl OpenCad {
                     // Arc: the last arc tool used, ▾ for the other.
                     let arc_tool = self.arc_tool;
                     let tip = format!("{}", arc_tool.name());
-                    let arc_icon = |t: Tool| match t {
-                        Tool::ArcCenter => Icon::ArcCenter,
-                        Tool::ArcTangent => Icon::ArcTangent,
-                        _ => Icon::Arc3Point,
-                    };
                     if icons::button(ui, arc_icon(arc_tool), &tip, true, self.editor.tool == arc_tool).clicked() {
                         self.editor.set_tool(arc_tool);
                     }
@@ -583,6 +628,19 @@ impl OpenCad {
                         self.editor.set_tool(Tool::Ellipse);
                     }
                 });
+                if let Some(&(t, _)) = picked.and_then(|name| families.iter().find(|(t, _)| t.name() == name)) {
+                    // Like choosing it from its button's ▾: it becomes that button.
+                    if Tool::RECTANGLES.contains(&t) {
+                        self.rect_tool = t;
+                    } else if Tool::CIRCLES.contains(&t) {
+                        self.circle_tool = t;
+                    } else if Tool::ARCS.contains(&t) {
+                        self.arc_tool = t;
+                    } else {
+                        self.poly_tool = t;
+                    }
+                    self.editor.set_tool(t);
+                }
                 let _ = i;
                 let t = self.editor.tool;
                 let pattern_on = |m: SpMode| self.sketch_pattern.as_ref().is_some_and(|d| d.mode == m);
@@ -600,7 +658,7 @@ impl OpenCad {
                     ToolItem { name: "Construction", icon: Icon::Construction, tip: "Construction: toggle the selected geometry, or what you draw next", enabled: true, on: self.editor.construction },
                     ToolItem { name: "Change Parameters", icon: Icon::Parameters, tip: "Change Parameters: named values (width, depth…) that dimensions and boxes can use", enabled: true, on: self.params_window.open },
                 ];
-                match tool_group(ui, "MODIFY", &items, &mut self.toolbar_hidden, &mut self.toolbar_order) {
+                match tool_group(ui, "MODIFY", "", &items, &mut self.toolbar_hidden, &mut self.toolbar_order) {
                     Some("Fillet") => self.editor.set_tool(Tool::SketchFillet),
                     Some("Chamfer") => self.editor.set_tool(Tool::SketchChamfer),
                     Some("Trim") => self.editor.set_tool(Tool::Trim),
@@ -641,7 +699,7 @@ impl OpenCad {
                         ToolItem { name: label, icon, tip, enabled: true, on: self.editor.tool == Tool::Constrain(label) }
                     })
                     .collect();
-                if let Some(label) = tool_group(ui, "CONSTRAINTS", &items, &mut self.toolbar_hidden, &mut self.toolbar_order) {
+                if let Some(label) = tool_group(ui, "CONSTRAINTS", "", &items, &mut self.toolbar_hidden, &mut self.toolbar_order) {
                     self.constraint_button(label);
                 }
                 group(ui, "OPTIONS", |ui| {
@@ -665,118 +723,81 @@ impl OpenCad {
                 // --- solid mode ---
                 let can_profile = self.sketches.iter().any(|s| !find_regions(s).is_empty());
                 let has_bodies = self.body_count > 0;
-                group(ui, "CREATE", |ui| {
-                    // Like Fusion: click, then click the plane (or flat face) in the view.
-                    let tip = "Create Sketch (N): uses the selected plane, or click a plane or flat face";
-                    if icons::button(ui, Icon::Sketch, tip, true, self.face_pick && !self.plane_pick).clicked() {
-                        self.new_sketch_tool();
-                    }
-                    if icons::button(ui, Icon::Extrude, "Extrude (E)", can_profile, self.dialog.is_some()).clicked() {
-                        self.open_extrude(None);
-                    }
-                    if icons::button(ui, Icon::Revolve, "Revolve: spin a profile around an axis", can_profile, self.revolve_dialog.is_some())
-                        .clicked()
-                    {
-                        self.open_revolve(None);
-                    }
-                    let tip = "Hole (H): click sketch points, circles or a face; counterbore, countersink, clearance and tapped holes";
-                    if icons::button(ui, Icon::Hole, tip, has_bodies, self.hole_dialog.is_some()).clicked() {
-                        if self.hole_dialog.is_some() {
-                            self.cancel_hole();
-                        } else {
-                            self.open_hole(None);
-                        }
-                    }
-                    let tip = "Thread: click a shaft or the inside of a hole; shown or modeled, ISO and Unified sizes";
-                    if icons::button(ui, Icon::Thread, tip, has_bodies, self.thread_dialog.is_some()).clicked() {
-                        if self.thread_dialog.is_some() {
-                            self.cancel_thread();
-                        } else {
-                            self.open_thread(None);
-                        }
-                    }
-                });
-                group(ui, "CONSTRUCT", |ui| {
-                    let tip = "Offset Plane: click an origin plane or a face, then set the distance";
-                    if icons::button(ui, Icon::Plane, tip, true, self.plane_pick || self.plane_dialog.as_ref().is_some_and(|d| d.angle.is_none())).clicked() {
+                // Each group's tools can be tucked into its ▾ list, as in sketch mode.
+                let (hidden, order) = (&mut self.toolbar_hidden, &mut self.toolbar_order);
+                let items = [
+                    ToolItem { name: "Create Sketch", icon: Icon::Sketch, tip: "Create Sketch (N): uses the selected plane, or click a plane or flat face", enabled: true, on: self.face_pick && !self.plane_pick },
+                    ToolItem { name: "Extrude", icon: Icon::Extrude, tip: "Extrude (E)", enabled: can_profile, on: self.dialog.is_some() },
+                    ToolItem { name: "Revolve", icon: Icon::Revolve, tip: "Revolve: spin a profile around an axis", enabled: can_profile, on: self.revolve_dialog.is_some() },
+                    ToolItem { name: "Hole", icon: Icon::Hole, tip: "Hole (H): click sketch points, circles or a face; counterbore, countersink, clearance and tapped holes", enabled: has_bodies, on: self.hole_dialog.is_some() },
+                    ToolItem { name: "Thread", icon: Icon::Thread, tip: "Thread: click a shaft or the inside of a hole; shown or modeled, ISO and Unified sizes", enabled: has_bodies, on: self.thread_dialog.is_some() },
+                ];
+                let create = tool_group(ui, "CREATE", "Solid ", &items, hidden, order);
+                let angled = self.plane_dialog.as_ref().is_some_and(|d| d.angle.is_some());
+                let items = [
+                    ToolItem { name: "Offset Plane", icon: Icon::Plane, tip: "Offset Plane: click an origin plane or a face, then set the distance", enabled: true, on: self.plane_pick || self.plane_dialog.as_ref().is_some_and(|d| d.angle.is_none()) },
+                    ToolItem { name: "Plane at Angle", icon: Icon::PlaneAngle, tip: "Plane at Angle: click a sketch line, body edge or axis, then set the angle", enabled: true, on: self.angle_pick || angled },
+                    ToolItem { name: "Axis Along Edge", icon: Icon::Axis, tip: "Axis Along Edge: click a straight edge of a body", enabled: has_bodies, on: self.axis_pick },
+                ];
+                let construct = tool_group(ui, "CONSTRUCT", "Solid ", &items, hidden, order);
+                let copy_mode = self.copy_dialog.as_ref().map(|d| d.mode);
+                let items = [
+                    ToolItem { name: "Mirror", icon: Icon::Mirror, tip: "Mirror: copy bodies across an origin plane", enabled: has_bodies, on: copy_mode == Some(CopyMode::Mirror) },
+                    ToolItem { name: "Rectangular Pattern", icon: Icon::RectPattern, tip: "Rectangular Pattern: copies in a grid", enabled: has_bodies, on: copy_mode == Some(CopyMode::Rectangular) },
+                    ToolItem { name: "Circular Pattern", icon: Icon::CircPattern, tip: "Circular Pattern: copies round an axis", enabled: has_bodies, on: copy_mode == Some(CopyMode::Circular) },
+                ];
+                let pattern = tool_group(ui, "PATTERN", "Solid ", &items, hidden, order);
+                let edge_kind = self.edge_dialog.as_ref().map(|d| d.kind);
+                let items = [
+                    ToolItem { name: "Press Pull", icon: Icon::PressPull, tip: "Press Pull (Q): drag a face to move it (Offset Face), a fillet to change its radius, or a sketch profile to extrude it", enabled: has_bodies || !self.sketches.is_empty(), on: self.offset_dialog.is_some() },
+                    ToolItem { name: "Fillet", icon: Icon::Fillet, tip: "Fillet (F): round edges", enabled: has_bodies, on: edge_kind == Some(EdgeKind::Fillet) },
+                    ToolItem { name: "Chamfer", icon: Icon::Chamfer, tip: "Chamfer: bevel edges", enabled: has_bodies, on: edge_kind == Some(EdgeKind::Chamfer) },
+                    ToolItem { name: "Shell", icon: Icon::Shell, tip: "Shell: hollow a body — click the faces to open, or a body to hollow closed", enabled: has_bodies, on: self.shell_dialog.is_some() },
+                    ToolItem { name: "Move/Copy", icon: Icon::Move, tip: "Move/Copy (M): move or turn bodies — drag the arrows and rings, type distances and angles, or turn about an axis", enabled: has_bodies, on: self.move_dialog.is_some() },
+                    ToolItem { name: "Change Parameters", icon: Icon::Parameters, tip: "Change Parameters: named values (width, depth…) that dimensions and boxes can use", enabled: true, on: self.params_window.open },
+                    ToolItem { name: "Combine", icon: Icon::Combine, tip: "Combine: join, cut or intersect bodies — a target body and tool bodies", enabled: self.body_count > 1, on: self.combine_dialog.is_some() },
+                ];
+                let modify = tool_group(ui, "MODIFY", "Solid ", &items, hidden, order);
+                match create.or(construct).or(pattern).or(modify) {
+                    Some("Create Sketch") => self.new_sketch_tool(),
+                    Some("Extrude") => self.open_extrude(None),
+                    Some("Revolve") => self.open_revolve(None),
+                    Some("Hole") if self.hole_dialog.is_some() => self.cancel_hole(),
+                    Some("Hole") => self.open_hole(None),
+                    Some("Thread") if self.thread_dialog.is_some() => self.cancel_thread(),
+                    Some("Thread") => self.open_thread(None),
+                    Some("Offset Plane") => {
                         let was = self.plane_pick;
                         self.cancel_all_dialogs();
                         self.plane_pick = !was;
                         self.face_pick = !was;
                     }
-                    let tip = "Plane at Angle: click a sketch line, body edge or axis, then set the angle";
-                    let angled = self.plane_dialog.as_ref().is_some_and(|d| d.angle.is_some());
-                    if icons::button(ui, Icon::PlaneAngle, tip, true, self.angle_pick || angled).clicked() {
+                    Some("Plane at Angle") => {
                         let was = self.angle_pick;
                         self.cancel_all_dialogs();
                         self.angle_pick = !was;
                     }
-                    let tip = "Axis Along Edge: click a straight edge of a body";
-                    if icons::button(ui, Icon::Axis, tip, has_bodies, self.axis_pick).clicked() {
+                    Some("Axis Along Edge") => {
                         let was = self.axis_pick;
                         self.cancel_all_dialogs();
                         self.axis_pick = !was;
                     }
-                });
-                let copy_mode = self.copy_dialog.as_ref().map(|d| d.mode);
-                group(ui, "PATTERN", |ui| {
-                    for (mode, icon, tip) in [
-                        (CopyMode::Mirror, Icon::Mirror, "Mirror: copy bodies across an origin plane"),
-                        (CopyMode::Rectangular, Icon::RectPattern, "Rectangular Pattern: copies in a grid"),
-                        (CopyMode::Circular, Icon::CircPattern, "Circular Pattern: copies round an axis"),
-                    ] {
-                        if icons::button(ui, icon, tip, has_bodies, copy_mode == Some(mode)).clicked() {
-                            self.open_copy(mode, None);
-                        }
-                    }
-                });
-                let edge_kind = self.edge_dialog.as_ref().map(|d| d.kind);
-                group(ui, "MODIFY", |ui| {
-                    let pulling = self.offset_dialog.is_some();
-                    if icons::button(ui, Icon::PressPull, "Press Pull (Q): drag a face to move it (Offset Face), a fillet to change its radius, or a sketch profile to extrude it", has_bodies || !self.sketches.is_empty(), pulling).clicked() {
-                        if pulling {
-                            self.cancel_offset();
-                        } else {
-                            self.open_offset(None, true);
-                        }
-                    }
-                    if icons::button(ui, Icon::Fillet, "Fillet (F): round edges", has_bodies, edge_kind == Some(EdgeKind::Fillet))
-                        .clicked()
-                    {
-                        self.open_edge_dialog(None, EdgeKind::Fillet);
-                    }
-                    if icons::button(ui, Icon::Chamfer, "Chamfer: bevel edges", has_bodies, edge_kind == Some(EdgeKind::Chamfer))
-                        .clicked()
-                    {
-                        self.open_edge_dialog(None, EdgeKind::Chamfer);
-                    }
-                    if icons::button(ui, Icon::Shell, "Shell: hollow a body — click the faces to open, or a body to hollow closed", has_bodies, self.shell_dialog.is_some()).clicked() {
-                        if self.shell_dialog.is_some() {
-                            self.cancel_shell();
-                        } else {
-                            self.open_shell(None);
-                        }
-                    }
-                    let moving = self.move_dialog.is_some();
-                    if icons::button(ui, Icon::Move, "Move/Copy (M): move or turn bodies — drag the arrows and rings, type distances and angles, or turn about an axis", has_bodies, moving).clicked() {
-                        if moving {
-                            self.cancel_move();
-                        } else {
-                            self.open_move(None);
-                        }
-                    }
-                    if icons::button(ui, Icon::Parameters, "Change Parameters: named values (width, depth…) that dimensions and boxes can use", true, self.params_window.open).clicked() {
-                        self.params_window.open = !self.params_window.open;
-                    }
-                    let combining = self.combine_dialog.is_some();
-                    if icons::button(ui, Icon::Combine, "Combine: join, cut or intersect bodies — a target body and tool bodies", self.body_count > 1, combining).clicked() {
-                        if combining {
-                            self.cancel_combine();
-                        } else {
-                            self.open_combine(None);
-                        }
-                    }
-                });
+                    Some("Mirror") => self.open_copy(CopyMode::Mirror, None),
+                    Some("Rectangular Pattern") => self.open_copy(CopyMode::Rectangular, None),
+                    Some("Circular Pattern") => self.open_copy(CopyMode::Circular, None),
+                    Some("Press Pull") if self.offset_dialog.is_some() => self.cancel_offset(),
+                    Some("Press Pull") => self.open_offset(None, true),
+                    Some("Fillet") => self.open_edge_dialog(None, EdgeKind::Fillet),
+                    Some("Chamfer") => self.open_edge_dialog(None, EdgeKind::Chamfer),
+                    Some("Shell") if self.shell_dialog.is_some() => self.cancel_shell(),
+                    Some("Shell") => self.open_shell(None),
+                    Some("Move/Copy") if self.move_dialog.is_some() => self.cancel_move(),
+                    Some("Move/Copy") => self.open_move(None),
+                    Some("Change Parameters") => self.params_window.open = !self.params_window.open,
+                    Some("Combine") if self.combine_dialog.is_some() => self.cancel_combine(),
+                    Some("Combine") => self.open_combine(None),
+                    _ => {}
+                }
                 group(ui, "INSPECT", |ui| {
                     if icons::button(ui, Icon::Measure, "Measure: click a corner, edge, face, body or sketch geometry — one for its size, two for distance and angle", has_bodies || !self.sketches.is_empty(), self.measure.is_some()).clicked() {
                         self.measure = if self.measure.is_some() { None } else { Some(measure::Measure::default()) };
