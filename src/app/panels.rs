@@ -101,7 +101,8 @@ fn tool_group(ui: &mut egui::Ui, label: &str, items: &[ToolItem], hidden: &mut V
         let c = egui::pos2(text_at.x + galley.size().x + 8.0, rect.center().y);
         ui.painter().add(egui::Shape::convex_polygon(vec![c + egui::vec2(-4.0, -2.0), c + egui::vec2(4.0, -2.0), c + egui::vec2(0.0, 3.0)], ink, Stroke::NONE));
         let r = r.on_hover_text("More tools in this group (right-click a tool on the toolbar to take it off)");
-        egui::Popup::menu(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        // As wide as its rows need, not as wide as the whole group above it.
+        egui::Popup::menu(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(240.0).show(|ui| {
             ui.set_min_width(230.0);
             let tucked: Vec<&ToolItem> = items.iter().copied().filter(|it| hidden.iter().any(|h| h == it.name)).collect();
             if tucked.is_empty() {

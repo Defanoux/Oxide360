@@ -2705,12 +2705,11 @@ impl OpenCad {
             };
             for (e, ent) in sk.entities.iter().enumerate() {
                 let mut col = colour_of(Sel::Entity(e));
-                if col == base && sk.is_projected(e) {
-                    col = COL_PROJECTED;
-                }
-                // Linked to an edge that's gone: red, as in Fusion.
+                // Linked to an edge that's gone: red, as in Fusion; else projected: purple.
                 if col == base && lost.contains(&e) {
                     col = COL_FIXED;
+                } else if col == base && sk.is_projected(e) {
+                    col = COL_PROJECTED;
                 }
                 let stroke = Stroke::new(if active { 2.0 } else { 1.5 }, col);
                 let dashed = sk.is_construction(e);
@@ -3692,14 +3691,15 @@ impl OpenCad {
         }
         // Looking straight at a face: arrows to roll the view 45° at a time (as in Fusion).
         if self.camera.face_on() {
-            let radius = CUBE_SCALE * 1.75;
-            for (clockwise, from, to, tip) in [(false, -50f32, -85f32, "Rotate view 45° counter-clockwise"), (true, -40f32, -5f32, "Rotate view 45° clockwise")] {
+            // Round a point a little up and left of the cube's centre, clear of it.
+            let (around, radius) = (cube_center + egui::vec2(-8.0, -10.0), CUBE_SCALE * 1.85);
+            for (clockwise, from, to, tip) in [(false, -48f32, -88f32, "Rotate view 45° counter-clockwise"), (true, -42f32, -2f32, "Rotate view 45° clockwise")] {
                 let (from, to) = (from.to_radians(), to.to_radians());
                 let mid = (from + to) / 2.0;
-                let spot = egui::Rect::from_center_size(cube_center + egui::vec2(mid.cos(), mid.sin()) * radius, egui::vec2(30.0, 30.0));
+                let spot = egui::Rect::from_center_size(around + egui::vec2(mid.cos(), mid.sin()) * radius, egui::vec2(40.0, 40.0));
                 let r = ui.interact(spot, ui.id().with(("roll", clockwise)), egui::Sense::click()).on_hover_text(tip);
                 let col = if r.hovered() { COL_ARROW_HOT } else { icon };
-                View::roll_arrow(ui.painter(), cube_center, radius, from, to, col);
+                View::roll_arrow(ui.painter(), around, radius, from, to, col);
                 if r.clicked() {
                     let to = self.camera.rolled(clockwise);
                     self.move_camera(to, now);

@@ -540,12 +540,12 @@ impl View<'_> {
     pub fn roll_arrow(painter: &egui::Painter, center: egui::Pos2, radius: f32, from: f32, to: f32, color: Color32) {
         let at = |a: f32| center + egui::vec2(a.cos(), a.sin()) * radius;
         let pts: Vec<egui::Pos2> = (0..=16).map(|k| at(from + (to - from) * k as f32 / 16.0)).collect();
-        painter.add(egui::Shape::line(pts, Stroke::new(2.5, color)));
+        painter.add(egui::Shape::line(pts, Stroke::new(4.5, color)));
         // The head: along the arc's direction at its end.
         let dir = egui::vec2(-to.sin(), to.cos()) * (to - from).signum();
         let side = egui::vec2(-dir.y, dir.x);
-        let tip = at(to) + dir * 7.0;
-        painter.add(egui::Shape::convex_polygon(vec![tip, at(to) + side * 5.0, at(to) - side * 5.0], color, Stroke::NONE));
+        let tip = at(to) + dir * 11.0;
+        painter.add(egui::Shape::convex_polygon(vec![tip, at(to) + side * 8.0, at(to) - side * 8.0], color, Stroke::NONE));
     }
 
     /// Small downward triangle (menu button).
@@ -670,11 +670,12 @@ mod roll_shots {
             crate::ui_shot::shot(&format!("{dir}/{name}.png"), [240, 220], |ui| {
                 let painter = ui.painter().clone();
                 let view = super::View { painter: &painter, vp: glam::Mat4::IDENTITY, min: glam::Vec2::ZERO, size: glam::Vec2::new(240.0, 220.0), trace: None };
-                let c = egui::pos2(120.0, 120.0);
+                let c = egui::pos2(120.0, 130.0);
                 view.view_cube(&cam, &crate::camera::cube_cells(), glam::Vec2::new(c.x, c.y), 34.0, None, true);
                 let icon = egui::Color32::from_gray(215);
-                for (from, to) in [(-50f32, -85f32), (-40f32, -5f32)] {
-                    super::View::roll_arrow(&painter, c, 34.0 * 1.75, from.to_radians(), to.to_radians(), icon);
+                // (As the viewport places them.)
+                for (from, to) in [(-48f32, -88f32), (-42f32, -2f32)] {
+                    super::View::roll_arrow(&painter, c + egui::vec2(-8.0, -10.0), 34.0 * 1.85, from.to_radians(), to.to_radians(), icon);
                 }
             });
         }
