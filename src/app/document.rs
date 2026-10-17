@@ -278,6 +278,38 @@ impl OpenCad {
             || self.axes != self.saved.axes
             || self.planes != self.saved.planes
             || self.timeline != self.saved.timeline
+            || self.points != self.saved.points
+            || self.sweeps != self.saved.sweeps
+            || self.sections != self.saved.sections
+    }
+
+    /// Autosave this design if it has changes and it's time (see `recovery`);
+    /// once it's saved (or has nothing unsaved), its autosave goes.
+    pub(crate) fn autosave(&mut self, now: f64) {
+        let Some(dir) = recovery::default_dir() else { return };
+        if !self.is_dirty() {
+            if std::mem::take(&mut self.autosaved) {
+                recovery::remove(&dir, std::process::id(), self.tab_id);
+            }
+            self.last_autosave = now;
+            return;
+        }
+        if now - self.last_autosave >= recovery::every_seconds() {
+            self.last_autosave = now;
+            let title = self.tab_title();
+            if recovery::save(&dir, std::process::id(), self.tab_id, &self.document(), self.path.as_deref(), &title).is_ok() {
+                self.autosaved = true;
+            }
+        }
+    }
+
+    /// Open a recovered autosave in this (fresh) tab: unsaved, pointing at its own file.
+    pub(crate) fn open_recovered(&mut self, r: &recovery::Recovered) -> Result<(), String> {
+        let d = doc::load(&r.file)?;
+        self.reset_with(d, r.original.clone());
+        // Unsaved against what's on disk (or all of it, if it never was saved).
+        self.saved = r.original.as_deref().and_then(|p| doc::load(p).ok()).unwrap_or_default();
+        Ok(())
     }
 
     pub(crate) fn file_name(&self) -> String {

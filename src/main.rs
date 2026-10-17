@@ -59,6 +59,7 @@ mod text;
 mod text_dialog;
 mod section_dialog;
 mod sweep_dialog;
+mod recovery;
 #[cfg(test)]
 mod ui_shot;
 mod view;
@@ -845,6 +846,9 @@ struct OpenCad {
     renaming_design: Option<String>,    // the tab's name being edited
     rename_select_all: bool,            // select the whole name when the box opens
     saved: Document,                    // what's on disk, to detect unsaved changes
+    tab_id: u64,                        // names this tab's autosave (see `recovery`)
+    last_autosave: f64,                 // when it was last autosaved (or found clean)
+    autosaved: bool,                    // an autosave of it is on disk
     cmd: Option<Cmd>,
     confirm: Option<Pending>,
     alert: Option<String>,
@@ -1059,6 +1063,12 @@ impl Default for OpenCad {
             arrow_turn: None,
             path: None,
             saved: Document::default(),
+            tab_id: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
+            last_autosave: 0.0,
+            autosaved: false,
             cmd: None,
             confirm: None,
             alert: None,
@@ -1412,6 +1422,8 @@ struct Tabs {
     title: String,
     /// Driven from outside (`--control PORT`): see `control`.
     control: Option<Control>,
+    /// Autosaves left by a run that didn't close properly: offered at start.
+    recovered: Vec<recovery::Recovered>,
 }
 
 /// The control link's side in the app: requests come in one at a time;
@@ -1498,10 +1510,68 @@ impl eframe::App for Tabs {
             self.title = title;
         }
         self.control_frame(&ctx);
+        // Autosave every design with changes now and then (see `recovery`).
+        let now = ctx.input(|i| i.time);
+        for t in &mut self.tabs {
+            t.autosave(now);
+        }
+        self.recovery_prompt(&ctx);
+    }
+
+    /// A normal close: this run's autosaves aren't needed.
+    fn on_exit(&mut self) {
+        if let Some(dir) = recovery::default_dir() {
+            for t in &self.tabs {
+                recovery::remove(&dir, std::process::id(), t.tab_id);
+            }
+        }
     }
 }
 
 impl Tabs {
+    /// After a run that didn't close properly: offer its autosaves back.
+    fn recovery_prompt(&mut self, ctx: &egui::Context) {
+        if self.recovered.is_empty() {
+            return;
+        }
+        let mut choice: Option<bool> = None;
+        egui::Window::new("Recover designs?").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
+            ui.label("opencad didn't close properly last time. These designs had unsaved changes:");
+            for r in &self.recovered {
+                let from = r.original.as_ref().map_or_else(|| "never saved".to_string(), |p| p.display().to_string());
+                ui.label(format!("  {}   ({from})", r.title));
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Recover").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Discard").clicked() {
+                    choice = Some(false);
+                }
+            });
+        });
+        let Some(recover) = choice else { return };
+        let settings = self.tabs[self.current].current_settings();
+        for r in std::mem::take(&mut self.recovered) {
+            if recover {
+                // Into the empty first tab, else a new one.
+                let blank = self.tabs.len() == 1 && !self.tabs[0].is_dirty() && self.tabs[0].path.is_none();
+                if !blank {
+                    self.tabs.push(OpenCad::fresh(&settings, self.gpu));
+                }
+                let k = self.tabs.len() - 1;
+                if self.tabs[k].open_recovered(&r).is_err() {
+                    if !blank {
+                        self.tabs.pop();
+                    }
+                    continue; // (unreadable: dropped)
+                }
+                self.current = k;
+            }
+            recovery::forget(&r);
+        }
+    }
+
     /// The control link, once a frame: take the next request, and answer the
     /// one in hand when it's done.
     fn control_frame(&mut self, ctx: &egui::Context) {
@@ -1597,6 +1667,9 @@ impl Tabs {
     /// Close tab `k` (an empty window gets a fresh design).
     fn close(&mut self, k: usize) {
         let settings = self.tabs[self.current].current_settings();
+        if let Some(dir) = recovery::default_dir() {
+            recovery::remove(&dir, std::process::id(), self.tabs[k].tab_id);
+        }
         self.tabs.remove(k);
         if self.tabs.is_empty() {
             self.tabs.push(OpenCad::fresh(&settings, self.gpu));
@@ -1682,7 +1755,8 @@ fn main() -> eframe::Result {
                 }
                 None => None,
             };
-            Ok(Box::new(Tabs { tabs: vec![OpenCad::fresh(&s, gpu)], current: 0, gpu, title: String::new(), control }))
+            let recovered = recovery::default_dir().map_or_else(Vec::new, |d| recovery::left_behind(&d, recovery::process_alive));
+            Ok(Box::new(Tabs { tabs: vec![OpenCad::fresh(&s, gpu)], current: 0, gpu, title: String::new(), control, recovered }))
         }),
     )
 }
