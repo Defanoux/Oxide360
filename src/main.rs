@@ -30,6 +30,7 @@ mod icons;
 mod inertia;
 mod kernel;
 mod app;
+mod assembly;
 mod materials;
 mod measure;
 mod units;
@@ -726,6 +727,8 @@ struct OpenCad {
     sweeps: Vec<model::SweepFeature>,       // sweeps and lofts
     sweep_errors: Vec<Option<String>>,
     imports: Vec<model::ImportFeature>,    // STEP / STL bodies brought in
+    components: Vec<assembly::Component>,  // named groups of bodies (parts)
+    renaming_component: Option<(usize, String)>,
     import_errors: Vec<Option<String>>,
     sweep_dialog: Option<sweep_dialog::SweepDialog>, // the Sweep / Loft dialog
     import_dialog: Option<import_dialog::ImportDialog>, // placing an inserted STEP / STL
@@ -952,6 +955,8 @@ impl Default for OpenCad {
             sweep_errors: Vec::new(),
             imports: Vec::new(),
             import_errors: Vec::new(),
+            components: Vec::new(),
+            renaming_component: None,
             sweep_dialog: None,
             import_dialog: None,
             path_hover: None,

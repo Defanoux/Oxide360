@@ -22,6 +22,7 @@ impl OpenCad {
             points: self.points.clone(),
             sweeps: self.sweeps.clone(),
             imports: self.imports.clone(),
+            components: self.components.clone(),
             sections: self.sections.clone(),
             parameters: self.parameters.clone(),
             feature_exprs: self.feature_exprs.clone(),
@@ -122,6 +123,7 @@ impl OpenCad {
         self.body_names = self.body_names.drain().filter_map(|(id, n)| Some((id.after_delete(revolve, k)?, n))).collect();
         self.body_colors = self.body_colors.drain().filter_map(|(id, c)| Some((id.after_delete(revolve, k)?, c))).collect();
         self.body_materials = self.body_materials.drain().filter_map(|(id, m)| Some((id.after_delete(revolve, k)?, m))).collect();
+        assembly::remap(&mut self.components, |id| id.after_delete(revolve, k));
         self.properties_of = None;
         for c in &mut self.copies {
             c.bodies = c.bodies.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
@@ -156,6 +158,7 @@ impl OpenCad {
         self.body_names = self.body_names.drain().filter_map(|(id, n)| Some((id.after_maker_delete(gone)?, n))).collect();
         self.body_colors = self.body_colors.drain().filter_map(|(id, c)| Some((id.after_maker_delete(gone)?, c))).collect();
         self.body_materials = self.body_materials.drain().filter_map(|(id, m)| Some((id.after_maker_delete(gone)?, m))).collect();
+        assembly::remap(&mut self.components, |id| id.after_maker_delete(gone));
         self.properties_of = None;
         for c in &mut self.copies {
             c.bodies = c.bodies.iter().filter_map(|id| id.after_maker_delete(gone)).collect();
@@ -298,6 +301,7 @@ impl OpenCad {
             || self.points != self.saved.points
             || self.sweeps != self.saved.sweeps
             || self.imports != self.saved.imports
+            || self.components != self.saved.components
             || self.sections != self.saved.sections
             || self.sorted_body_materials() != self.saved.body_materials
     }
@@ -400,6 +404,8 @@ impl OpenCad {
         self.points = doc.points.clone();
         self.sweeps = doc.sweeps.clone();
         self.imports = doc.imports.clone();
+        self.components = doc.components.clone();
+        self.renaming_component = None;
         self.sweep_dialog = None;
         self.point_pick = false;
         self.section_dialog = None;
@@ -497,6 +503,8 @@ impl OpenCad {
         self.points = doc.points;
         self.sweeps = doc.sweeps;
         self.imports = doc.imports;
+        self.components = doc.components;
+        self.renaming_component = None;
         self.sweep_dialog = None;
         self.parameters = doc.parameters;
         self.feature_exprs = doc.feature_exprs;

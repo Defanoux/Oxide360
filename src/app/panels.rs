@@ -874,6 +874,7 @@ impl OpenCad {
                     self.browser_construction(ui);
                     self.browser_bodies(ui);
                     self.browser_sketches(ui);
+                    self.browser_components(ui);
                 });
         });
     }
@@ -1140,17 +1141,93 @@ impl OpenCad {
         }
     }
 
+    /// The design's own bodies (those in no component).
     fn browser_bodies(&mut self, ui: &mut egui::Ui) {
-        let any = self.body_ids.iter().any(|id| !self.hidden_bodies.contains(id));
-        let clicked = self.folder(ui, "folder_bodies", Icon::Folder, "Bodies", Some(any), |app, ui| app.body_rows(ui));
+        let own: Vec<BodyId> = self.body_ids.iter().copied().filter(|id| assembly::owner(&self.components, *id).is_none()).collect();
+        let any = own.iter().any(|id| !self.hidden_bodies.contains(id));
+        let rows = own.clone();
+        let clicked = self.folder(ui, "folder_bodies", Icon::Folder, "Bodies", Some(any), |app, ui| app.body_rows(ui, rows, true));
         if clicked {
             if any {
-                self.hidden_bodies.extend(self.body_ids.iter().copied());
+                self.hidden_bodies.extend(own.iter().copied());
             } else {
-                for id in &self.body_ids {
+                for id in &own {
                     self.hidden_bodies.remove(id);
                 }
             }
+        }
+    }
+
+    /// Each component, with its bodies (as Fusion lists its occurrences).
+    fn browser_components(&mut self, ui: &mut egui::Ui) {
+        let (mut dissolve, mut move_it, mut rename_done) = (None, None, None);
+        for k in 0..self.components.len() {
+            let bodies: Vec<BodyId> = self.components[k].bodies.iter().copied().filter(|id| self.body_ids.contains(id)).collect();
+            let any = bodies.iter().any(|id| !self.hidden_bodies.contains(id));
+            let name = self.components[k].name.clone();
+            let rows = bodies.clone();
+            if let Some((rk, text)) = self.renaming_component.as_mut().filter(|(rk, _)| *rk == k) {
+                browser_row(ui, |ui| {
+                    icons::small(ui, Icon::Component);
+                    let edit = ui.add(egui::TextEdit::singleline(text).desired_width(140.0));
+                    edit.request_focus();
+                    let (enter, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+                    if enter {
+                        rename_done = Some((*rk, Some(text.trim().to_string())));
+                    } else if esc || edit.lost_focus() {
+                        rename_done = Some((*rk, None));
+                    }
+                });
+                continue;
+            }
+            let (clicked, header) = self.folder_header(ui, &format!("component_{k}"), Icon::Component, &name, Some(any), |app, ui| {
+                if rows.is_empty() {
+                    ui.weak("No bodies");
+                }
+                app.body_rows(ui, rows, false);
+            });
+            if clicked {
+                for id in &bodies {
+                    if any {
+                        self.hidden_bodies.insert(*id);
+                    } else {
+                        self.hidden_bodies.remove(id);
+                    }
+                }
+            }
+            if header.double_clicked() {
+                self.renaming_component = Some((k, name.clone()));
+            } else if header.clicked() {
+                self.selected_bodies = bodies.clone();
+            }
+            header.on_hover_text("Click to select its bodies · double-click to rename · right-click for more").context_menu(|ui| {
+                if ui.button("Rename").clicked() {
+                    self.renaming_component = Some((k, name.clone()));
+                    ui.close();
+                }
+                if ui.add_enabled(!bodies.is_empty(), egui::Button::new("Move/Copy")).on_hover_text("Move the whole component").clicked() {
+                    move_it = Some(bodies.clone());
+                    ui.close();
+                }
+                if ui.button("Dissolve").on_hover_text("Its bodies go back to the design's own; the component goes").clicked() {
+                    dissolve = Some(k);
+                    ui.close();
+                }
+            });
+        }
+        if let Some((k, name)) = rename_done {
+            self.renaming_component = None;
+            if let (Some(n), Some(c)) = (name.filter(|n| !n.is_empty()), self.components.get_mut(k)) {
+                c.name = n;
+            }
+        }
+        if let Some(k) = dissolve {
+            self.components.remove(k);
+            self.renaming_component = None;
+        }
+        if let Some(bodies) = move_it {
+            self.selected_bodies = bodies;
+            self.open_move(None);
         }
     }
 
@@ -1164,11 +1241,14 @@ impl OpenCad {
         }
     }
 
-    fn body_rows(&mut self, ui: &mut egui::Ui) {
+    /// Rows for `ids` (bodies); `keys`: this list also takes the Delete key
+    /// (only one list does, though several are shown).
+    fn body_rows(&mut self, ui: &mut egui::Ui, ids: Vec<BodyId>, keys: bool) {
         let mut rename_done: Option<(BodyId, Option<String>)> = None;
         let (mut remove, mut delete_maker): (Option<Vec<BodyId>>, Option<Feature>) = (None, None);
+        let mut make_component: Option<Vec<BodyId>> = None;
         self.selected_bodies.retain(|id| self.body_ids.contains(id));
-        for id in self.body_ids.clone() {
+        for id in ids {
             browser_row(ui, |ui| {
                 let shown = !self.hidden_bodies.contains(&id);
                 if icons::eye(ui, shown, "Show or hide this body").clicked() {
@@ -1269,6 +1349,11 @@ impl OpenCad {
                                 }
                             }
                         });
+                        let what = if n == 1 { "Body" } else { "Bodies" };
+                        if ui.button(format!("Create Component from {what}")).on_hover_text("Make a component (a part of its own) of these bodies").clicked() {
+                            make_component = Some(if self.selected_bodies.is_empty() { vec![id] } else { self.selected_bodies.clone() });
+                            ui.close();
+                        }
                         if ui.button("Properties").on_hover_text("Mass, volume, area, centre of mass, bounding box").clicked() {
                             self.properties_of = Some(id);
                             ui.close();
@@ -1284,16 +1369,23 @@ impl OpenCad {
         // Delete key with bodies selected: Remove them (the safe one; the
         // right-click menu has Delete, which deletes the making feature).
         let typing = ui.ctx().text_edit_focused();
-        if self.active.is_none() && !typing && !self.selected_bodies.is_empty() && ui.input(|i| i.key_pressed(egui::Key::Delete)) {
+        if keys && self.active.is_none() && !typing && !self.selected_bodies.is_empty() && ui.input(|i| i.key_pressed(egui::Key::Delete)) {
             remove = Some(self.selected_bodies.clone());
         }
         if let Some(bodies) = remove {
             self.remove_bodies(bodies);
         }
+        if let Some(bodies) = make_component {
+            let k = assembly::create(&mut self.components, &bodies);
+            self.notify(format!("{} made", self.components[k].name));
+        }
         match delete_maker {
             Some(Feature::Extrude(k)) => self.delete_extrude(k),
             Some(Feature::Revolve(k)) => self.delete_revolve(k),
             Some(Feature::Copy(k)) => self.delete_copy(k),
+            Some(Feature::Move(k)) => self.delete_move(k),
+            Some(Feature::Sweep(k)) => self.delete_sweep(k),
+            Some(Feature::Import(k)) => self.delete_import(k),
             _ => {}
         }
         if let Some((id, name)) = rename_done {

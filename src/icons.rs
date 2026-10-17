@@ -41,6 +41,7 @@ pub enum Icon {
     Pipe,
     Coil,
     Import,
+    Component,
     Interference,
     Break,
     ControlSpline,
@@ -688,6 +689,15 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             poly(&[(0.4, 0.15), (0.9, 0.15), (0.9, 0.6), (0.4, 0.6)], blue);
             poly(&[(0.4, 0.3), (0.6, 0.3), (0.6, 0.6), (0.4, 0.6)], if enabled { Color32::from_rgb(230, 70, 70) } else { ink });
         }
+        Icon::Component => {
+            // A box drawn as an outline cube: a part of its own.
+            let s = Stroke::new(thin.width * 1.2, ink);
+            outline(&[(0.2, 0.35), (0.55, 0.2), (0.85, 0.35), (0.85, 0.75), (0.5, 0.9), (0.2, 0.75)], s);
+            line((0.2, 0.35), (0.5, 0.5), s);
+            line((0.85, 0.35), (0.5, 0.5), s);
+            line((0.5, 0.5), (0.5, 0.9), s);
+            poly(&[(0.2, 0.35), (0.55, 0.2), (0.85, 0.35), (0.5, 0.5)], blue);
+        }
         Icon::Import => {
             // A blue box with an arrow coming down into it.
             poly(&[(0.2, 0.55), (0.8, 0.55), (0.8, 0.9), (0.2, 0.9)], blue);
@@ -1009,7 +1019,7 @@ mod shot_tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [720, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil, Icon::Import, Icon::Interference] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil, Icon::Import, Icon::Interference, Icon::Component] {
                     button(ui, icon, "", true, false);
                 }
             });

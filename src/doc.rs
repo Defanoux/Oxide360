@@ -243,6 +243,9 @@ pub struct Document {
     /// Sweeps and lofts. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sweeps: Vec<crate::model::SweepFeature>,
+    /// Components: named groups of bodies. Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<crate::assembly::Component>,
     /// Imported STEP / STL bodies. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub imports: Vec<crate::model::ImportFeature>,
@@ -824,6 +827,7 @@ mod tests {
             points: Vec::new(),
             sweeps: Vec::new(),
             imports: Vec::new(),
+            components: Vec::new(),
             parameters: Vec::new(),
             feature_exprs: Vec::new(),
             units: crate::units::Unit::Mm,
