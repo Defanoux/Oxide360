@@ -26,5 +26,7 @@ mod inner {
         pub fn opencad_brep_to_string(shape: &TopoDS_Shape) -> String;
         /// opencad patch: a shape back from BRep text (null on failure).
         pub fn opencad_try_brep_from_string(text: &str) -> UniquePtr<TopoDS_Shape>;
+        /// opencad patch: the exact bounding box into `out` (6 numbers; false on failure).
+        pub fn opencad_try_exact_bounds(shape: &TopoDS_Shape, out: &mut [f64]) -> bool;
     }
 }

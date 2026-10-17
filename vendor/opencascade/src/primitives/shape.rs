@@ -595,6 +595,13 @@ impl Shape {
         (!made.is_null()).then(|| Self::from_shape(&made))
     }
 
+    /// opencad patch: the exact bounding box (from the geometry, no
+    /// tolerance added) as (min, max); None for an empty shape.
+    pub fn try_exact_bounds(&self) -> Option<(DVec3, DVec3)> {
+        let mut out = [0.0; 6];
+        ffi::b_rep_tools::opencad_try_exact_bounds(&self.inner, &mut out).then(|| (DVec3::new(out[0], out[1], out[2]), DVec3::new(out[3], out[4], out[5])))
+    }
+
     /// opencad patch: the shape as OCCT BRep text (exact; empty on failure).
     pub fn to_brep_string(&self) -> String {
         ffi::b_rep_tools::opencad_brep_to_string(&self.inner)

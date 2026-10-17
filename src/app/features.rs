@@ -1420,6 +1420,82 @@ impl OpenCad {
         }
     }
 
+    /// Inspect → Interference: the visible bodies' overlaps, worked out again
+    /// whenever the bodies change while it's open.
+    pub(crate) fn interference_panel(&mut self, ui: &mut egui::Ui) {
+        self.ensure_model(Slot::Committed);
+        let visible: Vec<(BodyId, opencascade::primitives::Shape)> =
+            self.model(Slot::Committed).bodies.iter().filter(|b| !self.hidden_bodies.contains(&b.id)).map(|b| (b.id, b.shape.clone())).collect();
+        let stale = self.interference.as_ref().is_some_and(|i| i.shapes.len() != visible.len() || i.shapes.iter().zip(&visible).any(|(a, (_, b))| !a.is_same(b)));
+        if stale {
+            let shapes: Vec<&opencascade::primitives::Shape> = visible.iter().map(|(_, s)| s).collect();
+            let hits = kernel::interference(&shapes)
+                .into_iter()
+                .map(|(i, j, common)| (visible[i].0, visible[j].0, common.volume(), kernel::mesh_tagged(&common).map(|(m, _)| m).unwrap_or_default()))
+                .collect();
+            self.interference = Some(Interference { shapes: visible.iter().map(|(_, s)| s.clone()).collect(), hits });
+        }
+        let Some(inter) = &self.interference else { return };
+        ui.heading("Interference");
+        ui.weak(format!("{} visible bodies checked", visible.len()));
+        if inter.hits.is_empty() {
+            ui.label("No bodies overlap.");
+        } else {
+            for (a, b, volume, _) in &inter.hits {
+                ui.horizontal(|ui| {
+                    let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().rect_filled(dot, 2.0, COL_INTERFERENCE);
+                    ui.label(format!("{} × {}", self.body_name(*a), self.body_name(*b)));
+                    ui.weak(format!("{:.2} mm³", volume));
+                });
+            }
+        }
+        let close = ui.button("Close").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if close {
+            self.interference = None;
+        }
+    }
+
+    /// A body's Properties (right-click a body → Properties), as Fusion's.
+    pub(crate) fn properties_window(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.properties_of else { return };
+        self.ensure_model(Slot::Committed);
+        let Some(body) = self.model(Slot::Committed).bodies.iter().find(|b| b.id == id) else {
+            self.properties_of = None;
+            return;
+        };
+        let (volume, area, centre) = kernel::body_properties(&body.shape);
+        let bounds = kernel::exact_bounds(&body.shape);
+        let material = self.body_material(id);
+        let mass = materials::mass_g(volume, material.density);
+        let mut open = true;
+        egui::Window::new(format!("Properties — {}", self.body_name(id))).id(egui::Id::new("body_properties")).open(&mut open).resizable(false).collapsible(false).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).show(ctx, |ui| {
+            egui::Grid::new("props").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+                let mut row = |k: &str, v: String| {
+                    ui.label(k);
+                    ui.label(v);
+                    ui.end_row();
+                };
+                row("Material", material.name.to_string());
+                row("Density", format!("{:.2} g/cm³", material.density));
+                row("Mass", materials::format_mass(mass));
+                row("Volume", format!("{volume:.2} mm³"));
+                row("Area", format!("{area:.2} mm²"));
+                row("Centre of mass", format!("{:.2}, {:.2}, {:.2} mm", centre.x, centre.y, centre.z));
+                if let Some((lo, hi)) = bounds {
+                    let size = hi - lo;
+                    row("Bounding box", format!("{:.2} × {:.2} × {:.2} mm", size.x, size.y, size.z));
+                    row("    from", format!("{:.2}, {:.2}, {:.2}", lo.x, lo.y, lo.z));
+                    row("    to", format!("{:.2}, {:.2}, {:.2}", hi.x, hi.y, hi.z));
+                }
+            });
+            ui.weak("To change the material, right-click the body, then Physical Material.");
+        });
+        if !open {
+            self.properties_of = None;
+        }
+    }
+
     pub(crate) fn delete_plane(&mut self, k: usize) {
         if self.sketches.iter().any(|s| s.plane_ref == Some(k)) {
             self.notify("A sketch is on that plane — delete the sketch first".into());

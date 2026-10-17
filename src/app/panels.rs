@@ -838,6 +838,10 @@ impl OpenCad {
                     if icons::button(ui, Icon::Section, tip, has_bodies, self.section_dialog.is_some()).clicked() {
                         self.section_dialog = if self.section_dialog.is_some() { None } else { Some(section_dialog::SectionDialog::new()) };
                     }
+                    let tip = "Interference: find where the visible bodies overlap, and by how much";
+                    if icons::button(ui, Icon::Interference, tip, has_bodies, self.interference.is_some()).clicked() {
+                        self.interference = if self.interference.is_some() { None } else { Some(Interference { shapes: Vec::new(), hits: Vec::new() }) };
+                    }
                 });
             }
         });
@@ -1022,7 +1026,7 @@ impl OpenCad {
         let mut delete: Option<usize> = None;
         self.folder(ui, "folder_analysis", Icon::Folder, "Analysis", None, |app, ui| {
             if app.sections.is_empty() {
-                ui.weak("Nothing yet (Inspect → Section Analysis)");
+                ui.weak("Nothing yet (Inspect, Section Analysis)");
             }
             for k in 0..app.sections.len() {
                 let r = browser_row(ui, |ui| {
@@ -1222,6 +1226,24 @@ impl OpenCad {
                         });
                         if self.body_colors.contains_key(&id) && ui.button("Use the default color").clicked() {
                             self.body_colors.remove(&id);
+                            ui.close();
+                        }
+                        ui.menu_button("Physical Material", |ui| {
+                            let now = self.body_material(id).name;
+                            for m in materials::ALL {
+                                if ui.selectable_label(m.name == now, format!("{}   {:.2} g/cm³", m.name, m.density)).clicked() {
+                                    // Steel is what a body is anyway: nothing to store.
+                                    if m.name == materials::DEFAULT {
+                                        self.body_materials.remove(&id);
+                                    } else {
+                                        self.body_materials.insert(id, m.name.to_string());
+                                    }
+                                    ui.close();
+                                }
+                            }
+                        });
+                        if ui.button("Properties").on_hover_text("Mass, volume, area, centre of mass, bounding box").clicked() {
+                            self.properties_of = Some(id);
                             ui.close();
                         }
                         if self.body_names.contains_key(&id) && ui.button("Use the feature's name").clicked() {

@@ -41,6 +41,7 @@ pub enum Icon {
     Pipe,
     Coil,
     Import,
+    Interference,
     Break,
     ControlSpline,
     Plane,
@@ -681,6 +682,12 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             arc(0.2, 0.85, 0.6, -std::f32::consts::FRAC_PI_2, 0.0, Stroke::new(thin.width * 4.0, blue));
             arc(0.2, 0.25, 0.1, 0.0, std::f32::consts::TAU, Stroke::new(thin.width * 1.3, orange));
         }
+        Icon::Interference => {
+            // Two blocks overlapping, the overlap in red.
+            poly(&[(0.1, 0.3), (0.6, 0.3), (0.6, 0.75), (0.1, 0.75)], blue_dark);
+            poly(&[(0.4, 0.15), (0.9, 0.15), (0.9, 0.6), (0.4, 0.6)], blue);
+            poly(&[(0.4, 0.3), (0.6, 0.3), (0.6, 0.6), (0.4, 0.6)], if enabled { Color32::from_rgb(230, 70, 70) } else { ink });
+        }
         Icon::Import => {
             // A blue box with an arrow coming down into it.
             poly(&[(0.2, 0.55), (0.8, 0.55), (0.8, 0.9), (0.2, 0.9)], blue);
@@ -1002,7 +1009,7 @@ mod shot_tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [720, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil, Icon::Import] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil, Icon::Import, Icon::Interference] {
                     button(ui, icon, "", true, false);
                 }
             });

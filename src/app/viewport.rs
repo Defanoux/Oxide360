@@ -3389,6 +3389,13 @@ impl OpenCad {
             }
         }
 
+        // --- draw: where bodies overlap (Inspect → Interference), on top ---
+        if let Some(inter) = &self.interference {
+            for (_, _, _, mesh) in &inter.hits {
+                view.fill_tris(mesh.tris.iter().map(|t| t.map(|i| mesh.positions[i as usize])), COL_INTERFERENCE.gamma_multiply(0.75));
+            }
+        }
+
         // --- draw: construction points, with their names ---
         if self.active.is_none() {
             let built = self.model(Slot::Committed).points.clone();

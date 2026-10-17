@@ -32,6 +32,7 @@ impl OpenCad {
             view: self.view_state(),
             body_names: self.sorted_body_names(),
             body_colors: self.sorted_body_colors(),
+            body_materials: self.sorted_body_materials(),
         }
     }
 
@@ -78,6 +79,17 @@ impl OpenCad {
         v
     }
 
+    pub(crate) fn sorted_body_materials(&self) -> Vec<(BodyId, String)> {
+        let mut v: Vec<(BodyId, String)> = self.body_materials.iter().map(|(&k, m)| (k, m.clone())).collect();
+        v.sort();
+        v
+    }
+
+    /// A body's physical material (Steel unless one was chosen).
+    pub(crate) fn body_material(&self, id: BodyId) -> materials::Material {
+        materials::by_name(self.body_materials.get(&id).map_or(materials::DEFAULT, String::as_str))
+    }
+
     pub(crate) fn sorted_body_colors(&self) -> Vec<(BodyId, [u8; 3])> {
         let mut v: Vec<(BodyId, [u8; 3])> = self.body_colors.iter().map(|(&k, &c)| (k, c)).collect();
         v.sort();
@@ -109,6 +121,8 @@ impl OpenCad {
         self.hidden_bodies = self.hidden_bodies.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
         self.body_names = self.body_names.drain().filter_map(|(id, n)| Some((id.after_delete(revolve, k)?, n))).collect();
         self.body_colors = self.body_colors.drain().filter_map(|(id, c)| Some((id.after_delete(revolve, k)?, c))).collect();
+        self.body_materials = self.body_materials.drain().filter_map(|(id, m)| Some((id.after_delete(revolve, k)?, m))).collect();
+        self.properties_of = None;
         for c in &mut self.copies {
             c.bodies = c.bodies.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
         }
@@ -141,6 +155,8 @@ impl OpenCad {
         self.hidden_bodies = self.hidden_bodies.iter().filter_map(|id| id.after_maker_delete(gone)).collect();
         self.body_names = self.body_names.drain().filter_map(|(id, n)| Some((id.after_maker_delete(gone)?, n))).collect();
         self.body_colors = self.body_colors.drain().filter_map(|(id, c)| Some((id.after_maker_delete(gone)?, c))).collect();
+        self.body_materials = self.body_materials.drain().filter_map(|(id, m)| Some((id.after_maker_delete(gone)?, m))).collect();
+        self.properties_of = None;
         for c in &mut self.copies {
             c.bodies = c.bodies.iter().filter_map(|id| id.after_maker_delete(gone)).collect();
         }
@@ -283,6 +299,7 @@ impl OpenCad {
             || self.sweeps != self.saved.sweeps
             || self.imports != self.saved.imports
             || self.sections != self.saved.sections
+            || self.sorted_body_materials() != self.saved.body_materials
     }
 
     /// Autosave this design if it has changes and it's time (see `recovery`);
@@ -411,6 +428,9 @@ impl OpenCad {
         self.apply_view(&doc.view);
         self.body_names = doc.body_names.iter().cloned().collect();
         self.body_colors = doc.body_colors.iter().cloned().collect();
+        self.body_materials = doc.body_materials.iter().cloned().collect();
+        self.properties_of = None;
+        self.interference = None;
         self.renaming = None;
         self.history.reset(doc.clone());
         self.saved = doc;
@@ -498,6 +518,9 @@ impl OpenCad {
         self.renaming_feature = None;
         self.body_names = doc.body_names.into_iter().collect();
         self.body_colors = doc.body_colors.into_iter().collect();
+        self.body_materials = doc.body_materials.into_iter().collect();
+        self.properties_of = None;
+        self.interference = None;
         self.renaming = None;
         self.marker = self.marker.filter(|&n| n < self.timeline.len());
         self.dialog = None;

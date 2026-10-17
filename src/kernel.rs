@@ -2449,6 +2449,35 @@ thread_local! {
 
 /// A body's volume (mm³), surface area (mm²) and centre of mass, exactly
 /// (remembered per shape: Measure asks every frame the cursor is over it).
+/// A body's exact bounding box (min, max), from its geometry.
+pub fn exact_bounds(shape: &Shape) -> Option<(DVec3, DVec3)> {
+    let (lo, hi) = catch_unwind(AssertUnwindSafe(|| shape.try_exact_bounds())).ok().flatten()?;
+    Some((DVec3::new(lo.x, lo.y, lo.z), DVec3::new(hi.x, hi.y, hi.z)))
+}
+
+/// Where bodies overlap (Fusion's Inspect → Interference): each pair (by
+/// index) that shares volume, with the shared solid. Touching isn't overlapping.
+pub fn interference(bodies: &[&Shape]) -> Vec<(usize, usize, Shape)> {
+    let boxes: Vec<Option<(DVec3, DVec3)>> = bodies.iter().map(|b| exact_bounds(b)).collect();
+    let mut out = Vec::new();
+    for i in 0..bodies.len() {
+        for j in i + 1..bodies.len() {
+            // Boxes apart: nothing to check.
+            let (Some((alo, ahi)), Some((blo, bhi))) = (boxes[i], boxes[j]) else { continue };
+            if alo.cmpgt(bhi).any() || blo.cmpgt(ahi).any() {
+                continue;
+            }
+            let Some(common) = catch_unwind(AssertUnwindSafe(|| bodies[i].try_intersect(bodies[j]))).ok().flatten() else { continue };
+            let volume = common.volume();
+            let scale = (ahi - alo).max_element().max((bhi - blo).max_element());
+            if volume > 1e-9 * scale * scale * scale && !common.solids().is_empty() {
+                out.push((i, j, common));
+            }
+        }
+    }
+    out
+}
+
 pub fn body_properties(shape: &Shape) -> (f64, f64, DVec3) {
     if let Some(p) = PROPERTIES.with(|c| c.borrow().iter().find(|(k, _)| k.is_same(shape)).map(|(_, p)| *p)) {
         return p;
@@ -4049,6 +4078,35 @@ mod tests {
         // All three are at z = 5: the plane is the top.
         let f = m.planes[0].expect("built");
         assert!(f.normal().cross(DVec3::Z).length() < 1e-9 && (f.origin.dot(f.normal()) * f.normal().z - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn interference_finds_exactly_the_shared_volume_and_bounds_are_exact() {
+        // Block A 0..20 × 0..10 × 0..5; block B 15..30 × 5..15 overlaps it by
+        // 5 × 5 × 5; shaft C r 3 at (50, 5) is apart; block D 20..25 only touches A.
+        let mut a = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut a, 0.0, 0.0, 20.0, 10.0);
+        let mut b = Sketch::new("B".into(), OriginPlane::XY);
+        rect(&mut b, 15.0, 5.0, 30.0, 15.0);
+        let mut c = Sketch::new("C".into(), OriginPlane::XY);
+        circle(&mut c, 50.0, 5.0, 3.0);
+        let mut d = Sketch::new("D".into(), OriginPlane::XY);
+        rect(&mut d, 20.0, -5.0, 25.0, -1.0);
+        rect(&mut d, 20.0, 0.0, 25.0, 3.0);
+        let exs = [ex(0, vec![0], 5.0, Operation::NewBody), ex(1, vec![0], 5.0, Operation::NewBody), ex(2, vec![0], 5.0, Operation::NewBody), ex(3, vec![1], 5.0, Operation::NewBody)];
+        let m = build4(&[a, b, c, d], &exs, &[], &timeline(4, 4));
+        assert_eq!(m.bodies.len(), 4);
+        let shapes: Vec<&Shape> = m.bodies.iter().map(|b| &b.shape).collect();
+        let hits = interference(&shapes);
+        assert_eq!(hits.len(), 1, "only A and B overlap (D just touches A)");
+        let (i, j, common) = &hits[0];
+        let made_by = |k: usize| m.bodies[k].id.feature;
+        assert_eq!((made_by(*i), made_by(*j)), (Feature::Extrude(0), Feature::Extrude(1)));
+        assert!(close(common.volume(), 125.0), "{}", common.volume());
+        // The shaft's box is exact: 47..53 × 2..8 × 0..5.
+        let shaft = m.bodies.iter().find(|b| b.id.feature == Feature::Extrude(2)).unwrap();
+        let (lo, hi) = exact_bounds(&shaft.shape).unwrap();
+        assert!(lo.distance(DVec3::new(47.0, 2.0, 0.0)) < 1e-6 && hi.distance(DVec3::new(53.0, 8.0, 5.0)) < 1e-6, "{lo} {hi}");
     }
 
     fn run_imports(imports: Vec<ImportFeature>) -> Model {

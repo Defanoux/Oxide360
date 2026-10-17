@@ -8,19 +8,7 @@ Ordered by how much each makes opencad a usable part modeller (FEATURES.md
 has the full Fusion list; this is the slice to do now). Fusion's behaviour is
 the spec for each.
 
-**Core solid tools (the gaps you hit modelling a real part)**
-
-**Viewing / selection**
-
-**Shapes Extrude/Revolve can't make**
-17. **Sweep** (profile along a path) and **Loft** (between profiles, rails).
-
-**Files**
-**Inspect**
-21. Centre of mass, bounding box, **physical materials** (density → mass),
-    **Interference**.
-
-Later (big, after the above): components + joints (assemblies), 2D drawings,
+All of the listed slice is done. Later (big, after the above): components + joints (assemblies), 2D drawings,
 sheet metal, surfaces, CAM.
 
 ## Polish (do when nearby code is touched)
@@ -33,6 +21,7 @@ sheet metal, surfaces, CAM.
 
 ## Done
 
+- 21 Inspect: body right-click → Physical Material (17 materials, Steel by default, saved per body) and Properties (material, density, mass, volume, area, centre of mass, exact bounding box); INSPECT → Interference (overlaps between visible bodies, exact volumes, shown in red, recomputed when bodies change). Checked in the running app.
 - 20 Import and 2-D export: File → Insert into Design (STEP exact; STL triangles joined into a solid, coplanar ones merged; open meshes refused with a reason), kept inside the design as an Import timeline feature; sketch right-click → Save As DXF / SVG (lines, circles, arcs exact; splines, ellipses, text as polylines; construction left out). Checked in the running app (OCCT sample STEP/STL; DXF checked with ezdxf).
 - 19 Autosave + crash recovery: designs with unsaved changes are written to ~/.local/share/opencad/recovery every 2 minutes; saving, closing a tab or quitting normally removes them; after a crash the next start offers Recover / Discard (recovered designs open unsaved, pointing at their own file; another running opencad's autosaves are left alone). Also: points, sweeps and section analyses now count as unsaved changes. Crash and recovery checked in the running app.
 - 18 Coil and Pipe (CREATE): Pipe — a round section along a path of sketch curves, solid or hollow; Coil — on a plane or face (a face: centred where clicked), diameter, revolutions, height, circular/square/triangular section; exact OCCT (helix sweep behind a try wrapper). Coil checked in the running app (volume exact). F6 now fits previews too.

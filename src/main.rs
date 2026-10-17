@@ -29,6 +29,7 @@ mod icons;
 mod inertia;
 mod kernel;
 mod app;
+mod materials;
 mod measure;
 mod units;
 mod keys;
@@ -107,6 +108,7 @@ const COL_FIXED: Color32 = Color32::from_rgb(230, 80, 80);
 const COL_ORIGIN: Color32 = Color32::from_rgb(240, 180, 60);
 const COL_SNAP: Color32 = Color32::from_rgb(255, 120, 60);
 const COL_SELECT: Color32 = Color32::from_rgb(255, 170, 40);
+const COL_INTERFERENCE: Color32 = Color32::from_rgb(230, 60, 60); // where bodies overlap
 const COL_PROJECTED: Color32 = Color32::from_rgb(190, 120, 255); // projected from a body
 const COL_HOVER: Color32 = Color32::from_rgb(255, 220, 140);
 const COL_GLYPH: Color32 = Color32::from_rgb(170, 200, 170);
@@ -805,7 +807,10 @@ struct OpenCad {
     history: History, // undo / redo for the whole design
     hidden_bodies: HashSet<BodyId>,         // bodies switched off in the browser
     body_names: HashMap<BodyId, String>,    // names the user gave bodies
-    body_colors: HashMap<BodyId, [u8; 3]>,  // colours the user gave bodies
+    body_colors: HashMap<BodyId, [u8; 3]>,
+    body_materials: HashMap<BodyId, String>, // physical materials the user gave bodies
+    properties_of: Option<BodyId>,           // the body whose Properties window is open
+    interference: Option<Interference>,      // Inspect → Interference, while open  // colours the user gave bodies
     body_ids: Vec<BodyId>,                  // the bodies of the last build, in order
     measure: Option<measure::Measure>,      // the Measure tool while it's on
     measure_unit: Option<measure::Unit>,    // the Measure window's unit (None: the design's)
@@ -1028,6 +1033,9 @@ impl Default for OpenCad {
             hidden_bodies: HashSet::new(),
             body_names: HashMap::new(),
             body_colors: HashMap::new(),
+            body_materials: HashMap::new(),
+            properties_of: None,
+            interference: None,
             body_ids: Vec::new(),
             measure: None,
             measure_unit: None,
@@ -1237,6 +1245,7 @@ impl OpenCad {
             }
         });
 
+        self.properties_window(&ctx);
         // Tool dialogs float over the view's right side, like Fusion's.
         // Bottom right, above the timeline, so they cover no controls.
         let lift = self.timeline_height + 12.0;
@@ -1258,6 +1267,8 @@ impl OpenCad {
             float("sweep").show(&ctx, |ui| self.sweep_panel(ui));
         } else if self.section_dialog.is_some() && self.active.is_none() {
             float("section").show(&ctx, |ui| self.section_panel(ui));
+        } else if self.interference.is_some() && self.active.is_none() {
+            float("interference").show(&ctx, |ui| self.interference_panel(ui));
         } else if self.sketch_pattern.is_some() && self.active.is_some() {
             float("sketch_pattern").show(&ctx, |ui| {
                 let error = self.sketch_pattern.as_ref().and_then(|d| d.preview().err());
@@ -1427,6 +1438,13 @@ impl ConstructPick {
             ConstructPick::AxisTwoPoints(p) => format!("Axis Through Two Points {} of 2: click a body corner or construction point", p.len() + 1),
         }
     }
+}
+
+/// Inspect → Interference: the bodies that overlap and where, for the
+/// bodies as they were when it was worked out (`shapes`).
+struct Interference {
+    shapes: Vec<opencascade::primitives::Shape>,
+    hits: Vec<(BodyId, BodyId, f64, model::Mesh)>,
 }
 
 /// The open designs, one per tab (like Fusion's document tabs).

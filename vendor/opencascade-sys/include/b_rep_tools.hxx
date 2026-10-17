@@ -178,3 +178,26 @@ inline std::unique_ptr<TopoDS_Shape> opencad_try_brep_from_string(rust::Str text
     return nullptr;
   }
 }
+
+// opencad patch: a shape's exact bounding box (from its geometry, not its
+// mesh, with no tolerance added): xmin, ymin, zmin, xmax, ymax, zmax.
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
+
+inline bool opencad_try_exact_bounds(const TopoDS_Shape &shape, rust::Slice<double> out) {
+  try {
+    OCC_CATCH_SIGNALS
+    if (out.size() < 6) {
+      return false;
+    }
+    Bnd_Box box;
+    BRepBndLib::AddOptimal(shape, box, false, false);
+    if (box.IsVoid()) {
+      return false;
+    }
+    box.Get(out[0], out[1], out[2], out[3], out[4], out[5]);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
