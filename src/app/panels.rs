@@ -1258,7 +1258,7 @@ impl OpenCad {
     }
 
     fn sketch_rows(&mut self, ui: &mut egui::Ui) {
-        let (mut edit, mut delete, mut toggle, mut redefine) = (None, None, None, None);
+        let (mut edit, mut delete, mut toggle, mut redefine, mut drawing) = (None, None, None, None, None);
         for (i, s) in self.sketches.iter().enumerate() {
             browser_row(ui, |ui| {
                 let shown = self.sketch_visible(i);
@@ -1283,6 +1283,14 @@ impl OpenCad {
                         redefine = Some(i);
                         ui.close();
                     }
+                    if ui.button("Save As DXF…").on_hover_text("The sketch as a 2-D drawing (for laser cutters, CAD); construction lines left out").clicked() {
+                        drawing = Some((i, false));
+                        ui.close();
+                    }
+                    if ui.button("Save As SVG…").on_hover_text("The sketch as a 2-D drawing in millimetres; construction lines left out").clicked() {
+                        drawing = Some((i, true));
+                        ui.close();
+                    }
                     if ui.button(label).clicked() {
                         delete = Some(i);
                         ui.close();
@@ -1295,6 +1303,9 @@ impl OpenCad {
         }
         if let Some(i) = redefine {
             self.start_redefine(i);
+        }
+        if let Some((i, svg)) = drawing {
+            self.save_sketch_drawing(i, svg);
         }
         if let Some(i) = delete {
             self.delete_sketch(i);

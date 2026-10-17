@@ -991,6 +991,26 @@ impl OpenCad {
         }
     }
 
+    /// Sketch `i` as a DXF (or SVG) drawing, as Fusion's Save As DXF.
+    pub(crate) fn save_sketch_drawing(&mut self, i: usize, svg: bool) {
+        let Some(sk) = self.sketches.get(i) else { return };
+        let ext = if svg { "svg" } else { "dxf" };
+        let picked = self
+            .file_dialog()
+            .set_title(format!("Save {} As {}", sk.name, ext.to_uppercase()))
+            .add_filter(if svg { "SVG drawing" } else { "DXF drawing" }, &[ext])
+            .set_file_name(format!("{}.{ext}", sk.name))
+            .save_file();
+        let Some(mut p) = picked else { return };
+        if p.extension().is_none_or(|e| e != ext) {
+            p.set_extension(ext);
+        }
+        let text = if svg { sketch_export::svg(sk) } else { sketch_export::dxf(sk) };
+        if let Err(e) = std::fs::write(&p, text) {
+            self.alert = Some(format!("Couldn't save {}: {e}", p.display()));
+        }
+    }
+
     /// New / Open / Quit go through here so unsaved work is never lost silently.
     pub(crate) fn request(&mut self, action: Pending, ctx: &egui::Context) {
         if self.is_dirty() {

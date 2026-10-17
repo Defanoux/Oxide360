@@ -52,6 +52,7 @@ mod rect_input;
 mod project;
 mod settings;
 mod sketch;
+mod sketch_export;
 mod sketch_pattern;
 mod solver;
 mod threads;
