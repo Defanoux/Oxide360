@@ -178,7 +178,7 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             // An isometric block with an up arrow.
             poly(&[(0.15, 0.55), (0.5, 0.4), (0.85, 0.55), (0.5, 0.7)], blue);
             poly(&[(0.15, 0.55), (0.5, 0.7), (0.5, 0.92), (0.15, 0.77)], blue_dark);
-            poly(&[(0.5, 0.7), (0.85, 0.55), (0.85, 0.77), (0.5, 0.92)], Color32::from_rgb(60, 125, 205));
+            poly(&[(0.5, 0.7), (0.85, 0.55), (0.85, 0.77), (0.5, 0.92)], tint(Color32::from_rgb(60, 125, 205)));
             line((0.5, 0.52), (0.5, 0.14), Stroke::new(thin.width * 1.2, ink));
             arrow_head((0.5, 0.06), (0.5, 0.3), ink);
         }
@@ -405,9 +405,9 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
         }
         Icon::PressPull => {
             // A block whose top face (orange) is pulled: arrows up and down off it.
-            poly(&[(0.04, 0.5), (0.38, 0.34), (0.72, 0.5), (0.38, 0.66)], Color32::from_rgb(235, 150, 60));
+            poly(&[(0.04, 0.5), (0.38, 0.34), (0.72, 0.5), (0.38, 0.66)], tint(Color32::from_rgb(235, 150, 60)));
             poly(&[(0.04, 0.5), (0.38, 0.66), (0.38, 0.96), (0.04, 0.8)], blue_dark);
-            poly(&[(0.38, 0.66), (0.72, 0.5), (0.72, 0.8), (0.38, 0.96)], Color32::from_rgb(60, 125, 205));
+            poly(&[(0.38, 0.66), (0.72, 0.5), (0.72, 0.8), (0.38, 0.96)], tint(Color32::from_rgb(60, 125, 205)));
             let s = Stroke::new(thin.width * 1.3, ink);
             line((0.87, 0.14), (0.87, 0.6), s);
             arrow_head((0.87, 0.04), (0.87, 0.28), ink);
@@ -415,7 +415,7 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
         }
         Icon::Move => {
             // A block with a four-way arrow over it.
-            poly(&[(0.28, 0.42), (0.72, 0.42), (0.72, 0.86), (0.28, 0.86)], Color32::from_rgb(60, 125, 205));
+            poly(&[(0.28, 0.42), (0.72, 0.42), (0.72, 0.86), (0.28, 0.86)], tint(Color32::from_rgb(60, 125, 205)));
             let s = Stroke::new(thin.width * 1.3, ink);
             line((0.5, 0.12), (0.5, 0.88), s);
             line((0.12, 0.5), (0.88, 0.5), s);
@@ -431,9 +431,9 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
         }
         Icon::Combine => {
             // Two overlapping blocks: the target (blue) and a tool (orange outline) merging into it.
-            poly(&[(0.06, 0.38), (0.6, 0.38), (0.6, 0.94), (0.06, 0.94)], Color32::from_rgb(60, 125, 205));
-            poly(&[(0.4, 0.06), (0.94, 0.06), (0.94, 0.6), (0.4, 0.6)], Color32::from_rgba_unmultiplied(235, 150, 60, 150));
-            outline(&[(0.4, 0.06), (0.94, 0.06), (0.94, 0.6), (0.4, 0.6)], Stroke::new(thin.width * 1.2, Color32::from_rgb(235, 150, 60)));
+            poly(&[(0.06, 0.38), (0.6, 0.38), (0.6, 0.94), (0.06, 0.94)], tint(Color32::from_rgb(60, 125, 205)));
+            poly(&[(0.4, 0.06), (0.94, 0.06), (0.94, 0.6), (0.4, 0.6)], tint(Color32::from_rgba_unmultiplied(235, 150, 60, 150)));
+            outline(&[(0.4, 0.06), (0.94, 0.06), (0.94, 0.6), (0.4, 0.6)], Stroke::new(thin.width * 1.2, tint(Color32::from_rgb(235, 150, 60))));
         }
         Icon::Thread => {
             // A bolt shank with slanted thread lines.
@@ -691,7 +691,7 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             arc(0.5, 0.42, 0.18, std::f32::consts::PI, 2.0 * std::f32::consts::PI, Stroke::new(thin.width * 1.4, ink));
             line((0.32, 0.42), (0.32, 0.5), Stroke::new(thin.width * 1.4, ink));
             line((0.68, 0.42), (0.68, 0.5), Stroke::new(thin.width * 1.4, ink));
-            poly(&[(0.24, 0.5), (0.76, 0.5), (0.76, 0.88), (0.24, 0.88)], Color32::from_rgb(230, 80, 80));
+            poly(&[(0.24, 0.5), (0.76, 0.5), (0.76, 0.88), (0.24, 0.88)], tint(Color32::from_rgb(230, 80, 80)));
         }
         Icon::Remove => {
             // A body (box) with a red cross over it.

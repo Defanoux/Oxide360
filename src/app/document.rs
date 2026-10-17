@@ -546,6 +546,11 @@ impl OpenCad {
         let mut combines = self.combines.clone();
         let mut moves = self.moves.clone();
         timeline.truncate(self.applied()); // features after the marker aren't built
+        // Editing a sketch: the part as it was there (Fusion rolls the timeline
+        // back to the sketch), so what you see and project existed before it.
+        if let Some(p) = self.active.and_then(|i| timeline.iter().position(|f| *f == Feature::Sketch(i))) {
+            timeline.truncate(p + 1);
+        }
         timeline.retain(|f| !self.suppressed.contains(f));
         match slot {
             Slot::Committed => {}

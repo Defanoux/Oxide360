@@ -49,6 +49,7 @@ sheet metal, surfaces, CAM.
 
 ## Done
 
+- Toolbar fixes (Gavin asked): greyed-out tools can still be right-clicked off the toolbar and their icons are fully grey; sketch CREATE is a normal group whose Rectangle, Circle, Arc and Polygon are one tool each (the kind used last, ▾ for the others; tucked away, their row opens the kinds); editing a sketch builds the part only up to it (Fusion's roll back), so edges from earlier features project.
 - Toolbar groups (Gavin asked): the solid CREATE, CONSTRUCT, PATTERN and MODIFY groups have the ▾ list (tools can be tucked away and pinned back; kept apart from the sketch tools of the same name); the sketch CREATE ▾ lists the other rectangle, circle, arc and polygon kinds; a sketch with lost references or a missing face says so in red at the top.
 - Projection follow-ups and view roll (Gavin asked): projected geometry alone can't be dimensioned (to your own lines it can); a sketch whose face is gone shows its projections red; looking straight at a face, the view cube shows two arrows that roll the view 45° each way.
 - Measure (Gavin asked): a third pick replaces the second and keeps the first; a body shows its volume, surface area and centre of mass (exact, from OpenCASCADE).

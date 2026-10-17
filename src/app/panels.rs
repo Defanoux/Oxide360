@@ -30,7 +30,11 @@ struct ToolItem {
 /// `order` keeps the arrangement (names, earlier first).
 /// `scope` keeps its names apart from another group's tools of the same
 /// name in the settings ("Solid " for the model's groups).
-fn tool_group(ui: &mut egui::Ui, label: &str, scope: &str, items: &[ToolItem], hidden: &mut Vec<String>, order: &mut Vec<String>) -> Option<&'static str> {
+/// `families`: tools that come in kinds (Rectangle: 2-point, 3-point,
+/// centre). The tool's button is the kind used last, with a ▾ for the
+/// others; tucked away, its row in the list opens them. A kind's name is
+/// returned when one is picked.
+fn tool_group(ui: &mut egui::Ui, label: &str, scope: &str, items: &[ToolItem], families: &[(&'static str, Vec<ToolItem>)], hidden: &mut Vec<String>, order: &mut Vec<String>) -> Option<&'static str> {
     let key = |n: &str| format!("{scope}{n}");
     let mut chosen = None;
     let mut toggle: Option<&'static str> = None;
@@ -55,6 +59,16 @@ fn tool_group(ui: &mut egui::Ui, label: &str, scope: &str, items: &[ToolItem], h
                     }
                     if r.drag_started() {
                         dragging = Some(it.name);
+                    }
+                    // Greyed out it can't be used, but it can still be taken off the toolbar.
+                    let r = if it.enabled { r } else { ui.interact(r.rect, ui.id().with(("tool_off", it.name)), egui::Sense::click()).on_hover_text(it.tip) };
+                    if let Some((_, kinds)) = families.iter().find(|(n, _)| *n == it.name) {
+                        let more = icons::dropdown(ui, &format!("More {} tools", it.name.to_lowercase()));
+                        egui::Popup::menu(&more).show(|ui| {
+                            if let Some(k) = kind_rows(ui, kinds) {
+                                chosen = Some(k);
+                            }
+                        });
                     }
                     r.context_menu(|ui| {
                         if ui.button("Remove from toolbar").clicked() {
@@ -94,7 +108,7 @@ fn tool_group(ui: &mut egui::Ui, label: &str, scope: &str, items: &[ToolItem], h
             .width();
         ui.ctx().data_mut(|d| d.insert_temp(drag_id, dragging));
         let tucked: Vec<&ToolItem> = items.iter().copied().filter(|it| hidden.iter().any(|h| *h == key(it.name))).collect();
-        let (picked, pin) = group_menu(ui, label, row, &tucked, true);
+        let (picked, pin) = group_menu(ui, label, row, &tucked, families, true);
         chosen = chosen.or(picked);
         toggle = toggle.or(pin);
     });
@@ -114,7 +128,23 @@ fn tool_group(ui: &mut egui::Ui, label: &str, scope: &str, items: &[ToolItem], h
 /// it lists `tucked`, the group's tools that aren't on the toolbar. With
 /// `pinnable`, each row's ⋯ can pin it to the toolbar. Returns the tool
 /// clicked and the one to pin.
-fn group_menu(ui: &mut egui::Ui, label: &str, row: f32, tucked: &[&ToolItem], pinnable: bool) -> (Option<&'static str>, Option<&'static str>) {
+/// The kinds of a tool (see `tool_group`), as rows with their icons. Returns the one clicked.
+fn kind_rows(ui: &mut egui::Ui, kinds: &[ToolItem]) -> Option<&'static str> {
+    for k in kinds {
+        let row = ui.horizontal(|ui| {
+            let icon = icons::button(ui, k.icon, k.tip, k.enabled, k.on);
+            let name = ui.selectable_label(k.on, k.name);
+            icon.clicked() || name.clicked()
+        });
+        if row.inner {
+            ui.close();
+            return Some(k.name);
+        }
+    }
+    None
+}
+
+fn group_menu(ui: &mut egui::Ui, label: &str, row: f32, tucked: &[&ToolItem], families: &[(&'static str, Vec<ToolItem>)], pinnable: bool) -> (Option<&'static str>, Option<&'static str>) {
     let mut chosen = None;
     let mut toggle: Option<&'static str> = None;
     // The group's name with a ▾: every tool, with names.
@@ -135,6 +165,26 @@ fn group_menu(ui: &mut egui::Ui, label: &str, row: f32, tucked: &[&ToolItem], pi
             ui.weak("Every tool here is on the toolbar.");
         }
         for &it in tucked {
+            // A tool with kinds: its row opens them (and can pin the tool back).
+            if let Some((_, kinds)) = families.iter().find(|(n, _)| *n == it.name) {
+                ui.horizontal(|ui| {
+                    let (spot, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+                    icons::paint(ui.painter(), spot.shrink(2.0), it.icon, it.enabled);
+                    ui.menu_button(it.name, |ui| {
+                        if let Some(k) = kind_rows(ui, kinds) {
+                            chosen = Some(k);
+                        }
+                        if pinnable {
+                            ui.separator();
+                            if ui.button("Pin to toolbar").clicked() {
+                                toggle = Some(it.name);
+                                ui.close();
+                            }
+                        }
+                    });
+                });
+                continue;
+            }
             // The whole row is the button; ⋯ at its end pins it to the toolbar.
             let (row, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), if it.enabled { egui::Sense::click() } else { egui::Sense::hover() });
             let more = egui::Rect::from_min_size(row.right_top() - egui::vec2(26.0, 0.0), egui::vec2(24.0, 24.0));
@@ -179,20 +229,6 @@ fn group_menu(ui: &mut egui::Ui, label: &str, row: f32, tucked: &[&ToolItem], pi
         }
     });
     (chosen, toggle)
-}
-
-/// A toolbar group drawn by `add`, whose name's ▾ lists `listed` (tools
-/// not on the toolbar as buttons of their own). Returns the one clicked there.
-fn group_listing(ui: &mut egui::Ui, label: &str, listed: &[ToolItem], add: impl FnOnce(&mut egui::Ui)) -> Option<&'static str> {
-    let picked = ui
-        .vertical(|ui| {
-            let row = ui.horizontal(add).response.rect.width();
-            let listed: Vec<&ToolItem> = listed.iter().collect();
-            group_menu(ui, label, row, &listed, false).0
-        })
-        .inner;
-    ui.separator();
-    picked
 }
 
 impl OpenCad {
@@ -509,137 +545,65 @@ impl OpenCad {
         ui.horizontal(|ui| {
             if let Some(i) = self.active {
                 // --- sketch mode ---
-                // The CREATE ▾ lists the other kinds of rectangle, circle, arc
-                // and polygon (each button there is the kind used last).
+                // CREATE: rectangle, circle, arc and polygon each come in kinds;
+                // their button is the kind used last.
+                let t = self.editor.tool;
                 let arc_icon = |t: Tool| match t {
                     Tool::ArcCenter => Icon::ArcCenter,
                     Tool::ArcTangent => Icon::ArcTangent,
                     _ => Icon::Arc3Point,
                 };
-                let families: Vec<(Tool, Icon)> = Tool::RECTANGLES
-                    .into_iter()
-                    .filter(|&t| t != self.rect_tool)
-                    .map(|t| (t, rect_icon(t)))
-                    .chain(Tool::CIRCLES.into_iter().filter(|&t| t != self.circle_tool).map(|t| (t, circle_icon(t))))
-                    .chain(Tool::ARCS.into_iter().filter(|&t| t != self.arc_tool).map(|t| (t, arc_icon(t))))
-                    .chain(Tool::POLYGONS.into_iter().filter(|&t| t != self.poly_tool).map(|t| (t, Icon::Polygon)))
-                    .collect();
-                let listed: Vec<ToolItem> = families.iter().map(|&(t, icon)| ToolItem { name: t.name(), icon, tip: t.name(), enabled: true, on: self.editor.tool == t }).collect();
-                let picked = group_listing(ui, "CREATE", &listed, |ui| {
-                    for (tool, icon, tip) in [(Tool::Select, Icon::Select, "Select (Esc)"), (Tool::Line, Icon::Line, "Line (L)")] {
-                        if icons::button(ui, icon, tip, true, self.editor.tool == tool).clicked() {
-                            self.editor.set_tool(tool);
+                let kinds = |tools: &[Tool], icon: &dyn Fn(Tool) -> Icon| -> Vec<ToolItem> {
+                    tools.iter().map(|&k| ToolItem { name: k.name(), icon: icon(k), tip: k.name(), enabled: true, on: t == k }).collect()
+                };
+                let families = [
+                    ("Rectangle", kinds(&Tool::RECTANGLES, &rect_icon)),
+                    ("Circle", kinds(&Tool::CIRCLES, &circle_icon)),
+                    ("Arc", kinds(&Tool::ARCS, &arc_icon)),
+                    ("Polygon", kinds(&Tool::POLYGONS, &|_| Icon::Polygon)),
+                ];
+                let (rect_tool, circle, arc_tool, poly_tool) = (self.rect_tool, self.circle_tool, self.arc_tool, self.poly_tool);
+                let items = [
+                    ToolItem { name: "Select", icon: Icon::Select, tip: "Select (Esc)", enabled: true, on: t == Tool::Select },
+                    ToolItem { name: "Line", icon: Icon::Line, tip: "Line (L)", enabled: true, on: t == Tool::Line },
+                    ToolItem { name: "Rectangle", icon: rect_icon(rect_tool), tip: "Rectangle (R) — the kind used last; the arrow beside it for the others", enabled: true, on: Tool::RECTANGLES.contains(&t) },
+                    ToolItem { name: "Point", icon: Icon::Point, tip: "Point: a sketch point (on a line if you click one)", enabled: true, on: t == Tool::Point },
+                    ToolItem { name: "Circle", icon: circle_icon(circle), tip: "Circle (C) — the kind used last; the arrow beside it for the others", enabled: true, on: Tool::CIRCLES.contains(&t) },
+                    ToolItem { name: "Arc", icon: arc_icon(arc_tool), tip: arc_tool.name(), enabled: true, on: Tool::ARCS.contains(&t) },
+                    ToolItem { name: "Polygon", icon: Icon::Polygon, tip: poly_tool.name(), enabled: true, on: Tool::POLYGONS.contains(&t) },
+                    ToolItem { name: "Slot", icon: Icon::Slot, tip: "Slot: click the two end centres, then the width", enabled: true, on: t == Tool::Slot },
+                    ToolItem { name: "Fit Point Spline", icon: Icon::Spline, tip: "Fit Point Spline: click the points it goes through; Enter (or click the last point again) finishes. Select it to drag its tangent handles", enabled: true, on: t == Tool::Spline },
+                    ToolItem { name: "Control Point Spline", icon: Icon::ControlSpline, tip: "Control Point Spline: click its control points (the curve is pulled toward them); the Up/Down arrow keys for degree 3 or 5; Enter finishes", enabled: true, on: t == Tool::ControlSpline },
+                    ToolItem { name: "Ellipse", icon: Icon::Ellipse, tip: "Ellipse: click the centre, the end of one axis, then how wide", enabled: true, on: t == Tool::Ellipse },
+                ];
+                let picked = tool_group(ui, "CREATE", "", &items, &families, &mut self.toolbar_hidden, &mut self.toolbar_order);
+                let kind = picked.and_then(|name| Tool::RECTANGLES.into_iter().chain(Tool::CIRCLES).chain(Tool::ARCS).chain(Tool::POLYGONS).find(|k| k.name() == name));
+                match (picked, kind) {
+                    // A kind: it becomes its family's button, as Fusion remembers it.
+                    (_, Some(k)) => {
+                        if Tool::RECTANGLES.contains(&k) {
+                            self.rect_tool = k;
+                        } else if Tool::CIRCLES.contains(&k) {
+                            self.circle_tool = k;
+                        } else if Tool::ARCS.contains(&k) {
+                            self.arc_tool = k;
+                        } else {
+                            self.poly_tool = k;
                         }
+                        self.editor.set_tool(k);
                     }
-                    // Rectangle: the last rectangle tool used, ▾ for the others.
-                    let rect_tool = self.rect_tool;
-                    let tip = format!("{} (R)", rect_tool.name());
-                    if icons::button(ui, rect_icon(rect_tool), &tip, true, self.editor.tool == rect_tool).clicked() {
-                        self.editor.set_tool(rect_tool);
-                    }
-                    let more = icons::dropdown(ui, "More rectangle tools");
-                    egui::Popup::menu(&more).show(|ui| {
-                        for tool in Tool::RECTANGLES {
-                            let row = ui.horizontal(|ui| {
-                                let icon = icons::button(ui, rect_icon(tool), tool.name(), true, tool == rect_tool);
-                                let name = ui.selectable_label(tool == rect_tool, tool.name());
-                                icon.clicked() || name.clicked()
-                            });
-                            if row.inner {
-                                self.rect_tool = tool;
-                                self.editor.set_tool(tool);
-                                ui.close();
-                            }
-                        }
-                    });
-                    if icons::button(ui, Icon::Point, "Point: a sketch point (on a line if you click one)", true, self.editor.tool == Tool::Point)
-                        .clicked()
-                    {
-                        self.editor.set_tool(Tool::Point);
-                    }
-                    // The circle button is whichever circle tool was used last;
-                    // the arrow beside it picks another.
-                    let circle = self.circle_tool;
-                    let tip = format!("{} (C)", circle.name());
-                    if icons::button(ui, circle_icon(circle), &tip, true, self.editor.tool == circle).clicked() {
-                        self.editor.set_tool(circle);
-                    }
-                    let more_circles = icons::dropdown(ui, "More circle tools");
-                    egui::Popup::menu(&more_circles).show(|ui| {
-                        for tool in Tool::CIRCLES {
-                            let row = ui.horizontal(|ui| {
-                                let icon = icons::button(ui, circle_icon(tool), tool.name(), true, tool == circle);
-                                let name = ui.selectable_label(tool == circle, tool.name());
-                                icon.clicked() || name.clicked()
-                            });
-                            if row.inner {
-                                self.circle_tool = tool;
-                                self.editor.set_tool(tool);
-                                ui.close();
-                            }
-                        }
-                    });
-                    // Arc: the last arc tool used, ▾ for the other.
-                    let arc_tool = self.arc_tool;
-                    let tip = format!("{}", arc_tool.name());
-                    if icons::button(ui, arc_icon(arc_tool), &tip, true, self.editor.tool == arc_tool).clicked() {
-                        self.editor.set_tool(arc_tool);
-                    }
-                    let more_arcs = icons::dropdown(ui, "More arc tools");
-                    egui::Popup::menu(&more_arcs).show(|ui| {
-                        for tool in Tool::ARCS {
-                            let row = ui.horizontal(|ui| {
-                                let icon = icons::button(ui, arc_icon(tool), tool.name(), true, tool == arc_tool);
-                                let name = ui.selectable_label(tool == arc_tool, tool.name());
-                                icon.clicked() || name.clicked()
-                            });
-                            if row.inner {
-                                self.arc_tool = tool;
-                                self.editor.set_tool(tool);
-                                ui.close();
-                            }
-                        }
-                    });
-                    // Polygon: the last polygon tool used, ▾ for the others, and the side count.
-                    let poly_tool = self.poly_tool;
-                    if icons::button(ui, Icon::Polygon, poly_tool.name(), true, Tool::POLYGONS.contains(&self.editor.tool)).clicked() {
-                        self.editor.set_tool(poly_tool);
-                    }
-                    let more_polys = icons::dropdown(ui, "More polygon tools");
-                    egui::Popup::menu(&more_polys).show(|ui| {
-                        for tool in Tool::POLYGONS {
-                            if ui.selectable_label(tool == poly_tool, tool.name()).clicked() {
-                                self.poly_tool = tool;
-                                self.editor.set_tool(tool);
-                                ui.close();
-                            }
-                        }
-                    });
-                    if icons::button(ui, Icon::Slot, "Slot: click the two end centres, then the width", true, self.editor.tool == Tool::Slot).clicked() {
-                        self.editor.set_tool(Tool::Slot);
-                    }
-                    if icons::button(ui, Icon::Spline, "Fit Point Spline: click the points it goes through; Enter (or click the last point again) finishes. Select it to drag its tangent handles", true, self.editor.tool == Tool::Spline).clicked() {
-                        self.editor.set_tool(Tool::Spline);
-                    }
-                    if icons::button(ui, Icon::ControlSpline, "Control Point Spline: click its control points (the curve is pulled toward them); the Up/Down arrow keys for degree 3 or 5; Enter finishes", true, self.editor.tool == Tool::ControlSpline).clicked() {
-                        self.editor.set_tool(Tool::ControlSpline);
-                    }
-                    if icons::button(ui, Icon::Ellipse, "Ellipse: click the centre, the end of one axis, then how wide", true, self.editor.tool == Tool::Ellipse).clicked() {
-                        self.editor.set_tool(Tool::Ellipse);
-                    }
-                });
-                if let Some(&(t, _)) = picked.and_then(|name| families.iter().find(|(t, _)| t.name() == name)) {
-                    // Like choosing it from its button's ▾: it becomes that button.
-                    if Tool::RECTANGLES.contains(&t) {
-                        self.rect_tool = t;
-                    } else if Tool::CIRCLES.contains(&t) {
-                        self.circle_tool = t;
-                    } else if Tool::ARCS.contains(&t) {
-                        self.arc_tool = t;
-                    } else {
-                        self.poly_tool = t;
-                    }
-                    self.editor.set_tool(t);
+                    (Some("Select"), _) => self.editor.set_tool(Tool::Select),
+                    (Some("Line"), _) => self.editor.set_tool(Tool::Line),
+                    (Some("Rectangle"), _) => self.editor.set_tool(rect_tool),
+                    (Some("Point"), _) => self.editor.set_tool(Tool::Point),
+                    (Some("Circle"), _) => self.editor.set_tool(circle),
+                    (Some("Arc"), _) => self.editor.set_tool(arc_tool),
+                    (Some("Polygon"), _) => self.editor.set_tool(poly_tool),
+                    (Some("Slot"), _) => self.editor.set_tool(Tool::Slot),
+                    (Some("Fit Point Spline"), _) => self.editor.set_tool(Tool::Spline),
+                    (Some("Control Point Spline"), _) => self.editor.set_tool(Tool::ControlSpline),
+                    (Some("Ellipse"), _) => self.editor.set_tool(Tool::Ellipse),
+                    _ => {}
                 }
                 let _ = i;
                 let t = self.editor.tool;
@@ -658,7 +622,7 @@ impl OpenCad {
                     ToolItem { name: "Construction", icon: Icon::Construction, tip: "Construction: toggle the selected geometry, or what you draw next", enabled: true, on: self.editor.construction },
                     ToolItem { name: "Change Parameters", icon: Icon::Parameters, tip: "Change Parameters: named values (width, depth…) that dimensions and boxes can use", enabled: true, on: self.params_window.open },
                 ];
-                match tool_group(ui, "MODIFY", "", &items, &mut self.toolbar_hidden, &mut self.toolbar_order) {
+                match tool_group(ui, "MODIFY", "", &items, &[], &mut self.toolbar_hidden, &mut self.toolbar_order) {
                     Some("Fillet") => self.editor.set_tool(Tool::SketchFillet),
                     Some("Chamfer") => self.editor.set_tool(Tool::SketchChamfer),
                     Some("Trim") => self.editor.set_tool(Tool::Trim),
@@ -699,7 +663,7 @@ impl OpenCad {
                         ToolItem { name: label, icon, tip, enabled: true, on: self.editor.tool == Tool::Constrain(label) }
                     })
                     .collect();
-                if let Some(label) = tool_group(ui, "CONSTRAINTS", "", &items, &mut self.toolbar_hidden, &mut self.toolbar_order) {
+                if let Some(label) = tool_group(ui, "CONSTRAINTS", "", &items, &[], &mut self.toolbar_hidden, &mut self.toolbar_order) {
                     self.constraint_button(label);
                 }
                 group(ui, "OPTIONS", |ui| {
@@ -732,21 +696,21 @@ impl OpenCad {
                     ToolItem { name: "Hole", icon: Icon::Hole, tip: "Hole (H): click sketch points, circles or a face; counterbore, countersink, clearance and tapped holes", enabled: has_bodies, on: self.hole_dialog.is_some() },
                     ToolItem { name: "Thread", icon: Icon::Thread, tip: "Thread: click a shaft or the inside of a hole; shown or modeled, ISO and Unified sizes", enabled: has_bodies, on: self.thread_dialog.is_some() },
                 ];
-                let create = tool_group(ui, "CREATE", "Solid ", &items, hidden, order);
+                let create = tool_group(ui, "CREATE", "Solid ", &items, &[], hidden, order);
                 let angled = self.plane_dialog.as_ref().is_some_and(|d| d.angle.is_some());
                 let items = [
                     ToolItem { name: "Offset Plane", icon: Icon::Plane, tip: "Offset Plane: click an origin plane or a face, then set the distance", enabled: true, on: self.plane_pick || self.plane_dialog.as_ref().is_some_and(|d| d.angle.is_none()) },
                     ToolItem { name: "Plane at Angle", icon: Icon::PlaneAngle, tip: "Plane at Angle: click a sketch line, body edge or axis, then set the angle", enabled: true, on: self.angle_pick || angled },
                     ToolItem { name: "Axis Along Edge", icon: Icon::Axis, tip: "Axis Along Edge: click a straight edge of a body", enabled: has_bodies, on: self.axis_pick },
                 ];
-                let construct = tool_group(ui, "CONSTRUCT", "Solid ", &items, hidden, order);
+                let construct = tool_group(ui, "CONSTRUCT", "Solid ", &items, &[], hidden, order);
                 let copy_mode = self.copy_dialog.as_ref().map(|d| d.mode);
                 let items = [
                     ToolItem { name: "Mirror", icon: Icon::Mirror, tip: "Mirror: copy bodies across an origin plane", enabled: has_bodies, on: copy_mode == Some(CopyMode::Mirror) },
                     ToolItem { name: "Rectangular Pattern", icon: Icon::RectPattern, tip: "Rectangular Pattern: copies in a grid", enabled: has_bodies, on: copy_mode == Some(CopyMode::Rectangular) },
                     ToolItem { name: "Circular Pattern", icon: Icon::CircPattern, tip: "Circular Pattern: copies round an axis", enabled: has_bodies, on: copy_mode == Some(CopyMode::Circular) },
                 ];
-                let pattern = tool_group(ui, "PATTERN", "Solid ", &items, hidden, order);
+                let pattern = tool_group(ui, "PATTERN", "Solid ", &items, &[], hidden, order);
                 let edge_kind = self.edge_dialog.as_ref().map(|d| d.kind);
                 let items = [
                     ToolItem { name: "Press Pull", icon: Icon::PressPull, tip: "Press Pull (Q): drag a face to move it (Offset Face), a fillet to change its radius, or a sketch profile to extrude it", enabled: has_bodies || !self.sketches.is_empty(), on: self.offset_dialog.is_some() },
@@ -757,7 +721,7 @@ impl OpenCad {
                     ToolItem { name: "Change Parameters", icon: Icon::Parameters, tip: "Change Parameters: named values (width, depth…) that dimensions and boxes can use", enabled: true, on: self.params_window.open },
                     ToolItem { name: "Combine", icon: Icon::Combine, tip: "Combine: join, cut or intersect bodies — a target body and tool bodies", enabled: self.body_count > 1, on: self.combine_dialog.is_some() },
                 ];
-                let modify = tool_group(ui, "MODIFY", "Solid ", &items, hidden, order);
+                let modify = tool_group(ui, "MODIFY", "Solid ", &items, &[], hidden, order);
                 match create.or(construct).or(pattern).or(modify) {
                     Some("Create Sketch") => self.new_sketch_tool(),
                     Some("Extrude") => self.open_extrude(None),
@@ -1965,4 +1929,32 @@ impl OpenCad {
 
     // ---------- viewport ----------
 
+}
+
+#[cfg(test)]
+mod shots {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn shots() {
+        let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
+        let kinds = |tools: &[Tool], icon: fn(Tool) -> Icon| tools.iter().map(|&k| ToolItem { name: k.name(), icon: icon(k), tip: k.name(), enabled: true, on: false }).collect::<Vec<_>>();
+        let families = [("Rectangle", kinds(&Tool::RECTANGLES, rect_icon)), ("Circle", kinds(&Tool::CIRCLES, circle_icon))];
+        let items = [
+            ToolItem { name: "Line", icon: Icon::Line, tip: "", enabled: true, on: false },
+            ToolItem { name: "Rectangle", icon: Icon::Rectangle, tip: "", enabled: true, on: false },
+            ToolItem { name: "Circle", icon: circle_icon(Tool::Circle), tip: "", enabled: true, on: false },
+            ToolItem { name: "Combine", icon: Icon::Combine, tip: "", enabled: false, on: false },
+            ToolItem { name: "Move", icon: Icon::Move, tip: "", enabled: false, on: false },
+        ];
+        for (name, hidden) in [("create_row", vec![]), ("create_row_tucked", vec!["Rectangle".to_string()])] {
+            let (mut hidden, mut order) = (hidden, Vec::new());
+            crate::ui_shot::shot(&format!("{dir}/{name}.png"), [360, 70], |ui| {
+                ui.horizontal(|ui| {
+                    tool_group(ui, "CREATE", "", &items, &families, &mut hidden, &mut order);
+                });
+            });
+        }
+    }
 }
