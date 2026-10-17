@@ -379,6 +379,13 @@ fn circle_icon(tool: Tool) -> Icon {
     }
 }
 
+fn spline_icon(tool: Tool) -> Icon {
+    match tool {
+        Tool::ControlSpline => Icon::ControlSpline,
+        _ => Icon::Spline,
+    }
+}
+
 fn rgb(c: Color32) -> [f32; 3] {
     [c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0]
 }
@@ -649,6 +656,7 @@ struct OpenCad {
     rect_tool: Tool, // which rectangle tool the toolbar's rectangle button is
     arc_tool: Tool,  // which arc tool the toolbar's arc button is
     poly_tool: Tool, // which polygon tool the toolbar's polygon button is
+    spline_tool: Tool, // which spline tool the toolbar's spline button is
     corner_size: f64, // last sketch fillet radius / chamfer distance
     poly_asked: bool, // the sides box was shown for the polygon being drawn
     corner_first: Option<usize>, // chamfer: the line the first distance is for (when picked as two lines)
@@ -841,6 +849,7 @@ impl Default for OpenCad {
             rect_tool: Tool::Rectangle,
             arc_tool: Tool::Arc3Point,
             poly_tool: Tool::PolygonCircumscribed,
+            spline_tool: Tool::Spline,
             corner_size: 2.0,
             poly_asked: false,
             corner_first: None,

@@ -653,8 +653,17 @@ impl OpenCad {
         let sk = &self.sketches[i];
         let new: Vec<usize> = sk.projections.iter().map(|&(e, _)| e).filter(|&e| !before.projections.iter().any(|&(f, _)| f == e)).collect();
         let lost = m.projection_lost.get(i).is_some_and(|l| l.iter().any(|e| new.contains(e)));
+        // (The view's edges are single precision, so a fresh projection is a
+        // hair off the exact one the build makes; a wrong edge is far off.)
+        const SAME: f64 = 1e-3;
         let moved = m.linked_sketches.get(i).cloned().flatten().is_some_and(|ms| {
-            new.iter().any(|&e| sk.entity_points(e).iter().any(|&p| ms.points.get(p).is_none_or(|q| q.distance(sk.points[p]) > 1e-6)))
+            new.iter().any(|&e| {
+                let radius = |s: &Sketch| match s.entities.get(e) {
+                    Some(&sketch::Entity::Circle { radius, .. }) => radius,
+                    _ => 0.0,
+                };
+                (radius(&ms) - radius(sk)).abs() > SAME || sk.entity_points(e).iter().any(|&p| ms.points.get(p).is_none_or(|q| q.distance(sk.points[p]) > SAME))
+            })
         });
         if lost || moved {
             self.sketches[i] = before.clone();

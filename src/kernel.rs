@@ -3427,6 +3427,25 @@ mod tests {
     }
 
     #[test]
+    fn a_cylinder_projects_linked_and_stays_put() {
+        let mut a = Sketch::new("A".into(), OriginPlane::XY);
+        circle(&mut a, 60.0, 0.0, 20.0);
+        let exs = [ex(0, vec![0], 25.0, Operation::NewBody)];
+        let base = build4(&[a.clone()], &exs, &[], &timeline(1, 1));
+        let edges: Vec<(Option<EdgeRef>, Vec<DVec3>)> = base.bodies[0].edges.iter().map(|e| (Some(e.at), e.points.iter().map(|p| p.as_dvec3()).collect())).collect();
+        let mut b = Sketch::new("B".into(), OriginPlane::XY);
+        let n = crate::project::project_all(&mut b, DVec3::ZERO, DVec3::X, DVec3::Y, &edges);
+        assert_eq!(n, 1, "top and bottom circles are the same seen from above");
+        let m = build4(&[a, b.clone()], &exs, &[], &[Feature::Sketch(0), Feature::Extrude(0), Feature::Sketch(1)]);
+        assert_eq!(m.projection_lost[1], Vec::<usize>::new());
+        // From the view's single-precision edge it's a hair off; the build puts it exactly on the edge.
+        let moved = m.linked_sketches[1].as_ref().expect("snapped onto the exact circle");
+        let Entity::Circle { center, radius } = moved.entities[0] else { panic!() };
+        assert!(moved.points[center].distance(DVec2::new(60.0, 0.0)) < 1e-9 && (radius - 20.0).abs() < 1e-9);
+        assert!(moved.points[center].distance(b.points[center]) < 1e-5);
+    }
+
+    #[test]
     fn a_sketch_whose_face_is_gone_has_all_its_projections_lost() {
         let (a, mut b) = projected_square(20.0);
         let line = b.projections[0].0;

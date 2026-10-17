@@ -2919,6 +2919,9 @@ impl Tool {
     /// The polygon tools, in the order of the toolbar's polygon menu.
     pub const POLYGONS: [Tool; 3] = [Tool::PolygonCircumscribed, Tool::PolygonInscribed, Tool::PolygonEdge];
 
+    /// The spline tools, in the order of the toolbar's spline menu.
+    pub const SPLINES: [Tool; 2] = [Tool::Spline, Tool::ControlSpline];
+
     /// The rectangle tools, in the order of the toolbar's rectangle menu.
     pub const RECTANGLES: [Tool; 3] = [Tool::Rectangle, Tool::Rectangle3Point, Tool::RectangleCenter];
 

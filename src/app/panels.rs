@@ -561,8 +561,9 @@ impl OpenCad {
                     ("Circle", kinds(&Tool::CIRCLES, &circle_icon)),
                     ("Arc", kinds(&Tool::ARCS, &arc_icon)),
                     ("Polygon", kinds(&Tool::POLYGONS, &|_| Icon::Polygon)),
+                    ("Spline", kinds(&Tool::SPLINES, &spline_icon)),
                 ];
-                let (rect_tool, circle, arc_tool, poly_tool) = (self.rect_tool, self.circle_tool, self.arc_tool, self.poly_tool);
+                let (rect_tool, circle, arc_tool, poly_tool, spline_tool) = (self.rect_tool, self.circle_tool, self.arc_tool, self.poly_tool, self.spline_tool);
                 let items = [
                     ToolItem { name: "Select", icon: Icon::Select, tip: "Select (Esc)", enabled: true, on: t == Tool::Select },
                     ToolItem { name: "Line", icon: Icon::Line, tip: "Line (L)", enabled: true, on: t == Tool::Line },
@@ -572,12 +573,21 @@ impl OpenCad {
                     ToolItem { name: "Arc", icon: arc_icon(arc_tool), tip: arc_tool.name(), enabled: true, on: Tool::ARCS.contains(&t) },
                     ToolItem { name: "Polygon", icon: Icon::Polygon, tip: poly_tool.name(), enabled: true, on: Tool::POLYGONS.contains(&t) },
                     ToolItem { name: "Slot", icon: Icon::Slot, tip: "Slot: click the two end centres, then the width", enabled: true, on: t == Tool::Slot },
-                    ToolItem { name: "Fit Point Spline", icon: Icon::Spline, tip: "Fit Point Spline: click the points it goes through; Enter (or click the last point again) finishes. Select it to drag its tangent handles", enabled: true, on: t == Tool::Spline },
-                    ToolItem { name: "Control Point Spline", icon: Icon::ControlSpline, tip: "Control Point Spline: click its control points (the curve is pulled toward them); the Up/Down arrow keys for degree 3 or 5; Enter finishes", enabled: true, on: t == Tool::ControlSpline },
+                    ToolItem {
+                        name: "Spline",
+                        icon: spline_icon(spline_tool),
+                        tip: if spline_tool == Tool::Spline {
+                            "Fit Point Spline: click the points it goes through; Enter (or click the last point again) finishes. Select it to drag its tangent handles"
+                        } else {
+                            "Control Point Spline: click its control points (the curve is pulled toward them); the Up/Down arrow keys for degree 3 or 5; Enter finishes"
+                        },
+                        enabled: true,
+                        on: Tool::SPLINES.contains(&t),
+                    },
                     ToolItem { name: "Ellipse", icon: Icon::Ellipse, tip: "Ellipse: click the centre, the end of one axis, then how wide", enabled: true, on: t == Tool::Ellipse },
                 ];
                 let picked = tool_group(ui, "CREATE", "", &items, &families, &mut self.toolbar_hidden, &mut self.toolbar_order);
-                let kind = picked.and_then(|name| Tool::RECTANGLES.into_iter().chain(Tool::CIRCLES).chain(Tool::ARCS).chain(Tool::POLYGONS).find(|k| k.name() == name));
+                let kind = picked.and_then(|name| Tool::RECTANGLES.into_iter().chain(Tool::CIRCLES).chain(Tool::ARCS).chain(Tool::POLYGONS).chain(Tool::SPLINES).find(|k| k.name() == name));
                 match (picked, kind) {
                     // A kind: it becomes its family's button, as Fusion remembers it.
                     (_, Some(k)) => {
@@ -587,6 +597,8 @@ impl OpenCad {
                             self.circle_tool = k;
                         } else if Tool::ARCS.contains(&k) {
                             self.arc_tool = k;
+                        } else if Tool::SPLINES.contains(&k) {
+                            self.spline_tool = k;
                         } else {
                             self.poly_tool = k;
                         }
@@ -600,8 +612,7 @@ impl OpenCad {
                     (Some("Arc"), _) => self.editor.set_tool(arc_tool),
                     (Some("Polygon"), _) => self.editor.set_tool(poly_tool),
                     (Some("Slot"), _) => self.editor.set_tool(Tool::Slot),
-                    (Some("Fit Point Spline"), _) => self.editor.set_tool(Tool::Spline),
-                    (Some("Control Point Spline"), _) => self.editor.set_tool(Tool::ControlSpline),
+                    (Some("Spline"), _) => self.editor.set_tool(spline_tool),
                     (Some("Ellipse"), _) => self.editor.set_tool(Tool::Ellipse),
                     _ => {}
                 }
