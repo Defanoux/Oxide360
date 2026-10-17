@@ -730,7 +730,7 @@ impl OpenCad {
 
         crate::mark("Extrude To Object / Hole To: click the");
         // --- Extrude To Object / Hole To: click the plane or flat face it runs up to ---
-        let picking_target = self.dialog.as_ref().is_some_and(|d| d.picking_target) || self.hole_dialog.as_ref().is_some_and(|d| d.picking_target) || self.section_dialog.as_ref().is_some_and(|d| d.picking) || matches!(self.construct_pick, Some(ConstructPick::Midplane(_)));
+        let picking_target = self.dialog.as_ref().is_some_and(|d| d.picking_target) || self.hole_dialog.as_ref().is_some_and(|d| d.picking_target) || self.section_dialog.as_ref().is_some_and(|d| d.picking) || matches!(self.construct_pick, Some(ConstructPick::Midplane(_))) || self.sweep_dialog.as_ref().is_some_and(|d| d.picking_plane);
         if picking_target {
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
@@ -768,6 +768,20 @@ impl OpenCad {
                 }
                 if let (Some(t), Some(d)) = (target, self.section_dialog.as_mut()) {
                     (d.at, d.picking) = (Some(t), false);
+                }
+                // Coil: its plane, and on a face the spot clicked is its centre.
+                if let (Some(t), Some(d)) = (target, self.sweep_dialog.as_mut().filter(|d| d.picking_plane)) {
+                    d.at = Some(t);
+                    d.picking_plane = false;
+                    d.centre = match t {
+                        model::ExtrudeTarget::Face { anchor, face } => {
+                            // In the coil's own frame (from the face's normal through it).
+                            let f = sketch::FacePlane::from_face(face.normal(), face.origin);
+                            let q = face.origin + face.u * anchor[0] + face.v * anchor[1];
+                            [(q - f.origin).dot(f.u), (q - f.origin).dot(f.v)]
+                        }
+                        _ => [0.0, 0.0],
+                    };
                 }
                 // Midplane: two picks, then it's made.
                 if let (Some(t), Some(ConstructPick::Midplane(mut picked))) = (target, self.construct_pick.clone()) {
@@ -2886,7 +2900,7 @@ impl OpenCad {
             for s in (0..self.sketches.len()).filter(|&s| self.pickable_sketch(s)) {
                 let plane = self.plane_of(s);
                 for (ri, r) in regions.get(s).into_iter().flatten().enumerate() {
-                    let selected = (pick_sketch == Some(s) && pick_profiles.contains(&ri)) || self.sweep_dialog.as_ref().is_some_and(|d| d.loft && d.sections.contains(&(s, ri)));
+                    let selected = (pick_sketch == Some(s) && pick_profiles.contains(&ri)) || self.sweep_dialog.as_ref().is_some_and(|d| d.mode == sweep_dialog::Mode::Loft && d.sections.contains(&(s, ri)));
                     let alpha = if selected {
                         140
                     } else if hover_profile == Some((s, ri)) {

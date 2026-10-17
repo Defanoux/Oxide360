@@ -32,6 +32,9 @@ mod inner {
 
         /// opencad patch: Sweep — the face along the path (null on failure).
         pub fn opencad_try_sweep(profile: &TopoDS_Face, path: &TopoDS_Wire) -> UniquePtr<TopoDS_Shape>;
+        /// opencad patch: Coil — a section swept round a helix (null on failure).
+        #[allow(clippy::too_many_arguments)]
+        pub fn opencad_try_coil(ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64, xx: f64, xy: f64, xz: f64, radius: f64, pitch: f64, turns: f64, section: i32, size: f64) -> UniquePtr<TopoDS_Shape>;
         /// opencad patch: Loft through the wires of a compound, in order (null on failure).
         pub fn opencad_try_loft(sections: &TopoDS_Shape, ruled: bool) -> UniquePtr<TopoDS_Shape>;
 

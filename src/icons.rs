@@ -38,6 +38,8 @@ pub enum Icon {
     ConstructPoint,
     Sweep,
     Loft,
+    Pipe,
+    Coil,
     Break,
     ControlSpline,
     Plane,
@@ -673,6 +675,22 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             arc(0.2, 0.85, 0.62, -std::f32::consts::FRAC_PI_2, 0.0, Stroke::new(thin.width * 0.8, ink));
             poly(&[(0.12, 0.14), (0.3, 0.14), (0.3, 0.32), (0.12, 0.32)], orange);
         }
+        Icon::Pipe => {
+            // A bent tube with its round end showing.
+            arc(0.2, 0.85, 0.6, -std::f32::consts::FRAC_PI_2, 0.0, Stroke::new(thin.width * 4.0, blue));
+            arc(0.2, 0.25, 0.1, 0.0, std::f32::consts::TAU, Stroke::new(thin.width * 1.3, orange));
+        }
+        Icon::Coil => {
+            // A spring seen from the side.
+            let s = Stroke::new(thin.width * 1.4, orange);
+            for k in 0..4 {
+                let y = 0.15 + 0.2 * k as f32;
+                line((0.2, y), (0.8, y + 0.1), s);
+                if k < 3 {
+                    line((0.8, y + 0.1), (0.2, y + 0.2), Stroke::new(thin.width, ink));
+                }
+            }
+        }
         Icon::Loft => {
             // A square below blending into a circle above.
             arc(0.5, 0.2, 0.18, 0.0, std::f32::consts::TAU, Stroke::new(thin.width * 1.3, orange));
@@ -975,7 +993,7 @@ mod shot_tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [720, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil] {
                     button(ui, icon, "", true, false);
                 }
             });

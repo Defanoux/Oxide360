@@ -954,6 +954,16 @@ impl Shape {
         (!made.is_null()).then(|| Self::from_shape(&made))
     }
 
+    /// opencad patch: a coil (Fusion's Coil): a section (0 circle, 1 square,
+    /// 2 triangle, `size` across) `radius` out from the axis through
+    /// `origin` along `dir`, starting toward `x_dir`, wound `turns` times at
+    /// `pitch`. None when the kernel can't.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_coil(origin: DVec3, dir: DVec3, x_dir: DVec3, radius: f64, pitch: f64, turns: f64, section: i32, size: f64) -> Option<Self> {
+        let made = ffi::b_rep_offset_api::opencad_try_coil(origin.x, origin.y, origin.z, dir.x, dir.y, dir.z, x_dir.x, x_dir.y, x_dir.z, radius, pitch, turns, section, size);
+        (!made.is_null()).then(|| Self::from_shape(&made))
+    }
+
     /// opencad patch: a solid lofted through closed `sections` in order
     /// (Fusion's Loft; `ruled`: straight between them). None when the
     /// kernel can't (instead of aborting).

@@ -294,3 +294,73 @@ inline std::unique_ptr<TopoDS_Shape> opencad_try_loft(const TopoDS_Shape &sectio
     return nullptr;
   }
 }
+
+// opencad patch: Coil. A section (0 circle, 1 square, 2 triangle, `size`
+// across) in the plane through the axis, `radius` out, swept round a helix
+// of `pitch` for `turns` (Fusion's Coil). nullptr on any failure.
+#include <GC_MakeCircle.hxx>
+inline std::unique_ptr<TopoDS_Shape> opencad_try_coil(double ox, double oy, double oz, double dx, double dy, double dz, double xx, double xy, double xz,
+                                                      double radius, double pitch, double turns, int section, double size) {
+  try {
+    OCC_CATCH_SIGNALS
+    if (!(radius > 0.0 && pitch > 0.0 && turns > 0.0 && size > 0.0)) {
+      return nullptr;
+    }
+    gp_Ax3 frame(gp_Pnt(ox, oy, oz), gp_Dir(dx, dy, dz), gp_Dir(xx, xy, xz));
+    Handle(Geom_Surface) surface = new Geom_CylindricalSurface(frame, radius);
+    gp_Dir2d dir2(2.0 * M_PI, pitch);
+    Handle(Geom2d_Line) line = new Geom2d_Line(gp_Pnt2d(0.0, 0.0), dir2);
+    double per_turn = std::sqrt(4.0 * M_PI * M_PI + pitch * pitch);
+    BRepBuilderAPI_MakeWire spine_maker;
+    const double piece = 0.5;
+    int count = std::max(1, int(std::ceil(turns / piece - 1e-9)));
+    for (int i = 0; i < count; i++) {
+      double t0 = per_turn * turns * double(i) / double(count);
+      double t1 = per_turn * turns * double(i + 1) / double(count);
+      TopoDS_Edge e = BRepBuilderAPI_MakeEdge(line, surface, t0, t1).Edge();
+      BRepLib::BuildCurves3d(e, 1.0e-7, GeomAbs_C1, 14, 200);
+      spine_maker.Add(e);
+    }
+    if (!spine_maker.IsDone()) {
+      return nullptr;
+    }
+    TopoDS_Wire spine = spine_maker.Wire();
+    gp_Vec x(frame.XDirection()), z(frame.Direction());
+    gp_Pnt o = frame.Location();
+    auto at = [&](double r, double h) { return o.Translated(x * r + z * h); };
+    TopoDS_Wire profile;
+    if (section == 0) {
+      gp_Ax2 ax(at(radius, 0.0), frame.YDirection(), frame.XDirection());
+      Handle(Geom_Circle) c = new Geom_Circle(ax, size / 2.0);
+      profile = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(c).Edge()).Wire();
+    } else if (section == 1) {
+      double h = size / 2.0;
+      profile = BRepBuilderAPI_MakePolygon(at(radius - h, -h), at(radius + h, -h), at(radius + h, h), at(radius - h, h), true).Wire();
+    } else {
+      double s3 = std::sqrt(3.0);
+      profile = BRepBuilderAPI_MakePolygon(at(radius + size / s3, 0.0), at(radius - size / (2.0 * s3), size / 2.0), at(radius - size / (2.0 * s3), -size / 2.0), true).Wire();
+    }
+    BRepOffsetAPI_MakePipeShell sweep(spine);
+    sweep.SetMode(true); // Frenet: on a helix that's a rigid screw motion
+    sweep.SetTolerance(1.0e-6, 1.0e-6, 1.0e-3);
+    sweep.SetMaxDegree(14);
+    sweep.SetMaxSegments(500);
+    sweep.Add(profile, false, false);
+    sweep.Build();
+    if (!sweep.IsDone() || !sweep.MakeSolid()) {
+      return nullptr;
+    }
+    TopoDS_Shape solid = sweep.Shape();
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(solid, props);
+    if (props.Mass() < 0.0) {
+      solid.Reverse();
+    }
+    if (!opencad_good_solid(solid)) {
+      return nullptr;
+    }
+    return std::unique_ptr<TopoDS_Shape>(new TopoDS_Shape(solid));
+  } catch (...) {
+    return nullptr;
+  }
+}

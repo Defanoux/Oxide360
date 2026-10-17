@@ -743,6 +743,11 @@ pub fn section(bodies: &[Body], planes: &[Option<FacePlane>], at: &ExtrudeTarget
 /// A chain of sketch curves (lines, arcs, splines, or one circle) as a wire,
 /// in order from one end to the other (or round, if it closes).
 fn chain_wire(sk: &Sketch, plane: &Frame, entities: &[usize]) -> Result<Wire, String> {
+    chain_wire_from(sk, plane, entities).map(|(w, ..)| w)
+}
+
+/// As `chain_wire`, with where it starts and which way it sets off.
+fn chain_wire_from(sk: &Sketch, plane: &Frame, entities: &[usize]) -> Result<(Wire, DVec3, DVec3), String> {
     use crate::sketch::Entity;
     if entities.is_empty() {
         return Err("no path picked".into());
@@ -751,7 +756,9 @@ fn chain_wire(sk: &Sketch, plane: &Frame, entities: &[usize]) -> Result<Wire, St
     // A lone circle is a closed path.
     if let [e] = entities {
         if let Some(&Entity::Circle { center, radius }) = sk.entities.get(*e) {
-            return Ok(Wire::from_edges(&[Edge::circle(p3(sk.points[center]), kv(plane.normal()), radius)]));
+            let c = sk.points[center];
+            let start = world(plane, c + DVec2::new(radius, 0.0));
+            return Ok((Wire::from_edges(&[Edge::circle(p3(c), kv(plane.normal()), radius)]), start, plane.normal().cross(plane.u).normalize()));
         }
     }
     // Each curve's ends (as sketch points) and its points along the way.
@@ -778,6 +785,7 @@ fn chain_wire(sk: &Sketch, plane: &Frame, entities: &[usize]) -> Result<Wire, St
     let mut at = start;
     let mut left = pieces;
     let mut edges = Vec::new();
+    let mut set_off: Option<(DVec3, DVec3)> = None;
     while !left.is_empty() {
         let Some(k) = left.iter().position(|q| q.0 == at || q.1 == at) else { return Err("the path's curves don't join end to end".into()) };
         let (a, b, mut pts, _) = left.remove(k);
@@ -785,6 +793,23 @@ fn chain_wire(sk: &Sketch, plane: &Frame, entities: &[usize]) -> Result<Wire, St
             pts.reverse();
         }
         at = if a == at { b } else { a };
+        if set_off.is_none() {
+            // Which way the path sets off: a line's direction, an arc's tangent at its start, a spline's first step.
+            let (p0, p1) = (world(plane, pts[0]), world(plane, pts[1]));
+            let dir = if pts.len() == 3 {
+                // An arc through three points: the tangent at its start is square to the radius there.
+                let (q0, q1, q2) = (pts[0], pts[1], pts[2]);
+                let d = 2.0 * (q0.x * (q1.y - q2.y) + q1.x * (q2.y - q0.y) + q2.x * (q0.y - q1.y));
+                let (s0, s1, s2) = (q0.length_squared(), q1.length_squared(), q2.length_squared());
+                let c = if d.abs() < 1e-12 { q1 } else { DVec2::new((s0 * (q1.y - q2.y) + s1 * (q2.y - q0.y) + s2 * (q0.y - q1.y)) / d, (s0 * (q2.x - q1.x) + s1 * (q0.x - q2.x) + s2 * (q1.x - q0.x)) / d) };
+                let r = q0 - c;
+                let t = DVec2::new(-r.y, r.x) * if (q1 - q0).dot(DVec2::new(-r.y, r.x)) >= 0.0 { 1.0 } else { -1.0 };
+                (world(plane, q0 + t) - p0).normalize()
+            } else {
+                (p1 - p0).normalize()
+            };
+            set_off = Some((p0, dir));
+        }
         let edge = if pts.len() == 2 {
             Edge::segment(p3(pts[0]), p3(pts[1]))
         } else if pts.len() == 3 {
@@ -794,11 +819,12 @@ fn chain_wire(sk: &Sketch, plane: &Frame, entities: &[usize]) -> Result<Wire, St
         };
         edges.push(edge);
     }
-    Ok(Wire::from_edges(&edges))
+    let (p0, dir) = set_off.ok_or("no path picked")?;
+    Ok((Wire::from_edges(&edges), p0, dir))
 }
 
 /// The solid a sweep or loft adds or takes away.
-fn sweep_tool(sketches: &[Sketch], frames: &[Option<FacePlane>], sf: &SweepFeature) -> Result<Shape, String> {
+fn sweep_tool(sketches: &[Sketch], frames: &[Option<FacePlane>], sf: &SweepFeature, planes: &[Option<FacePlane>], bodies: &[&Shape]) -> Result<Shape, String> {
     let sketch_and_plane = |s: usize| -> Result<(&Sketch, Frame), String> {
         let sk = sketches.get(s).ok_or("a sketch it uses was deleted")?;
         Ok((sk, frame_for(sk, frames.get(s).copied().flatten())?))
@@ -836,6 +862,43 @@ fn sweep_tool(sketches: &[Sketch], frames: &[Option<FacePlane>], sf: &SweepFeatu
                 wires.push(loop_wire(&plane, loops[0].0, loops[0].1)?);
             }
             Shape::try_loft(&wires, *ruled).ok_or_else(|| "the kernel couldn't loft through those profiles".into())
+        }
+        SweepKind::Pipe { path_sketch, path, diameter, thickness } => {
+            if !(diameter.is_finite() && *diameter > 0.0) {
+                return Err("the diameter must be more than zero".into());
+            }
+            if !(thickness.is_finite() && *thickness >= 0.0 && *thickness < diameter / 2.0) {
+                return Err("the wall must be thinner than half the diameter".into());
+            }
+            let (psk, pplane) = sketch_and_plane(*path_sketch)?;
+            let (wire, start, dir) = chain_wire_from(psk, &pplane, path)?;
+            // Round sections square to the path where it starts.
+            let tube = |r: f64| -> Result<Shape, String> {
+                let face = Face::from_wire(&Wire::from_edges(&[Edge::circle(kv(start), kv(dir), r)]));
+                face.try_sweep(&wire).ok_or_else(|| "the kernel couldn't run a pipe along that path (a bend tighter than the pipe?)".into())
+            };
+            let outer = tube(diameter / 2.0)?;
+            if *thickness > 0.0 {
+                let inner = tube(diameter / 2.0 - thickness)?;
+                outer.try_subtract(&inner).ok_or_else(|| "the kernel couldn't hollow the pipe".into())
+            } else {
+                Ok(outer)
+            }
+        }
+        SweepKind::Coil { at, centre, diameter, turns, height, section, size } => {
+            if !(diameter.is_finite() && *diameter > 0.0 && turns.is_finite() && *turns > 0.0 && height.is_finite() && height.abs() > 1e-9 && size.is_finite() && *size > 0.0) {
+                return Err("diameter, revolutions, height and section size must be more than zero".into());
+            }
+            let (q, n) = target_plane(at, planes, bodies)?;
+            let f = FacePlane::from_face(n, q);
+            let o = f.origin + f.u * centre[0] + f.v * centre[1];
+            let up = if *height > 0.0 { n } else { -n };
+            let s = match section {
+                crate::model::CoilSection::Circle => 0,
+                crate::model::CoilSection::Square => 1,
+                crate::model::CoilSection::Triangle => 2,
+            };
+            Shape::try_coil(kv(o), kv(up), kv(f.u), diameter / 2.0, height.abs() / turns, *turns, s, *size).ok_or_else(|| "the kernel couldn't make that coil (its turns overlap? make it taller or the section smaller)".into())
         }
     }
 }
@@ -2887,8 +2950,10 @@ impl Build {
                         *shapes = current;
                         continue;
                     };
+                    let planes_now = &planes;
                     let r = catch_unwind(AssertUnwindSafe(|| {
-                        let shape = sweep_tool(sketches, &frames, sf)?;
+                        let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
+                        let shape = sweep_tool(sketches, &frames, sf, planes_now, &bodies)?;
                         apply(current, shape, sf.op, Feature::Sweep(k))
                     }));
                     (r, &mut sweep_errors[k])
@@ -3952,6 +4017,34 @@ mod tests {
         assert!(close(vols[0], 3000.0), "{}", vols[0]);
         // Pappus: area × the distance its centre travels, a quarter of a 20 circle.
         assert!(close(vols[1], 100.0 * std::f64::consts::FRAC_PI_2 * 20.0), "{}", vols[1]);
+    }
+
+    #[test]
+    fn pipes_and_coils_have_their_exact_volumes() {
+        use crate::model::CoilSection;
+        use crate::sketch::Entity;
+        let mut path = Sketch::new("L".into(), OriginPlane::XY);
+        path.points.push(DVec2::new(30.0, 0.0));
+        path.entities.push(Entity::Line { a: 0, b: 1 });
+        let pipe = |thickness| SweepFeature { name: "P".into(), kind: SweepKind::Pipe { path_sketch: 0, path: vec![0], diameter: 4.0, thickness }, op: Operation::NewBody };
+        let coil = |section| SweepFeature {
+            name: "C".into(),
+            kind: SweepKind::Coil { at: ExtrudeTarget::Origin(OriginPlane::XY), centre: [50.0, 0.0], diameter: 20.0, turns: 2.0, height: 20.0, section, size: 2.0 },
+            op: Operation::NewBody,
+        };
+        let m = run_sweeps(vec![path], vec![], vec![pipe(0.0), pipe(0.5), coil(CoilSection::Circle), coil(CoilSection::Square)], vec![Feature::Sketch(0), Feature::Sweep(0), Feature::Sweep(1), Feature::Sweep(2), Feature::Sweep(3)]);
+        assert_eq!(m.sweep_errors, vec![None, None, None, None]);
+        let vol = |k: usize| m.bodies.iter().filter(|b| b.id.feature == Feature::Sweep(k)).map(|b| b.shape.volume()).sum::<f64>();
+        use std::f64::consts::PI;
+        assert!(close(vol(0), PI * 4.0 * 30.0), "solid pipe {}", vol(0));
+        assert!(close(vol(1), PI * (4.0 - 1.5 * 1.5) * 30.0), "hollow pipe {}", vol(1));
+        // A screw motion of a section in the plane through the axis: area × 2πR × turns.
+        assert!((vol(2) - PI * 1.0 * 2.0 * PI * 10.0 * 2.0).abs() < 1e-3 * vol(2), "round coil {}", vol(2));
+        assert!((vol(3) - 4.0 * 2.0 * PI * 10.0 * 2.0).abs() < 1e-3 * vol(3), "square coil {}", vol(3));
+        // It stands on the plane, centred where asked, as tall as asked.
+        let c = m.bodies.iter().find(|b| b.id.feature == Feature::Sweep(2)).unwrap();
+        let (lo, hi) = bbox(c);
+        assert!(((lo.x + hi.x) / 2.0 - 50.0).abs() < 0.5 && (hi.z - lo.z - 22.0).abs() < 0.1, "{lo} {hi}");
     }
 
     #[test]

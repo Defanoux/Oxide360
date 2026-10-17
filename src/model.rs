@@ -162,6 +162,33 @@ pub enum SweepKind {
     /// Through one profile of each of several sketches, in order (`ruled`:
     /// straight between them, else smooth).
     Loft { sections: Vec<(usize, usize)>, ruled: bool },
+    /// A round section of `diameter` along a chain of sketch curves;
+    /// `thickness` > 0: hollow, with walls that thick.
+    Pipe { path_sketch: usize, path: Vec<usize>, diameter: f64, #[serde(default)] thickness: f64 },
+    /// A coil round the normal of the plane `at`, centred at `centre` (in
+    /// that plane's coordinates): `turns` revolutions over `height`.
+    Coil { at: ExtrudeTarget, centre: [f64; 2], diameter: f64, turns: f64, height: f64, section: CoilSection, size: f64 },
+}
+
+/// A coil's cross-section.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CoilSection {
+    #[default]
+    Circle,
+    Square,
+    Triangle,
+}
+
+impl CoilSection {
+    pub const ALL: [CoilSection; 3] = [CoilSection::Circle, CoilSection::Square, CoilSection::Triangle];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CoilSection::Circle => "Circular",
+            CoilSection::Square => "Square",
+            CoilSection::Triangle => "Triangular",
+        }
+    }
 }
 
 /// Section Analysis (Inspect): the model shown cut by a plane, to see

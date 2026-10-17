@@ -1863,17 +1863,17 @@ impl OpenCad {
             Some((d.sketch, d.profiles.as_slice()))
         } else {
             // Sweep: its profiles; Loft: profiles of any sketch (picked ones are drawn by their sections).
-            self.sweep_dialog.as_ref().filter(|d| !d.picking_path).map(|d| if d.loft { (None, &[][..]) } else { (d.sketch, d.profiles.as_slice()) })
+            self.sweep_dialog.as_ref().filter(|d| !d.picking_path && matches!(d.mode, sweep_dialog::Mode::Sweep | sweep_dialog::Mode::Loft)).map(|d| if d.mode == sweep_dialog::Mode::Loft { (None, &[][..]) } else { (d.sketch, d.profiles.as_slice()) })
         }
     }
 
-    /// Open the Sweep (`loft`: Loft) dialog, new or on sweep `editing`.
-    pub(crate) fn open_sweep(&mut self, editing: Option<usize>, loft: bool) {
+    /// Open the Sweep / Loft / Pipe / Coil dialog, new or on sweep `editing`.
+    pub(crate) fn open_sweep(&mut self, editing: Option<usize>, mode: sweep_dialog::Mode) {
         self.cancel_all_dialogs();
         self.finish_sketch();
         self.sweep_dialog = Some(match editing {
             Some(k) => sweep_dialog::SweepDialog::edit(k, &self.sweeps[k]),
-            None => sweep_dialog::SweepDialog::new(loft, self.body_count > 0),
+            None => sweep_dialog::SweepDialog::new(mode, self.body_count > 0),
         });
     }
 
@@ -1884,10 +1884,10 @@ impl OpenCad {
             d.feature(String::new()).and_then(|_| self.caches[Slot::Preview as usize].as_ref().and_then(|c| c.model.sweep_errors.get(k).cloned().flatten()))
         });
         let Some(d) = self.sweep_dialog.as_mut() else { return };
-        match d.panel(ui, error.as_deref()) {
+        match d.panel(ui, self.units, error.as_deref()) {
             copy_dialog::Action::Ok => {
                 let Some(d) = self.sweep_dialog.take() else { return };
-                let base = if d.loft { "Loft" } else { "Sweep" };
+                let base = d.mode.name();
                 match d.editing {
                     Some(k) => {
                         if let Some(f) = d.feature(self.sweeps[k].name.clone()) {

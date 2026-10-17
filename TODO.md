@@ -14,7 +14,6 @@ the spec for each.
 
 **Shapes Extrude/Revolve can't make**
 17. **Sweep** (profile along a path) and **Loft** (between profiles, rails).
-18. **Coil** / **Pipe**.
 
 **Files**
 19. **Autosave + crash recovery**.
@@ -37,6 +36,7 @@ sheet metal, surfaces, CAM.
 
 ## Done
 
+- 18 Coil and Pipe (CREATE): Pipe — a round section along a path of sketch curves, solid or hollow; Coil — on a plane or face (a face: centred where clicked), diameter, revolutions, height, circular/square/triangular section; exact OCCT (helix sweep behind a try wrapper). Coil checked in the running app (volume exact). F6 now fits previews too.
 - 17 Sweep and Loft (CREATE): Sweep a sketch's profiles along a chain of sketch curves (lines, arcs, splines, or a circle); Loft through one profile per sketch, in order, smooth or straight; Join/Cut/New Body/Intersect, live preview, timeline + edit; exact OCCT (MakePipe / ThruSections behind try wrappers). Not yet: loft rails, holes in loft profiles, sweep twist/taper. Sweep checked in the running app.
 - 16 Construction geometry: Midplane (two planes/faces; bisects meeting ones), Plane Through Three Points, Tangent Plane, Axis Through Cylinder, Axis Through Two Points, Construction Point (corner or circle centre; three-point planes and two-point axes can use it). All follow the part (corners/edges/cylinders found again each build). Checked in the running app.
 - 15 Vertex picking and box select: body corners light up and select (X/Y/Z, or distance and deltas between two); Shift+drag in solid mode boxes (left to right: wholly inside — a whole body as a body with volume/area; right to left: faces it touches, front-facing). Checked in the running app.

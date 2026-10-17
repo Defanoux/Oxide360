@@ -551,7 +551,9 @@ impl OpenCad {
     /// Fit (F6): glide to show every visible body and sketch, looking the same way.
     pub(crate) fn fit_view(&mut self, aspect: f32, now: f64) {
         let mut pts: Vec<Vec3> = Vec::new();
-        if let Some(c) = self.caches[Slot::Committed as usize].as_ref() {
+        // With a dialog open, what it's previewing counts too.
+        let slots: &[Slot] = if self.active.is_none() && !self.free_view() { &[Slot::Committed, Slot::Preview] } else { &[Slot::Committed] };
+        for c in slots.iter().filter_map(|&k| self.caches[k as usize].as_ref()) {
             for b in c.model.bodies.iter().filter(|b| !self.hidden_bodies.contains(&b.id)) {
                 // Its box's corners are enough.
                 let (lo, hi) = b.mesh.positions.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));

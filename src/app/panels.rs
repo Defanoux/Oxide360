@@ -712,8 +712,10 @@ impl OpenCad {
                     ToolItem { name: "Create Sketch", icon: Icon::Sketch, tip: "Create Sketch (N): uses the selected plane, or click a plane or flat face", enabled: true, on: self.face_pick && !self.plane_pick },
                     ToolItem { name: "Extrude", icon: Icon::Extrude, tip: "Extrude (E)", enabled: can_profile, on: self.dialog.is_some() },
                     ToolItem { name: "Revolve", icon: Icon::Revolve, tip: "Revolve: spin a profile around an axis", enabled: can_profile, on: self.revolve_dialog.is_some() },
-                    ToolItem { name: "Sweep", icon: Icon::Sweep, tip: "Sweep: a profile carried along a path of sketch curves", enabled: can_profile, on: self.sweep_dialog.as_ref().is_some_and(|d| !d.loft) },
-                    ToolItem { name: "Loft", icon: Icon::Loft, tip: "Loft: a shape through profiles on two or more sketches, in order", enabled: can_profile, on: self.sweep_dialog.as_ref().is_some_and(|d| d.loft) },
+                    ToolItem { name: "Sweep", icon: Icon::Sweep, tip: "Sweep: a profile carried along a path of sketch curves", enabled: can_profile, on: self.sweep_dialog.as_ref().is_some_and(|d| d.mode == sweep_dialog::Mode::Sweep) },
+                    ToolItem { name: "Loft", icon: Icon::Loft, tip: "Loft: a shape through profiles on two or more sketches, in order", enabled: can_profile, on: self.sweep_dialog.as_ref().is_some_and(|d| d.mode == sweep_dialog::Mode::Loft) },
+                    ToolItem { name: "Pipe", icon: Icon::Pipe, tip: "Pipe: a round section along a path of sketch curves (solid or hollow)", enabled: !self.sketches.is_empty(), on: self.sweep_dialog.as_ref().is_some_and(|d| d.mode == sweep_dialog::Mode::Pipe) },
+                    ToolItem { name: "Coil", icon: Icon::Coil, tip: "Coil: a spring — click a plane or face, then set its size and turns", enabled: true, on: self.sweep_dialog.as_ref().is_some_and(|d| d.mode == sweep_dialog::Mode::Coil) },
                     ToolItem { name: "Hole", icon: Icon::Hole, tip: "Hole (H): click sketch points, circles or a face; counterbore, countersink, clearance and tapped holes", enabled: has_bodies, on: self.hole_dialog.is_some() },
                     ToolItem { name: "Thread", icon: Icon::Thread, tip: "Thread: click a shaft or the inside of a hole; shown or modeled, ISO and Unified sizes", enabled: has_bodies, on: self.thread_dialog.is_some() },
                 ];
@@ -753,10 +755,19 @@ impl OpenCad {
                     Some("Create Sketch") => self.new_sketch_tool(),
                     Some("Extrude") => self.open_extrude(None),
                     Some("Revolve") => self.open_revolve(None),
-                    Some("Sweep") if self.sweep_dialog.as_ref().is_some_and(|d| !d.loft) => self.sweep_dialog = None,
-                    Some("Sweep") => self.open_sweep(None, false),
-                    Some("Loft") if self.sweep_dialog.as_ref().is_some_and(|d| d.loft) => self.sweep_dialog = None,
-                    Some("Loft") => self.open_sweep(None, true),
+                    Some(name @ ("Sweep" | "Loft" | "Pipe" | "Coil")) => {
+                        let mode = match name {
+                            "Sweep" => sweep_dialog::Mode::Sweep,
+                            "Loft" => sweep_dialog::Mode::Loft,
+                            "Pipe" => sweep_dialog::Mode::Pipe,
+                            _ => sweep_dialog::Mode::Coil,
+                        };
+                        if self.sweep_dialog.as_ref().is_some_and(|d| d.mode == mode) {
+                            self.sweep_dialog = None;
+                        } else {
+                            self.open_sweep(None, mode);
+                        }
+                    }
                     Some("Hole") if self.hole_dialog.is_some() => self.cancel_hole(),
                     Some("Hole") => self.open_hole(None),
                     Some("Thread") if self.thread_dialog.is_some() => self.cancel_thread(),

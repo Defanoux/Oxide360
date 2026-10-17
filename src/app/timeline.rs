@@ -678,7 +678,12 @@ impl OpenCad {
                     Feature::Combine(_) => Icon::Combine,
                     Feature::Move(_) => Icon::Move,
                     Feature::Point(_) => Icon::ConstructPoint,
-                    Feature::Sweep(k) => if matches!(self.sweeps[k].kind, model::SweepKind::Loft { .. }) { Icon::Loft } else { Icon::Sweep },
+                    Feature::Sweep(k) => match sweep_dialog::Mode::of(&self.sweeps[k].kind) {
+                        sweep_dialog::Mode::Loft => Icon::Loft,
+                        sweep_dialog::Mode::Pipe => Icon::Pipe,
+                        sweep_dialog::Mode::Coil => Icon::Coil,
+                        sweep_dialog::Mode::Sweep => Icon::Sweep,
+                    },
                     Feature::Copy(k) => match self.copies[k].kind {
                         model::CopyKind::Mirror(_) | model::CopyKind::MirrorPlane(_) => Icon::Mirror,
                         model::CopyKind::Rectangular { .. } => Icon::RectPattern,
@@ -830,7 +835,7 @@ impl OpenCad {
             Some(Feature::Combine(k)) => self.open_combine(Some(k)),
             Some(Feature::Move(k)) => self.open_move(Some(k)),
             Some(Feature::Axis(_) | Feature::Remove(_) | Feature::Point(_)) => {}
-            Some(Feature::Sweep(k)) => self.open_sweep(Some(k), matches!(self.sweeps[k].kind, model::SweepKind::Loft { .. })),
+            Some(Feature::Sweep(k)) => self.open_sweep(Some(k), sweep_dialog::Mode::of(&self.sweeps[k].kind)),
             Some(Feature::Plane(k)) => {
                 self.cancel_all_dialogs();
                 let built = self.caches[Slot::Committed as usize].as_ref().and_then(|c| c.model.planes.get(k).copied().flatten());
