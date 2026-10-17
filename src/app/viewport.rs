@@ -896,25 +896,31 @@ impl OpenCad {
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 if corners {
-                    self.corner_hover = self.corner_under(&view, px, &ray);
+                    // A construction point near the cursor first, then a body corner.
+                    let pts = self.model(Slot::Committed).points.clone();
+                    let near_point = pts.iter().enumerate().filter_map(|(k, p)| p.and_then(|q| view.project(q.as_vec3()).map(|s| (k, q, s.distance(px))))).filter(|(.., d)| *d <= SNAP_PX).min_by(|a, b| a.2.total_cmp(&b.2));
+                    self.corner_hover = match near_point {
+                        Some((k, q, _)) => Some((model::PointRef::Point(k), q)),
+                        None => self.corner_under(&view, px, &ray).map(|q| (model::PointRef::Corner(q), q)),
+                    };
                 } else {
                     self.cylinder_hover = self.cylinder_under(&ray);
                 }
             }
             if response.clicked() {
-                use model::{AxisKind, PlaneKind, PointRef::Corner};
+                use model::{AxisKind, PlaneKind};
                 match (self.construct_pick.clone(), self.corner_hover, self.cylinder_hover) {
                     (Some(ConstructPick::ThreePoints(mut v)), Some(p), _) => {
                         v.push(p);
                         match v[..] {
-                            [a, b, c] => self.add_construct_plane(PlaneKind::ThreePoints([Corner(a), Corner(b), Corner(c)])),
+                            [a, b, c] => self.add_construct_plane(PlaneKind::ThreePoints([a.0, b.0, c.0])),
                             _ => self.construct_pick = Some(ConstructPick::ThreePoints(v)),
                         }
                     }
                     (Some(ConstructPick::AxisTwoPoints(mut v)), Some(p), _) => {
                         v.push(p);
                         match v[..] {
-                            [a, b] => self.add_construct_axis(AxisKind::TwoPoints([Corner(a), Corner(b)])),
+                            [a, b] => self.add_construct_axis(AxisKind::TwoPoints([a.0, b.0])),
                             _ => self.construct_pick = Some(ConstructPick::AxisTwoPoints(v)),
                         }
                     }
@@ -925,6 +931,33 @@ impl OpenCad {
             }
             if esc && !typing {
                 self.construct_pick = None;
+            }
+        } else if self.point_pick {
+            // --- Construction Point: click a body corner, or a circle (its centre) ---
+            self.ensure_model(Slot::Committed);
+            self.corner_hover = None;
+            self.edge_hover = None;
+            if let Some(px) = hover_px {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                self.corner_hover = self.corner_under(&view, px, &ray).map(|q| (model::PointRef::Corner(q), q));
+                if self.corner_hover.is_none() {
+                    // Only round edges: a point goes at their centre.
+                    self.edge_hover = self.edge_under(&view, Slot::Committed, px, &ray, false).filter(|r| {
+                        self.model(Slot::Committed).bodies.iter().flat_map(|b| &b.edges).any(|e| e.at.mid.distance(r.mid) < 1e-6 && matches!(e.geom, measure::Geom::Circle { .. }))
+                    });
+                }
+            }
+            if response.clicked() {
+                if let Some((_, q)) = self.corner_hover {
+                    self.add_point(model::PointKind::Corner(q));
+                } else if let Some(r) = self.edge_hover {
+                    let caps = &self.model(Slot::Committed).caps;
+                    let r = EdgeRef { follow: kernel::follow_for_edge(caps, r.mid, r.dir, FOLLOW_TOL), ..r };
+                    self.add_point(model::PointKind::CircleCentre(r));
+                }
+            }
+            if esc && !typing {
+                self.point_pick = false;
             }
         } else if self.axis_pick {
             // --- construction axis: click a straight edge ---
@@ -2280,6 +2313,7 @@ impl OpenCad {
         self.offset_face_errors = self.model(Slot::Committed).offset_face_errors.clone();
         self.combine_errors = self.model(Slot::Committed).combine_errors.clone();
         self.move_errors = self.model(Slot::Committed).move_errors.clone();
+        self.point_errors = self.model(Slot::Committed).point_errors.clone();
         self.body_count = self.model(Slot::Committed).bodies.len();
         // With a body in the scene the origin gets out of the way (Create Sketch
         // and the browser's Origin box bring it back).
@@ -3287,18 +3321,35 @@ impl OpenCad {
             }
         }
 
+        // --- draw: construction points, with their names ---
+        if self.active.is_none() {
+            let built = self.model(Slot::Committed).points.clone();
+            for (k, p) in built.iter().enumerate() {
+                if let (Some(q), Some(cp)) = (p.and_then(|q| view.project(q.as_vec3())), self.points.get(k)) {
+                    painter.circle_stroke(to_pos(q), 4.0, Stroke::new(2.0, COL_ORIGIN));
+                    painter.text(to_pos(q) + egui::vec2(7.0, -7.0), egui::Align2::LEFT_BOTTOM, &cp.name, egui::FontId::proportional(12.0), Color32::from_gray(200));
+                }
+            }
+            if self.point_pick {
+                if let Some(px) = self.corner_hover.and_then(|(_, p)| view.project(p.as_vec3())) {
+                    painter.circle_filled(to_pos(px), 5.0, COL_HOVER);
+                }
+                painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, "Construction Point: click a body corner, or a round edge for its centre   (Esc to stop)", egui::FontId::proportional(15.0), Color32::from_gray(220));
+            }
+        }
+
         // --- draw: construction picks (corners picked and under the cursor, the cylinder under it) ---
         if let Some(pick) = &self.construct_pick {
-            let picked: &[DVec3] = match pick {
+            let picked: &[(model::PointRef, DVec3)] = match pick {
                 ConstructPick::ThreePoints(v) | ConstructPick::AxisTwoPoints(v) => v,
                 _ => &[],
             };
-            for p in picked {
+            for (_, p) in picked {
                 if let Some(px) = view.project(p.as_vec3()) {
                     painter.circle_filled(to_pos(px), 5.0, COL_SELECT);
                 }
             }
-            if let Some(px) = self.corner_hover.and_then(|p| view.project(p.as_vec3())) {
+            if let Some(px) = self.corner_hover.and_then(|(_, p)| view.project(p.as_vec3())) {
                 painter.circle_filled(to_pos(px), 5.0, COL_HOVER);
             }
             if let Some((c, _)) = self.cylinder_hover {

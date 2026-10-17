@@ -19,6 +19,7 @@ impl OpenCad {
             offset_faces: self.offset_faces.clone(),
             combines: self.combines.clone(),
             moves: self.moves.clone(),
+            points: self.points.clone(),
             sections: self.sections.clone(),
             parameters: self.parameters.clone(),
             feature_exprs: self.feature_exprs.clone(),
@@ -344,6 +345,8 @@ impl OpenCad {
         self.moves = doc.moves.clone();
         self.move_dialog = None;
         self.sections = doc.sections.clone();
+        self.points = doc.points.clone();
+        self.point_pick = false;
         self.section_dialog = None;
         self.parameters = doc.parameters.clone();
         self.feature_exprs = doc.feature_exprs.clone();
@@ -432,6 +435,7 @@ impl OpenCad {
         self.moves = doc.moves;
         self.move_dialog = None;
         self.sections = doc.sections;
+        self.points = doc.points;
         self.parameters = doc.parameters;
         self.feature_exprs = doc.feature_exprs;
         self.params_seen = None;
@@ -737,6 +741,7 @@ impl OpenCad {
             offset_faces,
             combines,
             moves,
+            points: self.points.clone(),
             timeline,
         }
     }
@@ -884,6 +889,7 @@ impl OpenCad {
             Feature::OffsetFace(k) => self.offset_faces.get(k).map(|f| f.name.clone()),
             Feature::Combine(k) => self.combines.get(k).map(|c| c.name.clone()),
             Feature::Move(k) => self.moves.get(k).map(|m| m.name.clone()),
+            Feature::Point(k) => self.points.get(k).map(|p| p.name.clone()),
         }
         .unwrap_or_else(|| format!("{f:?}"))
     }

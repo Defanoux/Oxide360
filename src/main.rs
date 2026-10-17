@@ -707,6 +707,9 @@ struct OpenCad {
     pending_exprs: Vec<(doc::Field, String)>,  // typed in the open dialog's box, kept at OK
     move_dialog: Option<MoveDialog>,
     move_errors: Vec<Option<String>>,
+    points: Vec<model::ConstructionPoint>,  // construction points
+    point_errors: Vec<Option<String>>,
+    point_pick: bool,                       // Construction Point: click a corner or a circle
     move_hover: Option<BodyId>,                // the body a click would pick (Move/Copy)
     thread_dialog: Option<thread_dialog::ThreadDialog>,
     thread_errors: Vec<Option<String>>,
@@ -735,7 +738,7 @@ struct OpenCad {
     solid_hover: Option<measure::Picked>,   // the edge or face under the cursor there
     solid_box: Option<(Vec2, Vec2)>,        // Shift+drag selection box in solid mode (screen corners)
     construct_pick: Option<ConstructPick>,  // Midplane / three-point / tangent plane, axis through cylinder / two points: picking
-    corner_hover: Option<DVec3>,            // the body corner under the cursor while picking corners
+    corner_hover: Option<(model::PointRef, DVec3)>, // the corner (or construction point) under the cursor while picking points
     cylinder_hover: Option<(kernel::Cylinder, DVec3)>, // the cylinder under the cursor while picking one
     copy_body_hover: Option<BodyId>,        // Mirror: the body under the cursor (a click adds / drops it)
     copy_dialog: Option<CopyDialog>,
@@ -914,6 +917,9 @@ impl Default for OpenCad {
             pending_exprs: Vec::new(),
             move_dialog: None,
             move_errors: Vec::new(),
+            points: Vec::new(),
+            point_errors: Vec::new(),
+            point_pick: false,
             move_hover: None,
             thread_dialog: None,
             thread_errors: Vec::new(),
@@ -1367,10 +1373,11 @@ impl OpenCad {
 #[derive(Clone, Debug, PartialEq)]
 enum ConstructPick {
     Midplane(Vec<model::ExtrudeTarget>),
-    ThreePoints(Vec<DVec3>),
+    /// The points picked so far, and where they are.
+    ThreePoints(Vec<(model::PointRef, DVec3)>),
     Tangent,
     AxisCylinder,
-    AxisTwoPoints(Vec<DVec3>),
+    AxisTwoPoints(Vec<(model::PointRef, DVec3)>),
 }
 
 impl ConstructPick {
@@ -1378,10 +1385,10 @@ impl ConstructPick {
     fn hint(&self) -> String {
         match self {
             ConstructPick::Midplane(t) => format!("Midplane {} of 2: click a plane or flat face", t.len() + 1),
-            ConstructPick::ThreePoints(p) => format!("Plane Through Three Points {} of 3: click a body corner", p.len() + 1),
+            ConstructPick::ThreePoints(p) => format!("Plane Through Three Points {} of 3: click a body corner or construction point", p.len() + 1),
             ConstructPick::Tangent => "Tangent Plane: click a cylinder where the plane should touch it".into(),
             ConstructPick::AxisCylinder => "Axis Through Cylinder: click a hole or shaft".into(),
-            ConstructPick::AxisTwoPoints(p) => format!("Axis Through Two Points {} of 2: click a body corner", p.len() + 1),
+            ConstructPick::AxisTwoPoints(p) => format!("Axis Through Two Points {} of 2: click a body corner or construction point", p.len() + 1),
         }
     }
 }

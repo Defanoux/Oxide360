@@ -54,6 +54,7 @@ impl OpenCad {
             Feature::OffsetFace(k) => self.offset_face_errors.get(k).cloned().flatten(),
             Feature::Combine(k) => self.combine_errors.get(k).cloned().flatten(),
             Feature::Move(k) => self.move_errors.get(k).cloned().flatten(),
+            Feature::Point(k) => self.point_errors.get(k).cloned().flatten(),
         }
     }
 
@@ -285,6 +286,7 @@ impl OpenCad {
             && self.move_dialog.is_none()
             && self.section_dialog.is_none()
             && self.construct_pick.is_none()
+            && !self.point_pick
             && !self.axis_pick
             && !self.angle_pick
             && !self.plane_pick
@@ -540,6 +542,7 @@ impl OpenCad {
             Feature::OffsetFace(k) => &mut self.offset_faces.get_mut(k)?.name,
             Feature::Combine(k) => &mut self.combines.get_mut(k)?.name,
             Feature::Move(k) => &mut self.moves.get_mut(k)?.name,
+            Feature::Point(k) => &mut self.points.get_mut(k)?.name,
         })
     }
 
@@ -654,6 +657,7 @@ impl OpenCad {
                     Feature::OffsetFace(k) => (self.offset_faces[k].name.clone(), self.offset_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
                     Feature::Combine(k) => (self.combines[k].name.clone(), self.combine_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
                     Feature::Move(k) => (self.moves[k].name.clone(), self.move_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
+                    Feature::Point(k) => (self.points[k].name.clone(), false),
                 };
                 let error = self.feature_error(*f);
                 let icon = match *f {
@@ -669,6 +673,7 @@ impl OpenCad {
                     Feature::OffsetFace(_) => Icon::PressPull,
                     Feature::Combine(_) => Icon::Combine,
                     Feature::Move(_) => Icon::Move,
+                    Feature::Point(_) => Icon::ConstructPoint,
                     Feature::Copy(k) => match self.copies[k].kind {
                         model::CopyKind::Mirror(_) | model::CopyKind::MirrorPlane(_) => Icon::Mirror,
                         model::CopyKind::Rectangular { .. } => Icon::RectPattern,
@@ -802,6 +807,7 @@ impl OpenCad {
             Some(Feature::OffsetFace(k)) => self.delete_offset(k),
             Some(Feature::Combine(k)) => self.delete_combine(k),
             Some(Feature::Move(k)) => self.delete_move(k),
+            Some(Feature::Point(k)) => self.delete_point(k),
             None => {}
         }
         if delete.is_some() {
@@ -817,7 +823,7 @@ impl OpenCad {
             Some(Feature::OffsetFace(k)) => self.open_offset(Some(k), false),
             Some(Feature::Combine(k)) => self.open_combine(Some(k)),
             Some(Feature::Move(k)) => self.open_move(Some(k)),
-            Some(Feature::Axis(_) | Feature::Remove(_)) => {}
+            Some(Feature::Axis(_) | Feature::Remove(_) | Feature::Point(_)) => {}
             Some(Feature::Plane(k)) => {
                 self.cancel_all_dialogs();
                 let built = self.caches[Slot::Committed as usize].as_ref().and_then(|c| c.model.planes.get(k).copied().flatten());

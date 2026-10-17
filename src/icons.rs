@@ -35,6 +35,7 @@ pub enum Icon {
     TangentPlane,
     AxisCylinder,
     Axis2Points,
+    ConstructPoint,
     Break,
     ControlSpline,
     Plane,
@@ -664,6 +665,14 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             arc(0.5, 0.25, 0.25, std::f32::consts::PI, std::f32::consts::TAU, Stroke::new(thin.width * 1.1, ink));
             line((0.5, 0.05), (0.5, 0.97), Stroke::new(thin.width * 1.5, orange));
         }
+        Icon::ConstructPoint => {
+            // An orange point with a little cross through it.
+            let s = Stroke::new(thin.width * 1.1, ink);
+            line((0.2, 0.5), (0.8, 0.5), s);
+            line((0.5, 0.2), (0.5, 0.8), s);
+            dot(0.5, 0.5, orange);
+            arc(0.5, 0.5, 0.14, 0.0, std::f32::consts::TAU, Stroke::new(thin.width * 1.4, orange));
+        }
         Icon::Axis2Points => {
             // An orange line through two dots.
             line((0.08, 0.9), (0.92, 0.1), Stroke::new(thin.width * 1.5, orange));
@@ -951,7 +960,7 @@ mod shot_tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [720, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint] {
                     button(ui, icon, "", true, false);
                 }
             });

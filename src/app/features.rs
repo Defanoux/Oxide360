@@ -8,6 +8,7 @@ impl OpenCad {
         self.axis_pick = false;
         self.angle_pick = false;
         self.construct_pick = None;
+        self.point_pick = false;
         self.hole_dialog = None;
         self.shell_dialog = None;
         self.offset_dialog = None;
@@ -1336,6 +1337,9 @@ impl OpenCad {
         self.move_dialog = None;
         self.thread_dialog = None;
         self.face_pick = false;
+        self.construct_pick = None;
+        self.point_pick = false;
+        self.section_dialog = None;
     }
 
     /// Open the Offset Plane box with the distance ready to type into.
@@ -1568,6 +1572,54 @@ impl OpenCad {
             .min_by(|a, b| a.1.total_cmp(&b.1))
     }
 
+    /// Make a construction point (at a corner or a circle's centre), and back to Select.
+    pub(crate) fn add_point(&mut self, kind: model::PointKind) {
+        self.point_pick = false;
+        let name = format!("Point{}", self.points.len() + 1);
+        self.points.push(model::ConstructionPoint { name: name.clone(), kind });
+        self.timeline_insert(Feature::Point(self.points.len() - 1));
+        self.notify(format!("{name} made"));
+    }
+
+    /// Delete construction point `k`, unless a plane or axis goes through it.
+    pub(crate) fn delete_point(&mut self, k: usize) {
+        use model::{AxisKind, PlaneKind, PointRef};
+        let uses = |r: &PointRef| *r == PointRef::Point(k);
+        let used = self.planes.iter().any(|p| matches!(&p.kind, Some(PlaneKind::ThreePoints(pts)) if pts.iter().any(uses)))
+            || self.axes.iter().any(|a| matches!(&a.kind, Some(AxisKind::TwoPoints(pts)) if pts.iter().any(uses)));
+        if used {
+            self.notify("A plane or axis goes through that point — delete it first".into());
+            return;
+        }
+        // Later points shift down, wherever they're used.
+        let shift = |r: &mut PointRef| {
+            if let PointRef::Point(j) = r {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        };
+        for p in &mut self.planes {
+            if let Some(PlaneKind::ThreePoints(pts)) = &mut p.kind {
+                pts.iter_mut().for_each(shift);
+            }
+        }
+        for a in &mut self.axes {
+            if let Some(AxisKind::TwoPoints(pts)) = &mut a.kind {
+                pts.iter_mut().for_each(shift);
+            }
+        }
+        self.points.remove(k);
+        self.timeline_remove(Feature::Point(k));
+        for f in &mut self.timeline {
+            if let Feature::Point(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+    }
+
     pub(crate) fn delete_axis(&mut self, k: usize) {
         if self.planes.iter().any(|p| p.angle.is_some_and(|a| a.hinge.uses_axis(k))) {
             self.notify("A plane at angle turns about that axis — delete the plane first".into());
@@ -1619,7 +1671,7 @@ impl OpenCad {
         let m = self.model(Slot::Committed);
         let made = {
             let bodies: Vec<&_> = m.bodies.iter().map(|b| &b.shape).collect();
-            kernel::construct_plane(&kind, &bodies, &m.planes)
+            kernel::construct_plane(&kind, &bodies, &m.planes, &m.points)
         };
         let f = match made {
             Ok(f) => f,

@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{AxisKind, PlaneKind, PointRef, MoveFeature, MoveKind, CombineFeature, OffsetFaceFeature, ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{AxisKind, ConstructionPoint, PlaneKind, PointKind, PointRef, MoveFeature, MoveKind, CombineFeature, OffsetFaceFeature, ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::measure::{self, Geom};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
@@ -224,6 +224,10 @@ pub struct Model {
     pub linked_sketches: Vec<Option<Sketch>>,
     /// One entry per sketch: projected entities whose edge can't be found.
     pub projection_lost: Vec<Vec<usize>>,
+    /// Each construction point as built.
+    pub points: Vec<Option<DVec3>>,
+    /// One entry per construction point.
+    pub point_errors: Vec<Option<String>>,
 }
 
 fn kv(p: DVec3) -> KVec {
@@ -1558,9 +1562,10 @@ fn radial_shift(body: &Shape, origin: DVec3, axis: DVec3, radial: f64) -> DVec3 
 
 /// Where a point reference is in what's built so far: a body corner is the
 /// corner nearest where it was picked.
-fn resolve_point(bodies: &[&Shape], p: PointRef) -> Result<DVec3, String> {
+fn resolve_point(bodies: &[&Shape], p: PointRef, points: &[Option<DVec3>]) -> Result<DVec3, String> {
     match p {
         PointRef::Origin => Ok(DVec3::ZERO),
+        PointRef::Point(k) => points.get(k).copied().flatten().ok_or_else(|| "the construction point it goes through couldn't be placed".into()),
         PointRef::Corner(q) => bodies
             .iter()
             .flat_map(|b| shape_edges(b).into_iter().flat_map(|(_, _, pts)| [pts.first().copied(), pts.last().copied()]).flatten().collect::<Vec<_>>())
@@ -1569,9 +1574,26 @@ fn resolve_point(bodies: &[&Shape], p: PointRef) -> Result<DVec3, String> {
     }
 }
 
+/// Where a construction point is in what's built so far.
+fn place_point(bodies: &[&Shape], p: &ConstructionPoint) -> Result<DVec3, String> {
+    match p.kind {
+        PointKind::Corner(q) => resolve_point(bodies, PointRef::Corner(q), &[]),
+        PointKind::CircleCentre(r) => {
+            let all: Vec<(usize, Edge, EdgeRef, Vec<DVec3>)> = bodies.iter().enumerate().flat_map(|(i, b)| shape_edges(b).into_iter().map(move |(e, r, pts)| (i, e, r, pts))).collect();
+            let list: Vec<(usize, Edge, EdgeRef)> = all.iter().map(|(i, e, r, _)| (*i, e.clone(), *r)).collect();
+            let hit = find_edge(&list, &r, f64::INFINITY).ok_or("the circle it's at the centre of is gone")?;
+            let k = list.iter().position(|c| std::ptr::eq(c, hit)).expect("from this list");
+            match edge_geom(&all[k].1, &all[k].3) {
+                Geom::Circle { center, .. } => Ok(center),
+                _ => Err("its edge isn't round any more".into()),
+            }
+        }
+    }
+}
+
 /// A midplane, three-point or tangent plane, from what's built so far
 /// (`planes`: the construction planes before it).
-pub fn construct_plane(kind: &PlaneKind, bodies: &[&Shape], planes: &[Option<FacePlane>]) -> Result<FacePlane, String> {
+pub fn construct_plane(kind: &PlaneKind, bodies: &[&Shape], planes: &[Option<FacePlane>], points: &[Option<DVec3>]) -> Result<FacePlane, String> {
     match kind {
         PlaneKind::Midplane(a, b) => {
             let ((q1, n1), (q2, n2)) = (target_plane(a, planes, bodies)?, target_plane(b, planes, bodies)?);
@@ -1588,7 +1610,7 @@ pub fn construct_plane(kind: &PlaneKind, bodies: &[&Shape], planes: &[Option<Fac
             }
         }
         PlaneKind::ThreePoints(pts) => {
-            let [a, b, c] = [resolve_point(bodies, pts[0])?, resolve_point(bodies, pts[1])?, resolve_point(bodies, pts[2])?];
+            let [a, b, c] = [resolve_point(bodies, pts[0], points)?, resolve_point(bodies, pts[1], points)?, resolve_point(bodies, pts[2], points)?];
             let n = (b - a).cross(c - a).try_normalize().filter(|n| n.is_finite()).ok_or("the three points are in a line")?;
             Ok(FacePlane::from_face(n, a))
         }
@@ -1602,10 +1624,10 @@ pub fn construct_plane(kind: &PlaneKind, bodies: &[&Shape], planes: &[Option<Fac
 }
 
 /// An axis through two points or through a cylinder: a point on it and its direction.
-pub fn construct_axis(kind: &AxisKind, bodies: &[&Shape]) -> Result<(DVec3, DVec3), String> {
+pub fn construct_axis(kind: &AxisKind, bodies: &[&Shape], points: &[Option<DVec3>]) -> Result<(DVec3, DVec3), String> {
     match kind {
         AxisKind::TwoPoints([a, b]) => {
-            let (a, b) = (resolve_point(bodies, *a)?, resolve_point(bodies, *b)?);
+            let (a, b) = (resolve_point(bodies, *a, points)?, resolve_point(bodies, *b, points)?);
             let d = (b - a).try_normalize().filter(|d| d.is_finite()).ok_or("the two points are the same")?;
             Ok((a, d))
         }
@@ -1617,9 +1639,9 @@ pub fn construct_axis(kind: &AxisKind, bodies: &[&Shape]) -> Result<(DVec3, DVec
 }
 
 /// Where a construction axis is now: along the straight edge it was picked on.
-fn resolve_axis(bodies: &Tagged, af: &AxisFeature) -> Result<(DVec3, DVec3), String> {
+fn resolve_axis(bodies: &Tagged, af: &AxisFeature, points: &[Option<DVec3>]) -> Result<(DVec3, DVec3), String> {
     if let Some(kind) = &af.kind {
-        return construct_axis(kind, &bodies.iter().map(|(s, _)| s).collect::<Vec<_>>());
+        return construct_axis(kind, &bodies.iter().map(|(s, _)| s).collect::<Vec<_>>(), points);
     }
     let mut all: Vec<(usize, Edge, EdgeRef)> = Vec::new();
     for (i, (b, _)) in bodies.iter().enumerate() {
@@ -1646,7 +1668,7 @@ fn hinge_line(
             Ok((o, d, axis_features.get(k).map_or(DVec3::Z, |af| af.edge.faces[0])))
         }
         Hinge::Edge(r) => {
-            let (o, d) = resolve_axis(bodies, &AxisFeature { name: String::new(), edge: r, kind: None })?;
+            let (o, d) = resolve_axis(bodies, &AxisFeature { name: String::new(), edge: r, kind: None }, &[])?;
             Ok((o, d, r.faces[0]))
         }
         Hinge::SketchLine { sketch, line } => {
@@ -2477,6 +2499,7 @@ pub struct BuildInputs {
     pub offset_faces: Vec<OffsetFaceFeature>,
     pub combines: Vec<CombineFeature>,
     pub moves: Vec<MoveFeature>,
+    pub points: Vec<ConstructionPoint>,
     pub timeline: Vec<Feature>,
 }
 
@@ -2519,6 +2542,8 @@ fn relink(sk: &Sketch, frame: Option<FacePlane>, bodies: &Tagged, ext: &[Option<
 /// keeps drawing — and shows how far it's got — while a slow part is built).
 pub struct Build {
     inp: BuildInputs,
+    point_pos: Vec<Option<DVec3>>,
+    point_errors: Vec<Option<String>>,
     /// The next timeline entry to build.
     next: usize,
     hole_errors: Vec<Option<String>>,
@@ -2556,7 +2581,8 @@ pub struct Build {
 impl Build {
     pub fn start(inp: BuildInputs) -> Build {
         opencascade::catch_crashes();
-        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, moves, timeline: _ } = &inp;
+        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, moves, points, timeline: _ } = &inp;
+        let (point_pos, point_errors): (Vec<Option<DVec3>>, Vec<Option<String>>) = (vec![None; points.len()], vec![None; points.len()]);
         let _ = (extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, sketches, shells);
         let offset_face_errors: Vec<Option<String>> = vec![None; offset_faces.len()];
         let combine_errors: Vec<Option<String>> = vec![None; combines.len()];
@@ -2585,7 +2611,7 @@ impl Build {
         let timing = std::env::var_os("OPENCAD_TIMING").is_some();
         let started = std::time::Instant::now();
         let step = std::time::Instant::now();
-        Build { next: 0, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step, inp }
+        Build { next: 0, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step, inp }
     }
 
     /// How far it's got: (entries built, all of them, the one being built next).
@@ -2603,8 +2629,8 @@ impl Build {
     pub fn step(&mut self, budget: std::time::Duration) -> bool {
         let began = std::time::Instant::now();
         let first = self.next;
-        let Build { inp, next, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step } = self;
-        let BuildInputs { sketches: _, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, moves, timeline } = &*inp;
+        let Build { inp, next, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step } = self;
+        let BuildInputs { sketches: _, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, moves, points, timeline } = &*inp;
         let _ = (&timing, &started);
         loop {
             if *next >= timeline.len() {
@@ -2654,10 +2680,21 @@ impl Build {
             }
             let backup: Tagged = current.iter().flat_map(|(s, id)| s.solids().into_iter().map(move |x| (x, *id))).collect();
             let (result, slot) = match *f {
+                Feature::Point(k) => {
+                    if let Some(p) = points.get(k) {
+                        let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
+                        match catch_unwind(AssertUnwindSafe(|| place_point(&bodies, p))).unwrap_or_else(|_| Err("the geometry kernel couldn't place it".into())) {
+                            Ok(q) => point_pos[k] = Some(q),
+                            Err(e) => point_errors[k] = Some(e),
+                        }
+                    }
+                    *shapes = current;
+                    continue;
+                }
                 Feature::Plane(k) => {
                     if let Some((kind, offset)) = plane_features.get(k).and_then(|pf| pf.kind.map(|kd| (kd, pf.offset))) {
                         let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
-                        let made = catch_unwind(AssertUnwindSafe(|| construct_plane(&kind, &bodies, &planes))).unwrap_or_else(|_| Err("the geometry kernel couldn't place it".into()));
+                        let made = catch_unwind(AssertUnwindSafe(|| construct_plane(&kind, &bodies, &planes, point_pos))).unwrap_or_else(|_| Err("the geometry kernel couldn't place it".into()));
                         match made {
                             Ok(f) => planes[k] = Some(FacePlane { origin: f.origin + f.normal() * offset, ..f }),
                             Err(e) => plane_errors[k] = Some(e),
@@ -2777,7 +2814,7 @@ impl Build {
                 Feature::Axis(k) => {
                     // An axis changes no body: find its edge in what's built so far.
                     if let Some(af) = axis_features.get(k) {
-                        match catch_unwind(AssertUnwindSafe(|| resolve_axis(&current, af))) {
+                        match catch_unwind(AssertUnwindSafe(|| resolve_axis(&current, af, point_pos))) {
                             Ok(Ok(a)) => axes[k] = Some(a),
                             Ok(Err(e)) => axis_errors[k] = Some(e),
                             Err(_) => axis_errors[k] = Some("the geometry kernel couldn't find its edge".into()),
@@ -2964,7 +3001,7 @@ impl Build {
 
     /// The model built (bodies analysed for picking and Measure).
     pub fn finish(self) -> Model {
-        let Build { inp: _, next: _, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live: _, linked, lost, touched_by, timing, started, mut step } = self;
+        let Build { inp: _, next: _, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live: _, linked, lost, touched_by, timing, started, mut step } = self;
     if timing {
         eprintln!("  {:>8.1} ms  last feature; analysing bodies…", step.elapsed().as_secs_f64() * 1e3);
         step = std::time::Instant::now();
@@ -2992,7 +3029,7 @@ impl Build {
         eprintln!("  {:>8.1} ms  bodies; build {:.1} ms in all", step.elapsed().as_secs_f64() * 1e3, started.elapsed().as_secs_f64() * 1e3);
     }
     let caps = caps_of(&extrude_ends, &revolve_ends);
-    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, caps, touched: touched_by, linked_sketches: linked, projection_lost: lost }
+    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, caps, touched: touched_by, linked_sketches: linked, projection_lost: lost, points: point_pos, point_errors }
     }
 }
 
@@ -3029,6 +3066,7 @@ pub fn build_all(
         offset_faces: Vec::new(),
         combines: Vec::new(),
         moves: Vec::new(),
+        points: Vec::new(),
         timeline: timeline.to_vec(),
     });
     while b.step(std::time::Duration::MAX) {}
@@ -3736,6 +3774,35 @@ mod tests {
         assert!(o.distance(DVec3::ZERO) < 1e-9 && (d - DVec3::new(20.0, 10.0, 5.0).normalize()).length() < 1e-9, "corner to corner");
         let (o, d) = m.axes[1].unwrap();
         assert!(d.cross(DVec3::Z).length() < 1e-9 && (o - DVec3::new(40.0, 5.0, o.z)).length() < 1e-9, "the cylinder's own axis");
+    }
+
+    #[test]
+    fn construction_points_sit_on_corners_and_circle_centres_and_planes_go_through_them() {
+        use crate::model::{ConstructionPoint, PlaneKind, PointKind, PointRef};
+        let mut a = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut a, 0.0, 0.0, 20.0, 10.0);
+        circle(&mut a, 40.0, 5.0, 3.0);
+        let base = build4(&[a.clone()], &[ex(0, vec![0, 1], 5.0, Operation::NewBody)], &[], &timeline(1, 1));
+        let rim = base.bodies.iter().flat_map(|b| &b.edges).find(|e| matches!(e.geom, Geom::Circle { center, .. } if (center.z - 5.0).abs() < 1e-9)).expect("the shaft's top rim").at;
+        let points = vec![
+            ConstructionPoint { name: "P1".into(), kind: PointKind::Corner(DVec3::new(20.3, 10.2, 5.1)) },
+            ConstructionPoint { name: "P2".into(), kind: PointKind::CircleCentre(rim) },
+        ];
+        let plane = PlaneFeature { name: "Through".into(), base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: false, offset: 0.0, anchor: [0.0; 2], extent: [0.0; 4], angle: None,
+            kind: Some(PlaneKind::ThreePoints([PointRef::Point(0), PointRef::Point(1), PointRef::Corner(DVec3::new(0.0, 0.0, 5.0))])) };
+        let mut b = Build::start(BuildInputs {
+            sketches: vec![a], extrudes: vec![ex(0, vec![0, 1], 5.0, Operation::NewBody)], revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![],
+            plane_features: vec![plane], removes: vec![], holes: vec![], thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points,
+            timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Point(0), Feature::Point(1), Feature::Plane(0)],
+        });
+        while b.step(std::time::Duration::MAX) {}
+        let m = b.finish();
+        assert_eq!(m.point_errors, vec![None, None]);
+        assert!(m.points[0].unwrap().distance(DVec3::new(20.0, 10.0, 5.0)) < 1e-9, "on the nearest corner");
+        assert!(m.points[1].unwrap().distance(DVec3::new(40.0, 5.0, 5.0)) < 1e-9, "at the rim's centre");
+        // All three are at z = 5: the plane is the top.
+        let f = m.planes[0].expect("built");
+        assert!(f.normal().cross(DVec3::Z).length() < 1e-9 && (f.origin.dot(f.normal()) * f.normal().z - 5.0).abs() < 1e-9);
     }
 
     #[test]

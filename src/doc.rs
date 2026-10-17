@@ -41,6 +41,8 @@ pub enum Feature {
     Combine(usize),
     /// Bodies moved, or moved copies made (index into `moves`).
     Move(usize),
+    /// A construction point (index into `points`).
+    Point(usize),
 }
 
 /// Put `f` into the timeline at the rollback marker (the end when there is
@@ -232,6 +234,9 @@ pub struct Document {
     /// Move/Copy features. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub moves: Vec<crate::model::MoveFeature>,
+    /// Construction points. Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<crate::model::ConstructionPoint>,
     /// Section Analyses (the browser's Analysis folder). Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<crate::model::SectionAnalysis>,
@@ -631,6 +636,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     let mut seen_of = vec![false; doc.offset_faces.len()];
     let mut seen_cb = vec![false; doc.combines.len()];
     let mut seen_mv = vec![false; doc.moves.len()];
+    let mut seen_pt = vec![false; doc.points.len()];
     for f in &doc.timeline {
         let slot = match *f {
             Feature::Sketch(i) => seen_s.get_mut(i),
@@ -647,6 +653,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Feature::OffsetFace(i) => seen_of.get_mut(i),
             Feature::Combine(i) => seen_cb.get_mut(i),
             Feature::Move(i) => seen_mv.get_mut(i),
+            Feature::Point(i) => seen_pt.get_mut(i),
         };
         match slot {
             Some(s) if !*s => *s = true,
@@ -656,7 +663,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     if doc.suppressed.iter().any(|f| !doc.timeline.contains(f)) {
         return Err("a suppressed feature isn't in the timeline".into());
     }
-    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).chain(&seen_sh).chain(&seen_of).chain(&seen_cb).chain(&seen_mv).any(|s| !s) {
+    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).chain(&seen_sh).chain(&seen_of).chain(&seen_cb).chain(&seen_mv).chain(&seen_pt).any(|s| !s) {
         return Err("timeline is missing a feature".into());
     }
     Ok(())
@@ -795,6 +802,7 @@ mod tests {
             combines: Vec::new(),
             moves: Vec::new(),
             sections: Vec::new(),
+            points: Vec::new(),
             parameters: Vec::new(),
             feature_exprs: Vec::new(),
             units: crate::units::Unit::Mm,

@@ -12,10 +12,6 @@ the spec for each.
 
 **Viewing / selection**
 
-**Construction geometry**
-16. **Midplane**, **Plane through 3 points**, **Tangent plane**; **Axis
-    through 2 points / through a cylinder**; **Construction point**.
-
 **Shapes Extrude/Revolve can't make**
 17. **Sweep** (profile along a path) and **Loft** (between profiles, rails).
 18. **Coil** / **Pipe**.
@@ -41,6 +37,7 @@ sheet metal, surfaces, CAM.
 
 ## Done
 
+- 16 Construction geometry: Midplane (two planes/faces; bisects meeting ones), Plane Through Three Points, Tangent Plane, Axis Through Cylinder, Axis Through Two Points, Construction Point (corner or circle centre; three-point planes and two-point axes can use it). All follow the part (corners/edges/cylinders found again each build). Checked in the running app.
 - 15 Vertex picking and box select: body corners light up and select (X/Y/Z, or distance and deltas between two); Shift+drag in solid mode boxes (left to right: wholly inside — a whole body as a body with volume/area; right to left: faces it touches, front-facing). Checked in the running app.
 - 14 Display modes and Section Analysis: Visual style (Shaded, Visible Edges, Hidden Edges, Wireframe) in the view cube menu; Inspect → Section Analysis cuts the view exactly (OpenCASCADE) along an origin/construction plane or flat face at a distance, flip, cut faces coloured, kept in the Analysis folder (eye, edit, delete). Checked in the running app.
 - 13 Fit and named views: F6 / double-click the wheel / view cube menu fits every visible body and sketch (same direction, a margin); browser Named Views (TOP, FRONT, RIGHT, HOME; right-click the folder to save the view, right-click one to rename/update/delete; saved with the design). Checked in the running app.

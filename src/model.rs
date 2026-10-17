@@ -486,6 +486,23 @@ pub struct AxisFeature {
 pub enum PointRef {
     Origin,
     Corner(DVec3),
+    /// A construction point (index into the design's points).
+    Point(usize),
+}
+
+/// A construction point (Fusion's Point at Vertex / at Center of Circle).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ConstructionPoint {
+    pub name: String,
+    pub kind: PointKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum PointKind {
+    /// At a body corner (the nearest corner, found again every build).
+    Corner(DVec3),
+    /// At the centre of a circular edge (found again as edges are).
+    CircleCentre(EdgeRef),
 }
 
 /// How a construction axis is made, besides along an edge.

@@ -725,6 +725,7 @@ impl OpenCad {
                     ToolItem { name: "Plane Through Three Points", icon: Icon::Plane3Points, tip: "Plane Through Three Points: click three body corners", enabled: has_bodies, on: matches!(self.construct_pick, Some(ConstructPick::ThreePoints(_))) },
                     ToolItem { name: "Tangent Plane", icon: Icon::TangentPlane, tip: "Tangent Plane: click a cylinder where the plane should touch it", enabled: has_bodies, on: self.construct_pick == Some(ConstructPick::Tangent) },
                     ToolItem { name: "Axis Through Cylinder", icon: Icon::AxisCylinder, tip: "Axis Through Cylinder: click a hole or shaft", enabled: has_bodies, on: self.construct_pick == Some(ConstructPick::AxisCylinder) },
+                    ToolItem { name: "Point", icon: Icon::ConstructPoint, tip: "Construction Point: click a body corner, or a round edge (its centre)", enabled: has_bodies, on: self.point_pick },
                     ToolItem { name: "Axis Through Two Points", icon: Icon::Axis2Points, tip: "Axis Through Two Points: click two body corners", enabled: has_bodies, on: matches!(self.construct_pick, Some(ConstructPick::AxisTwoPoints(_))) },
                 ];
                 let construct = tool_group(ui, "CONSTRUCT", "Solid ", &items, &[], hidden, order);
@@ -769,6 +770,11 @@ impl OpenCad {
                         let was = self.axis_pick;
                         self.cancel_all_dialogs();
                         self.axis_pick = !was;
+                    }
+                    Some("Point") => {
+                        let was = self.point_pick;
+                        self.cancel_all_dialogs();
+                        self.point_pick = !was;
                     }
                     Some(name @ ("Midplane" | "Plane Through Three Points" | "Tangent Plane" | "Axis Through Cylinder" | "Axis Through Two Points")) => {
                         let pick = match name {
