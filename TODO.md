@@ -18,6 +18,7 @@ sheet metal, surfaces, CAM.
 
 ## Done
 
+- Assemblies, first steps: Components (right-click bodies or ASSEMBLE → New Component; browser rows with show/hide, select, rename, Move/Copy, Dissolve) and Joints (ASSEMBLE → Joint: corner / round-edge centre / face spot on the moving part, then on another part; rigid, revolute, slider with angle and offset, flip; moves the whole component; a timeline feature). Not yet: joint limits, animating motion, cylindrical/pin-slot/planar/ball, as-built joints, components owning sketches/features.
 - Polish: export writes only visible bodies; a typed circle size dropped by clicking away now says so; tangent-circle errors in red; construction points listed in the browser (show/hide, delete).
 - 21 Inspect: body right-click → Physical Material (17 materials, Steel by default, saved per body) and Properties (material, density, mass, volume, area, centre of mass, exact bounding box); INSPECT → Interference (overlaps between visible bodies, exact volumes, shown in red, recomputed when bodies change). Checked in the running app.
 - 20 Import and 2-D export: File → Insert into Design (STEP exact; STL triangles joined into a solid, coplanar ones merged; open meshes refused with a reason), kept inside the design as an Import timeline feature; sketch right-click → Save As DXF / SVG (lines, circles, arcs exact; splines, ellipses, text as polylines; construction left out). Checked in the running app (OCCT sample STEP/STL; DXF checked with ezdxf).
