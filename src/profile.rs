@@ -33,6 +33,10 @@ pub enum Curve {
     /// Part of an ellipse round `center`: `axis` its longer semi-axis (as a
     /// vector), `minor` the shorter one's length.
     Ellipse { center: DVec2, axis: DVec2, minor: f64 },
+    /// Part of text entity `e`'s letters: `curve` 0 for a straight piece
+    /// (each its own edge), else the number of the font curve it's on (a
+    /// run of one number is one smooth curve).
+    Text { e: usize, curve: u32 },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -103,6 +107,25 @@ fn triangulate(loops: &[&[DVec2]]) -> (Vec<DVec2>, Vec<[usize; 3]>) {
 }
 
 impl Region {
+    /// The text entity this region is a letter (or part of one) of: all its
+    /// edges come from that text. Picking one picks the whole text, as in Fusion.
+    pub fn text_entity(&self) -> Option<usize> {
+        let mut all = self.outer_curves.iter().chain(self.hole_curves.iter().flatten());
+        let Some(&Curve::Text { e, .. }) = all.next() else { return None };
+        all.all(|c| matches!(c, Curve::Text { e: f, .. } if *f == e)).then_some(e)
+    }
+
+    /// Is this region part of text `e`'s letters themselves (inside an odd
+    /// number of its outlines) rather than the space inside an O or an 8?
+    pub fn is_text_ink(&self, sk: &Sketch, e: usize) -> bool {
+        // A point surely inside the region: the middle of its biggest triangle.
+        let (verts, tris) = self.triangulate();
+        let area = |t: &[usize; 3]| (verts[t[1]] - verts[t[0]]).perp_dot(verts[t[2]] - verts[t[0]]).abs();
+        let Some(t) = tris.iter().max_by(|a, b| area(a).total_cmp(&area(b))) else { return false };
+        let p = (verts[t[0]] + verts[t[1]] + verts[t[2]]) / 3.0;
+        sk.text_contours(e).iter().filter(|c| point_in_polygon(p, &c.pts)).count() % 2 == 1
+    }
+
     pub fn loops(&self) -> Vec<&[DVec2]> {
         std::iter::once(self.outer.as_slice()).chain(self.holes.iter().map(|h| h.as_slice())).collect()
     }
@@ -344,6 +367,19 @@ fn arrangement(sk: &Sketch) -> (Graph, Vec<(DVec2, f64)>) {
                     }
                 }
             }
+            // Text goes in as its letters' outlines.
+            Entity::Text { .. } => {
+                for c in sk.text_contours(i) {
+                    let n = c.pts.len();
+                    for k in 0..n {
+                        let (a, b) = (c.pts[k], c.pts[(k + 1) % n]);
+                        if a.distance(b) > TOL {
+                            lines.push((a, b));
+                            line_tags.push(Curve::Text { e: i, curve: c.curve[k] });
+                        }
+                    }
+                }
+            }
             Entity::Circle { .. } | Entity::Point { .. } => {}
         }
     }
@@ -561,6 +597,7 @@ fn region_key(sk: &Sketch) -> Vec<u64> {
             Entity::Arc { center, a, b } => (3, center as u64, a as u64, b as u64),
             Entity::Spline { s } => (4, s as u64, 0, 0),
             Entity::Ellipse { center, major, minor } => (5, center as u64, major as u64, minor as u64),
+            Entity::Text { anchor, t } => (6, anchor as u64, t as u64, 0),
         };
         k.extend([tag, a, b, c, sk.is_construction(i) as u64]);
     }
@@ -572,6 +609,12 @@ fn region_key(sk: &Sketch) -> Vec<u64> {
     k.extend(sk.spline_tangents.iter().flat_map(|&(p, t)| [p as u64, t.x.to_bits(), t.y.to_bits()]));
     k.push(u64::MAX);
     k.extend(sk.control_splines.iter().flat_map(|&(s, d)| [s as u64, d as u64]));
+    for st in &sk.texts {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (&st.text, &st.font, st.bold, st.italic).hash(&mut h);
+        k.extend([u64::MAX - 2, h.finish(), st.height.to_bits(), st.angle.to_bits()]);
+    }
     k
 }
 

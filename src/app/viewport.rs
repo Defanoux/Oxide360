@@ -819,14 +819,23 @@ impl OpenCad {
             }
             if response.clicked() && near_arrow(hover_px, &self.arrows).is_none() {
                 self.focus_distance();
-                if let (Some((s, ri)), Some((sketch, profiles))) = (hover_profile, self.profile_pick_mut()) {
+                // A letter of a text: the whole text (its letters, not the space inside them), as in Fusion.
+                let group: Vec<usize> = hover_profile.map_or(Vec::new(), |(s, ri)| {
+                    let sk = &self.sketches[s];
+                    let regions = find_regions(sk);
+                    match regions.get(ri).and_then(|r| r.text_entity()).filter(|&e| regions[ri].is_text_ink(sk, e)) {
+                        Some(e) => (0..regions.len()).filter(|&k| regions[k].text_entity() == Some(e) && regions[k].is_text_ink(sk, e)).collect(),
+                        None => vec![ri],
+                    }
+                });
+                if let (Some((s, _)), Some((sketch, profiles))) = (hover_profile, self.profile_pick_mut()) {
                     if *sketch != Some(s) {
                         *sketch = Some(s);
-                        *profiles = vec![ri];
-                    } else if let Some(pos) = profiles.iter().position(|&p| p == ri) {
-                        profiles.remove(pos);
+                        *profiles = group;
+                    } else if group.iter().all(|r| profiles.contains(r)) {
+                        profiles.retain(|r| !group.contains(r));
                     } else {
-                        profiles.push(ri);
+                        profiles.extend(group.into_iter().filter(|r| !profiles.contains(r)).collect::<Vec<_>>());
                     }
                 }
             }
@@ -1445,8 +1454,17 @@ impl OpenCad {
                             if !sk.is_fixed(p) {
                                 self.undo.push(sk.clone());
                                 self.drag = Some(p);
+                                self.drag_offset = DVec2::ZERO;
                             }
                         } else if let (Some(Sel::Entity(e)), Some(q)) = (raw_press.and_then(|q| sk.hit(q, SNAP_PX as f64 * mm_per_px)), raw_press) {
+                            // Dragging text moves its point, from where it was grabbed.
+                            if let Some(&Entity::Text { anchor, .. }) = sk.entities.get(e) {
+                                if !sk.is_fixed(anchor) {
+                                    self.undo.push(sk.clone());
+                                    self.drag = Some(anchor);
+                                    self.drag_offset = sk.points[anchor] - q;
+                                }
+                            }
                             // Dragging a line moves it with the cursor, keeping its constraints.
                             if let Some(&Entity::Line { a, b }) = sk.entities.get(e) {
                                 if sk.points[a].distance(sk.points[b]) > 0.0 {
@@ -1490,6 +1508,7 @@ impl OpenCad {
                     }
                     if let (Some(p), Some(target)) = (self.drag, raw_hover) {
                         if response.dragged_by(egui::PointerButton::Primary) {
+                            let target = target + self.drag_offset;
                             let target = if self.grid_snap { grid.snap(target) } else { target };
                             // Follows the cursor as far as the constraints allow.
                             let _ = solver::drag(&mut self.sketches[i], p, target);
@@ -1547,6 +1566,14 @@ impl OpenCad {
                         self.label_drag = None;
                         if let Some(ci) = over_label {
                             edit_value(self, ci);
+                        }
+                    } else if let (true, Some(Sel::Entity(e)), false) = (response.double_clicked(), hovered, self.label_carry) {
+                        // Double-click text: edit it (Fusion's Edit Text); anything else: its whole chain.
+                        if matches!(self.sketches[i].entities.get(e), Some(Entity::Text { .. })) {
+                            self.open_text_dialog(e, false);
+                        } else {
+                            self.editor.selection = self.sketches[i].connected(Sel::Entity(e));
+                            self.dim_selection.clear();
                         }
                     } else if response.double_clicked() && hovered.is_some() && !self.label_carry {
                         // Double-click: the whole chain joined to what's under the cursor.
@@ -1810,6 +1837,7 @@ impl OpenCad {
                 | Tool::Rectangle3Point
                 | Tool::RectangleCenter
                 | Tool::Point
+                | Tool::Text
                 | Tool::Circle
                 | Tool::Circle2Point
                 | Tool::Circle3Point
@@ -1936,6 +1964,10 @@ impl OpenCad {
                                 }
                             });
                             self.report(r);
+                            // Text was placed: say what it is.
+                            if let Some(e) = self.editor.placed_text.take() {
+                                self.open_text_dialog(e, true);
+                            }
                             // Sizes typed as expressions: their dimensions follow the parameters.
                             if let (Some(l), Some(t)) = (length, self.line_length_text.take()) {
                                 self.link_new_dimension(l, &t);
@@ -2775,6 +2807,22 @@ impl OpenCad {
                             }
                         }
                     }
+                    // Text: its letters' outlines; selected or under the cursor, its box too (dashed).
+                    Entity::Text { .. } => {
+                        for c in sk.text_contours(e) {
+                            let n = c.pts.len();
+                            for k in 0..n {
+                                if !dashed || k % 2 == 0 {
+                                    view.line(plane.to_world(c.pts[k]), plane.to_world(c.pts[(k + 1) % n]), stroke);
+                                }
+                            }
+                        }
+                        if let (true, Some(b)) = (col != base, sk.text_box(e)) {
+                            for k in 0..4 {
+                                view.dashed(plane.to_world(b[k]), plane.to_world(b[(k + 1) % 4]), Stroke::new(1.0, col));
+                            }
+                        }
+                    }
                 }
             }
             if active {
@@ -2887,7 +2935,7 @@ impl OpenCad {
                                     view.line(plane.to_world(w[0]), plane.to_world(w[1]), stroke);
                                 }
                             }
-                            Entity::Point { .. } | Entity::Ellipse { .. } => {}
+                            Entity::Point { .. } | Entity::Ellipse { .. } | Entity::Text { .. } => {}
                         }
                     }
                 }
@@ -3061,6 +3109,12 @@ impl OpenCad {
                     Entity::Spline { s } => {
                         let curve = sk.spline_curve(s);
                         if let Some(px) = curve.get(curve.len() / 2).and_then(|&m| view.project(plane.to_world(m))) {
+                            place(g, px, Vec2::new(0.0, -1.0), 8.0);
+                        }
+                    }
+                    // Over the top of its box.
+                    Entity::Text { .. } => {
+                        if let Some(px) = sk.text_box(e).and_then(|b| view.project(plane.to_world(b[2].lerp(b[3], 0.5)))) {
                             place(g, px, Vec2::new(0.0, -1.0), 8.0);
                         }
                     }

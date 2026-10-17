@@ -212,6 +212,7 @@ impl OpenCad {
     /// Returns the index of a removed sketch so callers can fix up indices.
     pub(crate) fn finish_sketch(&mut self) -> Option<usize> {
         self.cancel_sketch_pattern();
+        self.text_dialog = None; // (its text is in the sketch already)
         let i = self.active.take()?;
         self.editor = Editor::default();
         self.undo.clear();
@@ -569,6 +570,43 @@ impl OpenCad {
         } else {
             self.editor.construction = !self.editor.construction;
             self.notify(if self.editor.construction { "Construction mode on: new geometry is construction" } else { "Construction mode off" }.into());
+        }
+    }
+
+    /// Open the Text dialog on text entity `e` of the open sketch (`new`: just placed).
+    pub(crate) fn open_text_dialog(&mut self, e: usize, new: bool) {
+        let Some(i) = self.active else { return };
+        self.text_dialog = text_dialog::TextDialog::new(&self.sketches[i], e, new);
+    }
+
+    /// The Text dialog after a frame: its values go into the sketch as you
+    /// type; OK keeps them, Cancel puts the sketch back (a new text goes).
+    pub(crate) fn text_dialog_step(&mut self, act: copy_dialog::Action) {
+        let (Some(i), Some(d)) = (self.active, self.text_dialog.as_ref()) else { return };
+        if !matches!(self.sketches[i].entities.get(d.entity), Some(sketch::Entity::Text { .. })) {
+            self.text_dialog = None; // (deleted or undone meanwhile)
+            return;
+        }
+        match act {
+            copy_dialog::Action::Cancel => {
+                let d = self.text_dialog.take().expect("checked above");
+                self.sketches[i] = d.before;
+                if d.new {
+                    self.sketches[i].delete(&[Sel::Entity(d.entity)]);
+                }
+                self.editor.selection.clear();
+            }
+            _ => {
+                let mut sk = self.sketches[i].clone();
+                d.apply(&mut sk);
+                if sk != self.sketches[i] {
+                    self.sketches[i] = sk;
+                }
+                if matches!(act, copy_dialog::Action::Ok) {
+                    self.editor.text_height = d.text.height;
+                    self.text_dialog = None;
+                }
+            }
         }
     }
 

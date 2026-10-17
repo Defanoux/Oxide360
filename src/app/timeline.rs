@@ -99,6 +99,7 @@ impl OpenCad {
                         round(c, r, a0, sweep)
                     }
                     sketch::Entity::Point { p } => return Some(Picked { pick, ..Picked::point(w(sk.points[p])) }),
+                    sketch::Entity::Text { anchor, .. } => return Some(Picked { pick, ..Picked::point(w(sk.points[anchor])) }),
                     sketch::Entity::Ellipse { .. } => {
                         let pts: Vec<DVec3> = sk.ellipse_curve(entity).into_iter().map(w).collect();
                         let length = pts.windows(2).map(|q| q[0].distance(q[1])).sum();

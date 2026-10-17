@@ -144,7 +144,7 @@ impl Sketch {
                         }
                     }
                 }
-                Entity::Point { .. } => {}
+                Entity::Point { .. } | Entity::Text { .. } => {}
             }
         }
         let Some((_, x, other, join)) = best else {
@@ -275,7 +275,7 @@ impl Sketch {
                 let off = at.distance(self.points[center]) - radius;
                 (if off < 0.0 { 1.0 } else { -1.0 }, off.abs())
             }
-            Entity::Point { .. } | Entity::Spline { .. } | Entity::Ellipse { .. } => (1.0, 0.0),
+            Entity::Point { .. } | Entity::Spline { .. } | Entity::Ellipse { .. } | Entity::Text { .. } => (1.0, 0.0),
         }
     }
 

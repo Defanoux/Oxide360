@@ -103,6 +103,11 @@ fn copy_chosen(
                 }
                 Entity::Spline { s: sk.splines.len() - 1 }
             }
+            // (Copied upright: letters aren't mirrored.)
+            Entity::Text { anchor, t } => {
+                sk.texts.push(sk.texts[t].clone());
+                Entity::Text { anchor: image(sk, anchor), t: sk.texts.len() - 1 }
+            }
         };
         let was_construction = sk.is_construction(e);
         sk.entities.push(copy);

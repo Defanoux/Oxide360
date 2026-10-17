@@ -28,6 +28,7 @@ pub enum Icon {
     Symmetric,
     ArcTangent,
     Ellipse,
+    Text,
     Break,
     ControlSpline,
     Plane,
@@ -631,6 +632,13 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             painter.add(egui::Shape::line(pts, Stroke::new(thin.width * 1.2, orange)));
             dot(0.5, 0.5, ink);
         }
+        Icon::Text => {
+            // An outlined capital A on a baseline, its start point marked.
+            let s = Stroke::new(thin.width * 1.2, orange);
+            outline(&[(0.14, 0.86), (0.42, 0.12), (0.58, 0.12), (0.86, 0.86), (0.7, 0.86), (0.62, 0.64), (0.38, 0.64), (0.3, 0.86)], s);
+            outline(&[(0.44, 0.5), (0.5, 0.32), (0.56, 0.5)], s);
+            dot(0.14, 0.86, ink);
+        }
         Icon::ArcTangent => {
             // A line running into an arc that leaves it smoothly.
             line((0.08, 0.8), (0.45, 0.8), Stroke::new(thin.width * 1.2, ink));
@@ -898,7 +906,7 @@ mod shot_tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [520, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text] {
                     button(ui, icon, "", true, false);
                 }
             });

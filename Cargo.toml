@@ -19,6 +19,9 @@ wgpu = "30.0.1"
 # fixes for OCCT 7.9 / CMake 4 — see "opencad patch" comments in vendor/.
 opencascade = { path = "vendor/opencascade", default-features = false }
 glam24 = { package = "glam", version = "0.24" }
+# Sketch text: letter outlines from fonts (both already part of egui).
+ab_glyph = "0.2.32"
+epaint_default_fonts = "0.36.2"
 
 [dev-dependencies]
 pollster = "0.4"

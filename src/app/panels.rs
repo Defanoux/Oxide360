@@ -585,6 +585,7 @@ impl OpenCad {
                         on: Tool::SPLINES.contains(&t),
                     },
                     ToolItem { name: "Ellipse", icon: Icon::Ellipse, tip: "Ellipse: click the centre, the end of one axis, then how wide", enabled: true, on: t == Tool::Ellipse },
+                    ToolItem { name: "Text", icon: Icon::Text, tip: "Text: click where it starts, then type it; its letters are profiles to extrude. Double-click text to edit it", enabled: true, on: t == Tool::Text || self.text_dialog.is_some() },
                 ];
                 let picked = tool_group(ui, "CREATE", "", &items, &families, &mut self.toolbar_hidden, &mut self.toolbar_order);
                 let kind = picked.and_then(|name| Tool::RECTANGLES.into_iter().chain(Tool::CIRCLES).chain(Tool::ARCS).chain(Tool::POLYGONS).chain(Tool::SPLINES).find(|k| k.name() == name));
@@ -614,6 +615,7 @@ impl OpenCad {
                     (Some("Slot"), _) => self.editor.set_tool(Tool::Slot),
                     (Some("Spline"), _) => self.editor.set_tool(spline_tool),
                     (Some("Ellipse"), _) => self.editor.set_tool(Tool::Ellipse),
+                    (Some("Text"), _) => self.editor.set_tool(Tool::Text),
                     _ => {}
                 }
                 let _ = i;

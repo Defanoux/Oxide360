@@ -10,9 +10,6 @@ the spec for each.
 
 **Core solid tools (the gaps you hit modelling a real part)**
 
-**Sketch gaps**
-12. **Sketch Text** (font outlines → profiles, extrudable).
-
 **Viewing / selection**
 13. **Zoom to fit** (F6 / double-middle-click) and named views (Front, Top,
     Right, Home) on the view cube's menu.
@@ -49,6 +46,7 @@ sheet metal, surfaces, CAM.
 
 ## Done
 
+- 12 Sketch Text: Text tool (click where it starts) and dialog (text, height = capital height, angle, font from the machine's fonts via fontconfig plus egui's bundled ones, bold/italic); its point drags and takes constraints, double-click edits; letters are profiles (font curves smooth in the solid), and picking one letter in Extrude picks the whole text.
 - Solid-mode selection with quick stats (Gavin asked): click a body edge or face (Shift/Ctrl adds, empty space or Esc clears); bottom right shows length, a circle's diameter and circumference, a face's area (a cylinder's diameter), or totals for several.
 - Project from round edges (the view's single-precision circle was refused as "moved"; now checked to 0.001 mm and snapped exact by the build); Fit Point and Control Point Spline are one Spline tool with a ▾.
 - Toolbar fixes (Gavin asked): greyed-out tools can still be right-clicked off the toolbar and their icons are fully grey; sketch CREATE is a normal group whose Rectangle, Circle, Arc and Polygon are one tool each (the kind used last, ▾ for the others; tucked away, their row opens the kinds); editing a sketch builds the part only up to it (Fusion's roll back), so edges from earlier features project.

@@ -54,6 +54,8 @@ mod sketch;
 mod sketch_pattern;
 mod solver;
 mod threads;
+mod text;
+mod text_dialog;
 #[cfg(test)]
 mod ui_shot;
 mod view;
@@ -647,6 +649,7 @@ struct OpenCad {
     dof: Option<usize>,
     message: Option<String>,
     drag: Option<PointId>,
+    drag_offset: DVec2, // where the point is from the cursor while dragging it (text is grabbed anywhere)
     dialog: Option<ExtrudeDialog>,
     float: Option<FloatEdit>,
     float_anchor: Option<egui::Pos2>,
@@ -745,6 +748,7 @@ struct OpenCad {
     hinge_hover: Option<(model::Hinge, DVec3, DVec3, DVec3)>, // the line under the cursor: what, its ends, the 0° normal
     revolve_errors: Vec<Option<String>>,
     sketch_pattern: Option<SketchPattern>,   // an open Rectangular / Circular Pattern in a sketch
+    text_dialog: Option<text_dialog::TextDialog>, // the Text dialog, on a text in the open sketch
     offset_preview: Option<Sketch>,          // the sketch with the offset the cursor would make
     cut_preview: Option<(Tool, sketch::TrimPiece)>, // what Trim would cut / Extend would add, under the cursor
     break_marks: Vec<DVec2>,                  // where Break would split what's under the cursor
@@ -842,6 +846,7 @@ impl Default for OpenCad {
             dof: None,
             message: None,
             drag: None,
+            drag_offset: DVec2::ZERO,
             dialog: None,
             float: None,
             float_anchor: None,
@@ -943,6 +948,7 @@ impl Default for OpenCad {
             hinge_hover: None,
             revolve_errors: Vec::new(),
             sketch_pattern: None,
+            text_dialog: None,
             offset_preview: None,
             break_marks: Vec::new(),
             cut_preview: None,
@@ -1178,7 +1184,12 @@ impl OpenCad {
                 .collapsible(false)
                 .default_width(240.0)
         };
-        if self.sketch_pattern.is_some() && self.active.is_some() {
+        if self.text_dialog.is_some() && self.active.is_some() {
+            float("text").show(&ctx, |ui| {
+                let act = self.text_dialog.as_mut().map_or(copy_dialog::Action::None, |d| d.panel(ui, design_units));
+                self.text_dialog_step(act);
+            });
+        } else if self.sketch_pattern.is_some() && self.active.is_some() {
             float("sketch_pattern").show(&ctx, |ui| {
                 let error = self.sketch_pattern.as_ref().and_then(|d| d.preview().err());
                 if let Some(d) = self.sketch_pattern.as_mut() {

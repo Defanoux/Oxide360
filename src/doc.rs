@@ -377,6 +377,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
                 Entity::Arc { center, a, b } => center < np && a < np && b < np && a != b && a != center && b != center,
                 Entity::Spline { s } => sk.splines.get(s).is_some_and(|l| l.len() >= 2 && l.iter().all(|&p| p < np) && l.windows(2).all(|w| w[0] != w[1])),
                 Entity::Ellipse { center, major, minor } => center < np && major < np && minor < np && center != major && center != minor && major != minor,
+                Entity::Text { anchor, t } => anchor < np && sk.texts.get(t).is_some_and(|st| finite(st.height) && st.height > 0.0 && finite(st.angle)),
             };
             if !sk.spline_tangents.iter().all(|&(p, t)| p < np && t.is_finite()) {
                 return Err(err("a spline handle is on a point that isn't there".into()));

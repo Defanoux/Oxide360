@@ -235,6 +235,28 @@ pub enum Entity {
     /// An ellipse round `center`: one semi-axis out to `major`, the other
     /// out to `minor` (the solver keeps the two square to each other).
     Ellipse { center: PointId, major: PointId, minor: PointId },
+    /// Text (`Sketch::texts[t]`): its first line's baseline starts at
+    /// `anchor`, an ordinary point (it drags and takes constraints). Its
+    /// letters' outlines are closed curves, so they make profiles.
+    Text { anchor: PointId, t: usize },
+}
+
+/// What a sketch text says and how it looks (see `Entity::Text`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SketchText {
+    pub text: String,
+    /// How tall its capital letters are (mm).
+    pub height: f64,
+    /// The font family (from the machine's fonts; another machine without
+    /// it shows the bundled font).
+    pub font: String,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
+    /// Turned counter-clockwise about its anchor (degrees).
+    #[serde(default)]
+    pub angle: f64,
 }
 
 /// Geometric constraints. Each (except Fix) is one equation for the solver.
@@ -429,6 +451,9 @@ pub struct Sketch {
     /// the part. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub projections: Vec<(EntityId, crate::model::EdgeRef)>,
+    /// Each text's words and style (see `Entity::Text`). Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub texts: Vec<SketchText>,
     /// A unit a dimension was typed in that differs from the design's ("1 in"
     /// in a mm design), by constraint index: it keeps showing in that unit.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -793,6 +818,7 @@ impl Sketch {
             spline_tangents: Vec::new(),
             control_splines: Vec::new(),
             projections: Vec::new(),
+            texts: Vec::new(),
             construction: Vec::new(),
         }
     }
@@ -951,8 +977,54 @@ impl Sketch {
             Some(&Entity::Point { p }) => vec![p],
             Some(&Entity::Spline { s }) => self.splines.get(s).cloned().unwrap_or_default(),
             Some(&Entity::Ellipse { center, major, minor }) => vec![center, major, minor],
+            Some(&Entity::Text { anchor, .. }) => vec![anchor],
             None => Vec::new(),
         }
+    }
+
+    /// Add text with its first line's baseline starting at `at` (a new
+    /// point, or one already there). Returns the new entity.
+    pub fn add_text(&mut self, at: Anchor, st: SketchText) -> EntityId {
+        let anchor = self.resolve(at);
+        self.texts.push(st);
+        self.entities.push(Entity::Text { anchor, t: self.texts.len() - 1 });
+        self.entities.len() - 1
+    }
+
+    /// What text entity `e` says, to change it (None for anything else).
+    pub fn text_mut(&mut self, e: EntityId) -> Option<&mut SketchText> {
+        let Some(&Entity::Text { t, .. }) = self.entities.get(e) else { return None };
+        self.texts.get_mut(t)
+    }
+
+    /// A text's letter outlines where they are in the sketch (empty for anything else).
+    pub fn text_contours(&self, e: EntityId) -> Vec<crate::text::Contour> {
+        let Some((o, turn, st)) = self.text_place(e) else { return Vec::new() };
+        crate::text::layout(&st.text, &st.font, st.bold, st.italic, st.height)
+            .into_iter()
+            .map(|c| crate::text::Contour { pts: c.pts.iter().map(|&p| o + turn.rotate(p)).collect(), curve: c.curve })
+            .collect()
+    }
+
+    /// Where a text is: its anchor, its turn (as a unit vector), what it says.
+    fn text_place(&self, e: EntityId) -> Option<(DVec2, DVec2, &SketchText)> {
+        let Some(&Entity::Text { anchor, t }) = self.entities.get(e) else { return None };
+        let st = self.texts.get(t)?;
+        Some((self.points[anchor], DVec2::from_angle(st.angle.to_radians()), st))
+    }
+
+    /// A text's box (anchor side bottom-left first, counter-clockwise), for
+    /// picking and drawing; an empty text is a box as tall as its letters.
+    pub fn text_box(&self, e: EntityId) -> Option<[DVec2; 4]> {
+        let (o, turn, st) = self.text_place(e)?;
+        let laid = crate::text::layout(&st.text, &st.font, st.bold, st.italic, st.height);
+        let (mut lo, mut hi) = laid.iter().flat_map(|c| &c.pts).fold((DVec2::splat(f64::MAX), DVec2::splat(f64::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+        if lo.x > hi.x {
+            (lo, hi) = (DVec2::ZERO, DVec2::new(0.6, 1.0) * st.height);
+        }
+        // From the baseline at least, so the box starts at the anchor's height.
+        lo = DVec2::new(lo.x.min(0.0), lo.y.min(0.0));
+        Some([lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y)].map(|p| o + turn.rotate(p)))
     }
 
     /// An ellipse's shape: (centre, unit direction of its *longer* axis,
@@ -1054,6 +1126,8 @@ impl Sketch {
                     Entity::Point { .. } => f64::INFINITY, // picked as its point
                     Entity::Spline { s } => crate::spline::distance(&self.spline_fit(s), p),
                     Entity::Ellipse { .. } => polyline_distance(&self.ellipse_curve(id), p),
+                    // Text: anywhere in its box.
+                    Entity::Text { .. } => self.text_box(id).map_or(f64::INFINITY, |b| if crate::profile::point_in_polygon(p, &b) { 0.0 } else { polyline_distance(&[b[0], b[1], b[2], b[3], b[0]], p) }),
                     Entity::Arc { .. } => {
                         let (c, r, a0, sweep) = self.arc_geometry(id).expect("an arc");
                         let ang = (p - c).y.atan2((p - c).x);
@@ -1112,6 +1186,11 @@ impl Sketch {
                     let pts = self.ellipse_curve(e);
                     if crossing { pts.windows(2).any(|w| segment_touches_rect(w[0], w[1], lo, hi)) } else { pts.iter().all(|&p| inside(p)) }
                 }
+                Entity::Text { .. } => {
+                    let Some(b) = self.text_box(e) else { continue };
+                    let edges = [b[0], b[1], b[2], b[3], b[0]];
+                    if crossing { edges.windows(2).any(|w| segment_touches_rect(w[0], w[1], lo, hi)) } else { b.iter().all(|&p| inside(p)) }
+                }
                 Entity::Arc { .. } => {
                     let Some((c, r, a0, sweep)) = self.arc_geometry(e) else { continue };
                     let pts: Vec<DVec2> = (0..=48).map(|i| c + DVec2::from_angle(a0 + sweep * i as f64 / 48.0) * r).collect();
@@ -1149,6 +1228,7 @@ impl Sketch {
                 Entity::Arc { center, a, b } => vec![center, a, b],
                 Entity::Spline { s } => self.splines.get(s).cloned().unwrap_or_default(),
                 Entity::Ellipse { center, major, minor } => vec![center, major, minor],
+                Entity::Text { anchor, .. } => vec![anchor],
             }
         };
         let mut ents: Vec<EntityId> = Vec::new();
@@ -1219,6 +1299,7 @@ impl Sketch {
                 Entity::Arc { center, a, b } => dead_pts[center] || dead_pts[a] || dead_pts[b],
                 Entity::Spline { s } => self.splines.get(s).is_none_or(|l| l.len() < 2),
                 Entity::Ellipse { center, major, minor } => dead_pts[center] || dead_pts[major] || dead_pts[minor],
+                Entity::Text { anchor, t } => dead_pts[anchor] || t >= self.texts.len(),
             };
             if uses_dead {
                 dead_ents[i] = true;
@@ -1276,6 +1357,7 @@ impl Sketch {
                         used[p] = true;
                     }
                 }
+                Entity::Text { anchor, .. } => used[anchor] = true,
             }
         }
         // A Fix or distance on a point that no longer has geometry is meaningless.
@@ -1310,8 +1392,20 @@ impl Sketch {
                     *major = pt_map[*major];
                     *minor = pt_map[*minor];
                 }
+                Entity::Text { anchor, .. } => *anchor = pt_map[*anchor],
             }
         }
+        // Texts: keep the ones still used, renumbered.
+        let mut kept_texts = Vec::new();
+        for e in &mut self.entities {
+            if let Entity::Text { t, .. } = e {
+                if let Some(st) = self.texts.get(*t) {
+                    kept_texts.push(st.clone());
+                    *t = kept_texts.len() - 1;
+                }
+            }
+        }
+        self.texts = kept_texts;
         // Tangent handles follow their points.
         self.spline_tangents = self.spline_tangents.iter().filter_map(|&(p, t)| (pt_map.get(p).copied().unwrap_or(usize::MAX) != usize::MAX).then(|| (pt_map[p], t))).collect();
         // Splines: keep the lists still used (renumbered), their points renumbered.
@@ -1386,7 +1480,7 @@ impl Sketch {
                 Entity::Circle { center, radius } => Some(self.points[center]).filter(|c| c.distance(p) < radius),
                 Entity::Arc { center, .. } => self.arc_geometry(e).and_then(|(_, r, _, _)| Some(self.points[center]).filter(|c| c.distance(p) < r)),
                 Entity::Ellipse { center, .. } => Some(self.points[center]).filter(|_| self.ellipse_curve(e).len() > 2 && crate::profile::point_in_polygon(p, &self.ellipse_curve(e))),
-                Entity::Point { .. } | Entity::Spline { .. } => None,
+                Entity::Point { .. } | Entity::Spline { .. } | Entity::Text { .. } => None,
             })
             .filter(|r| r.distance(p) > tol) // not when already on it
             .collect();
@@ -1512,6 +1606,7 @@ impl Sketch {
             Entity::Point { p: q } => p.distance(self.points[q]),
             Entity::Spline { s } => crate::spline::distance(&self.spline_fit(s), p),
             Entity::Ellipse { .. } => polyline_distance(&self.ellipse_curve(e), p),
+            Entity::Text { .. } => self.text_box(e).map_or(f64::INFINITY, |b| if crate::profile::point_in_polygon(p, &b) { 0.0 } else { polyline_distance(&[b[0], b[1], b[2], b[3], b[0]], p) }),
             Entity::Arc { .. } => {
                 let Some((c, r, a0, sweep)) = self.arc_geometry(e) else { return f64::INFINITY };
                 let ang = (p - c).y.atan2((p - c).x);
@@ -1537,7 +1632,7 @@ impl Sketch {
             Entity::Line { a, b } => self.points[a].distance(self.points[b]),
             Entity::Circle { radius, .. } => std::f64::consts::TAU * radius,
             Entity::Arc { .. } => self.arc_geometry(e).map_or(0.0, |(_, r, _, sweep)| r * sweep),
-            Entity::Point { .. } => 0.0,
+            Entity::Point { .. } | Entity::Text { .. } => 0.0,
             Entity::Spline { s } => self.spline_curve(s).windows(2).map(|w| w[0].distance(w[1])).sum(),
             Entity::Ellipse { .. } => self.ellipse_curve(e).windows(2).map(|w| w[0].distance(w[1])).sum(),
         };
@@ -1561,6 +1656,11 @@ impl Sketch {
                     }
                 }
                 Entity::Spline { .. } => out.push(("Length", length(*e), Length)),
+                Entity::Text { t, .. } => {
+                    if let Some(st) = self.texts.get(t) {
+                        out.push(("Height", st.height, Length));
+                    }
+                }
                 Entity::Ellipse { .. } => {
                     if let Some((_, _, a, b)) = self.ellipse_geometry(*e) {
                         out.extend([
@@ -1850,6 +1950,7 @@ impl Sketch {
             && self.driven == other.driven
             && self.construction == other.construction
             && self.projections == other.projections
+            && self.texts == other.texts
     }
 
     /// How many lines/circles use each point: 2 or more means it's a joint
@@ -1868,7 +1969,7 @@ impl Sketch {
                         n[p] += 1;
                     }
                 }
-                Entity::Point { .. } => {}
+                Entity::Point { .. } | Entity::Text { .. } => {}
                 Entity::Arc { a, b, center } => {
                     n[a] += 1;
                     n[b] += 1;
@@ -1914,7 +2015,7 @@ impl Sketch {
             match *ent {
                 Entity::Line { a, b } if a == p => found.push((e, b)),
                 Entity::Line { a, b } if b == p => found.push((e, a)),
-                Entity::Line { .. } | Entity::Point { .. } => {}
+                Entity::Line { .. } | Entity::Point { .. } | Entity::Text { .. } => {}
                 // Anything round ending here: not a plain corner.
                 Entity::Circle { center, .. } if center == p => return None,
                 Entity::Arc { a, b, .. } if a == p || b == p => return None,
@@ -2150,7 +2251,7 @@ impl Sketch {
                         }
                     }
                 }
-                Entity::Point { .. } => {}
+                Entity::Point { .. } | Entity::Text { .. } => {}
             }
         }
         cuts.sort_by(|x, y| x.0.total_cmp(&y.0));
@@ -2324,7 +2425,7 @@ impl Sketch {
                         }
                     }
                 }
-                Entity::Point { .. } => {}
+                Entity::Point { .. } | Entity::Text { .. } => {}
             }
         }
         cuts.sort_by(|x, y| x.0.total_cmp(&y.0));
@@ -2907,6 +3008,9 @@ pub enum Tool {
     ControlSpline,
     /// Centre, the end of one axis, then how wide the other way.
     Ellipse,
+    /// Click where text starts (its first line's baseline); the Text dialog
+    /// then sets what it says.
+    Text,
     /// Pick geometry for a constraint ("Dimension", "Parallel", …): the
     /// constraint is added as soon as the picks are enough for it.
     Constrain(&'static str),
@@ -2940,6 +3044,7 @@ impl Tool {
             Tool::Spline => "Fit Point Spline",
             Tool::ControlSpline => "Control Point Spline",
             Tool::Ellipse => "Ellipse",
+            Tool::Text => "Text",
             Tool::Circle => "Center Diameter Circle",
             Tool::Circle2Point => "2-Point Circle",
             Tool::Circle3Point => "3-Point Circle",
@@ -2994,6 +3099,10 @@ pub struct Editor {
     pub spline: Vec<Anchor>,
     /// The Control Point Spline tool's degree (3 or 5; 0 means 3).
     pub cp_degree: u8,
+    /// Text placed by the last click (the app opens the Text dialog on it).
+    pub placed_text: Option<EntityId>,
+    /// How tall new text is (mm; 0 means 5): the last height chosen.
+    pub text_height: f64,
 }
 
 /// A slot: the two end-cap centres and half the width.
@@ -3390,6 +3499,15 @@ impl Editor {
             }
             return ties;
         }
+        // Text: placed at once, then the dialog says what it is (the tool is done).
+        if self.tool == Tool::Text {
+            let p = resolve(sk, at);
+            let height = if self.text_height > 0.0 { self.text_height } else { 5.0 };
+            let st = SketchText { text: "Text".into(), height, font: crate::text::default_family().into(), bold: false, italic: false, angle: 0.0 };
+            self.placed_text = Some(sk.add_text(Anchor::Point(p), st));
+            self.tool = Tool::Select;
+            return ties;
+        }
         // Tangent arc: it starts only from the free end of a line or arc.
         if let (Tool::ArcTangent, None) = (self.tool, self.start) {
             if let Anchor::Point(p) = at {
@@ -3456,6 +3574,7 @@ impl Editor {
                     Entity::Arc { center: c, a, b } => c == center || a == center || b == center,
                     Entity::Spline { s } => sk.splines.get(s).is_some_and(|l| l.contains(&center)),
                     Entity::Ellipse { center: c, major, minor } => [c, major, minor].contains(&center),
+                    Entity::Text { anchor, .. } => anchor == center,
                 });
                 if !used {
                     sk.entities.push(Entity::Point { p: center });
@@ -3586,6 +3705,7 @@ impl Editor {
                         Entity::Point { .. } => false,
                         Entity::Spline { s } => sk.splines.get(s).is_some_and(|l| l.contains(&center)),
                         Entity::Ellipse { center: c, major, minor } => [c, major, minor].contains(&center),
+                        Entity::Text { anchor, .. } => anchor == center,
                     })
                 {
                     sk.entities.push(Entity::Point { p: center });
@@ -3740,7 +3860,7 @@ impl Editor {
                 sk.entities.push(Entity::Arc { center: c, a, b });
                 ties
             }
-            Tool::Circle2Tangent | Tool::Circle3Tangent | Tool::Constrain(_) | Tool::Point | Tool::Spline | Tool::ControlSpline => Vec::new(),
+            Tool::Circle2Tangent | Tool::Circle3Tangent | Tool::Constrain(_) | Tool::Point | Tool::Text | Tool::Spline | Tool::ControlSpline => Vec::new(),
             Tool::SketchFillet | Tool::SketchChamfer | Tool::Trim | Tool::Break | Tool::Extend | Tool::Offset | Tool::Mirror | Tool::Project => Vec::new(),
             Tool::Select => Vec::new(),
         }

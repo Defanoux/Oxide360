@@ -93,7 +93,7 @@ impl Sketch {
                             }
                         }
                     }
-                    Entity::Point { .. } => {}
+                    Entity::Point { .. } | Entity::Text { .. } => {}
                 }
                 for (t, x, p) in found {
                     let at = j as f64 + t;
@@ -585,7 +585,7 @@ impl Sketch {
                         }
                     }
                 }
-                Entity::Point { .. } => {}
+                Entity::Point { .. } | Entity::Text { .. } => {}
             }
         }
         best.map(|(_, x, i, p)| (x, i, p))

@@ -501,7 +501,7 @@ fn collapsed(before: &Sketch, after: &Sketch) -> bool {
         Entity::Line { .. } => sk.line_length(e).unwrap_or(0.0),
         Entity::Circle { radius, .. } => radius,
         Entity::Arc { .. } => sk.arc_geometry(e).map_or(0.0, |(_, r, _, _)| r),
-        Entity::Point { .. } => 0.0,
+        Entity::Point { .. } | Entity::Text { .. } => 0.0,
         Entity::Spline { s } => sk.spline_fit(s).windows(2).map(|w| w[0].distance(w[1])).sum(),
         Entity::Ellipse { .. } => sk.ellipse_geometry(e).map_or(0.0, |(_, _, _, b)| b),
     };
@@ -710,7 +710,7 @@ fn solve_with(sk: &mut Sketch, pinned: &[PointId], soft: Option<PointId>, stiff:
             Entity::Line { .. } => out.line_length(e).unwrap_or(0.0),
             Entity::Circle { radius, .. } => radius,
             Entity::Arc { .. } => out.arc_geometry(e).map_or(0.0, |(_, r, _, _)| r),
-            Entity::Point { .. } => continue,
+            Entity::Point { .. } | Entity::Text { .. } => continue,
             Entity::Spline { s } => out.spline_fit(s).windows(2).map(|w| w[0].distance(w[1])).sum(),
             Entity::Ellipse { .. } => out.ellipse_geometry(e).map_or(0.0, |(_, _, _, b)| b),
         };

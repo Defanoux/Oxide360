@@ -501,6 +501,26 @@ fn loop_wire(plane: &Frame, pts: &[DVec2], curves: &[Curve]) -> Result<Wire, Str
                 edges.push(edge);
                 i = j;
             }
+            // A text's straight piece: an edge of its own.
+            Curve::Text { curve: 0, .. } => {
+                edges.push(Edge::segment(p3(at(i)), p3(at(i + 1))));
+                i += 1;
+            }
+            // A run of one font curve: the smooth curve through it.
+            text @ Curve::Text { .. } => {
+                let mut j = i + 1;
+                while j < n && curve(j) == text {
+                    j += 1;
+                }
+                let run: Vec<KVec> = (i..=j).map(|k| p3(at(k))).collect();
+                let edge = if run.len() == 2 {
+                    Edge::segment(run[0], run[1])
+                } else {
+                    Edge::try_spline_through(&run).ok_or("the kernel couldn't make a letter's curve")?
+                };
+                edges.push(edge);
+                i = j;
+            }
             // A whole loop of one spline (a closed spline): smooth all the way round.
             spline @ Curve::Spline { .. } if i == 0 && (0..n).all(|k| curve(k) == spline) => {
                 let round: Vec<KVec> = (0..n).map(|k| p3(at(k))).collect();
@@ -1390,6 +1410,7 @@ fn sketch_anchor(sk: &Sketch) -> DVec2 {
             crate::sketch::Entity::Arc { center, a, b } => vec![sk.points[center], sk.points[a], sk.points[b]],
             crate::sketch::Entity::Spline { s } => sk.spline_fit(s),
             crate::sketch::Entity::Ellipse { center, .. } => vec![sk.points[center]],
+            crate::sketch::Entity::Text { anchor, .. } => vec![sk.points[anchor]],
         })
         .collect();
     if used.is_empty() { DVec2::ZERO } else { used.iter().copied().sum::<DVec2>() / used.len() as f64 }
@@ -3424,6 +3445,49 @@ mod tests {
         assert_eq!(m.projection_lost[1], vec![line]);
         assert_eq!(m.linked_sketches[1], None);
         assert_eq!(m.sketch_errors[1], None, "a warning, not an error");
+    }
+
+    fn text_sketch(words: &str, height: f64) -> Sketch {
+        let mut sk = Sketch::new("T".into(), OriginPlane::XY);
+        let st = crate::sketch::SketchText { text: words.into(), height, font: crate::text::HACK.into(), bold: false, italic: false, angle: 0.0 };
+        sk.add_text(Anchor::Free(DVec2::new(10.0, 5.0)), st);
+        sk
+    }
+
+    #[test]
+    fn straight_letters_extrude_to_their_exact_area() {
+        // Hack's H is all straight lines: the solid is exactly its outline's area times the distance.
+        let sk = text_sketch("H", 10.0);
+        let regions = find_regions(&sk);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].text_entity(), Some(0), "a letter knows its text");
+        let c = &sk.text_contours(0)[0];
+        let area = (0..c.pts.len()).map(|i| c.pts[i].perp_dot(c.pts[(i + 1) % c.pts.len()])).sum::<f64>().abs() / 2.0;
+        let m = build4(&[sk], &[ex(0, vec![0], 4.0, Operation::NewBody)], &[], &timeline(1, 1));
+        assert_eq!(m.errors, vec![None]);
+        assert!(close(total(&m), area * 4.0), "{} vs {}", total(&m), area * 4.0);
+        let (lo, hi) = bbox(&m.bodies[0]);
+        assert!((lo.y - 5.0).abs() < 1e-6 && (hi.y - 15.0).abs() < 1e-6, "on the baseline at the anchor, capitals 10 tall: {lo} {hi}");
+    }
+
+    #[test]
+    fn round_letters_make_smooth_solids_with_their_holes() {
+        let sk = text_sketch("O8", 10.0);
+        let regions = find_regions(&sk);
+        // The letters: O a ring (one region with a hole), 8 one region with two holes;
+        // the spaces inside them are regions too, but not the text's ink.
+        let ink: Vec<usize> = (0..regions.len()).filter(|&r| regions[r].text_entity() == Some(0) && regions[r].is_text_ink(&sk, 0)).collect();
+        assert_eq!(regions.len(), 5);
+        assert_eq!(ink.len(), 2);
+        assert_eq!(ink.iter().map(|&r| regions[r].holes.len()).sum::<usize>(), 3);
+        let flat: f64 = ink.iter().map(|&r| regions[r].exact_area()).sum();
+        let m = build4(&[sk], &[ex(0, ink, 2.0, Operation::NewBody)], &[], &timeline(1, 1));
+        assert_eq!(m.errors, vec![None]);
+        // The font's curves are smooth in the solid: within a hair of the flattened outline's area.
+        assert!((total(&m) - flat * 2.0).abs() < flat * 2.0 * 2e-3, "{} vs {}", total(&m), flat * 2.0);
+        // Few faces: each font curve is one smooth face, not dozens of flat ones.
+        let faces = m.bodies.iter().map(|b| b.faces.len()).sum::<usize>();
+        assert!(faces < 80, "{faces} faces");
     }
 
     #[test]
