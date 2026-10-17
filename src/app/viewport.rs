@@ -3491,7 +3491,7 @@ impl OpenCad {
         // --- draw: construction points, with their names ---
         if self.active.is_none() {
             let built = self.model(Slot::Committed).points.clone();
-            for (k, p) in built.iter().enumerate() {
+            for (k, p) in built.iter().enumerate().filter(|(k, _)| !self.point_hidden.contains(k)) {
                 if let (Some(q), Some(cp)) = (p.and_then(|q| view.project(q.as_vec3())), self.points.get(k)) {
                     painter.circle_stroke(to_pos(q), 4.0, Stroke::new(2.0, COL_ORIGIN));
                     painter.text(to_pos(q) + egui::vec2(7.0, -7.0), egui::Align2::LEFT_BOTTOM, &cp.name, egui::FontId::proportional(12.0), Color32::from_gray(200));
@@ -4040,20 +4040,21 @@ impl OpenCad {
             // Tangent circles: once the lines are picked, show the circle.
             if self.editor.tool.tangent_lines() > 0 {
                 let left = self.editor.tool.tangent_lines() - self.editor.tangent_lines.len();
-                let hint = if left > 0 {
-                    format!("pick {left} more line{}", if left == 1 { "" } else { "s" })
+                // (An error — no circle fits — in red, the rest in the preview colour.)
+                let (hint, colour) = if left > 0 {
+                    (format!("pick {left} more line{}", if left == 1 { "" } else { "s" }), COL_PREVIEW)
                 } else {
                     let at = cursor.map(|a| sk.pos(a)).unwrap_or_default();
                     match self.editor.tangent_circle(sk, at) {
                         Ok((c, r)) => {
                             view.circle(&plane, c, r, Stroke::new(1.5, COL_PREVIEW));
-                            format!("Ø {} — click to place", u.show(2.0 * r))
+                            (format!("Ø {} — click to place", u.show(2.0 * r)), COL_PREVIEW)
                         }
-                        Err(e) => e,
+                        Err(e) => (e, Color32::from_rgb(230, 80, 80)),
                     }
                 };
                 if let Some(px) = response.hover_pos() {
-                    painter.text(px + egui::vec2(14.0, -14.0), egui::Align2::LEFT_BOTTOM, hint, egui::FontId::monospace(13.0), COL_PREVIEW);
+                    painter.text(px + egui::vec2(14.0, -14.0), egui::Align2::LEFT_BOTTOM, hint, egui::FontId::monospace(13.0), colour);
                 }
             }
             status = format!(

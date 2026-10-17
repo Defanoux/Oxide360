@@ -1066,12 +1066,15 @@ impl OpenCad {
         }
     }
 
-    /// Construction planes and axes.
+    /// Construction planes, axes and points.
     fn browser_construction(&mut self, ui: &mut egui::Ui) {
-        if self.axes.is_empty() && self.planes.is_empty() {
+        if self.axes.is_empty() && self.planes.is_empty() && self.points.is_empty() {
             return;
         }
-        let any = (0..self.axes.len()).any(|k| !self.axis_hidden.contains(&k)) || (0..self.planes.len()).any(|k| !self.plane_hidden.contains(&k));
+        let any = (0..self.axes.len()).any(|k| !self.axis_hidden.contains(&k))
+            || (0..self.planes.len()).any(|k| !self.plane_hidden.contains(&k))
+            || (0..self.points.len()).any(|k| !self.point_hidden.contains(&k));
+        let mut delete_point = None;
         let clicked = self.folder(ui, "folder_construction", Icon::Folder, "Construction", Some(any), |app, ui| {
             for k in 0..app.planes.len() {
                 browser_row(ui, |ui| {
@@ -1101,14 +1104,38 @@ impl OpenCad {
                     ui.label(app.axes[k].name.as_str());
                 });
             }
+            for k in 0..app.points.len() {
+                browser_row(ui, |ui| {
+                    let shown = !app.point_hidden.contains(&k);
+                    if icons::eye(ui, shown, "Show or hide this point").clicked() {
+                        if shown {
+                            app.point_hidden.insert(k);
+                        } else {
+                            app.point_hidden.remove(&k);
+                        }
+                    }
+                    icons::small(ui, Icon::ConstructPoint);
+                    ui.add(egui::Label::new(app.points[k].name.as_str()).sense(egui::Sense::click())).on_hover_text("Right-click to delete").context_menu(|ui| {
+                        if ui.button("Delete").clicked() {
+                            delete_point = Some(k);
+                            ui.close();
+                        }
+                    });
+                });
+            }
         });
+        if let Some(k) = delete_point {
+            self.delete_point(k);
+        }
         if clicked {
             if any {
                 self.plane_hidden = (0..self.planes.len()).collect();
                 self.axis_hidden = (0..self.axes.len()).collect();
+                self.point_hidden = (0..self.points.len()).collect();
             } else {
                 self.plane_hidden.clear();
                 self.axis_hidden.clear();
+                self.point_hidden.clear();
             }
         }
     }
@@ -2019,6 +2046,11 @@ impl OpenCad {
                         }
                     },
                     Some(None) => self.message = Some("Type a number".into()),
+                    // Left by clicking away (not Esc) with something typed: say
+                    // it wasn't used, rather than dropping it silently.
+                    None if close && !esc_hit && self.editor.tool != Tool::Line && self.float.as_ref().is_some_and(|f| !f.text.trim().is_empty()) => {
+                        self.message = Some("The typed size wasn't used — clicking away closes the box; press Enter to use it".into());
+                    }
                     None => {}
                 }
                 if close {

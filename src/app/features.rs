@@ -1692,6 +1692,7 @@ impl OpenCad {
             self.notify("A plane or axis goes through that point — delete it first".into());
             return;
         }
+        self.point_hidden = self.point_hidden.iter().filter(|&&j| j != k).map(|&j| if j > k { j - 1 } else { j }).collect();
         // Later points shift down, wherever they're used.
         let shift = |r: &mut PointRef| {
             if let PointRef::Point(j) = r {

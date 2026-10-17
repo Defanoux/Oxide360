@@ -770,6 +770,7 @@ struct OpenCad {
     planes: Vec<PlaneFeature>,               // construction planes
     plane_errors: Vec<Option<String>>,
     plane_hidden: HashSet<usize>,            // construction planes switched off in the browser
+    point_hidden: HashSet<usize>,            // construction points switched off in the browser
     plane_dialog: Option<PlaneDialog>,
     plane_pick: bool,                        // Offset Plane: waiting for a click on the plane or face to measure from
     selected_cplane: Option<usize>,          // the construction plane clicked in the 3D view
@@ -996,6 +997,7 @@ impl Default for OpenCad {
             planes: Vec::new(),
             plane_errors: Vec::new(),
             plane_hidden: HashSet::new(),
+            point_hidden: HashSet::new(),
             plane_dialog: None,
             plane_pick: false,
             selected_cplane: None,

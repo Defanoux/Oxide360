@@ -3404,7 +3404,7 @@ pub fn build_all(
 }
 
 /// Exact STEP export of all bodies (true planes, cylinders, arcs).
-pub fn write_step(path: &Path, bodies: &[Body]) -> Result<(), String> {
+pub fn write_step(path: &Path, bodies: &[&Body]) -> Result<(), String> {
     Shape::write_all_step(bodies.iter().map(|b| &b.shape), path).map_err(|e| format!("STEP export failed: {e:?}"))
 }
 
@@ -4184,7 +4184,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("opencad-import-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (step, stl) = (dir.join("part.step"), dir.join("part.stl"));
-        write_step(&step, &made.bodies).unwrap();
+        write_step(&step, &made.bodies.iter().collect::<Vec<_>>()).unwrap();
         let block: Vec<&Body> = made.bodies.iter().filter(|b| b.shape.volume() > 500.0).collect();
         crate::export::write(&stl, crate::export::Format::Stl, &[crate::export::Body { name: "block".into(), mesh: &block[0].mesh }]).unwrap();
         let import = |p: &Path| ImportFeature { name: "I".into(), source: "x".into(), brep: Blob::new(import_file(p).unwrap()), offset: [0.0; 3], angles: [0.0; 3] };
@@ -6102,7 +6102,7 @@ mod tests {
         circle(&mut sk, 0.0, 0.0, 10.0);
         let m = build4(&[sk], &[ex(0, vec![0], 30.0, Operation::NewBody)], &[], &timeline(1, 1));
         let path = std::env::temp_dir().join(format!("opencad-kernel-{}.step", std::process::id()));
-        write_step(&path, &m.bodies).unwrap();
+        write_step(&path, &m.bodies.iter().collect::<Vec<_>>()).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("CYLINDRICAL_SURFACE"), "true cylinder, not facets");
         let back = Shape::read_step(&path).unwrap();

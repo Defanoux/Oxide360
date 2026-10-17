@@ -415,6 +415,7 @@ impl OpenCad {
         self.axes = doc.axes.clone();
         self.planes = doc.planes.clone();
         self.plane_hidden.clear();
+        self.point_hidden.clear();
         self.close_plane_dialog();
         self.plane_pick = false;
         self.axis_hidden.clear();
@@ -507,6 +508,7 @@ impl OpenCad {
         self.axes = doc.axes;
         self.planes = doc.planes;
         self.plane_hidden.retain(|&k| k < self.planes.len());
+        self.point_hidden.retain(|&k| k < self.points.len());
         self.close_plane_dialog();
         self.plane_pick = false;
         self.axis_hidden.retain(|&k| k < self.axes.len());
@@ -996,8 +998,10 @@ impl OpenCad {
 
     pub(crate) fn export(&mut self, format: export::Format) {
         self.build_now(Slot::Committed); // export what's really there, not a build half done
-        if self.model(Slot::Committed).bodies.is_empty() {
-            self.alert = Some("Nothing to export yet — extrude a body first.".into());
+        // Only what's shown, as Fusion exports what you see (hide a body to leave it out).
+        let shown: Vec<usize> = self.model(Slot::Committed).bodies.iter().enumerate().filter(|(_, b)| !self.hidden_bodies.contains(&b.id)).map(|(k, _)| k).collect();
+        if shown.is_empty() {
+            self.alert = Some(if self.model(Slot::Committed).bodies.is_empty() { "Nothing to export yet — extrude a body first." } else { "Every body is hidden — show the ones to export." }.into());
             return;
         }
         let ext = format.extension();
@@ -1014,12 +1018,12 @@ impl OpenCad {
             p.set_extension(ext);
         }
         let model = self.model(Slot::Committed);
+        let visible: Vec<&kernel::Body> = shown.iter().map(|&k| &model.bodies[k]).collect();
         let result = match format {
-            export::Format::Step => kernel::write_step(&p, &model.bodies),
+            export::Format::Step => kernel::write_step(&p, &visible),
             _ => {
-                let names: Vec<String> = model.bodies.iter().map(|b| self.body_name(b.id)).collect();
-                let bodies: Vec<export::Body> = model
-                    .bodies
+                let names: Vec<String> = visible.iter().map(|b| self.body_name(b.id)).collect();
+                let bodies: Vec<export::Body> = visible
                     .iter()
                     .zip(&names)
                     .map(|(b, name)| export::Body { name: name.clone(), mesh: &b.mesh })
