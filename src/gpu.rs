@@ -104,6 +104,32 @@ fn fs_blit_srgb(i: BOut) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// How bodies are drawn (Fusion's Visual Style).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Style {
+    Shaded,
+    /// Shaded, with the edges you can see (the usual look).
+    #[default]
+    ShadedEdges,
+    /// Shaded, with the edges behind showing faintly through.
+    ShadedHidden,
+    /// Edges only (corners and outlines), no faces.
+    Wireframe,
+}
+
+impl Style {
+    pub const ALL: [Style; 4] = [Style::Shaded, Style::ShadedEdges, Style::ShadedHidden, Style::Wireframe];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Style::Shaded => "Shaded",
+            Style::ShadedEdges => "Shaded with Visible Edges",
+            Style::ShadedHidden => "Shaded with Hidden Edges",
+            Style::Wireframe => "Wireframe",
+        }
+    }
+}
+
 /// One frame's worth of geometry, already flattened for the GPU.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scene {
@@ -120,6 +146,9 @@ pub struct Scene {
     /// Translucent triangles (origin planes): position + RGBA, depth-tested
     /// against the bodies but not written to the depth buffer.
     pub glass: Vec<[f32; 7]>,
+    /// Lines drawn over everything, seen through the bodies (hidden edges):
+    /// position + RGBA.
+    pub xray: Vec<[f32; 7]>,
 }
 
 impl Scene {
@@ -127,12 +156,13 @@ impl Scene {
     /// drew (sharp corners + silhouettes), nudged toward the viewer so they
     /// win the depth test against their own faces but stay hidden behind
     /// other geometry.
-    pub fn build(meshes: &[(&Mesh, [f32; 3])], cam: &OrbitCamera, aspect: f32) -> Scene {
+    pub fn build(meshes: &[(&Mesh, [f32; 3])], cam: &OrbitCamera, aspect: f32, style: Style) -> Scene {
         let mut s = Scene {
             view_proj: cam.view_proj(aspect),
             head_light: -cam.basis().0,
             key_light: Vec3::new(0.35, -0.45, 0.82).normalize(),
-            edge_color: [25.0 / 255.0, 28.0 / 255.0, 34.0 / 255.0, 1.0],
+            // Dark lines on the faces; with no faces (wireframe), light ones on the dark background.
+            edge_color: if style == Style::Wireframe { [0.78, 0.81, 0.86, 1.0] } else { [25.0 / 255.0, 28.0 / 255.0, 34.0 / 255.0, 1.0] },
             ..Default::default()
         };
         let nudge = cam.distance * 0.002;
@@ -143,20 +173,40 @@ impl Scene {
                     mesh.normal(t).dot(cam.to_eye((a + b + c) / 3.0)) > 0.0
                 })
                 .collect();
-            for (t, tri) in mesh.tris.iter().enumerate() {
-                let n = mesh.normal(t);
-                for &i in tri {
-                    let p = mesh.positions[i as usize];
-                    s.tris.push([p.x, p.y, p.z, n.x, n.y, n.z, color[0], color[1], color[2]]);
+            if style != Style::Wireframe {
+                for (t, tri) in mesh.tris.iter().enumerate() {
+                    let n = mesh.normal(t);
+                    for &i in tri {
+                        let p = mesh.positions[i as usize];
+                        s.tris.push([p.x, p.y, p.z, n.x, n.y, n.z, color[0], color[1], color[2]]);
+                    }
                 }
             }
             for e in mesh_edges(mesh) {
                 let (f0, f1) = (front[e.tris[0]], front[e.tris[1]]);
-                if (f0 != f1) || (e.sharp && (f0 || f1)) {
-                    for i in [e.a, e.b] {
-                        let p = mesh.positions[i as usize];
-                        let q = p + cam.to_eye(p) * nudge;
-                        s.edges.push([q.x, q.y, q.z]);
+                let outline = f0 != f1;
+                let seen = outline || (e.sharp && (f0 || f1));
+                let (a, b) = (mesh.positions[e.a as usize], mesh.positions[e.b as usize]);
+                match style {
+                    Style::Shaded => {}
+                    // Wireframe: every corner edge and the outline, nothing hides them.
+                    Style::Wireframe => {
+                        if e.sharp || outline {
+                            s.edges.extend([[a.x, a.y, a.z], [b.x, b.y, b.z]]);
+                        }
+                    }
+                    Style::ShadedEdges | Style::ShadedHidden => {
+                        if seen {
+                            for p in [a, b] {
+                                let q = p + cam.to_eye(p) * nudge;
+                                s.edges.push([q.x, q.y, q.z]);
+                            }
+                        }
+                        // The corner edges behind, faint, through the faces.
+                        if style == Style::ShadedHidden && e.sharp && !seen {
+                            let c = [0.12, 0.13, 0.16, 0.45];
+                            s.xray.extend([a, b].map(|p| [p.x, p.y, p.z, c[0], c[1], c[2], c[3]]));
+                        }
                     }
                 }
             }
@@ -260,7 +310,10 @@ pub struct Gpu {
     edges: GrowBuffer,
     lines: GrowBuffer,
     glass: GrowBuffer,
+    xray_pipeline: wgpu::RenderPipeline,
+    xray: GrowBuffer,
     counts: (u32, u32, u32, u32),
+    xray_count: u32,
     targets: Option<Targets>,
 }
 
@@ -409,6 +462,37 @@ impl Gpu {
             cache: None,
         });
 
+        // Hidden edges: lines that ignore the depth buffer (drawn after the bodies).
+        let xray_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("opencad hidden edges"),
+            layout: Some(&scene_pl),
+            vertex: wgpu::VertexState {
+                module: &scene_module,
+                entry_point: Some("vs_line"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: LINE_STRIDE,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &line_attrs,
+                })],
+            },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::LineList, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState { depth_compare: Some(wgpu::CompareFunction::Always), ..depth(false) }),
+            multisample: msaa,
+            fragment: Some(wgpu::FragmentState {
+                module: &scene_module,
+                entry_point: Some("fs_line"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: COLOR_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let glass_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("opencad glass"),
             layout: Some(&scene_pl),
@@ -511,7 +595,10 @@ impl Gpu {
             edges: GrowBuffer::new(device, "opencad edges"),
             lines: GrowBuffer::new(device, "opencad lines"),
             glass: GrowBuffer::new(device, "opencad glass"),
+            xray_pipeline,
+            xray: GrowBuffer::new(device, "opencad hidden edges"),
             counts: (0, 0, 0, 0),
+            xray_count: 0,
             targets: None,
         }
     }
@@ -574,6 +661,8 @@ impl Gpu {
         self.lines.upload(device, queue, &f32_bytes(&scene.lines));
         self.glass.upload(device, queue, &f32_bytes(&scene.glass));
         self.counts = (scene.tris.len() as u32, scene.edges.len() as u32, scene.lines.len() as u32, scene.glass.len() as u32);
+        self.xray.upload(device, queue, &f32_bytes(&scene.xray));
+        self.xray_count = scene.xray.len() as u32;
 
         let t = self.targets.as_ref().expect("targets were just created");
         let resolved_view = t.resolved.create_view(&Default::default());
@@ -602,6 +691,11 @@ impl Gpu {
             pass.set_pipeline(&self.glass_pipeline);
             pass.set_vertex_buffer(0, self.glass.buffer.slice(..self.counts.3 as u64 * LINE_STRIDE));
             pass.draw(0..self.counts.3, 0..1);
+        }
+        if self.xray_count > 0 {
+            pass.set_pipeline(&self.xray_pipeline);
+            pass.set_vertex_buffer(0, self.xray.buffer.slice(..self.xray_count as u64 * LINE_STRIDE));
+            pass.draw(0..self.xray_count, 0..1);
         }
         if self.counts.1 > 0 {
             pass.set_pipeline(&self.edge_pipeline);
@@ -713,7 +807,7 @@ mod tests {
         for order in [[0usize, 1], [1, 0]] {
             let bodies = [(&tall, [1.0, 0.0, 0.0]), (&short, [0.0, 1.0, 0.0])];
             let list: Vec<(&Mesh, [f32; 3])> = order.iter().map(|&i| bodies[i]).collect();
-            let scene = Scene::build(&list, &cam, 1.0);
+            let scene = Scene::build(&list, &cam, 1.0, Style::ShadedEdges);
             let Some(px) = render_pixels(&scene, [64, 64], wgpu::TextureFormat::Rgba8Unorm) else {
                 eprintln!("no GPU adapter available; skipping");
                 return;
@@ -736,7 +830,7 @@ mod tests {
         let _ = Gpu::new(&device, wgpu::TextureFormat::Bgra8UnormSrgb);
         let mut gpu = Gpu::new(&device, wgpu::TextureFormat::Rgba8Unorm);
         let tall = rect_body(-20.0, -20.0, 20.0, 20.0, 30.0);
-        let scene = Scene::build(&[(&tall, [1.0, 0.0, 0.0])], &top_camera(), 1.0);
+        let scene = Scene::build(&[(&tall, [1.0, 0.0, 0.0])], &top_camera(), 1.0, Style::ShadedEdges);
         let mut enc = device.create_command_encoder(&Default::default());
         gpu.render(&device, &queue, &mut enc, [32, 32], &scene);
         // A stand-in for egui's screen: opaque blue, then the image on top.
@@ -796,7 +890,7 @@ mod tests {
         let look = |pitch: f32| {
             let mut cam = top_camera();
             cam.look_from(-90.0, pitch);
-            let mut scene = Scene::build(&[(&block, [1.0, 0.0, 0.0])], &cam, 1.0);
+            let mut scene = Scene::build(&[(&block, [1.0, 0.0, 0.0])], &cam, 1.0, Style::ShadedEdges);
             scene.add_lines(&line, &cam);
             render_pixels(&scene, [64, 64], wgpu::TextureFormat::Rgba8Unorm)
         };
@@ -821,7 +915,7 @@ mod tests {
         };
         let look = |z: f32| {
             let cam = top_camera();
-            let mut scene = Scene::build(&[(&block, [1.0, 0.0, 0.0])], &cam, 1.0);
+            let mut scene = Scene::build(&[(&block, [1.0, 0.0, 0.0])], &cam, 1.0, Style::ShadedEdges);
             scene.add_glass(&quad_at(z), &cam);
             render_pixels(&scene, [64, 64], wgpu::TextureFormat::Rgba8Unorm)
         };
@@ -837,10 +931,27 @@ mod tests {
     fn scene_flattening_matches_mesh() {
         let m = rect_body(0.0, 0.0, 10.0, 10.0, 10.0);
         let cam = OrbitCamera::default();
-        let s = Scene::build(&[(&m, [0.5, 0.5, 0.5])], &cam, 1.5);
+        let s = Scene::build(&[(&m, [0.5, 0.5, 0.5])], &cam, 1.5, Style::ShadedEdges);
         assert_eq!(s.tris.len(), m.tris.len() * 3);
         assert_eq!(s.edges.len() % 2, 0);
         assert!(!s.edges.is_empty() && s.edges.len() <= 2 * 12, "only visible box edges");
         assert_eq!(s.uniform_bytes().len() as u64, UNIFORM_SIZE);
+        assert!(s.xray.is_empty());
+    }
+
+    #[test]
+    fn visual_styles_draw_what_they_say() {
+        let m = rect_body(0.0, 0.0, 10.0, 10.0, 10.0);
+        let cam = OrbitCamera::default();
+        let build = |st| Scene::build(&[(&m, [0.5, 0.5, 0.5])], &cam, 1.5, st);
+        let shaded = build(Style::Shaded);
+        assert!(!shaded.tris.is_empty() && shaded.edges.is_empty());
+        // From the home corner three of a box's twelve edges are behind it.
+        let hidden = build(Style::ShadedHidden);
+        assert_eq!(hidden.edges, build(Style::ShadedEdges).edges, "the visible ones as usual");
+        assert_eq!(hidden.xray.len(), 2 * 3, "and the three behind, faintly");
+        let wire = build(Style::Wireframe);
+        assert!(wire.tris.is_empty(), "no faces");
+        assert_eq!(wire.edges.len(), 2 * 12, "all twelve edges");
     }
 }

@@ -506,6 +506,17 @@ impl OpenCad {
         self.keybinds_open = open;
     }
 
+    /// FINISH SKETCH, kept at the toolbar's right end (outside its scrolling,
+    /// so it never goes off the edge), as in Fusion.
+    pub(crate) fn finish_sketch_group(&mut self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            if icons::button(ui, Icon::FinishSketch, "Finish Sketch", true, false).clicked() {
+                self.finish_sketch();
+            }
+            ui.label(egui::RichText::new("FINISH SKETCH").size(11.0).color(Color32::from_gray(150)));
+        });
+    }
+
     /// The ribbon: quick-access icons (file, save, undo, redo), then tool
     /// groups with their names underneath, like Fusion's toolbar.
     pub(crate) fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -689,11 +700,6 @@ impl OpenCad {
                         self.measure = if self.measure.is_some() { None } else { Some(measure::Measure::default()) };
                         self.editor.set_tool(Tool::Select);
                         self.editor.selection.clear();
-                    }
-                });
-                group(ui, "FINISH SKETCH", |ui| {
-                    if icons::button(ui, Icon::FinishSketch, "Finish Sketch", true, false).clicked() {
-                        self.finish_sketch();
                     }
                 });
             } else {

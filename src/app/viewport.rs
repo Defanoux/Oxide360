@@ -2285,7 +2285,7 @@ impl OpenCad {
             .collect();
         if self.gpu {
             let list: Vec<(&Mesh, [f32; 3])> = meshes.iter().map(|(m, c)| (*m, rgb(*c))).collect();
-            let mut scene = gpu::Scene::build(&list, &self.camera, aspect);
+            let mut scene = gpu::Scene::build(&list, &self.camera, aspect, self.style);
             scene.add_lines(&grid_segments, &self.camera);
             scene.add_lines(&origin_outlines, &self.camera);
             // Shown threads on the bodies: hidden where the part is in front.
@@ -3882,6 +3882,14 @@ impl OpenCad {
             }
             ui.separator();
             ui.checkbox(&mut self.cube_axes, "Show XYZ axes on cube");
+            ui.separator();
+            ui.weak("Visual style");
+            for st in gpu::Style::ALL {
+                if ui.radio(self.style == st, st.name()).clicked() {
+                    self.style = st;
+                    ui.close();
+                }
+            }
             ui.separator();
             ui.weak("Camera");
             for p in Projection::ALL {

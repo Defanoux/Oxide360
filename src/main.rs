@@ -722,6 +722,7 @@ struct OpenCad {
     toolbar_hidden: Vec<String>,            // tools tucked into their group's ▾ list (settings)
     keymap: keys::Keymap,                   // tool keys (settings)
     toolbar_order: Vec<String>,             // tools' order within their groups, as dragged (settings)
+    style: gpu::Style,                      // how bodies are drawn (view cube menu → Visual style; settings)
     keybinds_open: bool,                    // the Keybinds window is open
     capturing_key: Option<keys::Action>,    // waiting for the key to give this action
     browser_open: bool,                     // the browser is shown (else folded to a button)
@@ -923,6 +924,7 @@ impl Default for OpenCad {
             toolbar_hidden: settings::Settings::default().toolbar_hidden,
             keymap: keys::Keymap::default(),
             toolbar_order: Vec::new(),
+            style: gpu::Style::default(),
             keybinds_open: false,
             capturing_key: None,
             browser_open: true,
@@ -1151,6 +1153,9 @@ impl OpenCad {
         self.settings_window(&ctx);
         // Side-scrollable, so a narrow window doesn't cut the ribbon off.
         egui::Panel::top("toolbar").show(ui, |ui| {
+            if self.active.is_some() {
+                egui::Panel::right("finish_sketch").resizable(false).show(ui, |ui| self.finish_sketch_group(ui));
+            }
             // Carry-on scrolling: a flick keeps gliding a little (see `inertia`).
             let dt = ui.input(|i| i.stable_dt);
             let glide = self.toolbar_inertia.step(self.toolbar_user_delta, dt);
@@ -1323,6 +1328,7 @@ impl OpenCad {
         self.toolbar_hidden = s.toolbar_hidden.clone();
         self.keymap = keys::Keymap::from_pairs(&s.keybinds);
         self.toolbar_order = s.toolbar_order.clone();
+        self.style = s.style;
         self.settings_saved = s.clone();
     }
 
