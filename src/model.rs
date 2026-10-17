@@ -154,6 +154,12 @@ pub struct ImportFeature {
     /// The file it came from (for its name; never read again).
     pub source: String,
     pub brep: Blob,
+    /// Where it was put: turned `angles` degrees about X, then Y, then Z
+    /// (through the middle of its box), then moved `offset`.
+    #[serde(default)]
+    pub offset: [f64; 3],
+    #[serde(default)]
+    pub angles: [f64; 3],
 }
 
 /// Big text shared rather than copied (undo keeps a copy of the design per

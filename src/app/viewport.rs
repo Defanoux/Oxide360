@@ -713,6 +713,25 @@ impl OpenCad {
             self.cancel_thread(); // Esc ends the command, as in Fusion
         }
 
+        // --- Insert: click where the imported bodies go (on the model, else the ground) ---
+        if self.import_dialog.as_ref().is_some_and(|d| d.picking) && self.active.is_none() {
+            if let (true, Some(px)) = (response.clicked(), hover_px) {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                let own = self.import_dialog.as_ref().and_then(|d| d.editing).map(Feature::Import);
+                let model = self.model(Slot::Committed);
+                let hit = model
+                    .bodies
+                    .iter()
+                    .filter(|b| !self.hidden_bodies.contains(&b.id) && Some(b.id.feature) != own)
+                    .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir))
+                    .reduce(f32::min);
+                let t = hit.or_else(|| (ray.dir.z.abs() > 1e-6).then(|| -ray.origin.z / ray.dir.z).filter(|t| *t > 0.0));
+                if let (Some(t), Some(d)) = (t, self.import_dialog.as_mut()) {
+                    d.place_at((ray.origin + ray.dir * t).as_dvec3());
+                }
+            }
+        }
+
         crate::mark("Extrude To Object / Hole To: click the");
         // --- Extrude To Object / Hole To: click the plane or flat face it runs up to ---
         let picking_target = self.dialog.as_ref().is_some_and(|d| d.picking_target) || self.hole_dialog.as_ref().is_some_and(|d| d.picking_target) || self.section_dialog.as_ref().is_some_and(|d| d.picking) || matches!(self.construct_pick, Some(ConstructPick::Midplane(_))) || self.sweep_dialog.as_ref().is_some_and(|d| d.picking_plane);
@@ -2333,7 +2352,7 @@ impl OpenCad {
 
         crate::mark("draw: bodies (from the kernel; with an");
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
-        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some() || self.move_dialog.is_some() || self.sweep_dialog.is_some();
+        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some() || self.move_dialog.is_some() || self.sweep_dialog.is_some() || self.import_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
         self.ensure_model(Slot::Committed);
         self.adopt_linked_sketches();
@@ -3394,6 +3413,10 @@ impl OpenCad {
             for (_, _, _, mesh) in &inter.hits {
                 view.fill_tris(mesh.tris.iter().map(|t| t.map(|i| mesh.positions[i as usize])), COL_INTERFERENCE.gamma_multiply(0.75));
             }
+        }
+
+        if self.import_dialog.as_ref().is_some_and(|d| d.picking) {
+            painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, "Click a face, or the ground, to put the inserted part's bottom there   (Esc to stop)", egui::FontId::proportional(15.0), Color32::from_gray(220));
         }
 
         // --- draw: construction points, with their names ---

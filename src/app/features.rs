@@ -1316,6 +1316,7 @@ impl OpenCad {
 
     /// Close whichever tool dialog or pick mode is open.
     pub(crate) fn cancel_all_dialogs(&mut self) {
+        self.import_dialog = None;
         self.cancel_shell();
         self.cancel_offset();
         self.cancel_combine();
@@ -2024,7 +2025,44 @@ impl OpenCad {
         }
     }
 
+    /// The Insert dialog: where the imported bodies go; OK puts the import
+    /// in the timeline (or changes the one being edited).
+    pub(crate) fn import_panel(&mut self, ui: &mut egui::Ui) {
+        let units = self.units;
+        let Some(d) = self.import_dialog.as_mut() else { return };
+        if d.bounds_stale() {
+            d.bounds = kernel::import_bounds(&d.feature.brep, d.feature.angles);
+            d.bounds_for = d.feature.angles;
+        }
+        let act = d.panel(ui, units);
+        let esc = ui.input(|i| i.key_pressed(egui::Key::Escape)) && !ui.ctx().text_edit_focused();
+        match act {
+            copy_dialog::Action::Ok => {
+                let Some(d) = self.import_dialog.take() else { return };
+                match d.editing {
+                    Some(k) => self.imports[k] = d.feature,
+                    None => {
+                        let name = d.feature.name.clone();
+                        self.imports.push(d.feature);
+                        self.timeline_insert(Feature::Import(self.imports.len() - 1));
+                        self.notify(format!("{name} inserted"));
+                    }
+                }
+            }
+            copy_dialog::Action::Cancel => self.import_dialog = None,
+            copy_dialog::Action::None if esc => {
+                if let Some(d) = self.import_dialog.as_mut().filter(|d| d.picking) {
+                    d.picking = false;
+                } else {
+                    self.import_dialog = None;
+                }
+            }
+            copy_dialog::Action::None => {}
+        }
+    }
+
     pub(crate) fn delete_import(&mut self, k: usize) {
+        self.import_dialog = None;
         self.imports.remove(k);
         self.timeline_remove(Feature::Import(k));
         for f in &mut self.timeline {

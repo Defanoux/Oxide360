@@ -62,6 +62,7 @@ impl OpenCad {
             ("Text", self.text_dialog.is_some()),
             ("Measure", self.measure.is_some()),
             ("Interference", self.interference.is_some()),
+            ("Insert", self.import_dialog.is_some()),
             ("Properties", self.properties_of.is_some()),
             ("Change Parameters", self.params_window.open),
         ]

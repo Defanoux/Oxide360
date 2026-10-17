@@ -1054,7 +1054,7 @@ mod tests {
     #[test]
     fn imports_round_trip_and_are_checked() {
         let mut doc = sample();
-        doc.imports.push(crate::model::ImportFeature { name: "bracket".into(), source: "bracket.step".into(), brep: crate::model::Blob::new("DBRep_DrawableShape\n…".into()) });
+        doc.imports.push(crate::model::ImportFeature { name: "bracket".into(), source: "bracket.step".into(), brep: crate::model::Blob::new("DBRep_DrawableShape\n…".into()), offset: [1.0, 2.0, 3.0], angles: [0.0, 0.0, 45.0] });
         doc.timeline.push(Feature::Import(0));
         let back = from_json(&to_json(&doc)).unwrap();
         assert_eq!(back, doc);

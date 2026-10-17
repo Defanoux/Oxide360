@@ -41,6 +41,7 @@ mod plane_dialog;
 mod pattern;
 mod profile;
 mod hole_dialog;
+mod import_dialog;
 mod shell_dialog;
 mod offset_dialog;
 mod combine_dialog;
@@ -726,6 +727,7 @@ struct OpenCad {
     imports: Vec<model::ImportFeature>,    // STEP / STL bodies brought in
     import_errors: Vec<Option<String>>,
     sweep_dialog: Option<sweep_dialog::SweepDialog>, // the Sweep / Loft dialog
+    import_dialog: Option<import_dialog::ImportDialog>, // placing an inserted STEP / STL
     path_hover: Option<(usize, Vec<usize>)>, // the sketch curve chain under the cursor while picking a sweep's path
     point_errors: Vec<Option<String>>,
     point_pick: bool,                       // Construction Point: click a corner or a circle
@@ -949,6 +951,7 @@ impl Default for OpenCad {
             imports: Vec::new(),
             import_errors: Vec::new(),
             sweep_dialog: None,
+            import_dialog: None,
             path_hover: None,
             point_pick: false,
             move_hover: None,
@@ -1267,6 +1270,8 @@ impl OpenCad {
             float("sweep").show(&ctx, |ui| self.sweep_panel(ui));
         } else if self.section_dialog.is_some() && self.active.is_none() {
             float("section").show(&ctx, |ui| self.section_panel(ui));
+        } else if self.import_dialog.is_some() && self.active.is_none() {
+            float("import").show(&ctx, |ui| self.import_panel(ui));
         } else if self.interference.is_some() && self.active.is_none() {
             float("interference").show(&ctx, |ui| self.interference_panel(ui));
         } else if self.sketch_pattern.is_some() && self.active.is_some() {

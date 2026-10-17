@@ -670,6 +670,7 @@ impl OpenCad {
         let mut combines = self.combines.clone();
         let mut moves = self.moves.clone();
         let mut sweeps = self.sweeps.clone();
+        let mut imports = self.imports.clone();
         timeline.truncate(self.applied()); // features after the marker aren't built
         // Editing a sketch: the part as it was there (Fusion rolls the timeline
         // back to the sketch), so what you see and project existed before it.
@@ -735,6 +736,15 @@ impl OpenCad {
                         None => {
                             sweeps.push(sf);
                             timeline.push(Feature::Sweep(sweeps.len() - 1));
+                        }
+                    }
+                }
+                if let Some(d) = self.import_dialog.as_ref() {
+                    match d.editing {
+                        Some(k) => imports[k] = d.feature.clone(),
+                        None => {
+                            imports.push(d.feature.clone());
+                            timeline.push(Feature::Import(imports.len() - 1));
                         }
                     }
                 }
@@ -819,7 +829,7 @@ impl OpenCad {
             moves,
             points: self.points.clone(),
             sweeps,
-            imports: self.imports.clone(),
+            imports,
             timeline,
         }
     }
@@ -1022,16 +1032,18 @@ impl OpenCad {
         }
     }
 
-    /// A STEP / STL file's bodies added at the timeline marker (Fusion's
-    /// Insert). The geometry is kept in the design, so the file isn't needed again.
+    /// A STEP / STL file's bodies, to be placed in the Insert dialog and then
+    /// added at the timeline marker (Fusion's Insert). The geometry is kept in
+    /// the design, so the file isn't needed again.
     pub(crate) fn import_path(&mut self, path: &std::path::Path) -> Result<(), String> {
         let file = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
         let brep = kernel::import_file(path).map_err(|e| format!("Couldn't import {file}: {e}"))?;
         let stem = path.file_stem().map_or_else(|| "Import".into(), |s| s.to_string_lossy().into_owned());
         let name = if self.imports.iter().any(|i| i.name == stem) { format!("{stem} ({})", self.imports.len() + 1) } else { stem };
-        self.imports.push(model::ImportFeature { name: name.clone(), source: file, brep: model::Blob::new(brep) });
-        self.timeline_insert(Feature::Import(self.imports.len() - 1));
-        self.notify(format!("{name} inserted"));
+        // Placed in the Insert dialog first (it joins the timeline on OK).
+        self.finish_sketch();
+        self.cancel_all_dialogs();
+        self.import_dialog = Some(import_dialog::ImportDialog::new(model::ImportFeature { name, source: file, brep: model::Blob::new(brep), offset: [0.0; 3], angles: [0.0; 3] }));
         Ok(())
     }
 

@@ -1793,6 +1793,28 @@ pub fn construct_plane(kind: &PlaneKind, bodies: &[&Shape], planes: &[Option<Fac
     }
 }
 
+/// The most triangles an STL may have to be made into a solid (each becomes
+/// a face before flat areas are merged; much more takes minutes).
+pub const STL_LIMIT: usize = 50_000;
+
+/// How many triangles an STL file has (binary: its header says; text: its
+/// `facet` lines). None when it isn't readable.
+pub fn stl_triangles(path: &Path) -> Option<usize> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let mut head = [0u8; 84];
+    let got = f.read(&mut head).ok()?;
+    if got == 84 {
+        let n = u32::from_le_bytes([head[80], head[81], head[82], head[83]]) as u64;
+        if 84 + 50 * n == len {
+            return Some(n as usize);
+        }
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    Some(text.lines().filter(|l| l.trim_start().starts_with("facet")).count())
+}
+
 /// A STEP or STL file's solids as BRep text, to keep in the design (see
 /// `ImportFeature`). STL triangles are sewn into solids, with coplanar
 /// ones merged into single faces.
@@ -1801,6 +1823,12 @@ pub fn import_file(path: &Path) -> Result<String, String> {
     let shape = match ext.as_str() {
         "step" | "stp" => Shape::try_read_step(path).ok_or("couldn't read it as STEP")?,
         "stl" => {
+            let n = stl_triangles(path).ok_or("couldn't read it as STL")?;
+            if n > STL_LIMIT {
+                return Err(format!(
+                    "it has {n} triangles; solids can be made from meshes of up to {STL_LIMIT}. Reduce it first (PrusaSlicer: right-click it, Simplify; Meshmixer: Select All, then Reduce)"
+                ));
+            }
             let s = Shape::try_read_stl(path).ok_or("couldn't read it as STL")?;
             if s.solids().is_empty() {
                 return Err("the mesh has holes in it (it isn't closed), so it can't be a solid — repair it (PrusaSlicer, Meshmixer) and try again".into());
@@ -1817,6 +1845,30 @@ pub fn import_file(path: &Path) -> Result<String, String> {
         return Err("the geometry kernel couldn't store it".into());
     }
     Ok(text)
+}
+
+/// An import turned about the middle of its box, then moved (as Free Move).
+fn placed(shape: &Shape, angles: [f64; 3], offset: [f64; 3]) -> Shape {
+    let mut out = shape.clone();
+    if angles.iter().any(|a| *a != 0.0) {
+        if let Some((lo, hi)) = exact_bounds(shape) {
+            let pivot = (lo + hi) * 0.5;
+            for (axis, deg) in [DVec3::X, DVec3::Y, DVec3::Z].into_iter().zip(angles) {
+                if deg != 0.0 {
+                    out = out.rotated_about(kv(pivot), kv(axis), deg.to_radians());
+                }
+            }
+        }
+    }
+    let t = DVec3::from(offset);
+    if t != DVec3::ZERO { out.translated(kv(t)) } else { out }
+}
+
+/// An import's box once turned by `angles` (before any move): what the
+/// Insert dialog's Centre / Place on ground / click place by.
+pub fn import_bounds(brep: &Blob, angles: [f64; 3]) -> Option<(DVec3, DVec3)> {
+    let shape = imported(brep).ok()?;
+    exact_bounds(&placed(&shape, angles, [0.0; 3]))
 }
 
 thread_local! {
@@ -3047,7 +3099,10 @@ impl Build {
                         *shapes = current;
                         continue;
                     };
-                    let r = catch_unwind(AssertUnwindSafe(|| apply(current, imported(&im.brep)?, Operation::NewBody, Feature::Import(k))));
+                    let r = catch_unwind(AssertUnwindSafe(|| {
+                        let shape = imported(&im.brep)?;
+                        apply(current, placed(&shape, im.angles, im.offset), Operation::NewBody, Feature::Import(k))
+                    }));
                     (r, &mut import_errors[k])
                 }
                 Feature::Extrude(k) => {
@@ -4132,7 +4187,7 @@ mod tests {
         write_step(&step, &made.bodies).unwrap();
         let block: Vec<&Body> = made.bodies.iter().filter(|b| b.shape.volume() > 500.0).collect();
         crate::export::write(&stl, crate::export::Format::Stl, &[crate::export::Body { name: "block".into(), mesh: &block[0].mesh }]).unwrap();
-        let import = |p: &Path| ImportFeature { name: "I".into(), source: "x".into(), brep: Blob::new(import_file(p).unwrap()) };
+        let import = |p: &Path| ImportFeature { name: "I".into(), source: "x".into(), brep: Blob::new(import_file(p).unwrap()), offset: [0.0; 3], angles: [0.0; 3] };
         let m = run_imports(vec![import(&step), import(&stl)]);
         assert_eq!(m.import_errors, vec![None, None]);
         let from = |k: usize| m.bodies.iter().filter(|b| b.id.feature == Feature::Import(k)).map(|b| b.shape.volume()).collect::<Vec<f64>>();
@@ -4146,10 +4201,20 @@ mod tests {
         assert!(close(from(1)[0], 1000.0), "{:?}", from(1));
         let stl_body = m.bodies.iter().find(|b| b.id.feature == Feature::Import(1)).unwrap();
         assert_eq!(stl_body.shape.faces().count(), 6);
+        // Placed: the block turned 90° about Z through its middle (10, 5),
+        // then moved 100 along X: 105..115 × −5..15, volume unchanged.
+        let moved = ImportFeature { offset: [100.0, 0.0, 0.0], angles: [0.0, 0.0, 90.0], ..import(&stl) };
+        assert_eq!(import_bounds(&moved.brep, moved.angles).map(|(lo, hi)| ((lo.x * 1e6).round() / 1e6, (hi.y * 1e6).round() / 1e6)), Some((5.0, 15.0)));
+        let m = run_imports(vec![moved]);
+        let (lo, hi) = exact_bounds(&m.bodies[0].shape).unwrap();
+        assert!(lo.distance(DVec3::new(105.0, -5.0, 0.0)) < 1e-6 && hi.distance(DVec3::new(115.0, 15.0, 5.0)) < 1e-6, "{lo} {hi}");
+        assert!(close(m.bodies[0].shape.volume(), 1000.0));
         // A mesh with a hole (one lone triangle) isn't a solid: refused, saying why.
         let open = dir.join("open.stl");
         std::fs::write(&open, "solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid t\n").unwrap();
         assert!(import_file(&open).unwrap_err().contains("holes"));
+        assert_eq!(stl_triangles(&open), Some(1));
+        assert_eq!(stl_triangles(&stl), Some(12), "a block: two triangles a side (binary)");
         // Not a part file, or not there: refused with a reason.
         assert!(import_file(&dir.join("nothing.step")).is_err());
         assert!(import_file(&dir.join("notes.txt")).unwrap_err().contains("STEP"));

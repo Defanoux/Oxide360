@@ -87,8 +87,10 @@ inline std::unique_ptr<TopoDS_Shape> opencad_try_read_stl(rust::Str path) {
       std::pair<int, int> key(std::min(a, b), std::max(a, b));
       auto found = edges.find(key);
       if (found == edges.end()) {
-        TopoDS_Edge e = BRepBuilderAPI_MakeEdge(vertex[key.first], vertex[key.second]).Edge();
-        found = edges.emplace(key, std::make_pair(e, 0)).first;
+        found = edges.emplace(key, std::make_pair(TopoDS_Edge(), 0)).first;
+      }
+      if (found->second.first.IsNull()) {
+        found->second.first = BRepBuilderAPI_MakeEdge(vertex[key.first], vertex[key.second]).Edge();
       }
       found->second.second++;
       TopoDS_Edge e = found->second.first;
@@ -106,7 +108,14 @@ inline std::unique_ptr<TopoDS_Shape> opencad_try_read_stl(rust::Str path) {
       gp_Pnt p1 = tri->Node(n1), p2 = tri->Node(n2), p3 = tri->Node(n3);
       gp_Vec normal = gp_Vec(p1, p2).Crossed(gp_Vec(p1, p3));
       if (normal.Magnitude() < 1.0e-12) {
-        continue; // a sliver with no area
+        // A sliver with no area (corners in a line): no face, but its edges
+        // still count as covered, as the triangles round it close up there.
+        const int ends[3][2] = {{n1, n2}, {n2, n3}, {n3, n1}};
+        for (const auto &ab : ends) {
+          std::pair<int, int> key(std::min(ab[0], ab[1]), std::max(ab[0], ab[1]));
+          edges.emplace(key, std::make_pair(TopoDS_Edge(), 0)).first->second.second++;
+        }
+        continue;
       }
       TopoDS_Wire wire;
       builder.MakeWire(wire);
@@ -124,9 +133,11 @@ inline std::unique_ptr<TopoDS_Shape> opencad_try_read_stl(rust::Str path) {
     if (faces == 0) {
       return nullptr;
     }
+    // Closed: every edge has triangles on both sides — two, or (where parts
+    // of the mesh touch along an edge) four or six.
     bool closed = true;
     for (auto &kv : edges) {
-      if (kv.second.second != 2) {
+      if (kv.second.second % 2 != 0) {
         closed = false;
         break;
       }
