@@ -47,6 +47,8 @@ pub enum Feature {
     Sweep(usize),
     /// Bodies from a STEP or STL file (index into `imports`).
     Import(usize),
+    /// A joint moving one component onto another (index into `joints`).
+    Joint(usize),
 }
 
 /// Put `f` into the timeline at the rollback marker (the end when there is
@@ -243,6 +245,9 @@ pub struct Document {
     /// Sweeps and lofts. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sweeps: Vec<crate::model::SweepFeature>,
+    /// Joints. Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joints: Vec<crate::model::JointFeature>,
     /// Components: named groups of bodies. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub components: Vec<crate::assembly::Component>,
@@ -657,6 +662,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     let mut seen_pt = vec![false; doc.points.len()];
     let mut seen_sw = vec![false; doc.sweeps.len()];
     let mut seen_im = vec![false; doc.imports.len()];
+    let mut seen_j = vec![false; doc.joints.len()];
     for f in &doc.timeline {
         let slot = match *f {
             Feature::Sketch(i) => seen_s.get_mut(i),
@@ -676,6 +682,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Feature::Point(i) => seen_pt.get_mut(i),
             Feature::Sweep(i) => seen_sw.get_mut(i),
             Feature::Import(i) => seen_im.get_mut(i),
+            Feature::Joint(i) => seen_j.get_mut(i),
         };
         match slot {
             Some(s) if !*s => *s = true,
@@ -685,7 +692,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     if doc.suppressed.iter().any(|f| !doc.timeline.contains(f)) {
         return Err("a suppressed feature isn't in the timeline".into());
     }
-    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).chain(&seen_sh).chain(&seen_of).chain(&seen_cb).chain(&seen_mv).chain(&seen_pt).chain(&seen_sw).chain(&seen_im).any(|s| !s) {
+    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).chain(&seen_sh).chain(&seen_of).chain(&seen_cb).chain(&seen_mv).chain(&seen_pt).chain(&seen_sw).chain(&seen_im).chain(&seen_j).any(|s| !s) {
         return Err("timeline is missing a feature".into());
     }
     Ok(())
@@ -828,6 +835,7 @@ mod tests {
             sweeps: Vec::new(),
             imports: Vec::new(),
             components: Vec::new(),
+            joints: Vec::new(),
             parameters: Vec::new(),
             feature_exprs: Vec::new(),
             units: crate::units::Unit::Mm,
@@ -1055,6 +1063,18 @@ mod tests {
         let text = to_json(&doc);
         assert!(text.contains("\"format\": \"opencad\"") && text.contains("\"units\": \"mm\""));
         assert_eq!(from_json(&text).unwrap(), doc, "every f64 survives exactly");
+    }
+
+    #[test]
+    fn joints_and_components_round_trip_and_are_checked() {
+        use crate::model::{JointFeature, JointKind, JointSnap};
+        let mut doc = sample();
+        doc.joints.push(JointFeature { name: "Joint1".into(), a: JointSnap::Corner(glam::DVec3::X), b: JointSnap::Corner(glam::DVec3::Y), kind: JointKind::Revolute, angle: 30.0, offset: 2.0, flip: true });
+        doc.timeline.push(Feature::Joint(0));
+        doc.components.push(crate::assembly::Component { name: "Lid".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }] });
+        assert_eq!(from_json(&to_json(&doc)).unwrap(), doc);
+        doc.timeline.pop();
+        assert!(from_json(&to_json(&doc)).is_err(), "a joint missing from the timeline is refused");
     }
 
     #[test]

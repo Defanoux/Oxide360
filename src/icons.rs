@@ -41,6 +41,7 @@ pub enum Icon {
     Pipe,
     Coil,
     Import,
+    Joint,
     Component,
     Interference,
     Break,
@@ -698,6 +699,13 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             line((0.5, 0.5), (0.5, 0.9), s);
             poly(&[(0.2, 0.35), (0.55, 0.2), (0.85, 0.35), (0.5, 0.5)], blue);
         }
+        Icon::Joint => {
+            // Two blocks meeting at a pin (orange).
+            poly(&[(0.1, 0.55), (0.48, 0.55), (0.48, 0.9), (0.1, 0.9)], blue_dark);
+            poly(&[(0.52, 0.1), (0.9, 0.1), (0.9, 0.45), (0.52, 0.45)], blue);
+            arc(0.5, 0.5, 0.12, 0.0, std::f32::consts::TAU, Stroke::new(thin.width * 1.5, orange));
+            dot(0.5, 0.5, orange);
+        }
         Icon::Import => {
             // A blue box with an arrow coming down into it.
             poly(&[(0.2, 0.55), (0.8, 0.55), (0.8, 0.9), (0.2, 0.9)], blue);
@@ -1019,7 +1027,7 @@ mod shot_tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [720, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil, Icon::Import, Icon::Interference, Icon::Component] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil, Icon::Import, Icon::Interference, Icon::Component, Icon::Joint] {
                     button(ui, icon, "", true, false);
                 }
             });

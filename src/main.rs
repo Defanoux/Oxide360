@@ -44,6 +44,7 @@ mod pattern;
 mod profile;
 mod hole_dialog;
 mod import_dialog;
+mod joint_dialog;
 mod shell_dialog;
 mod offset_dialog;
 mod combine_dialog;
@@ -624,6 +625,8 @@ impl KernelCache {
             points: Vec::new(),
             sweeps: Vec::new(),
             imports: Vec::new(),
+            joints: Vec::new(),
+            components: Vec::new(),
             timeline: Vec::new(),
             model: kernel::Model::default(),
             stand_in: true,
@@ -649,6 +652,8 @@ struct KernelCache {
     points: Vec<model::ConstructionPoint>,
     sweeps: Vec<model::SweepFeature>,
     imports: Vec<model::ImportFeature>,
+    joints: Vec<model::JointFeature>,
+    components: Vec<assembly::Component>,
     timeline: Vec<Feature>,
     model: kernel::Model,
     /// Nothing built yet (an empty model while the first build runs).
@@ -728,6 +733,10 @@ struct OpenCad {
     sweep_errors: Vec<Option<String>>,
     imports: Vec<model::ImportFeature>,    // STEP / STL bodies brought in
     components: Vec<assembly::Component>,  // named groups of bodies (parts)
+    joints: Vec<model::JointFeature>,      // joints moving components onto each other
+    joint_errors: Vec<Option<String>>,
+    joint_dialog: Option<joint_dialog::JointDialog>,
+    joint_hover: Option<(model::JointSnap, DVec3, DVec3)>, // the snap under the mouse: point, Z
     renaming_component: Option<(usize, String)>,
     import_errors: Vec<Option<String>>,
     sweep_dialog: Option<sweep_dialog::SweepDialog>, // the Sweep / Loft dialog
@@ -957,6 +966,10 @@ impl Default for OpenCad {
             import_errors: Vec::new(),
             components: Vec::new(),
             renaming_component: None,
+            joints: Vec::new(),
+            joint_errors: Vec::new(),
+            joint_dialog: None,
+            joint_hover: None,
             sweep_dialog: None,
             import_dialog: None,
             path_hover: None,
@@ -1278,6 +1291,8 @@ impl OpenCad {
             float("sweep").show(&ctx, |ui| self.sweep_panel(ui));
         } else if self.section_dialog.is_some() && self.active.is_none() {
             float("section").show(&ctx, |ui| self.section_panel(ui));
+        } else if self.joint_dialog.is_some() && self.active.is_none() {
+            float("joint").show(&ctx, |ui| self.joint_panel(ui));
         } else if self.import_dialog.is_some() && self.active.is_none() {
             float("import").show(&ctx, |ui| self.import_panel(ui));
         } else if self.interference.is_some() && self.active.is_none() {

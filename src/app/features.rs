@@ -1317,6 +1317,7 @@ impl OpenCad {
     /// Close whichever tool dialog or pick mode is open.
     pub(crate) fn cancel_all_dialogs(&mut self) {
         self.import_dialog = None;
+        self.joint_dialog = None;
         self.cancel_shell();
         self.cancel_offset();
         self.cancel_combine();
@@ -2060,6 +2061,64 @@ impl OpenCad {
                 }
             }
             copy_dialog::Action::None => {}
+        }
+    }
+
+    /// ASSEMBLE → Joint.
+    pub(crate) fn open_joint(&mut self) {
+        self.finish_sketch();
+        self.cancel_all_dialogs();
+        let mut n = self.joints.len() + 1;
+        while self.joints.iter().any(|j| j.name == format!("Joint{n}")) {
+            n += 1;
+        }
+        self.joint_dialog = Some(joint_dialog::JointDialog::new(format!("Joint{n}")));
+    }
+
+    pub(crate) fn joint_panel(&mut self, ui: &mut egui::Ui) {
+        let units = self.units;
+        let error = self.joint_dialog.as_ref().filter(|d| d.feature().is_some()).and_then(|d| {
+            let k = d.editing.unwrap_or(self.joints.len());
+            self.caches[Slot::Preview as usize].as_ref().and_then(|c| c.model.joint_errors.get(k).cloned().flatten())
+        });
+        let Some(d) = self.joint_dialog.as_mut() else { return };
+        let act = d.panel(ui, units, error.as_deref());
+        let esc = ui.input(|i| i.key_pressed(egui::Key::Escape)) && !ui.ctx().text_edit_focused();
+        match act {
+            copy_dialog::Action::Ok => {
+                let Some(d) = self.joint_dialog.take() else { return };
+                if let Some(j) = d.feature() {
+                    match d.editing {
+                        Some(k) => self.joints[k] = j,
+                        None => {
+                            self.joints.push(j);
+                            self.timeline_insert(Feature::Joint(self.joints.len() - 1));
+                        }
+                    }
+                }
+            }
+            copy_dialog::Action::Cancel => self.joint_dialog = None,
+            copy_dialog::Action::None if esc => {
+                if let Some(d) = self.joint_dialog.as_mut().filter(|d| d.picking.is_some()) {
+                    d.picking = None;
+                } else {
+                    self.joint_dialog = None;
+                }
+            }
+            copy_dialog::Action::None => {}
+        }
+    }
+
+    pub(crate) fn delete_joint(&mut self, k: usize) {
+        self.joint_dialog = None;
+        self.joints.remove(k);
+        self.timeline_remove(Feature::Joint(k));
+        for f in &mut self.timeline {
+            if let Feature::Joint(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
         }
     }
 

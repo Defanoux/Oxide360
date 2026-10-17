@@ -23,6 +23,7 @@ impl OpenCad {
             sweeps: self.sweeps.clone(),
             imports: self.imports.clone(),
             components: self.components.clone(),
+            joints: self.joints.clone(),
             sections: self.sections.clone(),
             parameters: self.parameters.clone(),
             feature_exprs: self.feature_exprs.clone(),
@@ -302,6 +303,7 @@ impl OpenCad {
             || self.sweeps != self.saved.sweeps
             || self.imports != self.saved.imports
             || self.components != self.saved.components
+            || self.joints != self.saved.joints
             || self.sections != self.saved.sections
             || self.sorted_body_materials() != self.saved.body_materials
     }
@@ -405,6 +407,8 @@ impl OpenCad {
         self.sweeps = doc.sweeps.clone();
         self.imports = doc.imports.clone();
         self.components = doc.components.clone();
+        self.joints = doc.joints.clone();
+        self.joint_dialog = None;
         self.renaming_component = None;
         self.sweep_dialog = None;
         self.point_pick = false;
@@ -504,6 +508,8 @@ impl OpenCad {
         self.sweeps = doc.sweeps;
         self.imports = doc.imports;
         self.components = doc.components;
+        self.joints = doc.joints;
+        self.joint_dialog = None;
         self.renaming_component = None;
         self.sweep_dialog = None;
         self.parameters = doc.parameters;
@@ -681,6 +687,7 @@ impl OpenCad {
         let mut moves = self.moves.clone();
         let mut sweeps = self.sweeps.clone();
         let mut imports = self.imports.clone();
+        let mut joints = self.joints.clone();
         timeline.truncate(self.applied()); // features after the marker aren't built
         // Editing a sketch: the part as it was there (Fusion rolls the timeline
         // back to the sketch), so what you see and project existed before it.
@@ -746,6 +753,15 @@ impl OpenCad {
                         None => {
                             sweeps.push(sf);
                             timeline.push(Feature::Sweep(sweeps.len() - 1));
+                        }
+                    }
+                }
+                if let Some(j) = self.joint_dialog.as_ref().and_then(|d| d.feature().map(|j| (d.editing, j))) {
+                    match j.0 {
+                        Some(k) => joints[k] = j.1,
+                        None => {
+                            joints.push(j.1);
+                            timeline.push(Feature::Joint(joints.len() - 1));
                         }
                     }
                 }
@@ -840,6 +856,8 @@ impl OpenCad {
             points: self.points.clone(),
             sweeps,
             imports,
+            joints,
+            components: self.components.clone(),
             timeline,
         }
     }
@@ -867,6 +885,8 @@ impl OpenCad {
                 && c.points == inp.points
                 && c.sweeps == inp.sweeps
                 && c.imports == inp.imports
+                && c.joints == inp.joints
+                && c.components == inp.components
                 && c.timeline == inp.timeline
         });
         let i = slot as usize;
@@ -918,6 +938,8 @@ impl OpenCad {
             points: inp.points,
             sweeps: inp.sweeps,
             imports: inp.imports,
+            joints: inp.joints,
+            components: inp.components,
             timeline: inp.timeline,
             model,
             stand_in: false,
@@ -996,6 +1018,7 @@ impl OpenCad {
             Feature::Point(k) => self.points.get(k).map(|p| p.name.clone()),
             Feature::Sweep(k) => self.sweeps.get(k).map(|s| s.name.clone()),
             Feature::Import(k) => self.imports.get(k).map(|s| s.name.clone()),
+            Feature::Joint(k) => self.joints.get(k).map(|j| j.name.clone()),
         }
         .unwrap_or_else(|| format!("{f:?}"))
     }

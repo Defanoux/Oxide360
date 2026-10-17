@@ -830,6 +830,22 @@ impl OpenCad {
                     Some("Combine") => self.open_combine(None),
                     _ => {}
                 }
+                group(ui, "ASSEMBLE", |ui| {
+                    let picked = !self.selected_bodies.is_empty();
+                    if icons::button(ui, Icon::Component, "New Component: make the selected bodies a part of their own (select bodies in the browser or the view first)", picked, false).clicked() {
+                        let bodies = self.selected_bodies.clone();
+                        let k = assembly::create(&mut self.components, &bodies);
+                        self.notify(format!("{} made", self.components[k].name));
+                    }
+                    let tip = "Joint: click where a part attaches, then where it goes on another part — rigid, turning or sliding";
+                    if icons::button(ui, Icon::Joint, tip, self.body_ids.len() >= 2, self.joint_dialog.is_some()).clicked() {
+                        if self.joint_dialog.is_some() {
+                            self.joint_dialog = None;
+                        } else {
+                            self.open_joint();
+                        }
+                    }
+                });
                 group(ui, "INSPECT", |ui| {
                     if icons::button(ui, Icon::Measure, "Measure: click a corner, edge, face, body or sketch geometry — one for its size, two for distance and angle", has_bodies || !self.sketches.is_empty(), self.measure.is_some()).clicked() {
                         self.measure = if self.measure.is_some() { None } else { Some(measure::Measure::default()) };

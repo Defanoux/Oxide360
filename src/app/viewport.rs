@@ -735,6 +735,35 @@ impl OpenCad {
             self.cancel_thread(); // Esc ends the command, as in Fusion
         }
 
+        // --- Joint: the snap under the mouse (a corner, a round edge's centre, a spot on a flat face); a click takes it ---
+        self.joint_hover = None;
+        if self.joint_dialog.as_ref().is_some_and(|d| d.picking.is_some()) && self.active.is_none() {
+            self.ensure_model(Slot::Committed);
+            if let Some(px) = hover_px {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                let view = View { painter: &ui.painter_at(rect), vp: self.camera.view_proj(aspect), min, size, trace: None };
+                if let Some(q) = self.corner_under(&view, px, &ray) {
+                    self.joint_hover = Some((model::JointSnap::Corner(q), q, DVec3::Z));
+                } else if let Some((r, c, n)) = self.edge_under(&view, Slot::Committed, px, &ray, false).and_then(|r| {
+                    self.model(Slot::Committed).bodies.iter().flat_map(|b| &b.edges).find(|e| e.at.mid.distance(r.mid) < 1e-6).and_then(|e| match e.geom {
+                        measure::Geom::Circle { center, normal, .. } => Some((r, center, e.at.faces.into_iter().find(|f| f.dot(normal).abs() > 0.99).unwrap_or(normal))),
+                        _ => None,
+                    })
+                }) {
+                    let caps = &self.model(Slot::Committed).caps;
+                    let r = EdgeRef { follow: kernel::follow_for_edge(caps, r.mid, r.dir, FOLLOW_TOL), ..r };
+                    self.joint_hover = Some((model::JointSnap::Circle(r), c, n.normalize_or_zero()));
+                } else if let Some((t, _, face)) = self.pick_face(&ray) {
+                    let q = (ray.origin + ray.dir * t).as_dvec3();
+                    let snap = model::JointSnap::Face { face: sketch::FacePlane { follow: None, ..face }, anchor: [q.dot(face.u), q.dot(face.v)] };
+                    self.joint_hover = Some((snap, q, face.normal()));
+                }
+            }
+            if let (true, Some((s, ..)), Some(d)) = (response.clicked(), self.joint_hover, self.joint_dialog.as_mut()) {
+                d.pick(s);
+            }
+        }
+
         // --- Insert: click where the imported bodies go (on the model, else the ground) ---
         if self.import_dialog.as_ref().is_some_and(|d| d.picking) && self.active.is_none() {
             // The spot under the mouse (on the model, else the ground), lit as it moves.
@@ -2386,7 +2415,7 @@ impl OpenCad {
 
         crate::mark("draw: bodies (from the kernel; with an");
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
-        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some() || self.move_dialog.is_some() || self.sweep_dialog.is_some() || self.import_dialog.is_some();
+        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some() || self.move_dialog.is_some() || self.sweep_dialog.is_some() || self.import_dialog.is_some() || self.joint_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
         self.ensure_model(Slot::Committed);
         self.adopt_linked_sketches();
@@ -2407,6 +2436,7 @@ impl OpenCad {
         self.point_errors = self.model(Slot::Committed).point_errors.clone();
         self.sweep_errors = self.model(Slot::Committed).sweep_errors.clone();
         self.import_errors = self.model(Slot::Committed).import_errors.clone();
+        self.joint_errors = self.model(Slot::Committed).joint_errors.clone();
         self.body_count = self.model(Slot::Committed).bodies.len();
         // With a body in the scene the origin gets out of the way (Create Sketch
         // and the browser's Origin box bring it back).
@@ -3447,6 +3477,19 @@ impl OpenCad {
             for (_, _, _, mesh) in &inter.hits {
                 view.fill_tris(mesh.tris.iter().map(|t| t.map(|i| mesh.positions[i as usize])), COL_INTERFERENCE.gamma_multiply(0.75));
             }
+        }
+
+        // --- draw: the joint snap under the mouse: a dot, and its Z ---
+        if let Some((_, p, z)) = self.joint_hover {
+            if let (Some(a), Some(b)) = (view.project(p.as_vec3()), view.project((p + z * self.camera.distance as f64 * 0.08).as_vec3())) {
+                painter.line_segment([to_pos(a), to_pos(b)], Stroke::new(2.5, Color32::from_rgb(80, 140, 240)));
+                painter.circle_filled(to_pos(a), 6.0, COL_HOVER);
+                painter.circle_stroke(to_pos(a), 6.0, Stroke::new(1.5, Color32::from_gray(30)));
+            }
+        }
+        if let Some(d) = self.joint_dialog.as_ref().filter(|d| d.picking.is_some()) {
+            let hint = if d.picking == Some(joint_dialog::End::Moves) { "Joint: click a round edge, face or corner on the part that moves" } else { "Joint: click where it goes on another part" };
+            painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, format!("{hint}   (Esc to stop)"), egui::FontId::proportional(15.0), Color32::from_gray(220));
         }
 
         // --- draw: the Insert dialog's spot under the mouse, and its move arrows and squares ---

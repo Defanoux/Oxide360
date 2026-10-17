@@ -146,6 +146,56 @@ pub enum ExtrudeTarget {
     Face { face: FacePlane, anchor: [f64; 2] },
 }
 
+/// Where a joint attaches to a part (a joint origin, as Fusion's): a point
+/// and the direction its Z points (out of the part).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum JointSnap {
+    /// A body corner (found again as the nearest one); Z points up.
+    Corner(DVec3),
+    /// The centre of a round edge; Z along its axis, out of the flat face it lies on.
+    Circle(EdgeRef),
+    /// The spot clicked on a flat face (in its plane's coordinates); Z its outward normal.
+    Face { face: FacePlane, anchor: [f64; 2] },
+}
+
+/// How a joint lets its parts move (Fusion's motion types).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum JointKind {
+    /// Locked together.
+    #[default]
+    Rigid,
+    /// Turning about the joint's Z axis (`angle`).
+    Revolute,
+    /// Sliding along the joint's Z axis (`offset`).
+    Slider,
+}
+
+impl JointKind {
+    pub const ALL: [JointKind; 3] = [JointKind::Rigid, JointKind::Revolute, JointKind::Slider];
+    pub fn name(self) -> &'static str {
+        match self {
+            JointKind::Rigid => "Rigid",
+            JointKind::Revolute => "Revolute",
+            JointKind::Slider => "Slider",
+        }
+    }
+}
+
+/// A joint (Fusion's): the part at `a` (its whole component) moves so `a`
+/// meets `b` — their Z axes facing each other (or the same way when
+/// `flip`) — then turns `angle` degrees about the joint's axis and slides
+/// `offset` along it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct JointFeature {
+    pub name: String,
+    pub a: JointSnap,
+    pub b: JointSnap,
+    pub kind: JointKind,
+    pub angle: f64,
+    pub offset: f64,
+    pub flip: bool,
+}
+
 /// Bodies brought in from a STEP or STL file (Fusion's Insert): kept in the
 /// design itself (exact OCCT BRep text), so the file isn't needed again.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

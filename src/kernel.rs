@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{Blob, ImportFeature, SweepFeature, SweepKind, AxisKind, ConstructionPoint, PlaneKind, PointKind, PointRef, MoveFeature, MoveKind, CombineFeature, OffsetFaceFeature, ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{Blob, ImportFeature, JointFeature, JointSnap, SweepFeature, SweepKind, AxisKind, ConstructionPoint, PlaneKind, PointKind, PointRef, MoveFeature, MoveKind, CombineFeature, OffsetFaceFeature, ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::measure::{self, Geom};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
@@ -169,6 +169,7 @@ impl Model {
             + n(&self.point_errors)
             + n(&self.sweep_errors)
             + n(&self.import_errors)
+            + n(&self.joint_errors)
     }
 }
 
@@ -235,6 +236,8 @@ pub struct Model {
     pub sweep_errors: Vec<Option<String>>,
     /// One entry per import.
     pub import_errors: Vec<Option<String>>,
+    /// One entry per joint.
+    pub joint_errors: Vec<Option<String>>,
 }
 
 fn kv(p: DVec3) -> KVec {
@@ -1847,6 +1850,85 @@ pub fn import_file(path: &Path) -> Result<String, String> {
     Ok(text)
 }
 
+/// A joint origin in `bodies`: which body it's on, the point, and its Z.
+pub fn resolve_snap(bodies: &[&Shape], s: &JointSnap) -> Result<(usize, DVec3, DVec3), String> {
+    match *s {
+        JointSnap::Corner(q) => bodies
+            .iter()
+            .enumerate()
+            .flat_map(|(i, b)| shape_edges(b).into_iter().flat_map(move |(_, _, pts)| [pts.first().copied(), pts.last().copied()]).flatten().map(move |p| (i, p)))
+            .min_by(|a, b| a.1.distance(q).total_cmp(&b.1.distance(q)))
+            .map(|(i, p)| (i, p, DVec3::Z))
+            .ok_or_else(|| "the corner it's at is gone".into()),
+        JointSnap::Circle(r) => {
+            let all: Vec<(usize, Edge, EdgeRef, Vec<DVec3>)> = bodies.iter().enumerate().flat_map(|(i, b)| shape_edges(b).into_iter().map(move |(e, r, pts)| (i, e, r, pts))).collect();
+            let list: Vec<(usize, Edge, EdgeRef)> = all.iter().map(|(i, e, r, _)| (*i, e.clone(), *r)).collect();
+            let hit = find_edge(&list, &r, f64::INFINITY).ok_or("the round edge it's at is gone")?;
+            let k = list.iter().position(|c| std::ptr::eq(c, hit)).expect("from this list");
+            let Geom::Circle { center, normal, .. } = edge_geom(&all[k].1, &all[k].3) else { return Err("its edge isn't round any more".into()) };
+            // Out of the flat face the circle lies on (one of the two faces meeting there).
+            let z = all[k].2.faces.into_iter().find(|f| f.dot(normal).abs() > 0.99).unwrap_or(normal);
+            Ok((all[k].0, center, z.normalize()))
+        }
+        JointSnap::Face { face, anchor } => {
+            // On the body whose face it is: the spot must be on (or at) that body.
+            for (i, b) in bodies.iter().enumerate() {
+                if let Some(f) = resolve_face(&[*b], &face, DVec2::from(anchor)) {
+                    let n = f.normal();
+                    let p = n * n.dot(f.origin) + f.u * anchor[0] + f.v * anchor[1];
+                    let on = exact_bounds(b).is_some_and(|(lo, hi)| {
+                        let tol = 1e-6 * (hi - lo).max_element().max(1.0);
+                        p.cmpge(lo - DVec3::splat(tol)).all() && p.cmple(hi + DVec3::splat(tol)).all()
+                    });
+                    if on {
+                        return Ok((i, p, n));
+                    }
+                }
+            }
+            Err("the face it's on is gone".into())
+        }
+    }
+}
+
+/// The rotation turning frame (`za`, its x from `zero_normal`) onto (`zb`, likewise).
+fn frame_turn(za: DVec3, zb: DVec3) -> glam::DQuat {
+    let frame = |z: DVec3| {
+        let x = crate::model::zero_normal(z, DVec3::X);
+        glam::DMat3::from_cols(x, z.cross(x), z)
+    };
+    glam::DQuat::from_mat3(&(frame(zb) * frame(za).transpose())).normalize()
+}
+
+/// Move the component at the joint's `a` so it meets `b` (see `JointFeature`).
+fn apply_joint(bodies: Tagged, j: &JointFeature, components: &[crate::assembly::Component]) -> Result<(Tagged, Option<BodyId>), String> {
+    let shapes: Vec<&Shape> = bodies.iter().map(|(s, _)| s).collect();
+    let (ia, pa, za) = resolve_snap(&shapes, &j.a)?;
+    let moving_id = bodies[ia].1;
+    let group: Vec<BodyId> = crate::assembly::owner(components, moving_id).map_or_else(|| vec![moving_id], |k| components[k].bodies.clone());
+    let moves = |id: &BodyId| *id == moving_id || group.contains(id);
+    // The other end must be on a part that stays.
+    let still: Vec<usize> = (0..bodies.len()).filter(|&i| !moves(&bodies[i].1)).collect();
+    let still_shapes: Vec<&Shape> = still.iter().map(|&i| &bodies[i].0).collect();
+    let (_, pb, zb) = resolve_snap(&still_shapes, &j.b).map_err(|e| if still.is_empty() { "the second point must be on another part".to_string() } else { e })?;
+    let target = if j.flip { zb } else { -zb };
+    let (axis, angle) = frame_turn(za, target).to_axis_angle();
+    let place = |s: &Shape| -> Shape {
+        let mut out = if angle.abs() > 1e-12 { s.rotated_about(kv(pa), kv(axis), angle) } else { s.clone() };
+        if pb != pa {
+            out = out.translated(kv(pb - pa));
+        }
+        if j.angle != 0.0 {
+            out = out.rotated_about(kv(pb), kv(zb), j.angle.to_radians());
+        }
+        if j.offset != 0.0 {
+            out = out.translated(kv(zb * j.offset));
+        }
+        out
+    };
+    let out: Tagged = bodies.into_iter().map(|(s, id)| if moves(&id) { (place(&s), id) } else { (s, id) }).collect();
+    Ok((out, Some(moving_id)))
+}
+
 /// An import turned about the middle of its box, then moved (as Free Move).
 fn placed(shape: &Shape, angles: [f64; 3], offset: [f64; 3]) -> Shape {
     let mut out = shape.clone();
@@ -2800,6 +2882,9 @@ pub struct BuildInputs {
     pub points: Vec<ConstructionPoint>,
     pub sweeps: Vec<SweepFeature>,
     pub imports: Vec<ImportFeature>,
+    pub joints: Vec<JointFeature>,
+    /// Which bodies go together (a joint moves a whole component).
+    pub components: Vec<crate::assembly::Component>,
     pub timeline: Vec<Feature>,
 }
 
@@ -2844,6 +2929,7 @@ pub struct Build {
     inp: BuildInputs,
     sweep_errors: Vec<Option<String>>,
     import_errors: Vec<Option<String>>,
+    joint_errors: Vec<Option<String>>,
     point_pos: Vec<Option<DVec3>>,
     point_errors: Vec<Option<String>>,
     /// The next timeline entry to build.
@@ -2883,9 +2969,10 @@ pub struct Build {
 impl Build {
     pub fn start(inp: BuildInputs) -> Build {
         opencascade::catch_crashes();
-        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, moves, points, sweeps, imports, timeline: _ } = &inp;
+        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, moves, points, sweeps, imports, joints, components: _, timeline: _ } = &inp;
         let sweep_errors: Vec<Option<String>> = vec![None; sweeps.len()];
         let import_errors: Vec<Option<String>> = vec![None; imports.len()];
+        let joint_errors: Vec<Option<String>> = vec![None; joints.len()];
         let (point_pos, point_errors): (Vec<Option<DVec3>>, Vec<Option<String>>) = (vec![None; points.len()], vec![None; points.len()]);
         let _ = (extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, sketches, shells);
         let offset_face_errors: Vec<Option<String>> = vec![None; offset_faces.len()];
@@ -2915,7 +3002,7 @@ impl Build {
         let timing = std::env::var_os("OPENCAD_TIMING").is_some();
         let started = std::time::Instant::now();
         let step = std::time::Instant::now();
-        Build { next: 0, sweep_errors, import_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step, inp }
+        Build { next: 0, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step, inp }
     }
 
     /// How far it's got: (entries built, all of them, the one being built next).
@@ -2933,8 +3020,8 @@ impl Build {
     pub fn step(&mut self, budget: std::time::Duration) -> bool {
         let began = std::time::Instant::now();
         let first = self.next;
-        let Build { inp, next, sweep_errors, import_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step } = self;
-        let BuildInputs { sketches: _, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, moves, points, sweeps, imports, timeline } = &*inp;
+        let Build { inp, next, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step } = self;
+        let BuildInputs { sketches: _, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, moves, points, sweeps, imports, joints, components, timeline } = &*inp;
         let _ = (&timing, &started);
         loop {
             if *next >= timeline.len() {
@@ -3093,6 +3180,14 @@ impl Build {
                         apply(current, shape, sf.op, Feature::Sweep(k))
                     }));
                     (r, &mut sweep_errors[k])
+                }
+                Feature::Joint(k) => {
+                    let Some(j) = joints.get(k) else {
+                        *shapes = current;
+                        continue;
+                    };
+                    let r = catch_unwind(AssertUnwindSafe(|| apply_joint(current, j, components)));
+                    (r, &mut joint_errors[k])
                 }
                 Feature::Import(k) => {
                     let Some(im) = imports.get(k) else {
@@ -3329,7 +3424,7 @@ impl Build {
 
     /// The model built (bodies analysed for picking and Measure).
     pub fn finish(self) -> Model {
-        let Build { inp: _, next: _, sweep_errors, import_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live: _, linked, lost, touched_by, timing, started, mut step } = self;
+        let Build { inp: _, next: _, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live: _, linked, lost, touched_by, timing, started, mut step } = self;
     if timing {
         eprintln!("  {:>8.1} ms  last feature; analysing bodies…", step.elapsed().as_secs_f64() * 1e3);
         step = std::time::Instant::now();
@@ -3357,7 +3452,7 @@ impl Build {
         eprintln!("  {:>8.1} ms  bodies; build {:.1} ms in all", step.elapsed().as_secs_f64() * 1e3, started.elapsed().as_secs_f64() * 1e3);
     }
     let caps = caps_of(&extrude_ends, &revolve_ends);
-    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, caps, touched: touched_by, linked_sketches: linked, projection_lost: lost, points: point_pos, point_errors, sweep_errors, import_errors }
+    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, caps, touched: touched_by, linked_sketches: linked, projection_lost: lost, points: point_pos, point_errors, sweep_errors, import_errors, joint_errors }
     }
 }
 
@@ -3397,6 +3492,8 @@ pub fn build_all(
         points: Vec::new(),
         sweeps: Vec::new(),
         imports: Vec::new(),
+        joints: Vec::new(),
+        components: Vec::new(),
         timeline: timeline.to_vec(),
     });
     while b.step(std::time::Duration::MAX) {}
@@ -4122,7 +4219,7 @@ mod tests {
             kind: Some(PlaneKind::ThreePoints([PointRef::Point(0), PointRef::Point(1), PointRef::Corner(DVec3::new(0.0, 0.0, 5.0))])) };
         let mut b = Build::start(BuildInputs {
             sketches: vec![a], extrudes: vec![ex(0, vec![0, 1], 5.0, Operation::NewBody)], revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![],
-            plane_features: vec![plane], removes: vec![], holes: vec![], thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points, sweeps: vec![], imports: vec![],
+            plane_features: vec![plane], removes: vec![], holes: vec![], thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points, sweeps: vec![], imports: vec![], joints: vec![], components: vec![],
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Point(0), Feature::Point(1), Feature::Plane(0)],
         });
         while b.step(std::time::Duration::MAX) {}
@@ -4164,11 +4261,66 @@ mod tests {
         assert!(lo.distance(DVec3::new(47.0, 2.0, 0.0)) < 1e-6 && hi.distance(DVec3::new(53.0, 8.0, 5.0)) < 1e-6, "{lo} {hi}");
     }
 
+    #[test]
+    fn joints_put_one_part_onto_another_then_turn_slide_and_flip_it() {
+        use crate::assembly::Component;
+        use crate::model::{JointKind, JointSnap};
+        // A: 0..20 × 0..20 × 0..10. B: 50..70 × 0..10 × 0..5. C: a 2 × 2 × 2 cube on B's far end (50..52 × 0..2 × 5..7)... apart, 80..82.
+        let mut a = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut a, 0.0, 0.0, 20.0, 20.0);
+        let mut b = Sketch::new("B".into(), OriginPlane::XY);
+        rect(&mut b, 50.0, 0.0, 70.0, 10.0);
+        let mut c = Sketch::new("C".into(), OriginPlane::XY);
+        rect(&mut c, 80.0, 0.0, 82.0, 2.0);
+        let exs = vec![ex(0, vec![0], 10.0, Operation::NewBody), ex(1, vec![0], 5.0, Operation::NewBody), ex(2, vec![0], 2.0, Operation::NewBody)];
+        let id = |k: usize| BodyId { feature: Feature::Extrude(k), piece: 0 };
+        let face = |n: DVec3, q: DVec3| {
+            let f = FacePlane::from_face(n, q);
+            JointSnap::Face { face: f, anchor: [q.dot(f.u), q.dot(f.v)] }
+        };
+        // B's bottom (at 55, 5) onto A's top (at 10, 10).
+        let joint = |kind, angle, offset, flip| JointFeature { name: "J".into(), a: face(DVec3::NEG_Z, DVec3::new(55.0, 5.0, 0.0)), b: face(DVec3::Z, DVec3::new(10.0, 10.0, 10.0)), kind, angle, offset, flip };
+        let run = |j: JointFeature, components: Vec<Component>| {
+            let mut bld = Build::start(BuildInputs {
+                sketches: vec![a.clone(), b.clone(), c.clone()], extrudes: exs.clone(), revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![], plane_features: vec![], removes: vec![], holes: vec![],
+                thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points: vec![], sweeps: vec![], imports: vec![], joints: vec![j], components,
+                timeline: vec![Feature::Sketch(0), Feature::Sketch(1), Feature::Sketch(2), Feature::Extrude(0), Feature::Extrude(1), Feature::Extrude(2), Feature::Joint(0)],
+            });
+            while bld.step(std::time::Duration::MAX) {}
+            bld.finish()
+        };
+        let boxes = |m: &Model, k: usize| exact_bounds(&m.bodies.iter().find(|b| b.id == id(k)).unwrap().shape).unwrap();
+        let near = |got: (DVec3, DVec3), lo: [f64; 3], hi: [f64; 3]| got.0.distance(DVec3::from(lo)) < 1e-6 && got.1.distance(DVec3::from(hi)) < 1e-6;
+        // Rigid: B sits on A's top, the two spots together.
+        let m = run(joint(JointKind::Rigid, 0.0, 0.0, false), vec![]);
+        assert_eq!(m.joint_errors, vec![None]);
+        assert!(near(boxes(&m, 1), [5.0, 5.0, 10.0], [25.0, 15.0, 15.0]), "{:?}", boxes(&m, 1));
+        assert!(near(boxes(&m, 0), [0.0; 3], [20.0, 20.0, 10.0]), "A stays");
+        assert!(close(m.bodies.iter().find(|b| b.id == id(1)).unwrap().shape.volume(), 1000.0));
+        // Revolute 90°: turned about A's top at (10, 10).
+        let m = run(joint(JointKind::Revolute, 90.0, 0.0, false), vec![]);
+        assert!(near(boxes(&m, 1), [5.0, 5.0, 10.0], [15.0, 25.0, 15.0]), "{:?}", boxes(&m, 1));
+        // Slider 3: lifted along the joint's axis.
+        let m = run(joint(JointKind::Slider, 0.0, 3.0, false), vec![]);
+        assert!(near(boxes(&m, 1), [5.0, 5.0, 13.0], [25.0, 15.0, 18.0]), "{:?}", boxes(&m, 1));
+        // Flipped: facing the same way, so it sinks into A instead.
+        let m = run(joint(JointKind::Rigid, 0.0, 0.0, true), vec![]);
+        assert!(near(boxes(&m, 1), [5.0, 5.0, 5.0], [25.0, 15.0, 10.0]), "{:?}", boxes(&m, 1));
+        // B and C in one component: C goes along (30 to the right of B's start, 5 lower).
+        let m = run(joint(JointKind::Rigid, 0.0, 0.0, false), vec![Component { name: "BC".into(), bodies: vec![id(1), id(2)] }]);
+        assert!(near(boxes(&m, 2), [35.0, 5.0, 10.0], [37.0, 7.0, 12.0]), "{:?}", boxes(&m, 2));
+        // Both ends on the same part: refused, nothing moves.
+        let both = JointFeature { b: face(DVec3::Z, DVec3::new(60.0, 5.0, 5.0)), ..joint(JointKind::Rigid, 0.0, 0.0, false) };
+        let m = run(both, vec![]);
+        assert!(m.joint_errors[0].is_some());
+        assert!(near(boxes(&m, 1), [50.0, 0.0, 0.0], [70.0, 10.0, 5.0]));
+    }
+
     fn run_imports(imports: Vec<ImportFeature>) -> Model {
         let timeline = (0..imports.len()).map(Feature::Import).collect();
         let mut b = Build::start(BuildInputs {
             sketches: vec![], extrudes: vec![], revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![], plane_features: vec![], removes: vec![], holes: vec![],
-            thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points: vec![], sweeps: vec![], imports, timeline,
+            thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points: vec![], sweeps: vec![], imports, joints: vec![], components: vec![], timeline,
         });
         while b.step(std::time::Duration::MAX) {}
         b.finish()
@@ -4224,7 +4376,7 @@ mod tests {
     fn run_sweeps(sketches: Vec<Sketch>, planes: Vec<PlaneFeature>, sweeps: Vec<SweepFeature>, timeline: Vec<Feature>) -> Model {
         let mut b = Build::start(BuildInputs {
             sketches, extrudes: vec![], revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![], plane_features: planes, removes: vec![], holes: vec![],
-            thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points: vec![], sweeps, imports: vec![], timeline,
+            thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points: vec![], sweeps, imports: vec![], joints: vec![], components: vec![], timeline,
         });
         while b.step(std::time::Duration::MAX) {}
         b.finish()
