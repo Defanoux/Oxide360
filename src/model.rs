@@ -171,6 +171,15 @@ pub enum JointKind {
 }
 
 impl JointKind {
+    /// The turn (degrees) and slide (mm) that `motion` adds for this kind.
+    pub fn motion(self, motion: f64) -> (f64, f64) {
+        match self {
+            JointKind::Rigid => (0.0, 0.0),
+            JointKind::Revolute => (motion, 0.0),
+            JointKind::Slider => (0.0, motion),
+        }
+    }
+
     pub const ALL: [JointKind; 3] = [JointKind::Rigid, JointKind::Revolute, JointKind::Slider];
     pub fn name(self) -> &'static str {
         match self {
@@ -184,7 +193,9 @@ impl JointKind {
 /// A joint (Fusion's): the part at `a` (its whole component) moves so `a`
 /// meets `b` — their Z axes facing each other (or the same way when
 /// `flip`) — then turns `angle` degrees about the joint's axis and slides
-/// `offset` along it.
+/// `offset` along it (where it's put), then moves by `motion` the way the
+/// joint lets it: turned more (degrees) for a revolute joint, slid (mm)
+/// for a slider; a rigid joint has none.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JointFeature {
     pub name: String,
@@ -194,6 +205,8 @@ pub struct JointFeature {
     pub angle: f64,
     pub offset: f64,
     pub flip: bool,
+    #[serde(default)]
+    pub motion: f64,
 }
 
 /// Bodies brought in from a STEP or STL file (Fusion's Insert): kept in the

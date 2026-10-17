@@ -1911,17 +1911,19 @@ fn apply_joint(bodies: Tagged, j: &JointFeature, components: &[crate::assembly::
     let still_shapes: Vec<&Shape> = still.iter().map(|&i| &bodies[i].0).collect();
     let (_, pb, zb) = resolve_snap(&still_shapes, &j.b).map_err(|e| if still.is_empty() { "the second point must be on another part".to_string() } else { e })?;
     let target = if j.flip { zb } else { -zb };
+    let (turn, slide) = j.kind.motion(j.motion);
+    let (j_angle, j_offset) = (j.angle + turn, j.offset + slide);
     let (axis, angle) = frame_turn(za, target).to_axis_angle();
     let place = |s: &Shape| -> Shape {
         let mut out = if angle.abs() > 1e-12 { s.rotated_about(kv(pa), kv(axis), angle) } else { s.clone() };
         if pb != pa {
             out = out.translated(kv(pb - pa));
         }
-        if j.angle != 0.0 {
-            out = out.rotated_about(kv(pb), kv(zb), j.angle.to_radians());
+        if j_angle != 0.0 {
+            out = out.rotated_about(kv(pb), kv(zb), j_angle.to_radians());
         }
-        if j.offset != 0.0 {
-            out = out.translated(kv(zb * j.offset));
+        if j_offset != 0.0 {
+            out = out.translated(kv(zb * j_offset));
         }
         out
     };
@@ -4279,7 +4281,7 @@ mod tests {
             JointSnap::Face { face: f, anchor: [q.dot(f.u), q.dot(f.v)] }
         };
         // B's bottom (at 55, 5) onto A's top (at 10, 10).
-        let joint = |kind, angle, offset, flip| JointFeature { name: "J".into(), a: face(DVec3::NEG_Z, DVec3::new(55.0, 5.0, 0.0)), b: face(DVec3::Z, DVec3::new(10.0, 10.0, 10.0)), kind, angle, offset, flip };
+        let joint = |kind, angle, offset, flip| JointFeature { name: "J".into(), a: face(DVec3::NEG_Z, DVec3::new(55.0, 5.0, 0.0)), b: face(DVec3::Z, DVec3::new(10.0, 10.0, 10.0)), kind, angle, offset, flip, motion: 0.0 };
         let run = |j: JointFeature, components: Vec<Component>| {
             let mut bld = Build::start(BuildInputs {
                 sketches: vec![a.clone(), b.clone(), c.clone()], extrudes: exs.clone(), revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![], plane_features: vec![], removes: vec![], holes: vec![],
@@ -4309,6 +4311,13 @@ mod tests {
         // B and C in one component: C goes along (30 to the right of B's start, 5 lower).
         let m = run(joint(JointKind::Rigid, 0.0, 0.0, false), vec![Component { name: "BC".into(), bodies: vec![id(1), id(2)] }]);
         assert!(near(boxes(&m, 2), [35.0, 5.0, 10.0], [37.0, 7.0, 12.0]), "{:?}", boxes(&m, 2));
+        // Motion: a revolute joint turns by it, a slider slides, a rigid one ignores it.
+        let m = run(JointFeature { motion: 90.0, ..joint(JointKind::Revolute, 0.0, 0.0, false) }, vec![]);
+        assert!(near(boxes(&m, 1), [5.0, 5.0, 10.0], [15.0, 25.0, 15.0]), "{:?}", boxes(&m, 1));
+        let m = run(JointFeature { motion: 3.0, ..joint(JointKind::Slider, 0.0, 0.0, false) }, vec![]);
+        assert!(near(boxes(&m, 1), [5.0, 5.0, 13.0], [25.0, 15.0, 18.0]), "{:?}", boxes(&m, 1));
+        let m = run(JointFeature { motion: 90.0, ..joint(JointKind::Rigid, 0.0, 0.0, false) }, vec![]);
+        assert!(near(boxes(&m, 1), [5.0, 5.0, 10.0], [25.0, 15.0, 15.0]), "rigid: locked");
         // Both ends on the same part: refused, nothing moves.
         let both = JointFeature { b: face(DVec3::Z, DVec3::new(60.0, 5.0, 5.0)), ..joint(JointKind::Rigid, 0.0, 0.0, false) };
         let m = run(both, vec![]);
@@ -4336,7 +4345,7 @@ mod tests {
                 .find(|e| matches!(e.geom, Geom::Circle { center, .. } if (center.z - z).abs() < 1e-9)).unwrap().at
         };
         let run = |angle: f64| {
-            let j = JointFeature { name: "J".into(), a: JointSnap::Circle(rim(1, 5.0)), b: JointSnap::Circle(rim(0, 10.0)), kind: JointKind::Revolute, angle, offset: 0.0, flip: false };
+            let j = JointFeature { name: "J".into(), a: JointSnap::Circle(rim(1, 5.0)), b: JointSnap::Circle(rim(0, 10.0)), kind: JointKind::Revolute, angle, offset: 0.0, flip: false, motion: 0.0 };
             let mut bld = Build::start(BuildInputs {
                 sketches: vec![base.clone(), lever.clone()], extrudes: exs.clone(), revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![], plane_features: vec![], removes: vec![], holes: vec![],
                 thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points: vec![], sweeps: vec![], imports: vec![], joints: vec![j], components: vec![],

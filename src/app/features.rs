@@ -2081,8 +2081,13 @@ impl OpenCad {
             let k = d.editing.unwrap_or(self.joints.len());
             self.caches[Slot::Preview as usize].as_ref().and_then(|c| c.model.joint_errors.get(k).cloned().flatten())
         });
+        let now = ui.input(|i| i.time);
         let Some(d) = self.joint_dialog.as_mut() else { return };
-        let act = d.panel(ui, units, error.as_deref());
+        d.advance(now);
+        if d.playing.is_some() {
+            ui.ctx().request_repaint();
+        }
+        let act = d.panel(ui, units, error.as_deref(), now);
         let esc = ui.input(|i| i.key_pressed(egui::Key::Escape)) && !ui.ctx().text_edit_focused();
         match act {
             copy_dialog::Action::Ok => {

@@ -1069,7 +1069,7 @@ mod tests {
     fn joints_and_components_round_trip_and_are_checked() {
         use crate::model::{JointFeature, JointKind, JointSnap};
         let mut doc = sample();
-        doc.joints.push(JointFeature { name: "Joint1".into(), a: JointSnap::Corner(glam::DVec3::X), b: JointSnap::Corner(glam::DVec3::Y), kind: JointKind::Revolute, angle: 30.0, offset: 2.0, flip: true });
+        doc.joints.push(JointFeature { name: "Joint1".into(), a: JointSnap::Corner(glam::DVec3::X), b: JointSnap::Corner(glam::DVec3::Y), kind: JointKind::Revolute, angle: 30.0, offset: 2.0, flip: true, motion: 15.0 });
         doc.timeline.push(Feature::Joint(0));
         doc.components.push(crate::assembly::Component { name: "Lid".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }] });
         assert_eq!(from_json(&to_json(&doc)).unwrap(), doc);

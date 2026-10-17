@@ -3479,7 +3479,14 @@ impl OpenCad {
             }
         }
 
-        // --- draw: the joint snap under the mouse: a dot, and its Z ---
+        // --- draw: the joint snap under the mouse: a dot, and its Z (a round edge lit whole) ---
+        if let Some((model::JointSnap::Circle(r), ..)) = self.joint_hover {
+            if let Some(e) = self.model(Slot::Committed).bodies.iter().flat_map(|b| &b.edges).find(|e| e.at.mid.distance(r.mid) < 1e-6) {
+                for w in e.points.windows(2) {
+                    view.line(w[0], w[1], Stroke::new(3.5, COL_HOVER));
+                }
+            }
+        }
         if let Some((_, p, z)) = self.joint_hover {
             if let (Some(a), Some(b)) = (view.project(p.as_vec3()), view.project((p + z * self.camera.distance as f64 * 0.08).as_vec3())) {
                 painter.line_segment([to_pos(a), to_pos(b)], Stroke::new(2.5, Color32::from_rgb(80, 140, 240)));
