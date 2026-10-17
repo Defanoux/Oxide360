@@ -17,11 +17,20 @@ pub struct ImportDialog {
     /// Centre, Ground and clicks place by. The app fills it.
     pub bounds: Option<(DVec3, DVec3)>,
     pub bounds_for: [f64; 3],
+    /// The move arrows and squares: as last drawn (screen), the one under
+    /// the mouse, and a drag under way.
+    pub screen: Vec<(crate::gizmo::Handle, Vec<glam::Vec2>)>,
+    pub hover: Option<crate::gizmo::Handle>,
+    pub drag: Option<crate::gizmo::Drag>,
+    /// Placing by clicking: the spot under the mouse, and the flat face it's
+    /// on (body, plane) if any.
+    pub spot: Option<DVec3>,
+    pub spot_face: Option<(usize, crate::sketch::FacePlane)>,
 }
 
 impl ImportDialog {
     pub fn new(feature: ImportFeature) -> Self {
-        ImportDialog { editing: None, feature, picking: false, bounds: None, bounds_for: [f64::NAN; 3] }
+        ImportDialog { editing: None, feature, picking: false, bounds: None, bounds_for: [f64::NAN; 3], screen: Vec::new(), hover: None, drag: None, spot: None, spot_face: None }
     }
 
     pub fn edit(k: usize, feature: &ImportFeature) -> Self {
@@ -31,6 +40,11 @@ impl ImportDialog {
     /// Does `bounds` need working out again (new, or turned since)?
     pub fn bounds_stale(&self) -> bool {
         self.bounds.is_none() || self.bounds_for != self.feature.angles
+    }
+
+    /// Where the move arrows start: the middle of its box where it is now.
+    pub fn gizmo_origin(&self) -> Option<DVec3> {
+        self.bounds.map(|(lo, hi)| (lo + hi) * 0.5 + DVec3::from(self.feature.offset))
     }
 
     /// The middle of its box on the origin.

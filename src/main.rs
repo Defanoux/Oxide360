@@ -23,6 +23,7 @@ mod control;
 mod copy_dialog;
 mod doc;
 mod export;
+mod gizmo;
 mod gpu;
 mod handles;
 mod icons;

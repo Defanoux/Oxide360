@@ -62,11 +62,33 @@ impl OpenCad {
         };
         // Grabbing a drag arrow (decided before the camera, so it doesn't orbit).
         let grabbed = if response.drag_started_by(egui::PointerButton::Primary) { near_arrow(press_px, &self.arrows) } else { None };
-        let arrow_active = grabbed.is_some() || self.arrow_drag.is_some();
-
         let min = to_vec(rect.min);
         let size = Vec2::new(rect.width().max(1.0), rect.height().max(1.0));
         let aspect = size.x / size.y;
+        // The Insert dialog's move arrows and squares: grab, drag, let go.
+        let ray_at = |p: Vec2| {
+            let r = self.camera.ray_from_ndc(aspect, ndc_from_pixel(p, min, size));
+            (r.origin.as_dvec3(), r.dir.as_dvec3())
+        };
+        if let Some(d) = self.import_dialog.as_mut().filter(|_| self.active.is_none()) {
+            if response.drag_started_by(egui::PointerButton::Primary) && !d.picking {
+                if let (Some(p), Some(o)) = (press_px, d.gizmo_origin()) {
+                    if let Some(h) = gizmo::pick(&d.screen, p) {
+                        let (ro, rd) = ray_at(p);
+                        d.drag = gizmo::Drag::start(h, o, d.feature.offset, ro, rd);
+                    }
+                }
+            }
+            if let (Some(g), Some(p)) = (d.drag, hover_px) {
+                let (ro, rd) = ray_at(p);
+                d.feature.offset = g.offset(ro, rd);
+            }
+            if response.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
+                d.drag = None;
+            }
+            d.hover = if d.drag.is_some() { d.drag.map(|g| g.handle) } else { hover_px.and_then(|p| gizmo::pick(&d.screen, p)) };
+        }
+        let arrow_active = grabbed.is_some() || self.arrow_drag.is_some() || self.import_dialog.as_ref().is_some_and(|d| d.drag.is_some());
 
         crate::mark("camera input");
         // --- camera input ---
@@ -715,19 +737,31 @@ impl OpenCad {
 
         // --- Insert: click where the imported bodies go (on the model, else the ground) ---
         if self.import_dialog.as_ref().is_some_and(|d| d.picking) && self.active.is_none() {
-            if let (true, Some(px)) = (response.clicked(), hover_px) {
+            // The spot under the mouse (on the model, else the ground), lit as it moves.
+            let (mut spot, mut spot_face) = (None, None);
+            if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 let own = self.import_dialog.as_ref().and_then(|d| d.editing).map(Feature::Import);
                 let model = self.model(Slot::Committed);
                 let hit = model
                     .bodies
                     .iter()
-                    .filter(|b| !self.hidden_bodies.contains(&b.id) && Some(b.id.feature) != own)
-                    .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir))
-                    .reduce(f32::min);
-                let t = hit.or_else(|| (ray.dir.z.abs() > 1e-6).then(|| -ray.origin.z / ray.dir.z).filter(|t| *t > 0.0));
-                if let (Some(t), Some(d)) = (t, self.import_dialog.as_mut()) {
-                    d.place_at((ray.origin + ray.dir * t).as_dvec3());
+                    .enumerate()
+                    .filter(|(_, b)| !self.hidden_bodies.contains(&b.id) && Some(b.id.feature) != own)
+                    .filter_map(|(k, b)| model::ray_hit_tri(&b.mesh, ray.origin, ray.dir).map(|(t, tri)| (k, t, tri)))
+                    .min_by(|a, b| a.1.total_cmp(&b.1));
+                let t = hit.map(|h| h.1).or_else(|| (ray.dir.z.abs() > 1e-6).then(|| -ray.origin.z / ray.dir.z).filter(|t| *t > 0.0));
+                spot = t.map(|t| (ray.origin + ray.dir * t).as_dvec3());
+                // The flat face hit: the plane of the triangle under the mouse.
+                if let (Some((k, _, tri)), Some(p)) = (hit, spot) {
+                    let n = model.bodies[k].mesh.normal(tri).as_dvec3();
+                    spot_face = Some((k, sketch::FacePlane::from_face(n, p)));
+                }
+            }
+            if let Some(d) = self.import_dialog.as_mut() {
+                (d.spot, d.spot_face) = (spot, spot_face);
+                if let (true, Some(p)) = (response.clicked(), spot) {
+                    d.place_at(p);
                 }
             }
         }
@@ -3415,6 +3449,41 @@ impl OpenCad {
             }
         }
 
+        // --- draw: the Insert dialog's spot under the mouse, and its move arrows and squares ---
+        if let Some((spot, face)) = self.import_dialog.as_ref().filter(|d| d.picking).map(|d| (d.spot, d.spot_face)) {
+            if let Some((b, f)) = face {
+                self.fill_face(&view, Some(b), &f, profile_fill(110));
+            }
+            if let Some(px) = spot.and_then(|p| view.project(p.as_vec3())) {
+                painter.circle_filled(to_pos(px), 5.0, COL_HOVER);
+            }
+        }
+        let gizmo_len = self.camera.distance as f64 * 0.18;
+        if let Some(d) = self.import_dialog.as_mut().filter(|d| !d.picking) {
+            d.screen.clear();
+            if let Some(o) = d.gizmo_origin() {
+                let colour = |a: usize| [Color32::from_rgb(230, 70, 70), Color32::from_rgb(90, 200, 90), Color32::from_rgb(80, 140, 240)][a];
+                for (h, pts) in gizmo::geometry(o, gizmo_len) {
+                    let Some(screen): Option<Vec<Vec2>> = pts.iter().map(|p| view.project(p.as_vec3())).collect() else { continue };
+                    let hot = d.hover == Some(h);
+                    match h {
+                        gizmo::Handle::Axis(a) => {
+                            let (s, e) = (screen[0], screen[1]);
+                            let c = if hot { Color32::from_rgb(255, 220, 90) } else { colour(a) };
+                            painter.line_segment([to_pos(s), to_pos(e)], Stroke::new(if hot { 4.0 } else { 3.0 }, c));
+                            let dir = (e - s).normalize_or_zero();
+                            let side = Vec2::new(-dir.y, dir.x);
+                            painter.add(egui::Shape::convex_polygon(vec![to_pos(e + dir * 14.0), to_pos(e + side * 7.0), to_pos(e - side * 7.0)], c, Stroke::NONE));
+                        }
+                        gizmo::Handle::Plane(n) => {
+                            let c = if hot { Color32::from_rgb(255, 220, 90) } else { colour(n) };
+                            painter.add(egui::Shape::convex_polygon(screen.iter().map(|p| to_pos(*p)).collect(), c.gamma_multiply(0.45), Stroke::new(1.5, c)));
+                        }
+                    }
+                    d.screen.push((h, screen));
+                }
+            }
+        }
         if self.import_dialog.as_ref().is_some_and(|d| d.picking) {
             painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, "Click a face, or the ground, to put the inserted part's bottom there   (Esc to stop)", egui::FontId::proportional(15.0), Color32::from_gray(220));
         }
