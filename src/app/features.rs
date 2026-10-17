@@ -1948,6 +1948,18 @@ impl OpenCad {
         }
     }
 
+    pub(crate) fn delete_import(&mut self, k: usize) {
+        self.imports.remove(k);
+        self.timeline_remove(Feature::Import(k));
+        for f in &mut self.timeline {
+            if let Feature::Import(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+    }
+
     /// Can a sketch's profiles be picked (and are they shown) while picking?
     /// Only visible sketches — plus the one the dialog already uses, so
     /// editing an extrude shows its own (hidden) sketch. Like Fusion.

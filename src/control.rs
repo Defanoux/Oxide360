@@ -190,6 +190,7 @@ fn mcp_tools() -> Value {
         {"name": "type", "description": "Type text into the focused box.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
         {"name": "open", "description": "Open a design file (.opencad).", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
         {"name": "save", "description": "Save the design to a file.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+        {"name": "import", "description": "Insert a STEP (.step/.stp) or STL file's bodies into the design.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
         {"name": "new", "description": "Throw the open design away and start an empty one (no questions).", "inputSchema": {"type": "object", "properties": {}}}
     ])
 }

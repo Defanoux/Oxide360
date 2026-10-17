@@ -43,7 +43,7 @@ target/debug/opencad ctl '{"cmd":"state"}'   # timeline, errors, bodies + volume
 ```
 Commands: `screenshot`, `state`, `click` / `double_click` (`button`, `mods`),
 `move`, `drag` (`from`, `to`), `scroll` (`dy`), `key` ("Escape", "R", …),
-`type`, `open` / `save` (`path`), `new`, `wait` (`frames`). Each answers once
+`type`, `open` / `save` / `import` (`path`), `new`, `wait` (`frames`). Each answers once
 the view has settled and any rebuild is done. In a new session the same
 commands are MCP tools (`.mcp.json`, server `opencad mcp`, which starts the
 app if needed). Stop the app when done; it opens on Gavin's screen.

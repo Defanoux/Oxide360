@@ -405,6 +405,8 @@ enum Cmd {
     Save,
     SaveAs,
     Export(export::Format),
+    /// Insert a STEP / STL file's bodies into this design.
+    Import,
 }
 
 /// What to do once the user has answered "save changes?".
@@ -616,6 +618,7 @@ impl KernelCache {
             moves: Vec::new(),
             points: Vec::new(),
             sweeps: Vec::new(),
+            imports: Vec::new(),
             timeline: Vec::new(),
             model: kernel::Model::default(),
             stand_in: true,
@@ -640,6 +643,7 @@ struct KernelCache {
     moves: Vec<model::MoveFeature>,
     points: Vec<model::ConstructionPoint>,
     sweeps: Vec<model::SweepFeature>,
+    imports: Vec<model::ImportFeature>,
     timeline: Vec<Feature>,
     model: kernel::Model,
     /// Nothing built yet (an empty model while the first build runs).
@@ -717,6 +721,8 @@ struct OpenCad {
     points: Vec<model::ConstructionPoint>,  // construction points
     sweeps: Vec<model::SweepFeature>,       // sweeps and lofts
     sweep_errors: Vec<Option<String>>,
+    imports: Vec<model::ImportFeature>,    // STEP / STL bodies brought in
+    import_errors: Vec<Option<String>>,
     sweep_dialog: Option<sweep_dialog::SweepDialog>, // the Sweep / Loft dialog
     path_hover: Option<(usize, Vec<usize>)>, // the sketch curve chain under the cursor while picking a sweep's path
     point_errors: Vec<Option<String>>,
@@ -935,6 +941,8 @@ impl Default for OpenCad {
             point_errors: Vec::new(),
             sweeps: Vec::new(),
             sweep_errors: Vec::new(),
+            imports: Vec::new(),
+            import_errors: Vec::new(),
             sweep_dialog: None,
             path_hover: None,
             point_pick: false,
@@ -1596,6 +1604,7 @@ impl Tabs {
                     "state" => Some(tab.control_state()),
                     "open" => Some(done(path().and_then(|p| tab.control_open(&p)))),
                     "save" => Some(done(path().and_then(|p| tab.control_save(&p)))),
+                    "import" => Some(done(path().and_then(|p| tab.import_path(std::path::Path::new(&p))))),
                     "new" => {
                         tab.control_new();
                         Some(json!({"ok": true}))

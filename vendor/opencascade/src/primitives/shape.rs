@@ -581,6 +581,31 @@ impl Shape {
         BooleanShape { shape, new_edges }
     }
 
+    /// opencad patch: a STEP file's shapes (millimetres); None when it
+    /// can't be read (instead of aborting).
+    pub fn try_read_step(path: impl AsRef<Path>) -> Option<Self> {
+        let made = ffi::b_rep_tools::opencad_try_read_step(&path.as_ref().to_string_lossy());
+        (!made.is_null()).then(|| Self::from_shape(&made))
+    }
+
+    /// opencad patch: an STL mesh sewn into solids (coplanar triangles
+    /// merged); None when it can't be read or doesn't close.
+    pub fn try_read_stl(path: impl AsRef<Path>) -> Option<Self> {
+        let made = ffi::b_rep_tools::opencad_try_read_stl(&path.as_ref().to_string_lossy());
+        (!made.is_null()).then(|| Self::from_shape(&made))
+    }
+
+    /// opencad patch: the shape as OCCT BRep text (exact; empty on failure).
+    pub fn to_brep_string(&self) -> String {
+        ffi::b_rep_tools::opencad_brep_to_string(&self.inner)
+    }
+
+    /// opencad patch: a shape back from `to_brep_string` text.
+    pub fn try_from_brep_string(text: &str) -> Option<Self> {
+        let made = ffi::b_rep_tools::opencad_try_brep_from_string(text);
+        (!made.is_null()).then(|| Self::from_shape(&made))
+    }
+
     pub fn read_step(path: impl AsRef<Path>) -> Result<Self, Error> {
         let mut reader = ffi::step_control::STEPControl_Reader_new();
 

@@ -2353,6 +2353,7 @@ impl OpenCad {
         self.move_errors = self.model(Slot::Committed).move_errors.clone();
         self.point_errors = self.model(Slot::Committed).point_errors.clone();
         self.sweep_errors = self.model(Slot::Committed).sweep_errors.clone();
+        self.import_errors = self.model(Slot::Committed).import_errors.clone();
         self.body_count = self.model(Slot::Committed).bodies.len();
         // With a body in the scene the origin gets out of the way (Create Sketch
         // and the browser's Origin box bring it back).

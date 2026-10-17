@@ -17,5 +17,14 @@ mod inner {
         pub fn write(shape: &TopoDS_Shape, path: String) -> bool;
         #[cxx_name = "read_brep_text"]
         pub fn read(path: String) -> UniquePtr<TopoDS_Shape>;
+
+        /// opencad patch: a STEP file's shapes (null on failure).
+        pub fn opencad_try_read_step(path: &str) -> UniquePtr<TopoDS_Shape>;
+        /// opencad patch: an STL mesh as solids (null on failure).
+        pub fn opencad_try_read_stl(path: &str) -> UniquePtr<TopoDS_Shape>;
+        /// opencad patch: a shape as BRep text (empty on failure).
+        pub fn opencad_brep_to_string(shape: &TopoDS_Shape) -> String;
+        /// opencad patch: a shape back from BRep text (null on failure).
+        pub fn opencad_try_brep_from_string(text: &str) -> UniquePtr<TopoDS_Shape>;
     }
 }

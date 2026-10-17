@@ -21,6 +21,7 @@ impl OpenCad {
             moves: self.moves.clone(),
             points: self.points.clone(),
             sweeps: self.sweeps.clone(),
+            imports: self.imports.clone(),
             sections: self.sections.clone(),
             parameters: self.parameters.clone(),
             feature_exprs: self.feature_exprs.clone(),
@@ -280,6 +281,7 @@ impl OpenCad {
             || self.timeline != self.saved.timeline
             || self.points != self.saved.points
             || self.sweeps != self.saved.sweeps
+            || self.imports != self.saved.imports
             || self.sections != self.saved.sections
     }
 
@@ -380,6 +382,7 @@ impl OpenCad {
         self.sections = doc.sections.clone();
         self.points = doc.points.clone();
         self.sweeps = doc.sweeps.clone();
+        self.imports = doc.imports.clone();
         self.sweep_dialog = None;
         self.point_pick = false;
         self.section_dialog = None;
@@ -472,6 +475,7 @@ impl OpenCad {
         self.sections = doc.sections;
         self.points = doc.points;
         self.sweeps = doc.sweeps;
+        self.imports = doc.imports;
         self.sweep_dialog = None;
         self.parameters = doc.parameters;
         self.feature_exprs = doc.feature_exprs;
@@ -792,6 +796,7 @@ impl OpenCad {
             moves,
             points: self.points.clone(),
             sweeps,
+            imports: self.imports.clone(),
             timeline,
         }
     }
@@ -818,6 +823,7 @@ impl OpenCad {
                 && c.moves == inp.moves
                 && c.points == inp.points
                 && c.sweeps == inp.sweeps
+                && c.imports == inp.imports
                 && c.timeline == inp.timeline
         });
         let i = slot as usize;
@@ -868,6 +874,7 @@ impl OpenCad {
             moves: inp.moves,
             points: inp.points,
             sweeps: inp.sweeps,
+            imports: inp.imports,
             timeline: inp.timeline,
             model,
             stand_in: false,
@@ -945,6 +952,7 @@ impl OpenCad {
             Feature::Move(k) => self.moves.get(k).map(|m| m.name.clone()),
             Feature::Point(k) => self.points.get(k).map(|p| p.name.clone()),
             Feature::Sweep(k) => self.sweeps.get(k).map(|s| s.name.clone()),
+            Feature::Import(k) => self.imports.get(k).map(|s| s.name.clone()),
         }
         .unwrap_or_else(|| format!("{f:?}"))
     }
@@ -989,6 +997,19 @@ impl OpenCad {
         if let Err(e) = result {
             self.alert = Some(e);
         }
+    }
+
+    /// A STEP / STL file's bodies added at the timeline marker (Fusion's
+    /// Insert). The geometry is kept in the design, so the file isn't needed again.
+    pub(crate) fn import_path(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let file = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        let brep = kernel::import_file(path).map_err(|e| format!("Couldn't import {file}: {e}"))?;
+        let stem = path.file_stem().map_or_else(|| "Import".into(), |s| s.to_string_lossy().into_owned());
+        let name = if self.imports.iter().any(|i| i.name == stem) { format!("{stem} ({})", self.imports.len() + 1) } else { stem };
+        self.imports.push(model::ImportFeature { name: name.clone(), source: file, brep: model::Blob::new(brep) });
+        self.timeline_insert(Feature::Import(self.imports.len() - 1));
+        self.notify(format!("{name} inserted"));
+        Ok(())
     }
 
     /// Sketch `i` as a DXF (or SVG) drawing, as Fusion's Save As DXF.
@@ -1043,6 +1064,14 @@ impl OpenCad {
                 self.save_as();
             }
             Cmd::Export(f) => self.export(f),
+            Cmd::Import => {
+                let picked = self.file_dialog().set_title("Insert into Design").add_filter("STEP or STL", &["step", "stp", "stl", "STEP", "STP", "STL"]).pick_file();
+                if let Some(p) = picked {
+                    if let Err(e) = self.import_path(&p) {
+                        self.alert = Some(e);
+                    }
+                }
+            }
         }
     }
 

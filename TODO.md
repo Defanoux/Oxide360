@@ -16,8 +16,6 @@ the spec for each.
 17. **Sweep** (profile along a path) and **Loft** (between profiles, rails).
 
 **Files**
-20. **Import** STEP and STL (as bodies), **DXF/SVG export** of a sketch.
-
 **Inspect**
 21. Centre of mass, bounding box, **physical materials** (density → mass),
     **Interference**.
@@ -35,6 +33,7 @@ sheet metal, surfaces, CAM.
 
 ## Done
 
+- 20 Import and 2-D export: File → Insert into Design (STEP exact; STL triangles joined into a solid, coplanar ones merged; open meshes refused with a reason), kept inside the design as an Import timeline feature; sketch right-click → Save As DXF / SVG (lines, circles, arcs exact; splines, ellipses, text as polylines; construction left out). Checked in the running app (OCCT sample STEP/STL; DXF checked with ezdxf).
 - 19 Autosave + crash recovery: designs with unsaved changes are written to ~/.local/share/opencad/recovery every 2 minutes; saving, closing a tab or quitting normally removes them; after a crash the next start offers Recover / Discard (recovered designs open unsaved, pointing at their own file; another running opencad's autosaves are left alone). Also: points, sweeps and section analyses now count as unsaved changes. Crash and recovery checked in the running app.
 - 18 Coil and Pipe (CREATE): Pipe — a round section along a path of sketch curves, solid or hollow; Coil — on a plane or face (a face: centred where clicked), diameter, revolutions, height, circular/square/triangular section; exact OCCT (helix sweep behind a try wrapper). Coil checked in the running app (volume exact). F6 now fits previews too.
 - 17 Sweep and Loft (CREATE): Sweep a sketch's profiles along a chain of sketch curves (lines, arcs, splines, or a circle); Loft through one profile per sketch, in order, smooth or straight; Join/Cut/New Body/Intersect, live preview, timeline + edit; exact OCCT (MakePipe / ThruSections behind try wrappers). Not yet: loft rails, holes in loft profiles, sweep twist/taper. Sweep checked in the running app.

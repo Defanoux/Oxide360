@@ -56,6 +56,7 @@ impl OpenCad {
             Feature::Move(k) => self.move_errors.get(k).cloned().flatten(),
             Feature::Point(k) => self.point_errors.get(k).cloned().flatten(),
             Feature::Sweep(k) => self.sweep_errors.get(k).cloned().flatten(),
+            Feature::Import(k) => self.import_errors.get(k).cloned().flatten(),
         }
     }
 
@@ -546,6 +547,7 @@ impl OpenCad {
             Feature::Move(k) => &mut self.moves.get_mut(k)?.name,
             Feature::Point(k) => &mut self.points.get_mut(k)?.name,
             Feature::Sweep(k) => &mut self.sweeps.get_mut(k)?.name,
+            Feature::Import(k) => &mut self.imports.get_mut(k)?.name,
         })
     }
 
@@ -662,6 +664,7 @@ impl OpenCad {
                     Feature::Move(k) => (self.moves[k].name.clone(), self.move_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
                     Feature::Point(k) => (self.points[k].name.clone(), false),
                     Feature::Sweep(k) => (self.sweeps[k].name.clone(), self.sweep_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
+                    Feature::Import(k) => (self.imports[k].name.clone(), false),
                 };
                 let error = self.feature_error(*f);
                 let icon = match *f {
@@ -678,6 +681,7 @@ impl OpenCad {
                     Feature::Combine(_) => Icon::Combine,
                     Feature::Move(_) => Icon::Move,
                     Feature::Point(_) => Icon::ConstructPoint,
+                    Feature::Import(_) => Icon::Import,
                     Feature::Sweep(k) => match sweep_dialog::Mode::of(&self.sweeps[k].kind) {
                         sweep_dialog::Mode::Loft => Icon::Loft,
                         sweep_dialog::Mode::Pipe => Icon::Pipe,
@@ -819,6 +823,7 @@ impl OpenCad {
             Some(Feature::Move(k)) => self.delete_move(k),
             Some(Feature::Point(k)) => self.delete_point(k),
             Some(Feature::Sweep(k)) => self.delete_sweep(k),
+            Some(Feature::Import(k)) => self.delete_import(k),
             None => {}
         }
         if delete.is_some() {
@@ -834,7 +839,7 @@ impl OpenCad {
             Some(Feature::OffsetFace(k)) => self.open_offset(Some(k), false),
             Some(Feature::Combine(k)) => self.open_combine(Some(k)),
             Some(Feature::Move(k)) => self.open_move(Some(k)),
-            Some(Feature::Axis(_) | Feature::Remove(_) | Feature::Point(_)) => {}
+            Some(Feature::Axis(_) | Feature::Remove(_) | Feature::Point(_) | Feature::Import(_)) => {}
             Some(Feature::Sweep(k)) => self.open_sweep(Some(k), sweep_dialog::Mode::of(&self.sweeps[k].kind)),
             Some(Feature::Plane(k)) => {
                 self.cancel_all_dialogs();

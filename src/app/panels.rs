@@ -254,6 +254,10 @@ impl OpenCad {
                     }
                 }
                 ui.separator();
+                if ui.button("Insert into Design… (STEP, STL)").clicked() {
+                    self.cmd = Some(Cmd::Import);
+                    ui.close();
+                }
                 ui.menu_button("Export", |ui| {
                     for f in export::Format::ALL {
                         if ui.button(format!("{}…", f.label())).clicked() {

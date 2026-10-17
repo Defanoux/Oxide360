@@ -40,6 +40,7 @@ pub enum Icon {
     Loft,
     Pipe,
     Coil,
+    Import,
     Break,
     ControlSpline,
     Plane,
@@ -680,6 +681,14 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             arc(0.2, 0.85, 0.6, -std::f32::consts::FRAC_PI_2, 0.0, Stroke::new(thin.width * 4.0, blue));
             arc(0.2, 0.25, 0.1, 0.0, std::f32::consts::TAU, Stroke::new(thin.width * 1.3, orange));
         }
+        Icon::Import => {
+            // A blue box with an arrow coming down into it.
+            poly(&[(0.2, 0.55), (0.8, 0.55), (0.8, 0.9), (0.2, 0.9)], blue);
+            let s = Stroke::new(thin.width * 1.4, orange);
+            line((0.5, 0.1), (0.5, 0.48), s);
+            line((0.34, 0.33), (0.5, 0.49), s);
+            line((0.66, 0.33), (0.5, 0.49), s);
+        }
         Icon::Coil => {
             // A spring seen from the side.
             let s = Stroke::new(thin.width * 1.4, orange);
@@ -993,7 +1002,7 @@ mod shot_tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [720, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil, Icon::Import] {
                     button(ui, icon, "", true, false);
                 }
             });

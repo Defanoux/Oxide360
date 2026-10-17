@@ -146,6 +146,45 @@ pub enum ExtrudeTarget {
     Face { face: FacePlane, anchor: [f64; 2] },
 }
 
+/// Bodies brought in from a STEP or STL file (Fusion's Insert): kept in the
+/// design itself (exact OCCT BRep text), so the file isn't needed again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImportFeature {
+    pub name: String,
+    /// The file it came from (for its name; never read again).
+    pub source: String,
+    pub brep: Blob,
+}
+
+/// Big text shared rather than copied (undo keeps a copy of the design per
+/// step); equal when it's the same text.
+#[derive(Clone, Debug, Default)]
+pub struct Blob(pub std::sync::Arc<String>);
+
+impl Blob {
+    pub fn new(text: String) -> Self {
+        Blob(std::sync::Arc::new(text))
+    }
+}
+
+impl PartialEq for Blob {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
+    }
+}
+
+impl Serialize for Blob {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Blob {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        String::deserialize(d).map(Blob::new)
+    }
+}
+
 /// Sweep or Loft (Fusion's Create → Sweep / Loft): one kind of timeline
 /// feature, made one of two ways.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
