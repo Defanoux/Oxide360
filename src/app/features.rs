@@ -1559,6 +1559,29 @@ impl OpenCad {
         (c - half, c + half)
     }
 
+    /// Construction plane `k`'s drawn area (see `PlaneFeature::extent`); a
+    /// plane through three points covers just them.
+    pub(crate) fn plane_extent(&self, k: usize, frame: &sketch::FacePlane) -> [f64; 4] {
+        let pf = &self.planes[k];
+        let Some(model::PlaneKind::ThreePoints(refs)) = pf.kind else { return pf.extent };
+        let built = &self.model(Slot::Committed).points;
+        let pts: Vec<DVec3> = refs
+            .iter()
+            .filter_map(|r| match *r {
+                model::PointRef::Origin => Some(DVec3::ZERO),
+                model::PointRef::Corner(q) => Some(q),
+                model::PointRef::Point(j) => built.get(j).copied().flatten(),
+            })
+            .collect();
+        if pts.len() < 3 {
+            return pf.extent;
+        }
+        let uv: Vec<DVec2> = pts.iter().map(|p| DVec2::new((p - frame.origin).dot(frame.u), (p - frame.origin).dot(frame.v))).collect();
+        let lo = uv.iter().fold(DVec2::splat(f64::MAX), |a, b| a.min(*b));
+        let hi = uv.iter().fold(DVec2::splat(f64::MIN), |a, b| a.max(*b));
+        [lo.x, lo.y, hi.x, hi.y]
+    }
+
     /// The construction plane a ray meets first (not hidden): (index, distance).
     pub(crate) fn pick_cplane(&self, ray: &Ray, size: f32) -> Option<(usize, f32)> {
         let model = &self.caches[Slot::Committed as usize].as_ref()?.model;
@@ -1566,7 +1589,7 @@ impl OpenCad {
             .filter(|k| !self.plane_hidden.contains(k))
             .filter_map(|k| {
                 let frame = model.planes.get(k).copied().flatten()?;
-                let (lo, hi) = self.plane_rect(self.planes[k].extent, &frame, self.planes[k].on_origin, size);
+                let (lo, hi) = self.plane_rect(self.plane_extent(k, &frame), &frame, self.planes[k].on_origin, size);
                 let (t, p) = frame.plane().intersect_t(ray)?;
                 (p.cmpge(lo).all() && p.cmple(hi).all()).then_some((k, t))
             })

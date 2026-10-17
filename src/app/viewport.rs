@@ -128,21 +128,6 @@ impl OpenCad {
                 }
             }
         }
-        // The box being dragged: solid left to right (inside only), dashed right to left (touching too).
-        if let Some((a, b)) = self.solid_box {
-            let r = egui::Rect::from_two_pos(to_pos(a), to_pos(b));
-            let crossing = b.x < a.x;
-            let col = if crossing { Color32::from_rgb(90, 200, 120) } else { COL_PREVIEW };
-            painter.rect_filled(r, 0.0, col.gamma_multiply(0.12));
-            if crossing {
-                let c = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
-                for w in c.windows(2) {
-                    painter.add(egui::Shape::dashed_line(&[w[0], w[1]], Stroke::new(1.5, col), 6.0, 4.0));
-                }
-            } else {
-                painter.rect_stroke(r, 0.0, Stroke::new(1.5, col), egui::StrokeKind::Inside);
-            }
-        }
         let grid = GridSpec::for_units(self.camera.distance, self.units);
         let dplane = self.active.map_or(OriginPlane::XY.plane(), |i| self.plane_of(i));
         let mm_per_px = (self.camera.distance * 2.0 * (FOV_Y * 0.5).tan() / size.y) as f64;
@@ -2171,7 +2156,20 @@ impl OpenCad {
         let shown = if self.face_pick || picking_axis { origin::Shown::default() } else { self.origin_shown };
         let show_origin = !sketching && (shown.all || self.face_pick || picking_axis);
         let mirror_plane = self.copy_dialog.as_ref().filter(|d| d.mode == CopyMode::Mirror && d.plane_set).map(|d| (d.mirror_custom, d.plane));
-        let extrude_target = self.dialog.as_ref().filter(|d| d.extent == model::Extent::ToObject).and_then(|d| d.target);
+        // Planes and faces already picked by the open command (lit in the selection colour).
+        let chosen_targets: Vec<model::ExtrudeTarget> = self
+            .dialog
+            .as_ref()
+            .filter(|d| d.extent == model::Extent::ToObject)
+            .and_then(|d| d.target)
+            .into_iter()
+            .chain(self.hole_dialog.as_ref().and_then(|d| d.hole.target))
+            .chain(self.section_dialog.as_ref().and_then(|d| d.at))
+            .chain(match &self.construct_pick {
+                Some(ConstructPick::Midplane(t)) => t.clone(),
+                _ => Vec::new(),
+            })
+            .collect();
         let mut grid_segments: Vec<(Vec3, Vec3, [f32; 4])> = if sketching {
             sketch::grid_lines(&dplane, centre, grid, GRID_HALF_LINES)
                 .into_iter()
@@ -2242,7 +2240,7 @@ impl OpenCad {
             let mut outlines: Vec<(Vec3, Vec3, [f32; 4])> = Vec::new();
             for op in OriginPlane::ALL.into_iter().filter(|&p| shown.plane(p)) {
                 let hot = self.origin_hover == Some(op);
-                let chosen = self.selected_plane == Some(op) || mirror_plane == Some((None, op)) || extrude_target == Some(model::ExtrudeTarget::Origin(op));
+                let chosen = self.selected_plane == Some(op) || mirror_plane == Some((None, op)) || chosen_targets.contains(&model::ExtrudeTarget::Origin(op));
                 let alpha = if hot { 150 } else if chosen { 120 } else if self.face_pick { 80 } else { 55 };
                 let p = op.plane();
                 let s = origin_size;
@@ -2294,14 +2292,14 @@ impl OpenCad {
                 if let Some(f) = self.model(Slot::Committed).planes.get(k).copied().flatten() {
                     let alpha = if self.cplane_hover == Some(k) {
                         150.0
-                    } else if mirror_plane.is_some_and(|(c, _)| c == Some(k)) || extrude_target == Some(model::ExtrudeTarget::Plane(k)) {
+                    } else if mirror_plane.is_some_and(|(c, _)| c == Some(k)) || chosen_targets.contains(&model::ExtrudeTarget::Plane(k)) {
                         120.0
                     } else if self.face_pick {
                         80.0
                     } else {
                         55.0
                     };
-                    items.push((f, self.planes[k].on_origin, alpha / 255.0, self.planes[k].extent));
+                    items.push((f, self.planes[k].on_origin, alpha / 255.0, self.plane_extent(k, &f)));
                 }
             }
             if let Some(d) = &self.plane_dialog {
@@ -2492,6 +2490,27 @@ impl OpenCad {
             view.solids(&meshes, &self.camera);
         }
 
+        // (Drawn over the bodies.)
+        // The box being dragged: solid left to right (inside only), dashed right to left (touching too).
+        if let Some((a, b)) = self.solid_box {
+            let r = egui::Rect::from_two_pos(to_pos(a), to_pos(b));
+            let crossing = b.x < a.x;
+            let col = if crossing { Color32::from_rgb(90, 200, 120) } else { COL_PREVIEW };
+            painter.rect_filled(r, 0.0, col.gamma_multiply(0.12));
+            if crossing {
+                let c = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+                for w in c.windows(2) {
+                    painter.add(egui::Shape::dashed_line(&[w[0], w[1]], Stroke::new(1.5, col), 6.0, 4.0));
+                }
+            } else {
+                painter.rect_stroke(r, 0.0, Stroke::new(1.5, col), egui::StrokeKind::Inside);
+            }
+        }
+        // Holding Shift in the solid view: say what a drag does.
+        if shift && !sketching && self.free_view() && response.hovered() && self.solid_box.is_none() {
+            painter.text(rect.center_bottom() - egui::vec2(0.0, 40.0), egui::Align2::CENTER_BOTTOM, "Shift+drag: left to right selects what's fully inside, right to left what it touches", egui::FontId::proportional(15.0), Color32::from_gray(220));
+        }
+
         crate::mark("draw: threads that are only shown, whi");
         // --- draw: threads that are only shown, while a Hole or Thread window
         // is open: on top (the rest of the time they're drawn with the bodies) ---
@@ -2680,26 +2699,15 @@ impl OpenCad {
 
         crate::mark("draw: the face a sketch would start on");
         // --- draw: the face a sketch would start on ---
-        if let (Some((b, face)), false) = (self.face_hover, self.section_on) {
-            let model = self.model(Slot::Committed);
-            if let Some(body) = model.bodies.get(b) {
-                let n = face.normal();
-                let fill = profile_fill(110);
-                let mut overlay = egui::Mesh::default();
-                for (t, tri) in body.mesh.tris.iter().enumerate() {
-                    let [a, bb, c] = tri.map(|i| body.mesh.positions[i as usize]);
-                    let on_face = body.mesh.normal(t).as_dvec3().dot(n) > 0.9999
-                        && n.dot(a.as_dvec3() - face.origin).abs() < self.camera.distance as f64 * 1e-3;
-                    if let (true, Some(pa), Some(pb), Some(pc)) = (on_face, view.project(a), view.project(bb), view.project(c)) {
-                        let base = overlay.vertices.len() as u32;
-                        for q in [pa, pb, pc] {
-                            overlay.colored_vertex(to_pos(q), fill);
-                        }
-                        overlay.add_triangle(base, base + 1, base + 2);
-                    }
+        if !self.section_on {
+            for t in &chosen_targets {
+                if let model::ExtrudeTarget::Face { face, .. } = t {
+                    self.fill_face(&view, None, face, Color32::from_rgba_unmultiplied(70, 140, 230, 120));
                 }
-                painter.add(egui::Shape::mesh(overlay));
             }
+        }
+        if let (Some((b, face)), false) = (self.face_hover, self.section_on) {
+            self.fill_face(&view, Some(b), &face, profile_fill(110));
         }
         if self.face_pick {
             painter.text(
@@ -4177,5 +4185,26 @@ impl OpenCad {
             egui::FontId::monospace(12.0),
             Color32::from_gray(160),
         );
+    }
+
+    /// Fill the flat face `face` (of body `body`, or of whichever body has it) on top of the view.
+    fn fill_face(&self, view: &View, body: Option<usize>, face: &sketch::FacePlane, fill: Color32) {
+        let model = self.model(Slot::Committed);
+        let n = face.normal();
+        let mut overlay = egui::Mesh::default();
+        for (_, b) in model.bodies.iter().enumerate().filter(|(k, _)| body.is_none_or(|b| b == *k)) {
+            for (t, tri) in b.mesh.tris.iter().enumerate() {
+                let [a, bb, c] = tri.map(|i| b.mesh.positions[i as usize]);
+                let on_face = b.mesh.normal(t).as_dvec3().dot(n) > 0.9999 && n.dot(a.as_dvec3() - face.origin).abs() < self.camera.distance as f64 * 1e-3;
+                if let (true, Some(pa), Some(pb), Some(pc)) = (on_face, view.project(a), view.project(bb), view.project(c)) {
+                    let base = overlay.vertices.len() as u32;
+                    for q in [pa, pb, pc] {
+                        overlay.colored_vertex(to_pos(q), fill);
+                    }
+                    overlay.add_triangle(base, base + 1, base + 2);
+                }
+            }
+        }
+        view.painter.add(egui::Shape::mesh(overlay));
     }
 }

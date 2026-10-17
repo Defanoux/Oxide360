@@ -613,6 +613,8 @@ impl KernelCache {
             offset_faces: Vec::new(),
             combines: Vec::new(),
             moves: Vec::new(),
+            points: Vec::new(),
+            sweeps: Vec::new(),
             timeline: Vec::new(),
             model: kernel::Model::default(),
             stand_in: true,
@@ -635,6 +637,8 @@ struct KernelCache {
     offset_faces: Vec<model::OffsetFaceFeature>,
     combines: Vec<model::CombineFeature>,
     moves: Vec<model::MoveFeature>,
+    points: Vec<model::ConstructionPoint>,
+    sweeps: Vec<model::SweepFeature>,
     timeline: Vec<Feature>,
     model: kernel::Model,
     /// Nothing built yet (an empty model while the first build runs).
@@ -1196,7 +1200,9 @@ impl OpenCad {
         // Side-scrollable, so a narrow window doesn't cut the ribbon off.
         egui::Panel::top("toolbar").show(ui, |ui| {
             if self.active.is_some() {
-                egui::Panel::right("finish_sketch").resizable(false).show(ui, |ui| self.finish_sketch_group(ui));
+                // Only as wide as its label.
+                let label_w = ui.painter().layout_no_wrap("FINISH SKETCH".into(), egui::FontId::proportional(11.0), Color32::WHITE).size().x;
+                egui::Panel::right("finish_sketch").resizable(false).exact_size(label_w + 20.0).show(ui, |ui| self.finish_sketch_group(ui));
             }
             // Carry-on scrolling: a flick keeps gliding a little (see `inertia`).
             let dt = ui.input(|i| i.stable_dt);

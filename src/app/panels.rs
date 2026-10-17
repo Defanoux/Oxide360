@@ -513,7 +513,7 @@ impl OpenCad {
             if icons::button(ui, Icon::FinishSketch, "Finish Sketch", true, false).clicked() {
                 self.finish_sketch();
             }
-            ui.label(egui::RichText::new("FINISH SKETCH").size(11.0).color(Color32::from_gray(150)));
+            ui.add(egui::Label::new(egui::RichText::new("FINISH SKETCH").size(11.0).color(Color32::from_gray(150))).extend());
         });
     }
 

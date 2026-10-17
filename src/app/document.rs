@@ -816,6 +816,8 @@ impl OpenCad {
                 && c.offset_faces == inp.offset_faces
                 && c.combines == inp.combines
                 && c.moves == inp.moves
+                && c.points == inp.points
+                && c.sweeps == inp.sweeps
                 && c.timeline == inp.timeline
         });
         let i = slot as usize;
@@ -864,6 +866,8 @@ impl OpenCad {
             offset_faces: inp.offset_faces,
             combines: inp.combines,
             moves: inp.moves,
+            points: inp.points,
+            sweeps: inp.sweeps,
             timeline: inp.timeline,
             model,
             stand_in: false,
