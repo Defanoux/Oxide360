@@ -2024,6 +2024,7 @@ impl OpenCad {
                 }
             }
         }
+        self.shift_maker_keys(Feature::Sweep(k));
     }
 
     /// The Insert dialog: where the imported bodies go; OK puts the import
@@ -2073,6 +2074,7 @@ impl OpenCad {
                 }
             }
         }
+        self.shift_maker_keys(Feature::Import(k));
     }
 
     /// Can a sketch's profiles be picked (and are they shown) while picking?

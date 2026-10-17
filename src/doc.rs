@@ -162,13 +162,15 @@ impl BodyId {
     /// After mirror/pattern number `k` was deleted: the copies it made are
     /// gone, later features renumber.
     /// After `gone` (a feature that makes bodies: a mirror / pattern, a
-    /// Move that copies) was deleted: its bodies are gone, the later
+    /// Move that copies, a sweep, an import) was deleted: its bodies are gone, the later
     /// features of its kind renumber.
     pub fn after_maker_delete(self, gone: Feature) -> Option<BodyId> {
         let feature = match (self.feature, gone) {
             (f, g) if f == g => return None,
             (Feature::Copy(j), Feature::Copy(k)) if j > k => Feature::Copy(j - 1),
             (Feature::Move(j), Feature::Move(k)) if j > k => Feature::Move(j - 1),
+            (Feature::Sweep(j), Feature::Sweep(k)) if j > k => Feature::Sweep(j - 1),
+            (Feature::Import(j), Feature::Import(k)) if j > k => Feature::Import(j - 1),
             (f, _) => f,
         };
         Some(BodyId { feature, piece: self.piece })
@@ -1136,6 +1138,12 @@ mod tests {
         assert_eq!(id(0).after_maker_delete(Feature::Copy(1)), Some(id(0)));
         let ex = BodyId { feature: Feature::Extrude(4), piece: 0 };
         assert_eq!(ex.after_maker_delete(Feature::Copy(0)), Some(ex), "other kinds untouched");
+        // Sweeps and imports make bodies too.
+        let sw = |k: usize| BodyId { feature: Feature::Sweep(k), piece: 0 };
+        assert_eq!(sw(2).after_maker_delete(Feature::Sweep(0)), Some(sw(1)));
+        assert_eq!(sw(0).after_maker_delete(Feature::Sweep(0)), None);
+        let im = |k: usize| BodyId { feature: Feature::Import(k), piece: 0 };
+        assert_eq!(im(1).after_maker_delete(Feature::Import(0)), Some(im(0)));
     }
 
     #[test]
