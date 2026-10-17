@@ -73,7 +73,16 @@ impl OpenCad {
         let shift = ui.input(|i| i.modifiers.shift);
         let d = response.drag_delta();
         let middle = response.dragged_by(egui::PointerButton::Middle);
-        if (!sketching && !arrow_active && response.dragged_by(egui::PointerButton::Primary)) || (shift && middle) {
+        // Shift+drag in solid mode: a selection box instead of turning the view.
+        if response.drag_started_by(egui::PointerButton::Primary) && shift && !sketching && !arrow_active && self.free_view() {
+            self.solid_box = press_px.map(|p| (p, p));
+        }
+        if let (Some((a, _)), Some(h)) = (self.solid_box, hover_px) {
+            self.solid_box = Some((a, h));
+        }
+        let boxed = if response.drag_stopped() { self.solid_box.take() } else { None };
+        let boxing = self.solid_box.is_some() || boxed.is_some();
+        if (!sketching && !arrow_active && !boxing && response.dragged_by(egui::PointerButton::Primary)) || (shift && middle) {
             self.turn = None;
             self.camera.orbit(d.x, d.y);
         } else if response.dragged_by(egui::PointerButton::Secondary) || middle {
@@ -111,6 +120,29 @@ impl OpenCad {
         }
         let painter = ui.painter_at(rect);
         let view = View { painter: &painter, vp: self.camera.view_proj(aspect), min, size, trace: None };
+        // The box let go: what it took joins the selection.
+        if let Some((a, b)) = boxed {
+            for p in self.solid_box_pick(&view, a, b) {
+                if !self.solid_sel.iter().any(|q| q.pick == p.pick) {
+                    self.solid_sel.push(p);
+                }
+            }
+        }
+        // The box being dragged: solid left to right (inside only), dashed right to left (touching too).
+        if let Some((a, b)) = self.solid_box {
+            let r = egui::Rect::from_two_pos(to_pos(a), to_pos(b));
+            let crossing = b.x < a.x;
+            let col = if crossing { Color32::from_rgb(90, 200, 120) } else { COL_PREVIEW };
+            painter.rect_filled(r, 0.0, col.gamma_multiply(0.12));
+            if crossing {
+                let c = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+                for w in c.windows(2) {
+                    painter.add(egui::Shape::dashed_line(&[w[0], w[1]], Stroke::new(1.5, col), 6.0, 4.0));
+                }
+            } else {
+                painter.rect_stroke(r, 0.0, Stroke::new(1.5, col), egui::StrokeKind::Inside);
+            }
+        }
         let grid = GridSpec::for_units(self.camera.distance, self.units);
         let dplane = self.active.map_or(OriginPlane::XY.plane(), |i| self.plane_of(i));
         let mm_per_px = (self.camera.distance * 2.0 * (FOV_Y * 0.5).tan() / size.y) as f64;
@@ -400,19 +432,7 @@ impl OpenCad {
         if !self.face_pick && self.active.is_none() {
             self.marquee = None;
             self.measure_input(&view, hover_px, &response, aspect, min, size);
-            let free_view = self.measure.is_none()
-                && self.dialog.is_none()
-                && self.edge_dialog.is_none()
-                && self.revolve_dialog.is_none()
-                && self.copy_dialog.is_none()
-                && self.plane_dialog.is_none()
-                && self.hole_dialog.is_none()
-                && self.thread_dialog.is_none()
-                && self.shell_dialog.is_none()
-                && self.offset_dialog.is_none()
-                && self.combine_dialog.is_none()
-                && self.move_dialog.is_none()
-                && self.section_dialog.is_none();
+            let free_view = self.free_view();
             // Selected edges and faces whose geometry changed in a rebuild go.
             let now: Vec<bool> = self.solid_sel.iter().map(|p| self.measure_resolve(p.pick).is_some_and(|q| q.geom == p.geom)).collect();
             let mut keep = now.into_iter();
@@ -3195,13 +3215,23 @@ impl OpenCad {
                         view.fill_tris(b.face_tris(face).map(|t| t.map(|q| q.as_vec3())), col.gamma_multiply(0.35));
                     }
                 }
+                measure::Pick::Body { body } => {
+                    if let Some(b) = model.bodies.get(body) {
+                        view.fill_tris(b.mesh.tris.iter().map(|t| t.map(|i| b.mesh.positions[i as usize])), col.gamma_multiply(0.3));
+                    }
+                }
+                measure::Pick::Point(q) => {
+                    if let Some(px) = view.project(q.as_vec3()) {
+                        painter.circle_filled(to_pos(px), width + 1.5, col);
+                    }
+                }
                 _ => {}
             };
             for p in &self.solid_sel {
                 show(p, COL_SELECT, 3.5);
             }
-            // (A face under the cursor is lit already when it's flat; edges light here.)
-            if let Some(h) = self.solid_hover.as_ref().filter(|h| matches!(h.pick, measure::Pick::Edge { .. }) && !self.solid_sel.iter().any(|p| p.pick == h.pick)) {
+            // (A face under the cursor is lit already when it's flat; edges and corners light here.)
+            if let Some(h) = self.solid_hover.as_ref().filter(|h| matches!(h.pick, measure::Pick::Edge { .. } | measure::Pick::Point(_)) && !self.solid_sel.iter().any(|p| p.pick == h.pick)) {
                 show(h, COL_HOVER, 2.5);
             }
         }
@@ -3751,6 +3781,7 @@ impl OpenCad {
                     .iter()
                     .map(|&(label, v, kind)| match kind {
                         measure::Kind::Area => format!("{label}  {}", self.units.show_area(v)),
+                        measure::Kind::Volume => format!("{label}  {}", self.units.format(v, measure::Kind::Volume, false, 2)),
                         _ => format!("{label}  {}", self.units.show(v)),
                     })
                     .collect::<Vec<_>>()

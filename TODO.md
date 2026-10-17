@@ -11,7 +11,6 @@ the spec for each.
 **Core solid tools (the gaps you hit modelling a real part)**
 
 **Viewing / selection**
-15. **Vertex picking** in 3D and **box select** of bodies/faces.
 
 **Construction geometry**
 16. **Midplane**, **Plane through 3 points**, **Tangent plane**; **Axis
@@ -42,6 +41,7 @@ sheet metal, surfaces, CAM.
 
 ## Done
 
+- 15 Vertex picking and box select: body corners light up and select (X/Y/Z, or distance and deltas between two); Shift+drag in solid mode boxes (left to right: wholly inside — a whole body as a body with volume/area; right to left: faces it touches, front-facing). Checked in the running app.
 - 14 Display modes and Section Analysis: Visual style (Shaded, Visible Edges, Hidden Edges, Wireframe) in the view cube menu; Inspect → Section Analysis cuts the view exactly (OpenCASCADE) along an origin/construction plane or flat face at a distance, flip, cut faces coloured, kept in the Analysis folder (eye, edit, delete). Checked in the running app.
 - 13 Fit and named views: F6 / double-click the wheel / view cube menu fits every visible body and sketch (same direction, a margin); browser Named Views (TOP, FRONT, RIGHT, HOME; right-click the folder to save the view, right-click one to rename/update/delete; saved with the design). Checked in the running app.
 - 12 Sketch Text: Text tool (click where it starts) and dialog (text, height = capital height, angle, font from the machine's fonts via fontconfig plus egui's bundled ones, bold/italic); its point drags and takes constraints, double-click edits; letters are profiles (font curves smooth in the solid), and picking one letter in Extrude picks the whole text.

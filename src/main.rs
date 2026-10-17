@@ -733,6 +733,7 @@ struct OpenCad {
     selected_bodies: Vec<BodyId>,           // bodies selected in the browser
     solid_sel: Vec<measure::Picked>,        // edges and faces clicked in solid mode (their stats show bottom right)
     solid_hover: Option<measure::Picked>,   // the edge or face under the cursor there
+    solid_box: Option<(Vec2, Vec2)>,        // Shift+drag selection box in solid mode (screen corners)
     copy_body_hover: Option<BodyId>,        // Mirror: the body under the cursor (a click adds / drops it)
     copy_dialog: Option<CopyDialog>,
     axes: Vec<AxisFeature>,                  // construction axes
@@ -939,6 +940,7 @@ impl Default for OpenCad {
             selected_bodies: Vec::new(),
             solid_sel: Vec::new(),
             solid_hover: None,
+            solid_box: None,
             copy_body_hover: None,
             copy_dialog: None,
             axes: Vec::new(),

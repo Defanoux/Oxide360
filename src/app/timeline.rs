@@ -267,6 +267,60 @@ impl OpenCad {
         }
     }
 
+    /// Solid mode with no tool or dialog in use: clicks select edges and faces.
+    pub(crate) fn free_view(&self) -> bool {
+        self.active.is_none()
+            && !self.face_pick
+            && self.measure.is_none()
+            && self.dialog.is_none()
+            && self.edge_dialog.is_none()
+            && self.revolve_dialog.is_none()
+            && self.copy_dialog.is_none()
+            && self.plane_dialog.is_none()
+            && self.hole_dialog.is_none()
+            && self.thread_dialog.is_none()
+            && self.shell_dialog.is_none()
+            && self.offset_dialog.is_none()
+            && self.combine_dialog.is_none()
+            && self.move_dialog.is_none()
+            && self.section_dialog.is_none()
+    }
+
+    /// Box select (Shift+drag in solid mode), corners `a`, `b` in screen
+    /// pixels: dragged left to right, what's wholly inside; right to left,
+    /// what it touches too (Fusion's window and crossing). A body wholly
+    /// inside is taken as a body, else its faces.
+    pub(crate) fn solid_box_pick(&self, view: &View, a: Vec2, b: Vec2) -> Vec<measure::Picked> {
+        use measure::Pick;
+        let Some(model) = self.caches[Slot::Committed as usize].as_ref().map(|c| &c.model) else { return Vec::new() };
+        let (lo, hi, crossing) = (a.min(b), a.max(b), b.x < a.x);
+        let mut out = Vec::new();
+        for (bi, body) in model.bodies.iter().enumerate().filter(|(_, b)| !self.hidden_bodies.contains(&b.id)) {
+            let proj = |p: Vec3| view.project(p);
+            if measure::box_takes(body.mesh.positions.iter().map(|p| proj(*p)), lo, hi, false) {
+                out.extend(self.measure_resolve(Pick::Body { body: bi }));
+                continue;
+            }
+            for f in 0..body.faces.len() {
+                let tris: Vec<[Option<Vec2>; 3]> = body.face_tris(f).map(|t| t.map(|q| proj(q.as_vec3()))).collect();
+                // (Crossing: the sides turned toward you, not the ones behind them.)
+                let facing: Vec<bool> = body.face_tris(f).map(|t| {
+                    let [a, b, c] = t.map(|q| q.as_vec3());
+                    (b - a).cross(c - a).dot(self.camera.to_eye((a + b + c) / 3.0)) > 0.0
+                }).collect();
+                let takes = if crossing {
+                    tris.iter().zip(&facing).any(|(t, &front)| front && matches!(t, [Some(a), Some(b), Some(c)] if measure::tri_touches_box([*a, *b, *c], lo, hi)))
+                } else {
+                    !tris.is_empty() && measure::box_takes(tris.iter().flatten().copied(), lo, hi, false)
+                };
+                if takes {
+                    out.extend(self.measure_resolve(Pick::Face { body: bi, face: f }));
+                }
+            }
+        }
+        out
+    }
+
     /// Solid mode with nothing else going on: the body edge (nearest, within
     /// snap distance and not hidden behind a body) or else the face under
     /// the cursor, to select.
@@ -295,6 +349,26 @@ impl OpenCad {
                     }
                 }
             }
+        }
+        // A corner near the cursor comes first (as in Fusion), then an edge, then the face.
+        let mut corner: Option<(f32, DVec3)> = None;
+        for body in model.bodies.iter().filter(|b| visible(b)) {
+            for e in &body.edges {
+                let (Some(&first), Some(&last)) = (e.points.first(), e.points.last()) else { continue };
+                if first.distance(last) < 1e-6 {
+                    continue; // a whole circle has no corner
+                }
+                for p in [first, last] {
+                    let Some(q) = view.project(p) else { continue };
+                    let d = px.distance(q);
+                    if d <= SNAP_PX && corner.is_none_or(|(bd, _)| d < bd) && in_front(p) {
+                        corner = Some((d, p.as_dvec3()));
+                    }
+                }
+            }
+        }
+        if let Some((_, p)) = corner {
+            return Some(measure::Picked::point(p));
         }
         let face = hit.and_then(|(_, tri, bi)| model.bodies[bi].tri_face.get(tri).map(|&f| Pick::Face { body: bi, face: f as usize }));
         self.measure_resolve(edge.map(|(_, p)| p).or(face)?)

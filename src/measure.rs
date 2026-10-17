@@ -251,6 +251,19 @@ pub fn quick_stats(geoms: &[&Geom]) -> Vec<(&'static str, f64, Kind)> {
         Geom::Plane { area, .. } | Geom::Cylinder { area, .. } | Geom::Surface { area, .. } => Some(area),
         _ => None,
     };
+    // Corners: where one is; between two, how far.
+    if let [Geom::Point(p)] = geoms {
+        return vec![("X", p.x, Length), ("Y", p.y, Length), ("Z", p.z, Length)];
+    }
+    if let [Geom::Point(p), Geom::Point(q)] = geoms {
+        return vec![("Distance", p.distance(*q), Length), ("ΔX", (q.x - p.x).abs(), Length), ("ΔY", (q.y - p.y).abs(), Length), ("ΔZ", (q.z - p.z).abs(), Length)];
+    }
+    // Bodies: their volume and area.
+    let volumes: Vec<(f64, f64)> = geoms.iter().filter_map(|g| if let Geom::Body { volume, area, .. } = g { Some((*volume, *area)) } else { None }).collect();
+    if !volumes.is_empty() && volumes.len() == geoms.len() {
+        let (v, a) = volumes.iter().fold((0.0, 0.0), |(v, a), (x, y)| (v + x, a + y));
+        return if volumes.len() == 1 { vec![("Volume", v, Volume), ("Area", a, Area)] } else { vec![("Total volume", v, Volume), ("Total area", a, Area)] };
+    }
     match geoms {
         [] => Vec::new(),
         [g] => match **g {
@@ -272,6 +285,45 @@ pub fn quick_stats(geoms: &[&Geom]) -> Vec<(&'static str, f64, Kind)> {
             out
         }
     }
+}
+
+/// Does a selection box (`lo`..`hi`, screen) take something with these
+/// screen points (None: behind the viewer)? Window: all of them inside;
+/// crossing: any.
+pub fn box_takes(pts: impl Iterator<Item = Option<glam::Vec2>>, lo: glam::Vec2, hi: glam::Vec2, crossing: bool) -> bool {
+    let inside = |p: glam::Vec2| p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y;
+    let mut any = false;
+    for p in pts {
+        match p {
+            Some(p) if inside(p) => any = true,
+            _ if !crossing => return false,
+            _ => {}
+        }
+    }
+    any
+}
+
+/// Does a screen triangle overlap the box `lo`..`hi` at all (a crossing
+/// box takes a face it passes over, not only one whose corners it holds)?
+pub fn tri_touches_box(t: [glam::Vec2; 3], lo: glam::Vec2, hi: glam::Vec2) -> bool {
+    use glam::Vec2;
+    let inside = |p: Vec2| p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y;
+    if t.iter().any(|&p| inside(p)) {
+        return true;
+    }
+    // A box corner inside the triangle.
+    let side = |a: Vec2, b: Vec2, p: Vec2| (b - a).perp_dot(p - a);
+    let in_tri = |p: Vec2| {
+        let s = [side(t[0], t[1], p), side(t[1], t[2], p), side(t[2], t[0], p)];
+        s.iter().all(|&v| v >= 0.0) || s.iter().all(|&v| v <= 0.0)
+    };
+    let corners = [lo, Vec2::new(hi.x, lo.y), hi, Vec2::new(lo.x, hi.y)];
+    if corners.iter().any(|&c| in_tri(c)) {
+        return true;
+    }
+    // An edge of each crossing.
+    let cross = |a: Vec2, b: Vec2, c: Vec2, d: Vec2| side(a, b, c) * side(a, b, d) < 0.0 && side(c, d, a) * side(c, d, b) < 0.0;
+    (0..3).any(|i| (0..4).any(|j| cross(t[i], t[(i + 1) % 3], corners[j], corners[(j + 1) % 4])))
 }
 
 /// The direction a pick has for angles: a straight edge runs one way, a flat
@@ -762,5 +814,38 @@ mod tests {
         assert_eq!(names(&[&face]), [("Area", 100.0)]);
         assert_eq!(names(&[&cyl]), [("Diameter", 10.0), ("Area", 314.0)]);
         assert_eq!(names(&[&line, &line, &face]), [("Total length", 100.0), ("Total area", 100.0)]);
+    }
+
+    #[test]
+    fn quick_stats_for_corners_and_bodies() {
+        let (p, q) = (Geom::Point(DVec3::new(1.0, 2.0, 3.0)), Geom::Point(DVec3::new(4.0, 6.0, 3.0)));
+        let names = |gs: &[&Geom]| quick_stats(gs).iter().map(|r| (r.0, r.1)).collect::<Vec<_>>();
+        assert_eq!(names(&[&p]), [("X", 1.0), ("Y", 2.0), ("Z", 3.0)]);
+        assert_eq!(names(&[&p, &q])[0], ("Distance", 5.0));
+        let b = Geom::Body { volume: 1000.0, area: 600.0, center: DVec3::ZERO };
+        assert_eq!(names(&[&b]), [("Volume", 1000.0), ("Area", 600.0)]);
+        assert_eq!(names(&[&b, &b]), [("Total volume", 2000.0), ("Total area", 1200.0)]);
+    }
+
+    #[test]
+    fn a_window_takes_what_is_inside_a_crossing_what_it_touches() {
+        use glam::Vec2;
+        let (lo, hi) = (Vec2::new(0.0, 0.0), Vec2::new(10.0, 10.0));
+        let inside = [Some(Vec2::new(1.0, 1.0)), Some(Vec2::new(9.0, 9.0))];
+        let half = [Some(Vec2::new(1.0, 1.0)), Some(Vec2::new(19.0, 9.0))];
+        assert!(box_takes(inside.into_iter(), lo, hi, false));
+        assert!(!box_takes(half.into_iter(), lo, hi, false));
+        assert!(box_takes(half.into_iter(), lo, hi, true));
+        assert!(!box_takes([Some(Vec2::new(20.0, 20.0))].into_iter(), lo, hi, true));
+        assert!(!box_takes([Some(Vec2::new(1.0, 1.0)), None].into_iter(), lo, hi, false), "partly behind the viewer");
+    }
+
+    #[test]
+    fn a_crossing_box_over_the_middle_of_a_big_triangle_touches_it() {
+        use glam::Vec2;
+        let t = [Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), Vec2::new(0.0, 100.0)];
+        assert!(tri_touches_box(t, Vec2::new(10.0, 10.0), Vec2::new(20.0, 20.0)), "box inside the triangle");
+        assert!(tri_touches_box(t, Vec2::new(-5.0, 40.0), Vec2::new(5.0, 50.0)), "over an edge");
+        assert!(!tri_touches_box(t, Vec2::new(60.0, 60.0), Vec2::new(70.0, 70.0)), "past the long side");
     }
 }
