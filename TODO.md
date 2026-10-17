@@ -49,6 +49,7 @@ sheet metal, surfaces, CAM.
 
 ## Done
 
+- Solid-mode selection with quick stats (Gavin asked): click a body edge or face (Shift/Ctrl adds, empty space or Esc clears); bottom right shows length, a circle's diameter and circumference, a face's area (a cylinder's diameter), or totals for several.
 - Project from round edges (the view's single-precision circle was refused as "moved"; now checked to 0.001 mm and snapped exact by the build); Fit Point and Control Point Spline are one Spline tool with a ▾.
 - Toolbar fixes (Gavin asked): greyed-out tools can still be right-clicked off the toolbar and their icons are fully grey; sketch CREATE is a normal group whose Rectangle, Circle, Arc and Polygon are one tool each (the kind used last, ▾ for the others; tucked away, their row opens the kinds); editing a sketch builds the part only up to it (Fusion's roll back), so edges from earlier features project.
 - Toolbar groups (Gavin asked): the solid CREATE, CONSTRUCT, PATTERN and MODIFY groups have the ▾ list (tools can be tucked away and pinned back; kept apart from the sketch tools of the same name); the sketch CREATE ▾ lists the other rectangle, circle, arc and polygon kinds; a sketch with lost references or a missing face says so in red at the top.

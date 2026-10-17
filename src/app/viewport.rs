@@ -407,6 +407,16 @@ impl OpenCad {
                 && self.offset_dialog.is_none()
                 && self.combine_dialog.is_none()
                 && self.move_dialog.is_none();
+            // Selected edges and faces whose geometry changed in a rebuild go.
+            let now: Vec<bool> = self.solid_sel.iter().map(|p| self.measure_resolve(p.pick).is_some_and(|q| q.geom == p.geom)).collect();
+            let mut keep = now.into_iter();
+            self.solid_sel.retain(|_| keep.next().unwrap_or(false));
+            self.solid_hover = None;
+            if !free_view {
+                self.solid_sel.clear();
+            } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.solid_sel.clear();
+            }
             if let (Some(px), true) = (hover_px, free_view) {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 let face = self.pick_face(&ray);
@@ -440,9 +450,26 @@ impl OpenCad {
                     (Some((op, _)), None) => self.origin_hover = Some(op),
                     (None, None) => self.face_hover = face.map(|(_, b, f)| (b, f)),
                 }
+                // Otherwise an edge or face of a body (its stats show bottom right).
+                if self.origin_hover.is_none() && self.cplane_hover.is_none() {
+                    self.solid_hover = self.solid_pick_at(&view, px, &ray);
+                }
                 if response.clicked() {
                     self.selected_plane = self.origin_hover;
                     self.selected_cplane = self.cplane_hover;
+                    let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+                    match self.solid_hover.clone() {
+                        // Shift/Ctrl: add it, or drop it if it's picked already.
+                        Some(p) if add => match self.solid_sel.iter().position(|q| q.pick == p.pick) {
+                            Some(k) => {
+                                self.solid_sel.remove(k);
+                            }
+                            None => self.solid_sel.push(p),
+                        },
+                        Some(p) => self.solid_sel = vec![p],
+                        None if !add => self.solid_sel.clear(),
+                        None => {}
+                    }
                 }
                 if response.secondary_clicked() {
                     self.ctx_plane = self.origin_hover;
@@ -3050,6 +3077,31 @@ impl OpenCad {
             }
         }
 
+        // --- draw: edges and faces selected in solid mode ---
+        if self.active.is_none() {
+            let model = self.model(Slot::Committed);
+            let show = |p: &measure::Picked, col: Color32, width: f32| match p.pick {
+                measure::Pick::Edge { .. } => {
+                    for s in &p.samples.segments {
+                        view.line(s[0].as_vec3(), s[1].as_vec3(), Stroke::new(width, col));
+                    }
+                }
+                measure::Pick::Face { body, face } => {
+                    if let Some(b) = model.bodies.get(body) {
+                        view.fill_tris(b.face_tris(face).map(|t| t.map(|q| q.as_vec3())), col.gamma_multiply(0.35));
+                    }
+                }
+                _ => {}
+            };
+            for p in &self.solid_sel {
+                show(p, COL_SELECT, 3.5);
+            }
+            // (A face under the cursor is lit already when it's flat; edges light here.)
+            if let Some(h) = self.solid_hover.as_ref().filter(|h| matches!(h.pick, measure::Pick::Edge { .. }) && !self.solid_sel.iter().any(|p| p.pick == h.pick)) {
+                show(h, COL_HOVER, 2.5);
+            }
+        }
+
         crate::mark("draw: measure (over the sketches, so a");
         // --- draw: measure (over the sketches, so a picked sketch line shows) ---
         if let Some(m) = &self.measure {
@@ -3586,6 +3638,25 @@ impl OpenCad {
         crate::mark("notification (bottom-left, fades after");
         // --- notification (bottom-left, fades after a few seconds) ---
         // What's selected in the sketch measures, bottom right.
+        if self.active.is_none() && !self.solid_sel.is_empty() {
+            // Edges and faces selected in the model, the same way.
+            let geoms: Vec<&measure::Geom> = self.solid_sel.iter().map(|p| &p.geom).collect();
+            let rows = measure::quick_stats(&geoms);
+            if !rows.is_empty() {
+                let text = rows
+                    .iter()
+                    .map(|&(label, v, kind)| match kind {
+                        measure::Kind::Area => format!("{label}  {}", self.units.show_area(v)),
+                        _ => format!("{label}  {}", self.units.show(v)),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let galley = painter.layout_no_wrap(text, egui::FontId::monospace(13.0), Color32::from_gray(225));
+                let at = rect.right_bottom() - egui::vec2(16.0, 34.0) - galley.size();
+                painter.rect_filled(egui::Rect::from_min_size(at, galley.size()).expand(8.0), 6.0, Color32::from_rgba_unmultiplied(28, 28, 28, 225));
+                painter.galley(at, galley, Color32::WHITE);
+            }
+        }
         if let Some(i) = self.active {
             let info = self.sketches[i].selection_info(&self.editor.selection);
             if !info.is_empty() {

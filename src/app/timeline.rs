@@ -246,6 +246,39 @@ impl OpenCad {
         }
     }
 
+    /// Solid mode with nothing else going on: the body edge (nearest, within
+    /// snap distance and not hidden behind a body) or else the face under
+    /// the cursor, to select.
+    pub(crate) fn solid_pick_at(&self, view: &View, px: Vec2, ray: &Ray) -> Option<measure::Picked> {
+        use measure::Pick;
+        let model = &self.caches[Slot::Committed as usize].as_ref()?.model;
+        let visible = |b: &&kernel::Body| !self.hidden_bodies.contains(&b.id);
+        let hit = model
+            .bodies
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| visible(b))
+            .filter_map(|(i, b)| model::ray_hit_tri(&b.mesh, ray.origin, ray.dir).map(|(t, tri)| (t, tri, i)))
+            .min_by(|x, y| x.0.total_cmp(&y.0));
+        let slack = self.camera.distance * 0.01;
+        let in_front = |p: Vec3| hit.is_none_or(|(h, ..)| (p - ray.origin).dot(ray.dir) <= h + slack);
+        let mut edge: Option<(f32, Pick)> = None;
+        for (bi, body) in model.bodies.iter().enumerate().filter(|(_, b)| visible(b)) {
+            for (ei, e) in body.edges.iter().enumerate() {
+                for w in e.points.windows(2) {
+                    let (Some(a), Some(b)) = (view.project(w[0]), view.project(w[1])) else { continue };
+                    let d = dist_to_segment_px(px, a, b);
+                    let t = ((px - a).dot(b - a) / (b - a).length_squared().max(1e-12)).clamp(0.0, 1.0);
+                    if d <= SNAP_PX && edge.is_none_or(|(bd, _)| d < bd) && in_front(w[0].lerp(w[1], t)) {
+                        edge = Some((d, Pick::Edge { body: bi, edge: ei }));
+                    }
+                }
+            }
+        }
+        let face = hit.and_then(|(_, tri, bi)| model.bodies[bi].tri_face.get(tri).map(|&f| Pick::Face { body: bi, face: f as usize }));
+        self.measure_resolve(edge.map(|(_, p)| p).or(face)?)
+    }
+
     /// The floating Measure window, laid out like Fusion's: selection filter,
     /// Selection 1 / 2 with their readings, Results, then the settings. Click
     /// a value to copy it; hover one to see it in the view.

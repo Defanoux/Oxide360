@@ -235,6 +235,45 @@ pub fn describe(g: &Geom, i: usize) -> Vec<Row> {
     }
 }
 
+/// The quick readings for what's selected in the model (bottom right, as
+/// sketch selections show theirs): an edge's length (a circle's diameter and
+/// circumference), a face's area (a cylinder's diameter too). Several: the
+/// total length of the edges and area of the faces.
+pub fn quick_stats(geoms: &[&Geom]) -> Vec<(&'static str, f64, Kind)> {
+    use Kind::*;
+    let length = |g: &Geom| match *g {
+        Geom::Line { a, b } => Some(a.distance(b)),
+        Geom::Circle { radius, sweep, .. } => Some(radius * sweep.min(TAU)),
+        Geom::Curve { length } => Some(length),
+        _ => None,
+    };
+    let area = |g: &Geom| match *g {
+        Geom::Plane { area, .. } | Geom::Cylinder { area, .. } | Geom::Surface { area, .. } => Some(area),
+        _ => None,
+    };
+    match geoms {
+        [] => Vec::new(),
+        [g] => match **g {
+            Geom::Circle { radius, sweep, .. } if sweep >= TAU - 1e-9 => vec![("Diameter", 2.0 * radius, Length), ("Circumference", TAU * radius, Length)],
+            Geom::Circle { radius, sweep, .. } => vec![("Radius", radius, Length), ("Length", radius * sweep, Length)],
+            Geom::Cylinder { radius, area, .. } => vec![("Diameter", 2.0 * radius, Length), ("Area", area, Area)],
+            ref g => length(g).map(|l| ("Length", l, Length)).into_iter().chain(area(g).map(|a| ("Area", a, Area))).collect(),
+        },
+        many => {
+            let lengths: Vec<f64> = many.iter().filter_map(|g| length(g)).collect();
+            let areas: Vec<f64> = many.iter().filter_map(|g| area(g)).collect();
+            let mut out = Vec::new();
+            if !lengths.is_empty() {
+                out.push(("Total length", lengths.iter().sum(), Length));
+            }
+            if !areas.is_empty() {
+                out.push(("Total area", areas.iter().sum(), Area));
+            }
+            out
+        }
+    }
+}
+
 /// The direction a pick has for angles: a straight edge runs one way, a flat
 /// face faces one way, a cylinder or a circle has an axis.
 fn direction(g: &Geom) -> Option<(DVec3, bool)> {
@@ -709,5 +748,19 @@ mod tests {
         assert_eq!(crate::units::parse_angle("90.000°"), Some(90.0));
         // The radians line (copied) reads back as the same angle.
         assert!((crate::units::parse_angle(&Unit::Mm.format(1.0, Kind::Angle, true, 6)).unwrap() - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn quick_stats_for_model_selections() {
+        let circle = Geom::Circle { center: DVec3::ZERO, normal: DVec3::Z, radius: 60.0, sweep: TAU };
+        let line = Geom::Line { a: DVec3::ZERO, b: DVec3::new(30.0, 40.0, 0.0) };
+        let face = square(0.0, 0).geom;
+        let cyl = Geom::Cylinder { axis: DVec3::Z, radius: 5.0, area: 314.0, loop_length: 0.0 };
+        let names = |gs: &[&Geom]| quick_stats(gs).iter().map(|r| (r.0, (r.1 * 1e6).round() / 1e6)).collect::<Vec<_>>();
+        assert_eq!(names(&[&circle]), [("Diameter", 120.0), ("Circumference", (TAU * 60.0 * 1e6).round() / 1e6)]);
+        assert_eq!(names(&[&line]), [("Length", 50.0)]);
+        assert_eq!(names(&[&face]), [("Area", 100.0)]);
+        assert_eq!(names(&[&cyl]), [("Diameter", 10.0), ("Area", 314.0)]);
+        assert_eq!(names(&[&line, &line, &face]), [("Total length", 100.0), ("Total area", 100.0)]);
     }
 }
