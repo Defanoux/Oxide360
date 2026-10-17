@@ -836,6 +836,29 @@ impl OpenCad {
                     d.picking_axis = false;
                 }
             }
+        } else if self.sweep_dialog.as_ref().is_some_and(|d| d.picking_path) {
+            // --- Sweep's path: a sketch curve, with the curves joined to it ---
+            self.path_hover = None;
+            if let Some(px) = hover_px {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                let tol = SNAP_PX as f64 * mm_per_px;
+                for s in (0..self.sketches.len()).filter(|&s| self.sketch_visible(s)) {
+                    let Some(p) = self.plane_of(s).intersect(&ray) else { continue };
+                    if let Some(Sel::Entity(e)) = self.sketches[s].hit(p, tol) {
+                        let chain: Vec<usize> = self.sketches[s].connected(Sel::Entity(e)).into_iter().filter_map(|x| if let Sel::Entity(k) = x { Some(k) } else { None }).collect();
+                        self.path_hover = Some((s, chain));
+                        break;
+                    }
+                }
+            }
+            if let (true, Some((s, chain)), Some(d)) = (response.clicked(), self.path_hover.clone(), self.sweep_dialog.as_mut()) {
+                (d.path_sketch, d.path, d.picking_path) = (Some(s), chain, false);
+            }
+            if esc && !typing {
+                if let Some(d) = self.sweep_dialog.as_mut() {
+                    d.picking_path = false;
+                }
+            }
         } else if picking_target {
             // The object it runs up to is being picked (above).
         } else if self.profile_pick().is_some() {
@@ -871,7 +894,9 @@ impl OpenCad {
                         None => vec![ri],
                     }
                 });
-                if let (Some((s, _)), Some((sketch, profiles))) = (hover_profile, self.profile_pick_mut()) {
+                if let (Some((s, ri)), Some(d)) = (hover_profile, self.sweep_dialog.as_mut()) {
+                    d.click_profile(s, ri);
+                } else if let (Some((s, _)), Some((sketch, profiles))) = (hover_profile, self.profile_pick_mut()) {
                     if *sketch != Some(s) {
                         *sketch = Some(s);
                         *profiles = group;
@@ -885,6 +910,7 @@ impl OpenCad {
             if esc && !typing {
                 self.cancel_extrude();
                 self.cancel_revolve();
+                self.sweep_dialog = None;
             }
         } else if matches!(self.construct_pick, Some(ConstructPick::ThreePoints(_) | ConstructPick::AxisTwoPoints(_) | ConstructPick::Tangent | ConstructPick::AxisCylinder)) {
             // --- Plane Through Three Points / Axis Through Two Points: click corners;
@@ -2295,7 +2321,7 @@ impl OpenCad {
 
         crate::mark("draw: bodies (from the kernel; with an");
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
-        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some() || self.move_dialog.is_some();
+        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some() || self.move_dialog.is_some() || self.sweep_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
         self.ensure_model(Slot::Committed);
         self.adopt_linked_sketches();
@@ -2314,6 +2340,7 @@ impl OpenCad {
         self.combine_errors = self.model(Slot::Committed).combine_errors.clone();
         self.move_errors = self.model(Slot::Committed).move_errors.clone();
         self.point_errors = self.model(Slot::Committed).point_errors.clone();
+        self.sweep_errors = self.model(Slot::Committed).sweep_errors.clone();
         self.body_count = self.model(Slot::Committed).bodies.len();
         // With a body in the scene the origin gets out of the way (Create Sketch
         // and the browser's Origin box bring it back).
@@ -2835,13 +2862,31 @@ impl OpenCad {
             }
         }
 
+        // --- draw: a Sweep's path (picked, and the chain under the cursor) ---
+        if let Some(d) = &self.sweep_dialog {
+            let draw = |s: usize, chain: &[usize], col: Color32| {
+                let (sk, plane) = (&self.sketches[s], self.plane_of(s));
+                for &e in chain {
+                    for w in sk.entity_polyline(e).windows(2) {
+                        view.line(plane.to_world(w[0]), plane.to_world(w[1]), Stroke::new(3.0, col));
+                    }
+                }
+            };
+            if let (Some(s), false) = (d.path_sketch, d.path.is_empty()) {
+                draw(s, &d.path, COL_SELECT);
+            }
+            if let (true, Some((s, chain))) = (d.picking_path, &self.path_hover) {
+                draw(*s, chain, COL_HOVER);
+            }
+        }
+
         crate::mark("draw: profile fills");
         // --- draw: profile fills ---
         if let Some((pick_sketch, pick_profiles)) = self.profile_pick() {
             for s in (0..self.sketches.len()).filter(|&s| self.pickable_sketch(s)) {
                 let plane = self.plane_of(s);
                 for (ri, r) in regions.get(s).into_iter().flatten().enumerate() {
-                    let selected = pick_sketch == Some(s) && pick_profiles.contains(&ri);
+                    let selected = (pick_sketch == Some(s) && pick_profiles.contains(&ri)) || self.sweep_dialog.as_ref().is_some_and(|d| d.loft && d.sections.contains(&(s, ri)));
                     let alpha = if selected {
                         140
                     } else if hover_profile == Some((s, ri)) {

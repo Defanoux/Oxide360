@@ -30,6 +30,11 @@ mod inner {
             r_in: f64, r_out: f64, w_in: f64, w_out: f64, pitch: f64, length: f64, right_hand: bool, taper: f64,
         ) -> UniquePtr<TopoDS_Shape>;
 
+        /// opencad patch: Sweep — the face along the path (null on failure).
+        pub fn opencad_try_sweep(profile: &TopoDS_Face, path: &TopoDS_Wire) -> UniquePtr<TopoDS_Shape>;
+        /// opencad patch: Loft through the wires of a compound, in order (null on failure).
+        pub fn opencad_try_loft(sections: &TopoDS_Shape, ruled: bool) -> UniquePtr<TopoDS_Shape>;
+
         /// opencad patch: Shell through the faces numbered `faces` (null on failure).
         pub fn opencad_try_thick_solid(shape: &TopoDS_Shape, faces: &[i32], offset: f64, rounded: bool) -> UniquePtr<TopoDS_Shape>;
         /// opencad patch: a solid grown or shrunk all round (null on failure).

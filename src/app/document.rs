@@ -20,6 +20,7 @@ impl OpenCad {
             combines: self.combines.clone(),
             moves: self.moves.clone(),
             points: self.points.clone(),
+            sweeps: self.sweeps.clone(),
             sections: self.sections.clone(),
             parameters: self.parameters.clone(),
             feature_exprs: self.feature_exprs.clone(),
@@ -346,6 +347,8 @@ impl OpenCad {
         self.move_dialog = None;
         self.sections = doc.sections.clone();
         self.points = doc.points.clone();
+        self.sweeps = doc.sweeps.clone();
+        self.sweep_dialog = None;
         self.point_pick = false;
         self.section_dialog = None;
         self.parameters = doc.parameters.clone();
@@ -436,6 +439,8 @@ impl OpenCad {
         self.move_dialog = None;
         self.sections = doc.sections;
         self.points = doc.points;
+        self.sweeps = doc.sweeps;
+        self.sweep_dialog = None;
         self.parameters = doc.parameters;
         self.feature_exprs = doc.feature_exprs;
         self.params_seen = None;
@@ -603,6 +608,7 @@ impl OpenCad {
         let mut offset_faces = self.offset_faces.clone();
         let mut combines = self.combines.clone();
         let mut moves = self.moves.clone();
+        let mut sweeps = self.sweeps.clone();
         timeline.truncate(self.applied()); // features after the marker aren't built
         // Editing a sketch: the part as it was there (Fusion rolls the timeline
         // back to the sketch), so what you see and project existed before it.
@@ -659,6 +665,15 @@ impl OpenCad {
                         None => {
                             shells.push(d.shell.clone());
                             timeline.push(Feature::Shell(shells.len() - 1));
+                        }
+                    }
+                }
+                if let Some(sf) = self.sweep_dialog.as_ref().and_then(|d| d.feature(String::new())) {
+                    match self.sweep_dialog.as_ref().and_then(|d| d.editing) {
+                        Some(k) => sweeps[k] = sf,
+                        None => {
+                            sweeps.push(sf);
+                            timeline.push(Feature::Sweep(sweeps.len() - 1));
                         }
                     }
                 }
@@ -742,6 +757,7 @@ impl OpenCad {
             combines,
             moves,
             points: self.points.clone(),
+            sweeps,
             timeline,
         }
     }
@@ -890,6 +906,7 @@ impl OpenCad {
             Feature::Combine(k) => self.combines.get(k).map(|c| c.name.clone()),
             Feature::Move(k) => self.moves.get(k).map(|m| m.name.clone()),
             Feature::Point(k) => self.points.get(k).map(|p| p.name.clone()),
+            Feature::Sweep(k) => self.sweeps.get(k).map(|s| s.name.clone()),
         }
         .unwrap_or_else(|| format!("{f:?}"))
     }

@@ -58,6 +58,7 @@ mod threads;
 mod text;
 mod text_dialog;
 mod section_dialog;
+mod sweep_dialog;
 #[cfg(test)]
 mod ui_shot;
 mod view;
@@ -708,6 +709,10 @@ struct OpenCad {
     move_dialog: Option<MoveDialog>,
     move_errors: Vec<Option<String>>,
     points: Vec<model::ConstructionPoint>,  // construction points
+    sweeps: Vec<model::SweepFeature>,       // sweeps and lofts
+    sweep_errors: Vec<Option<String>>,
+    sweep_dialog: Option<sweep_dialog::SweepDialog>, // the Sweep / Loft dialog
+    path_hover: Option<(usize, Vec<usize>)>, // the sketch curve chain under the cursor while picking a sweep's path
     point_errors: Vec<Option<String>>,
     point_pick: bool,                       // Construction Point: click a corner or a circle
     move_hover: Option<BodyId>,                // the body a click would pick (Move/Copy)
@@ -919,6 +924,10 @@ impl Default for OpenCad {
             move_errors: Vec::new(),
             points: Vec::new(),
             point_errors: Vec::new(),
+            sweeps: Vec::new(),
+            sweep_errors: Vec::new(),
+            sweep_dialog: None,
+            path_hover: None,
             point_pick: false,
             move_hover: None,
             thread_dialog: None,
@@ -1220,6 +1229,8 @@ impl OpenCad {
                 let act = self.text_dialog.as_mut().map_or(copy_dialog::Action::None, |d| d.panel(ui, design_units));
                 self.text_dialog_step(act);
             });
+        } else if self.sweep_dialog.is_some() && self.active.is_none() {
+            float("sweep").show(&ctx, |ui| self.sweep_panel(ui));
         } else if self.section_dialog.is_some() && self.active.is_none() {
             float("section").show(&ctx, |ui| self.section_panel(ui));
         } else if self.sketch_pattern.is_some() && self.active.is_some() {

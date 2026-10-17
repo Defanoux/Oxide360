@@ -153,6 +153,14 @@ impl Face {
     }
 
     #[must_use]
+    /// opencad patch: this face swept along `path` (Fusion's Sweep); None when
+    /// the kernel can't (instead of aborting).
+    pub fn try_sweep(&self, path: &crate::primitives::Wire) -> Option<Shape> {
+        let made = ffi::b_rep_offset_api::opencad_try_sweep(&self.inner, &path.inner);
+        (!made.is_null()).then(|| Shape::from_shape(&made))
+    }
+
+    #[must_use]
     /// opencad patch: revolve `angle_radians` about the axis through `origin`
     /// along `axis`; None when the kernel can't (instead of aborting).
     pub fn try_revolve(&self, origin: DVec3, axis: DVec3, angle_radians: f64) -> Option<Shape> {

@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{AxisKind, ConstructionPoint, PlaneKind, PointKind, PointRef, MoveFeature, MoveKind, CombineFeature, OffsetFaceFeature, ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{SweepFeature, SweepKind, AxisKind, ConstructionPoint, PlaneKind, PointKind, PointRef, MoveFeature, MoveKind, CombineFeature, OffsetFaceFeature, ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::measure::{self, Geom};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
@@ -228,6 +228,8 @@ pub struct Model {
     pub points: Vec<Option<DVec3>>,
     /// One entry per construction point.
     pub point_errors: Vec<Option<String>>,
+    /// One entry per sweep / loft.
+    pub sweep_errors: Vec<Option<String>>,
 }
 
 fn kv(p: DVec3) -> KVec {
@@ -736,6 +738,106 @@ pub fn section(bodies: &[Body], planes: &[Option<FacePlane>], at: &ExtrudeTarget
         }
     });
     cut
+}
+
+/// A chain of sketch curves (lines, arcs, splines, or one circle) as a wire,
+/// in order from one end to the other (or round, if it closes).
+fn chain_wire(sk: &Sketch, plane: &Frame, entities: &[usize]) -> Result<Wire, String> {
+    use crate::sketch::Entity;
+    if entities.is_empty() {
+        return Err("no path picked".into());
+    }
+    let p3 = |p: DVec2| kv(world(plane, p));
+    // A lone circle is a closed path.
+    if let [e] = entities {
+        if let Some(&Entity::Circle { center, radius }) = sk.entities.get(*e) {
+            return Ok(Wire::from_edges(&[Edge::circle(p3(sk.points[center]), kv(plane.normal()), radius)]));
+        }
+    }
+    // Each curve's ends (as sketch points) and its points along the way.
+    let mut pieces: Vec<(usize, usize, Vec<DVec2>, usize)> = Vec::new(); // (start, end, points, entity)
+    for &e in entities {
+        let piece = match sk.entities.get(e) {
+            Some(&Entity::Line { a, b }) => (a, b, vec![sk.points[a], sk.points[b]]),
+            Some(&Entity::Arc { center, a, b }) => {
+                let (c, r, a0, sweep) = sk.arc_geometry(e).ok_or("an arc of the path has no size")?;
+                let _ = center;
+                (a, b, (0..=2).map(|k| c + DVec2::from_angle(a0 + sweep * k as f64 / 2.0) * r).collect())
+            }
+            Some(&Entity::Spline { s }) => {
+                let list = sk.splines.get(s).ok_or("a spline of the path is damaged")?;
+                (list[0], *list.last().expect("splines have points"), sk.spline_fit(s))
+            }
+            _ => return Err("a path is made of lines, arcs and splines (or one circle)".into()),
+        };
+        pieces.push((piece.0, piece.1, piece.2, e));
+    }
+    // Walk the chain from an end (a point only one piece touches), or anywhere if it closes.
+    let uses = |p: usize, ps: &[(usize, usize, Vec<DVec2>, usize)]| ps.iter().filter(|q| q.0 == p || q.1 == p).count();
+    let start = pieces.iter().flat_map(|q| [q.0, q.1]).find(|&p| uses(p, &pieces) == 1).unwrap_or(pieces[0].0);
+    let mut at = start;
+    let mut left = pieces;
+    let mut edges = Vec::new();
+    while !left.is_empty() {
+        let Some(k) = left.iter().position(|q| q.0 == at || q.1 == at) else { return Err("the path's curves don't join end to end".into()) };
+        let (a, b, mut pts, _) = left.remove(k);
+        if a != at {
+            pts.reverse();
+        }
+        at = if a == at { b } else { a };
+        let edge = if pts.len() == 2 {
+            Edge::segment(p3(pts[0]), p3(pts[1]))
+        } else if pts.len() == 3 {
+            Edge::arc(p3(pts[0]), p3(pts[1]), p3(pts[2]))
+        } else {
+            Edge::try_spline_through(&pts.iter().map(|&p| p3(p)).collect::<Vec<_>>()).ok_or("the kernel couldn't make a spline of the path")?
+        };
+        edges.push(edge);
+    }
+    Ok(Wire::from_edges(&edges))
+}
+
+/// The solid a sweep or loft adds or takes away.
+fn sweep_tool(sketches: &[Sketch], frames: &[Option<FacePlane>], sf: &SweepFeature) -> Result<Shape, String> {
+    let sketch_and_plane = |s: usize| -> Result<(&Sketch, Frame), String> {
+        let sk = sketches.get(s).ok_or("a sketch it uses was deleted")?;
+        Ok((sk, frame_for(sk, frames.get(s).copied().flatten())?))
+    };
+    match &sf.kind {
+        SweepKind::Path { sketch, profiles, path_sketch, path } => {
+            if profiles.is_empty() {
+                return Err("no profile picked".into());
+            }
+            let (sk, plane) = sketch_and_plane(*sketch)?;
+            let regions = find_regions(sk);
+            let picked = profiles.iter().map(|&p| regions.get(p).ok_or("a profile no longer exists — the sketch changed")).collect::<Result<Vec<&Region>, _>>()?;
+            let (psk, pplane) = sketch_and_plane(*path_sketch)?;
+            let wire = chain_wire(psk, &pplane, path)?;
+            let mut out: Option<Shape> = None;
+            for r in union(&picked) {
+                let solid = region_face(&plane, &r)?.try_sweep(&wire).ok_or("the kernel couldn't sweep the profile along that path (a tight bend, or the path passing through the profile?)")?;
+                out = Some(match out {
+                    None => solid,
+                    Some(acc) => acc.try_union(&solid).ok_or("the kernel couldn't merge the profiles")?,
+                });
+            }
+            out.ok_or_else(|| "nothing to sweep".into())
+        }
+        SweepKind::Loft { sections, ruled } => {
+            if sections.len() < 2 {
+                return Err("a loft needs two profiles or more".into());
+            }
+            let mut wires = Vec::new();
+            for &(s, region) in sections {
+                let (sk, plane) = sketch_and_plane(s)?;
+                let regions = find_regions(sk);
+                let r = regions.get(region).ok_or("a profile no longer exists — its sketch changed")?;
+                let loops = r.loops_with_curves();
+                wires.push(loop_wire(&plane, loops[0].0, loops[0].1)?);
+            }
+            Shape::try_loft(&wires, *ruled).ok_or_else(|| "the kernel couldn't loft through those profiles".into())
+        }
+    }
 }
 
 /// The solid a revolve adds/removes: the picked profiles spun around the axis.
@@ -2500,6 +2602,7 @@ pub struct BuildInputs {
     pub combines: Vec<CombineFeature>,
     pub moves: Vec<MoveFeature>,
     pub points: Vec<ConstructionPoint>,
+    pub sweeps: Vec<SweepFeature>,
     pub timeline: Vec<Feature>,
 }
 
@@ -2542,6 +2645,7 @@ fn relink(sk: &Sketch, frame: Option<FacePlane>, bodies: &Tagged, ext: &[Option<
 /// keeps drawing — and shows how far it's got — while a slow part is built).
 pub struct Build {
     inp: BuildInputs,
+    sweep_errors: Vec<Option<String>>,
     point_pos: Vec<Option<DVec3>>,
     point_errors: Vec<Option<String>>,
     /// The next timeline entry to build.
@@ -2581,7 +2685,8 @@ pub struct Build {
 impl Build {
     pub fn start(inp: BuildInputs) -> Build {
         opencascade::catch_crashes();
-        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, moves, points, timeline: _ } = &inp;
+        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, moves, points, sweeps, timeline: _ } = &inp;
+        let sweep_errors: Vec<Option<String>> = vec![None; sweeps.len()];
         let (point_pos, point_errors): (Vec<Option<DVec3>>, Vec<Option<String>>) = (vec![None; points.len()], vec![None; points.len()]);
         let _ = (extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, sketches, shells);
         let offset_face_errors: Vec<Option<String>> = vec![None; offset_faces.len()];
@@ -2611,7 +2716,7 @@ impl Build {
         let timing = std::env::var_os("OPENCAD_TIMING").is_some();
         let started = std::time::Instant::now();
         let step = std::time::Instant::now();
-        Build { next: 0, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step, inp }
+        Build { next: 0, sweep_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step, inp }
     }
 
     /// How far it's got: (entries built, all of them, the one being built next).
@@ -2629,8 +2734,8 @@ impl Build {
     pub fn step(&mut self, budget: std::time::Duration) -> bool {
         let began = std::time::Instant::now();
         let first = self.next;
-        let Build { inp, next, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step } = self;
-        let BuildInputs { sketches: _, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, moves, points, timeline } = &*inp;
+        let Build { inp, next, sweep_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step } = self;
+        let BuildInputs { sketches: _, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, moves, points, sweeps, timeline } = &*inp;
         let _ = (&timing, &started);
         loop {
             if *next >= timeline.len() {
@@ -2776,6 +2881,17 @@ impl Build {
                     }
                     *shapes = current;
                     continue;
+                }
+                Feature::Sweep(k) => {
+                    let Some(sf) = sweeps.get(k) else {
+                        *shapes = current;
+                        continue;
+                    };
+                    let r = catch_unwind(AssertUnwindSafe(|| {
+                        let shape = sweep_tool(sketches, &frames, sf)?;
+                        apply(current, shape, sf.op, Feature::Sweep(k))
+                    }));
+                    (r, &mut sweep_errors[k])
                 }
                 Feature::Extrude(k) => {
                     let Some(ex) = extrudes.get(k) else {
@@ -3001,7 +3117,7 @@ impl Build {
 
     /// The model built (bodies analysed for picking and Measure).
     pub fn finish(self) -> Model {
-        let Build { inp: _, next: _, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live: _, linked, lost, touched_by, timing, started, mut step } = self;
+        let Build { inp: _, next: _, sweep_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live: _, linked, lost, touched_by, timing, started, mut step } = self;
     if timing {
         eprintln!("  {:>8.1} ms  last feature; analysing bodies…", step.elapsed().as_secs_f64() * 1e3);
         step = std::time::Instant::now();
@@ -3029,7 +3145,7 @@ impl Build {
         eprintln!("  {:>8.1} ms  bodies; build {:.1} ms in all", step.elapsed().as_secs_f64() * 1e3, started.elapsed().as_secs_f64() * 1e3);
     }
     let caps = caps_of(&extrude_ends, &revolve_ends);
-    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, caps, touched: touched_by, linked_sketches: linked, projection_lost: lost, points: point_pos, point_errors }
+    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, caps, touched: touched_by, linked_sketches: linked, projection_lost: lost, points: point_pos, point_errors, sweep_errors }
     }
 }
 
@@ -3067,6 +3183,7 @@ pub fn build_all(
         combines: Vec::new(),
         moves: Vec::new(),
         points: Vec::new(),
+        sweeps: Vec::new(),
         timeline: timeline.to_vec(),
     });
     while b.step(std::time::Duration::MAX) {}
@@ -3792,7 +3909,7 @@ mod tests {
             kind: Some(PlaneKind::ThreePoints([PointRef::Point(0), PointRef::Point(1), PointRef::Corner(DVec3::new(0.0, 0.0, 5.0))])) };
         let mut b = Build::start(BuildInputs {
             sketches: vec![a], extrudes: vec![ex(0, vec![0, 1], 5.0, Operation::NewBody)], revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![],
-            plane_features: vec![plane], removes: vec![], holes: vec![], thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points,
+            plane_features: vec![plane], removes: vec![], holes: vec![], thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points, sweeps: vec![],
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Point(0), Feature::Point(1), Feature::Plane(0)],
         });
         while b.step(std::time::Duration::MAX) {}
@@ -3803,6 +3920,61 @@ mod tests {
         // All three are at z = 5: the plane is the top.
         let f = m.planes[0].expect("built");
         assert!(f.normal().cross(DVec3::Z).length() < 1e-9 && (f.origin.dot(f.normal()) * f.normal().z - 5.0).abs() < 1e-9);
+    }
+
+    fn run_sweeps(sketches: Vec<Sketch>, planes: Vec<PlaneFeature>, sweeps: Vec<SweepFeature>, timeline: Vec<Feature>) -> Model {
+        let mut b = Build::start(BuildInputs {
+            sketches, extrudes: vec![], revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![], plane_features: planes, removes: vec![], holes: vec![],
+            thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points: vec![], sweeps, timeline,
+        });
+        while b.step(std::time::Duration::MAX) {}
+        b.finish()
+    }
+
+    #[test]
+    fn a_sweep_carries_the_profile_the_length_of_its_path() {
+        use crate::sketch::Entity;
+        // A 10 × 10 square on YZ, centred on the origin.
+        let mut prof = Sketch::new("P".into(), OriginPlane::YZ);
+        rect(&mut prof, -5.0, -5.0, 5.0, 5.0);
+        // Paths on XY from the origin: straight 30 along X, and a quarter circle of radius 20 bending toward +Y.
+        let mut straight = Sketch::new("L".into(), OriginPlane::XY);
+        straight.points.push(DVec2::new(30.0, 0.0));
+        straight.entities.push(Entity::Line { a: 0, b: 1 });
+        let mut bend = Sketch::new("A".into(), OriginPlane::XY);
+        bend.points.extend([DVec2::new(0.0, 20.0), DVec2::new(20.0, 20.0)]);
+        bend.entities.push(Entity::Arc { center: 1, a: 0, b: 2 });
+        let sweep = |path_sketch: usize| SweepFeature { name: "S".into(), kind: SweepKind::Path { sketch: 0, profiles: vec![0], path_sketch, path: vec![0] }, op: Operation::NewBody };
+        let m = run_sweeps(vec![prof.clone(), straight, bend], vec![], vec![sweep(1), sweep(2)], vec![Feature::Sketch(0), Feature::Sketch(1), Feature::Sketch(2), Feature::Sweep(0), Feature::Sweep(1)]);
+        assert_eq!(m.sweep_errors, vec![None, None]);
+        let vols: Vec<f64> = m.bodies.iter().map(|b| b.shape.volume()).collect();
+        assert_eq!(vols.len(), 2);
+        assert!(close(vols[0], 3000.0), "{}", vols[0]);
+        // Pappus: area × the distance its centre travels, a quarter of a 20 circle.
+        assert!(close(vols[1], 100.0 * std::f64::consts::FRAC_PI_2 * 20.0), "{}", vols[1]);
+    }
+
+    #[test]
+    fn a_loft_between_a_small_and_a_big_square_is_a_frustum() {
+        let mut low = Sketch::new("Low".into(), OriginPlane::XY);
+        rect(&mut low, -5.0, -5.0, 5.0, 5.0);
+        let up = PlaneFeature { name: "Up".into(), base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: true, offset: 20.0, anchor: [0.0; 2], extent: [0.0; 4], angle: None, kind: None };
+        let mut high = Sketch::on_plane("High".into(), FacePlane::from_face(DVec3::Z, DVec3::new(0.0, 0.0, 20.0)), 0);
+        rect(&mut high, -10.0, -10.0, 10.0, 10.0);
+        let loft = |ruled| SweepFeature { name: "L".into(), kind: SweepKind::Loft { sections: vec![(0, 0), (1, 0)], ruled }, op: Operation::NewBody };
+        let m = run_sweeps(vec![low, high], vec![up], vec![loft(true), loft(false)], vec![Feature::Sketch(0), Feature::Plane(0), Feature::Sketch(1), Feature::Sweep(0), Feature::Sweep(1)]);
+        assert_eq!(m.sweep_errors, vec![None, None]);
+        // h/3 · (A1 + A2 + √(A1·A2)).
+        let frustum = 20.0 / 3.0 * (100.0 + 400.0 + 200.0);
+        for b in &m.bodies {
+            assert!(close(b.shape.volume(), frustum), "{} vs {frustum}", b.shape.volume());
+        }
+        // Fewer than two profiles is refused.
+        let one = SweepFeature { kind: SweepKind::Loft { sections: vec![(0, 0)], ruled: false }, ..loft(false) };
+        let mut low2 = Sketch::new("Low".into(), OriginPlane::XY);
+        rect(&mut low2, -5.0, -5.0, 5.0, 5.0);
+        let m = run_sweeps(vec![low2], vec![], vec![one], vec![Feature::Sketch(0), Feature::Sweep(0)]);
+        assert!(m.sweep_errors[0].is_some());
     }
 
     #[test]

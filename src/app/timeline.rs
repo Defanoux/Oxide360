@@ -55,6 +55,7 @@ impl OpenCad {
             Feature::Combine(k) => self.combine_errors.get(k).cloned().flatten(),
             Feature::Move(k) => self.move_errors.get(k).cloned().flatten(),
             Feature::Point(k) => self.point_errors.get(k).cloned().flatten(),
+            Feature::Sweep(k) => self.sweep_errors.get(k).cloned().flatten(),
         }
     }
 
@@ -287,6 +288,7 @@ impl OpenCad {
             && self.section_dialog.is_none()
             && self.construct_pick.is_none()
             && !self.point_pick
+            && self.sweep_dialog.is_none()
             && !self.axis_pick
             && !self.angle_pick
             && !self.plane_pick
@@ -543,6 +545,7 @@ impl OpenCad {
             Feature::Combine(k) => &mut self.combines.get_mut(k)?.name,
             Feature::Move(k) => &mut self.moves.get_mut(k)?.name,
             Feature::Point(k) => &mut self.points.get_mut(k)?.name,
+            Feature::Sweep(k) => &mut self.sweeps.get_mut(k)?.name,
         })
     }
 
@@ -658,6 +661,7 @@ impl OpenCad {
                     Feature::Combine(k) => (self.combines[k].name.clone(), self.combine_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
                     Feature::Move(k) => (self.moves[k].name.clone(), self.move_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
                     Feature::Point(k) => (self.points[k].name.clone(), false),
+                    Feature::Sweep(k) => (self.sweeps[k].name.clone(), self.sweep_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
                 };
                 let error = self.feature_error(*f);
                 let icon = match *f {
@@ -674,6 +678,7 @@ impl OpenCad {
                     Feature::Combine(_) => Icon::Combine,
                     Feature::Move(_) => Icon::Move,
                     Feature::Point(_) => Icon::ConstructPoint,
+                    Feature::Sweep(k) => if matches!(self.sweeps[k].kind, model::SweepKind::Loft { .. }) { Icon::Loft } else { Icon::Sweep },
                     Feature::Copy(k) => match self.copies[k].kind {
                         model::CopyKind::Mirror(_) | model::CopyKind::MirrorPlane(_) => Icon::Mirror,
                         model::CopyKind::Rectangular { .. } => Icon::RectPattern,
@@ -808,6 +813,7 @@ impl OpenCad {
             Some(Feature::Combine(k)) => self.delete_combine(k),
             Some(Feature::Move(k)) => self.delete_move(k),
             Some(Feature::Point(k)) => self.delete_point(k),
+            Some(Feature::Sweep(k)) => self.delete_sweep(k),
             None => {}
         }
         if delete.is_some() {
@@ -824,6 +830,7 @@ impl OpenCad {
             Some(Feature::Combine(k)) => self.open_combine(Some(k)),
             Some(Feature::Move(k)) => self.open_move(Some(k)),
             Some(Feature::Axis(_) | Feature::Remove(_) | Feature::Point(_)) => {}
+            Some(Feature::Sweep(k)) => self.open_sweep(Some(k), matches!(self.sweeps[k].kind, model::SweepKind::Loft { .. })),
             Some(Feature::Plane(k)) => {
                 self.cancel_all_dialogs();
                 let built = self.caches[Slot::Committed as usize].as_ref().and_then(|c| c.model.planes.get(k).copied().flatten());

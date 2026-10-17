@@ -37,6 +37,7 @@ sheet metal, surfaces, CAM.
 
 ## Done
 
+- 17 Sweep and Loft (CREATE): Sweep a sketch's profiles along a chain of sketch curves (lines, arcs, splines, or a circle); Loft through one profile per sketch, in order, smooth or straight; Join/Cut/New Body/Intersect, live preview, timeline + edit; exact OCCT (MakePipe / ThruSections behind try wrappers). Not yet: loft rails, holes in loft profiles, sweep twist/taper. Sweep checked in the running app.
 - 16 Construction geometry: Midplane (two planes/faces; bisects meeting ones), Plane Through Three Points, Tangent Plane, Axis Through Cylinder, Axis Through Two Points, Construction Point (corner or circle centre; three-point planes and two-point axes can use it). All follow the part (corners/edges/cylinders found again each build). Checked in the running app.
 - 15 Vertex picking and box select: body corners light up and select (X/Y/Z, or distance and deltas between two); Shift+drag in solid mode boxes (left to right: wholly inside — a whole body as a body with volume/area; right to left: faces it touches, front-facing). Checked in the running app.
 - 14 Display modes and Section Analysis: Visual style (Shaded, Visible Edges, Hidden Edges, Wireframe) in the view cube menu; Inspect → Section Analysis cuts the view exactly (OpenCASCADE) along an origin/construction plane or flat face at a distance, flip, cut faces coloured, kept in the Analysis folder (eye, edit, delete). Checked in the running app.

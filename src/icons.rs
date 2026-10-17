@@ -36,6 +36,8 @@ pub enum Icon {
     AxisCylinder,
     Axis2Points,
     ConstructPoint,
+    Sweep,
+    Loft,
     Break,
     ControlSpline,
     Plane,
@@ -665,6 +667,19 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             arc(0.5, 0.25, 0.25, std::f32::consts::PI, std::f32::consts::TAU, Stroke::new(thin.width * 1.1, ink));
             line((0.5, 0.05), (0.5, 0.97), Stroke::new(thin.width * 1.5, orange));
         }
+        Icon::Sweep => {
+            // A profile (orange) carried along a curved path into a bent tube.
+            arc(0.2, 0.85, 0.62, -std::f32::consts::FRAC_PI_2, 0.0, Stroke::new(thin.width * 3.2, blue));
+            arc(0.2, 0.85, 0.62, -std::f32::consts::FRAC_PI_2, 0.0, Stroke::new(thin.width * 0.8, ink));
+            poly(&[(0.12, 0.14), (0.3, 0.14), (0.3, 0.32), (0.12, 0.32)], orange);
+        }
+        Icon::Loft => {
+            // A square below blending into a circle above.
+            arc(0.5, 0.2, 0.18, 0.0, std::f32::consts::TAU, Stroke::new(thin.width * 1.3, orange));
+            outline(&[(0.2, 0.7), (0.8, 0.7), (0.8, 0.92), (0.2, 0.92)], Stroke::new(thin.width * 1.3, orange));
+            line((0.32, 0.2), (0.2, 0.7), thin);
+            line((0.68, 0.2), (0.8, 0.7), thin);
+        }
         Icon::ConstructPoint => {
             // An orange point with a little cross through it.
             let s = Stroke::new(thin.width * 1.1, ink);
@@ -960,7 +975,7 @@ mod shot_tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [720, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft] {
                     button(ui, icon, "", true, false);
                 }
             });

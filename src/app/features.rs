@@ -1340,6 +1340,7 @@ impl OpenCad {
         self.construct_pick = None;
         self.point_pick = false;
         self.section_dialog = None;
+        self.sweep_dialog = None;
     }
 
     /// Open the Offset Plane box with the distance ready to type into.
@@ -1858,8 +1859,65 @@ impl OpenCad {
     pub(crate) fn profile_pick(&self) -> Option<(Option<usize>, &[usize])> {
         if let Some(d) = &self.dialog {
             Some((d.sketch, d.profiles.as_slice()))
+        } else if let Some(d) = &self.revolve_dialog {
+            Some((d.sketch, d.profiles.as_slice()))
         } else {
-            self.revolve_dialog.as_ref().map(|d| (d.sketch, d.profiles.as_slice()))
+            // Sweep: its profiles; Loft: profiles of any sketch (picked ones are drawn by their sections).
+            self.sweep_dialog.as_ref().filter(|d| !d.picking_path).map(|d| if d.loft { (None, &[][..]) } else { (d.sketch, d.profiles.as_slice()) })
+        }
+    }
+
+    /// Open the Sweep (`loft`: Loft) dialog, new or on sweep `editing`.
+    pub(crate) fn open_sweep(&mut self, editing: Option<usize>, loft: bool) {
+        self.cancel_all_dialogs();
+        self.finish_sketch();
+        self.sweep_dialog = Some(match editing {
+            Some(k) => sweep_dialog::SweepDialog::edit(k, &self.sweeps[k]),
+            None => sweep_dialog::SweepDialog::new(loft, self.body_count > 0),
+        });
+    }
+
+    /// The Sweep / Loft dialog: OK keeps it in the timeline; Cancel drops it.
+    pub(crate) fn sweep_panel(&mut self, ui: &mut egui::Ui) {
+        let error = self.sweep_dialog.as_ref().and_then(|d| {
+            let k = d.editing.unwrap_or(self.sweeps.len());
+            d.feature(String::new()).and_then(|_| self.caches[Slot::Preview as usize].as_ref().and_then(|c| c.model.sweep_errors.get(k).cloned().flatten()))
+        });
+        let Some(d) = self.sweep_dialog.as_mut() else { return };
+        match d.panel(ui, error.as_deref()) {
+            copy_dialog::Action::Ok => {
+                let Some(d) = self.sweep_dialog.take() else { return };
+                let base = if d.loft { "Loft" } else { "Sweep" };
+                match d.editing {
+                    Some(k) => {
+                        if let Some(f) = d.feature(self.sweeps[k].name.clone()) {
+                            self.sweeps[k] = f;
+                        }
+                    }
+                    None => {
+                        let n = self.sweeps.iter().filter(|s| s.name.starts_with(base)).count() + 1;
+                        if let Some(f) = d.feature(format!("{base}{n}")) {
+                            self.sweeps.push(f);
+                            self.timeline_insert(Feature::Sweep(self.sweeps.len() - 1));
+                        }
+                    }
+                }
+            }
+            copy_dialog::Action::Cancel => self.sweep_dialog = None,
+            copy_dialog::Action::None => {}
+        }
+    }
+
+    pub(crate) fn delete_sweep(&mut self, k: usize) {
+        self.sweep_dialog = None;
+        self.sweeps.remove(k);
+        self.timeline_remove(Feature::Sweep(k));
+        for f in &mut self.timeline {
+            if let Feature::Sweep(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
         }
     }
 

@@ -997,6 +997,18 @@ impl Sketch {
         self.texts.get_mut(t)
     }
 
+    /// An entity's curve as points along it (a point entity: none).
+    pub fn entity_polyline(&self, e: EntityId) -> Vec<DVec2> {
+        match self.entities.get(e) {
+            Some(&Entity::Line { a, b }) => vec![self.points[a], self.points[b]],
+            Some(&Entity::Circle { center, radius }) => (0..=48).map(|k| self.points[center] + DVec2::from_angle(std::f64::consts::TAU * k as f64 / 48.0) * radius).collect(),
+            Some(&Entity::Arc { .. }) => self.arc_geometry(e).map_or(Vec::new(), |(c, r, a0, sweep)| (0..=32).map(|k| c + DVec2::from_angle(a0 + sweep * k as f64 / 32.0) * r).collect()),
+            Some(&Entity::Spline { s }) => self.spline_curve(s),
+            Some(&Entity::Ellipse { .. }) => self.ellipse_curve(e),
+            _ => Vec::new(),
+        }
+    }
+
     /// A text's letter outlines where they are in the sketch (empty for anything else).
     pub fn text_contours(&self, e: EntityId) -> Vec<crate::text::Contour> {
         let Some((o, turn, st)) = self.text_place(e) else { return Vec::new() };

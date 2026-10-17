@@ -146,6 +146,24 @@ pub enum ExtrudeTarget {
     Face { face: FacePlane, anchor: [f64; 2] },
 }
 
+/// Sweep or Loft (Fusion's Create → Sweep / Loft): one kind of timeline
+/// feature, made one of two ways.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SweepFeature {
+    pub name: String,
+    pub kind: SweepKind,
+    pub op: Operation,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum SweepKind {
+    /// Profiles of a sketch swept along a chain of sketch curves.
+    Path { sketch: usize, profiles: Vec<usize>, path_sketch: usize, path: Vec<usize> },
+    /// Through one profile of each of several sketches, in order (`ruled`:
+    /// straight between them, else smooth).
+    Loft { sections: Vec<(usize, usize)>, ruled: bool },
+}
+
 /// Section Analysis (Inspect): the model shown cut by a plane, to see
 /// inside. Display only — nothing in the design is cut.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

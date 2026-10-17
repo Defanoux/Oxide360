@@ -230,3 +230,67 @@ inline std::unique_ptr<TopoDS_Shape> opencad_try_offset_faces(const TopoDS_Shape
     return nullptr;
   }
 }
+
+// opencad patch: Sweep. The face swept along the path wire (corrected
+// Frenet, so it doesn't twist about the path). nullptr on any failure.
+#include <GeomFill_Trihedron.hxx>
+#include <TopoDS_Iterator.hxx>
+inline std::unique_ptr<TopoDS_Shape> opencad_try_sweep(const TopoDS_Face &profile, const TopoDS_Wire &path) {
+  try {
+    OCC_CATCH_SIGNALS
+    BRepOffsetAPI_MakePipe pipe(path, profile, GeomFill_IsCorrectedFrenet, false);
+    pipe.Build();
+    if (!pipe.IsDone()) {
+      return nullptr;
+    }
+    TopoDS_Shape s = pipe.Shape();
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(s, props);
+    if (props.Mass() < 0.0) {
+      s.Reverse();
+    }
+    if (!opencad_good_solid(s)) {
+      return nullptr;
+    }
+    return std::unique_ptr<TopoDS_Shape>(new TopoDS_Shape(s));
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+// opencad patch: Loft through the closed wires in `sections` (a compound,
+// in order); `ruled`: straight between sections, else smooth. nullptr on
+// any failure.
+inline std::unique_ptr<TopoDS_Shape> opencad_try_loft(const TopoDS_Shape &sections, bool ruled) {
+  try {
+    OCC_CATCH_SIGNALS
+    BRepOffsetAPI_ThruSections loft(true, ruled);
+    int n = 0;
+    for (TopoDS_Iterator it(sections); it.More(); it.Next()) {
+      if (it.Value().ShapeType() == TopAbs_WIRE) {
+        loft.AddWire(TopoDS::Wire(it.Value()));
+        n++;
+      }
+    }
+    if (n < 2) {
+      return nullptr;
+    }
+    loft.CheckCompatibility(true);
+    loft.Build();
+    if (!loft.IsDone()) {
+      return nullptr;
+    }
+    TopoDS_Shape s = loft.Shape();
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(s, props);
+    if (props.Mass() < 0.0) {
+      s.Reverse();
+    }
+    if (!opencad_good_solid(s)) {
+      return nullptr;
+    }
+    return std::unique_ptr<TopoDS_Shape>(new TopoDS_Shape(s));
+  } catch (...) {
+    return nullptr;
+  }
+}

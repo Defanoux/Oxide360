@@ -954,6 +954,15 @@ impl Shape {
         (!made.is_null()).then(|| Self::from_shape(&made))
     }
 
+    /// opencad patch: a solid lofted through closed `sections` in order
+    /// (Fusion's Loft; `ruled`: straight between them). None when the
+    /// kernel can't (instead of aborting).
+    pub fn try_loft(sections: &[crate::primitives::Wire], ruled: bool) -> Option<Self> {
+        let compound: Shape = crate::primitives::Compound::from_shapes(sections.iter().map(Shape::from)).into();
+        let made = ffi::b_rep_offset_api::opencad_try_loft(&compound.inner, ruled);
+        (!made.is_null()).then(|| Self::from_shape(&made))
+    }
+
     pub fn try_subtract(&self, other: &Shape) -> Option<Self> {
         let mut op = ffi::b_rep_algo_api::BRepAlgoAPI_Cut_new(&self.inner, &other.inner);
         op.IsDone().then(|| Self::from_shape(op.pin_mut().Shape()))
