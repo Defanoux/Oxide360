@@ -734,6 +734,9 @@ struct OpenCad {
     solid_sel: Vec<measure::Picked>,        // edges and faces clicked in solid mode (their stats show bottom right)
     solid_hover: Option<measure::Picked>,   // the edge or face under the cursor there
     solid_box: Option<(Vec2, Vec2)>,        // Shift+drag selection box in solid mode (screen corners)
+    construct_pick: Option<ConstructPick>,  // Midplane / three-point / tangent plane, axis through cylinder / two points: picking
+    corner_hover: Option<DVec3>,            // the body corner under the cursor while picking corners
+    cylinder_hover: Option<(kernel::Cylinder, DVec3)>, // the cylinder under the cursor while picking one
     copy_body_hover: Option<BodyId>,        // Mirror: the body under the cursor (a click adds / drops it)
     copy_dialog: Option<CopyDialog>,
     axes: Vec<AxisFeature>,                  // construction axes
@@ -941,6 +944,9 @@ impl Default for OpenCad {
             solid_sel: Vec::new(),
             solid_hover: None,
             solid_box: None,
+            construct_pick: None,
+            corner_hover: None,
+            cylinder_hover: None,
             copy_body_hover: None,
             copy_dialog: None,
             axes: Vec::new(),
@@ -1354,6 +1360,29 @@ impl OpenCad {
         app.saved.units = s.default_units;
         app.gpu = gpu;
         app
+    }
+}
+
+/// The construction tools that are picks only (no dialog): what's been picked so far.
+#[derive(Clone, Debug, PartialEq)]
+enum ConstructPick {
+    Midplane(Vec<model::ExtrudeTarget>),
+    ThreePoints(Vec<DVec3>),
+    Tangent,
+    AxisCylinder,
+    AxisTwoPoints(Vec<DVec3>),
+}
+
+impl ConstructPick {
+    /// What to click next, for the top of the view.
+    fn hint(&self) -> String {
+        match self {
+            ConstructPick::Midplane(t) => format!("Midplane {} of 2: click a plane or flat face", t.len() + 1),
+            ConstructPick::ThreePoints(p) => format!("Plane Through Three Points {} of 3: click a body corner", p.len() + 1),
+            ConstructPick::Tangent => "Tangent Plane: click a cylinder where the plane should touch it".into(),
+            ConstructPick::AxisCylinder => "Axis Through Cylinder: click a hole or shaft".into(),
+            ConstructPick::AxisTwoPoints(p) => format!("Axis Through Two Points {} of 2: click a body corner", p.len() + 1),
+        }
     }
 }
 

@@ -7,6 +7,7 @@ impl OpenCad {
         self.pending_exprs.clear();
         self.axis_pick = false;
         self.angle_pick = false;
+        self.construct_pick = None;
         self.hole_dialog = None;
         self.shell_dialog = None;
         self.offset_dialog = None;
@@ -1610,9 +1611,42 @@ impl OpenCad {
     }
 
     /// Put a construction axis along the straight edge picked.
+    /// Make a midplane, three-point or tangent plane from the picks (drawn
+    /// over the part's size), and back to Select.
+    pub(crate) fn add_construct_plane(&mut self, kind: model::PlaneKind) {
+        self.construct_pick = None;
+        self.ensure_model(Slot::Committed);
+        let m = self.model(Slot::Committed);
+        let made = {
+            let bodies: Vec<&_> = m.bodies.iter().map(|b| &b.shape).collect();
+            kernel::construct_plane(&kind, &bodies, &m.planes)
+        };
+        let f = match made {
+            Ok(f) => f,
+            Err(e) => return self.notify(format!("Can't make that plane: {e}")),
+        };
+        // Shown across the part: its box's middle and size in the plane's own coordinates.
+        let (lo, hi) = m.bodies.iter().flat_map(|b| &b.mesh.positions).fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+        let (c, h) = if lo.x <= hi.x { (((lo + hi) * 0.5).as_dvec3(), ((hi - lo).length() as f64 * 0.35).max(5.0)) } else { (f.origin, 50.0) };
+        let (cu, cv) = ((c - f.origin).dot(f.u), (c - f.origin).dot(f.v));
+        let name = format!("Plane{}", self.planes.len() + 1);
+        self.planes.push(model::PlaneFeature { name: name.clone(), base: f, on_origin: false, offset: 0.0, anchor: [0.0; 2], extent: [cu - h, cv - h, cu + h, cv + h], angle: None, kind: Some(kind) });
+        self.timeline_insert(Feature::Plane(self.planes.len() - 1));
+        self.notify(format!("{name} made"));
+    }
+
+    /// Make an axis through two points or a cylinder, and back to Select.
+    pub(crate) fn add_construct_axis(&mut self, kind: model::AxisKind) {
+        self.construct_pick = None;
+        let name = format!("Axis{}", self.axes.len() + 1);
+        self.axes.push(AxisFeature { name: name.clone(), edge: EdgeRef::default(), kind: Some(kind) });
+        self.timeline_insert(Feature::Axis(self.axes.len() - 1));
+        self.notify(format!("{name} made"));
+    }
+
     pub(crate) fn add_axis(&mut self, edge: EdgeRef) {
         let name = format!("Axis{}", self.axes.len() + 1);
-        self.axes.push(AxisFeature { name, edge });
+        self.axes.push(AxisFeature { name, edge, kind: None });
         self.timeline_insert(Feature::Axis(self.axes.len() - 1));
         self.axis_pick = false;
         self.angle_pick = false;

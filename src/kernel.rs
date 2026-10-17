@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{MoveFeature, MoveKind, CombineFeature, OffsetFaceFeature, ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{AxisKind, PlaneKind, PointRef, MoveFeature, MoveKind, CombineFeature, OffsetFaceFeature, ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::measure::{self, Geom};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
@@ -1556,8 +1556,71 @@ fn radial_shift(body: &Shape, origin: DVec3, axis: DVec3, radial: f64) -> DVec3 
     r.try_normalize().map_or(DVec3::ZERO, |d| d * radial)
 }
 
+/// Where a point reference is in what's built so far: a body corner is the
+/// corner nearest where it was picked.
+fn resolve_point(bodies: &[&Shape], p: PointRef) -> Result<DVec3, String> {
+    match p {
+        PointRef::Origin => Ok(DVec3::ZERO),
+        PointRef::Corner(q) => bodies
+            .iter()
+            .flat_map(|b| shape_edges(b).into_iter().flat_map(|(_, _, pts)| [pts.first().copied(), pts.last().copied()]).flatten().collect::<Vec<_>>())
+            .min_by(|a, b| a.distance(q).total_cmp(&b.distance(q)))
+            .ok_or_else(|| "the corner it goes through is gone".into()),
+    }
+}
+
+/// A midplane, three-point or tangent plane, from what's built so far
+/// (`planes`: the construction planes before it).
+pub fn construct_plane(kind: &PlaneKind, bodies: &[&Shape], planes: &[Option<FacePlane>]) -> Result<FacePlane, String> {
+    match kind {
+        PlaneKind::Midplane(a, b) => {
+            let ((q1, n1), (q2, n2)) = (target_plane(a, planes, bodies)?, target_plane(b, planes, bodies)?);
+            if n1.dot(n2).abs() > 1.0 - 1e-9 {
+                // Parallel: halfway between, facing as the first.
+                let q = q1 + n1 * ((q2 - q1).dot(n1) / 2.0);
+                Ok(FacePlane::from_face(n1, q))
+            } else {
+                // Meeting: the plane halving the angle between them, through where they meet.
+                let (d1, d2, c) = (n1.dot(q1), n2.dot(q2), n1.dot(n2));
+                let p = (n1 * (d1 - d2 * c) + n2 * (d2 - d1 * c)) / (1.0 - c * c);
+                let n = (n1 - n2).try_normalize().ok_or("those two are the same plane")?;
+                Ok(FacePlane::from_face(n, p))
+            }
+        }
+        PlaneKind::ThreePoints(pts) => {
+            let [a, b, c] = [resolve_point(bodies, pts[0])?, resolve_point(bodies, pts[1])?, resolve_point(bodies, pts[2])?];
+            let n = (b - a).cross(c - a).try_normalize().filter(|n| n.is_finite()).ok_or("the three points are in a line")?;
+            Ok(FacePlane::from_face(n, a))
+        }
+        PlaneKind::Tangent(r) => {
+            let c = find_cylinder(bodies, r).ok_or("the cylinder it touches is gone")?;
+            let along = (r.at - c.axis_point).dot(c.axis);
+            let radial = (r.at - c.axis_point - c.axis * along).try_normalize().ok_or("pick the cylinder away from its axis")?;
+            Ok(FacePlane::from_face(radial, c.axis_point + c.axis * along + radial * c.radius))
+        }
+    }
+}
+
+/// An axis through two points or through a cylinder: a point on it and its direction.
+pub fn construct_axis(kind: &AxisKind, bodies: &[&Shape]) -> Result<(DVec3, DVec3), String> {
+    match kind {
+        AxisKind::TwoPoints([a, b]) => {
+            let (a, b) = (resolve_point(bodies, *a)?, resolve_point(bodies, *b)?);
+            let d = (b - a).try_normalize().filter(|d| d.is_finite()).ok_or("the two points are the same")?;
+            Ok((a, d))
+        }
+        AxisKind::Cylinder(r) => {
+            let c = find_cylinder(bodies, r).ok_or("the cylinder it runs through is gone")?;
+            Ok((c.axis_point, c.axis))
+        }
+    }
+}
+
 /// Where a construction axis is now: along the straight edge it was picked on.
 fn resolve_axis(bodies: &Tagged, af: &AxisFeature) -> Result<(DVec3, DVec3), String> {
+    if let Some(kind) = &af.kind {
+        return construct_axis(kind, &bodies.iter().map(|(s, _)| s).collect::<Vec<_>>());
+    }
     let mut all: Vec<(usize, Edge, EdgeRef)> = Vec::new();
     for (i, (b, _)) in bodies.iter().enumerate() {
         all.extend(shape_edges(b).into_iter().filter(|(_, _, pts)| is_straight(pts)).map(|(e, r, _)| (i, e, r)));
@@ -1583,7 +1646,7 @@ fn hinge_line(
             Ok((o, d, axis_features.get(k).map_or(DVec3::Z, |af| af.edge.faces[0])))
         }
         Hinge::Edge(r) => {
-            let (o, d) = resolve_axis(bodies, &AxisFeature { name: String::new(), edge: r })?;
+            let (o, d) = resolve_axis(bodies, &AxisFeature { name: String::new(), edge: r, kind: None })?;
             Ok((o, d, r.faces[0]))
         }
         Hinge::SketchLine { sketch, line } => {
@@ -2592,7 +2655,14 @@ impl Build {
             let backup: Tagged = current.iter().flat_map(|(s, id)| s.solids().into_iter().map(move |x| (x, *id))).collect();
             let (result, slot) = match *f {
                 Feature::Plane(k) => {
-                    if let Some(a) = plane_features.get(k).and_then(|pf| pf.angle) {
+                    if let Some((kind, offset)) = plane_features.get(k).and_then(|pf| pf.kind.map(|kd| (kd, pf.offset))) {
+                        let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
+                        let made = catch_unwind(AssertUnwindSafe(|| construct_plane(&kind, &bodies, &planes))).unwrap_or_else(|_| Err("the geometry kernel couldn't place it".into()));
+                        match made {
+                            Ok(f) => planes[k] = Some(FacePlane { origin: f.origin + f.normal() * offset, ..f }),
+                            Err(e) => plane_errors[k] = Some(e),
+                        }
+                    } else if let Some(a) = plane_features.get(k).and_then(|pf| pf.angle) {
                         let made = catch_unwind(AssertUnwindSafe(|| hinge_line(&a, &current, &axes, axis_features, sketches, &frames)))
                             .unwrap_or_else(|_| Err("the geometry kernel couldn't find its line".into()))
                             .and_then(|(o, d, n0)| crate::model::angle_frame(o, d, n0, a.degrees).ok_or_else(|| "its line has no length".into()));
@@ -3236,7 +3306,7 @@ mod tests {
         let mut sk = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk, 2.0, 0.0, 6.0, 3.0);
         let edge = EdgeRef { mid: DVec3::new(6.0, 3.0, 2.5), dir: DVec3::Z, faces: [DVec3::ZERO; 2], follow: None };
-        let axis = AxisFeature { name: "Axis1".into(), edge };
+        let axis = AxisFeature { name: "Axis1".into(), edge, kind: None };
         let c = CopyFeature {
             name: "C".into(),
             bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }],
@@ -3261,13 +3331,13 @@ mod tests {
         let nowhere = EdgeRef { mid: DVec3::new(60.0, 3.0, 2.5), dir: DVec3::X, faces: [DVec3::ZERO; 2], follow: None };
         let mut t = timeline(1, 1);
         t.push(Feature::Axis(0));
-        let m = build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[], &[AxisFeature { name: "A".into(), edge: nowhere }], &[], &t);
+        let m = build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[], &[AxisFeature { name: "A".into(), edge: nowhere, kind: None }], &[], &t);
         // (No box edge runs along X near there… the nearest X edge is taken, so it resolves; a wrong direction can't.)
         let wrong = EdgeRef { mid: DVec3::new(6.0, 3.0, 2.5), dir: DVec3::new(0.0, 0.6, 0.8), faces: [DVec3::ZERO; 2], follow: None };
         assert!(m.axes.len() == 1);
         let mut sk2 = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk2, 2.0, 0.0, 6.0, 3.0);
-        let m2 = build_with(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[], &[AxisFeature { name: "A".into(), edge: wrong }], &[], &t);
+        let m2 = build_with(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[], &[AxisFeature { name: "A".into(), edge: wrong, kind: None }], &[], &t);
         assert!(m2.axis_errors[0].as_deref().is_some_and(|e| e.contains("no longer exists")));
         assert_eq!(m2.axes, vec![None]);
     }
@@ -3288,7 +3358,7 @@ mod tests {
         let mut sk2 = Sketch::new("P".into(), OriginPlane::XY);
         rect(&mut sk2, 2.0, 5.0, 4.0, 7.0); // 2 × 2, from 2 to 4 mm off the axis
         let edge = EdgeRef { mid: DVec3::new(4.0, 3.0, 0.0), dir: DVec3::X, faces: [DVec3::ZERO; 2], follow: None };
-        let axis = AxisFeature { name: "Axis1".into(), edge };
+        let axis = AxisFeature { name: "Axis1".into(), edge, kind: None };
         let rv = |axis: RevolveAxis| Revolve { op: Operation::NewBody, name: "R".into(), sketch: 1, profiles: vec![0], axis, angle: 360.0 };
         let t = vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Axis(0), Feature::Sketch(1), Feature::Revolve(0)];
         let m = build_with(&[sk.clone(), sk2.clone()], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[rv(RevolveAxis::Construction(0))], &[], &[], &[axis.clone()], &[], &t);
@@ -3296,7 +3366,7 @@ mod tests {
         // A ring, outer radius 4, inner 2, 2 mm long.
         assert!(close(total(&m), 60.0 + PI * (16.0 - 4.0) * 2.0), "{}", total(&m));
         // An axis standing up through the sketch plane can't be revolved about.
-        let up = AxisFeature { name: "Up".into(), edge: EdgeRef { mid: DVec3::new(6.0, 3.0, 2.5), dir: DVec3::Z, faces: [DVec3::ZERO; 2], follow: None } };
+        let up = AxisFeature { name: "Up".into(), edge: EdgeRef { mid: DVec3::new(6.0, 3.0, 2.5), dir: DVec3::Z, faces: [DVec3::ZERO; 2], follow: None }, kind: None };
         let m = build_with(&[sk, sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[rv(RevolveAxis::Construction(0))], &[], &[], &[up], &[], &t);
         assert!(m.revolve_errors[0].as_deref().is_some_and(|e| e.contains("parallel")), "{:?}", m.revolve_errors);
     }
@@ -3308,7 +3378,7 @@ mod tests {
         let mut sk = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk, 2.0, 0.0, 6.0, 3.0);
         let yz = FacePlane::from_face(DVec3::X, DVec3::ZERO);
-        let plane = PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None };
+        let plane = PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None, kind: None };
         let c = CopyFeature { name: "M".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: crate::model::CopyKind::MirrorPlane(0) };
         let t = [Feature::Sketch(0), Feature::Extrude(0), Feature::Plane(0), Feature::Copy(0)];
         let m = build_all(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[], &[plane], &[], &[], &[], &[], &t);
@@ -3322,7 +3392,7 @@ mod tests {
         let c2 = CopyFeature { name: "M".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: crate::model::CopyKind::MirrorPlane(0) };
         let mut sk2 = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk2, 2.0, 0.0, 6.0, 3.0);
-        let early = build_all(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c2], &[], &[PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None }], &[], &[], &[], &[], &[Feature::Sketch(0), Feature::Extrude(0), Feature::Copy(0), Feature::Plane(0)]);
+        let early = build_all(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c2], &[], &[PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None, kind: None }], &[], &[], &[], &[], &[Feature::Sketch(0), Feature::Extrude(0), Feature::Copy(0), Feature::Plane(0)]);
         assert!(early.copy_errors[0].is_some());
     }
 
@@ -3335,8 +3405,8 @@ mod tests {
         let xy = FacePlane::from_face(DVec3::Z, DVec3::ZERO);
         let top = FacePlane::from_face(DVec3::Z, DVec3::new(4.0, 1.5, 5.0));
         let planes = [
-            PlaneFeature { name: "P0".into(), base: xy, on_origin: true, offset: 2.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None },
-            PlaneFeature { name: "P1".into(), base: top, on_origin: false, offset: 3.0, anchor: [4.0, 1.5], extent: [0.0; 4], angle: None },
+            PlaneFeature { name: "P0".into(), base: xy, on_origin: true, offset: 2.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None, kind: None },
+            PlaneFeature { name: "P1".into(), base: top, on_origin: false, offset: 3.0, anchor: [4.0, 1.5], extent: [0.0; 4], angle: None, kind: None },
         ];
         let mut on0 = Sketch::on_plane("A".into(), xy, 0);
         rect(&mut on0, 0.0, 0.0, 1.0, 1.0);
@@ -3622,6 +3692,50 @@ mod tests {
         let all = section(&m.bodies, &m.planes, &yz, 100.0 * n.x.signum(), false).unwrap();
         let none = section(&m.bodies, &m.planes, &yz, -100.0 * n.x.signum(), false).unwrap();
         assert!((volume(&all) - 1000.0).abs() < 1e-3 && none.is_empty());
+    }
+
+    #[test]
+    fn midplanes_three_point_planes_and_new_axes_land_where_they_should() {
+        use crate::model::{AxisKind, PlaneKind, PointRef};
+        let mut a = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut a, 0.0, 0.0, 20.0, 10.0);
+        circle(&mut a, 40.0, 5.0, 3.0);
+        let exs = [ex(0, vec![0, 1], 5.0, Operation::NewBody)];
+        let base = |kind: PlaneKind| PlaneFeature { name: "P".into(), base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: false, offset: 0.0, anchor: [0.0; 2], extent: [0.0; 4], angle: None, kind: Some(kind) };
+        let up10 = PlaneFeature { name: "Up".into(), base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: true, offset: 10.0, anchor: [0.0; 2], extent: [0.0; 4], angle: None, kind: None };
+        let corner = |x: f64, y: f64, z: f64| PointRef::Corner(DVec3::new(x, y, z) + DVec3::splat(0.4)); // picked a little off
+        let planes = [
+            up10,
+            // Halfway between XY and the plane 10 up: z = 5.
+            base(PlaneKind::Midplane(ExtrudeTarget::Origin(OriginPlane::XY), ExtrudeTarget::Plane(0))),
+            // Through three top corners of the block: z = 5.
+            base(PlaneKind::ThreePoints([corner(0.0, 0.0, 5.0), corner(20.0, 0.0, 5.0), corner(0.0, 10.0, 5.0)])),
+            // XZ and YZ meet along Z: the plane halving them.
+            base(PlaneKind::Midplane(ExtrudeTarget::Origin(OriginPlane::XZ), ExtrudeTarget::Origin(OriginPlane::YZ))),
+        ];
+        let cyl = CylinderRef { axis_point: DVec3::new(40.0, 5.0, 0.0), axis: DVec3::Z, radius: 3.0, at: DVec3::new(43.0, 5.0, 2.0), internal: false, length: 5.0 };
+        let planes = [planes.to_vec(), vec![base(PlaneKind::Tangent(cyl))]].concat();
+        let axes = [
+            AxisFeature { name: "A1".into(), edge: EdgeRef::default(), kind: Some(AxisKind::TwoPoints([corner(0.0, 0.0, 0.0), corner(20.0, 10.0, 5.0)])) },
+            AxisFeature { name: "A2".into(), edge: EdgeRef::default(), kind: Some(AxisKind::Cylinder(CylinderRef { axis_point: DVec3::new(40.2, 5.1, 0.0), ..cyl })) },
+        ];
+        let mut t = vec![Feature::Sketch(0), Feature::Extrude(0)];
+        t.extend((0..planes.len()).map(Feature::Plane));
+        t.extend((0..axes.len()).map(Feature::Axis));
+        let m = build_all(&[a], &exs, &[], &[], &[], &axes, &planes, &[], &[], &[], &[], &t);
+        assert!(m.plane_errors.iter().all(|e| e.is_none()) && m.axis_errors.iter().all(|e| e.is_none()), "{:?} {:?}", m.plane_errors, m.axis_errors);
+        let height = |k: usize| { let f = m.planes[k].unwrap(); assert!(f.normal().cross(DVec3::Z).length() < 1e-9, "flat"); f.origin.dot(f.normal()) * f.normal().z };
+        assert!((height(1) - 5.0).abs() < 1e-9 && (height(2) - 5.0).abs() < 1e-9);
+        let bisect = m.planes[3].unwrap();
+        assert!(bisect.normal().z.abs() < 1e-9 && (bisect.normal().x.abs() - bisect.normal().y.abs()).abs() < 1e-9, "the 45° plane between XZ and YZ: {:?}", bisect.normal());
+        assert!(bisect.origin.dot(bisect.normal()).abs() < 1e-9, "through the Z axis");
+        // Tangent to the cylinder (radius 3 round x = 40, y = 5) where it was picked: the plane x = 43.
+        let tangent = m.planes[4].unwrap();
+        assert!((tangent.normal() - DVec3::X).length() < 1e-9 && (tangent.origin.dot(DVec3::X) - 43.0).abs() < 1e-9);
+        let (o, d) = m.axes[0].unwrap();
+        assert!(o.distance(DVec3::ZERO) < 1e-9 && (d - DVec3::new(20.0, 10.0, 5.0).normalize()).length() < 1e-9, "corner to corner");
+        let (o, d) = m.axes[1].unwrap();
+        assert!(d.cross(DVec3::Z).length() < 1e-9 && (o - DVec3::new(40.0, 5.0, o.z)).length() < 1e-9, "the cylinder's own axis");
     }
 
     #[test]
@@ -4204,7 +4318,7 @@ mod tests {
     }
 
     fn offset_plane(z: f64) -> crate::model::PlaneFeature {
-        crate::model::PlaneFeature { name: "P".into(), base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: true, offset: z, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None }
+        crate::model::PlaneFeature { name: "P".into(), base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: true, offset: z, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None, kind: None }
     }
 
     #[test]
@@ -4236,7 +4350,7 @@ mod tests {
     }
 
     fn angled(hinge: Hinge, degrees: f64) -> PlaneFeature {
-        PlaneFeature { name: "P".into(), base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: false, offset: 0.0, anchor: [0.0; 2], extent: [0.0; 4], angle: Some(PlaneAngle { hinge, degrees }) }
+        PlaneFeature { name: "P".into(), base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: false, offset: 0.0, anchor: [0.0; 2], extent: [0.0; 4], angle: Some(PlaneAngle { hinge, degrees }), kind: None }
     }
 
     #[test]
@@ -4275,7 +4389,7 @@ mod tests {
         // A 50 × 30 × h plate; its top front edge (along X at y 0, z h), between
         // the top (0°) and front faces. At 45° the plane leans out over the front.
         let edge = EdgeRef { mid: DVec3::new(25.0, 0.0, 10.0), dir: DVec3::X, faces: [DVec3::Z, DVec3::NEG_Y], follow: None };
-        let axes = [AxisFeature { name: "A".into(), edge }];
+        let axes = [AxisFeature { name: "A".into(), edge, kind: None }];
         let planes = [angled(Hinge::Edge(edge), 45.0), angled(Hinge::Axis(0), 0.0)];
         for h in [10.0, 20.0] {
             let mut b = Sketch::new("B".into(), OriginPlane::XY);
@@ -4927,7 +5041,7 @@ mod tests {
     #[test]
     fn holes_run_to_a_plane_and_take_screw_sizes() {
         // From the top (z 10) down to a plane at z 6: 4 deep.
-        let plane = PlaneFeature { name: "P".into(), base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: true, offset: 6.0, anchor: [0.0; 2], extent: [0.0; 4], angle: None };
+        let plane = PlaneFeature { name: "P".into(), base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: true, offset: 6.0, anchor: [0.0; 2], extent: [0.0; 4], angle: None, kind: None };
         let to = HoleFeature { places: vec![on_top(10.0, 10.0, 10.0, false)], extent: HoleExtent::To, target: Some(ExtrudeTarget::Plane(0)), tip_angle: None, diameter: 5.0, ..Default::default() };
         let m = drilled(10.0, None, &[to.clone()], &[plane.clone()]);
         assert_eq!(m.hole_errors, vec![None]);

@@ -30,6 +30,11 @@ pub enum Icon {
     Ellipse,
     Text,
     Section,
+    Midplane,
+    Plane3Points,
+    TangentPlane,
+    AxisCylinder,
+    Axis2Points,
     Break,
     ControlSpline,
     Plane,
@@ -633,6 +638,38 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             painter.add(egui::Shape::line(pts, Stroke::new(thin.width * 1.2, orange)));
             dot(0.5, 0.5, ink);
         }
+        Icon::Midplane => {
+            // Two plates with an orange plane halfway between.
+            let s = Stroke::new(thin.width * 1.1, ink);
+            outline(&[(0.1, 0.2), (0.6, 0.06), (0.9, 0.2), (0.4, 0.34)], s);
+            outline(&[(0.1, 0.8), (0.6, 0.66), (0.9, 0.8), (0.4, 0.94)], s);
+            poly(&[(0.06, 0.5), (0.6, 0.35), (0.94, 0.5), (0.4, 0.65)], orange);
+        }
+        Icon::Plane3Points => {
+            // A plane through three dots.
+            outline(&[(0.08, 0.6), (0.55, 0.3), (0.92, 0.5), (0.45, 0.8)], Stroke::new(thin.width * 1.2, orange));
+            for (x, y) in [(0.2, 0.58), (0.58, 0.4), (0.62, 0.68)] {
+                dot(x, y, ink);
+            }
+        }
+        Icon::TangentPlane => {
+            // A cylinder end-on with a plane touching its side.
+            arc(0.38, 0.55, 0.28, 0.0, std::f32::consts::TAU, Stroke::new(thin.width * 1.2, ink));
+            line((0.66, 0.1), (0.66, 0.95), Stroke::new(thin.width * 1.6, orange));
+            dot(0.66, 0.55, orange);
+        }
+        Icon::AxisCylinder => {
+            // A cylinder with an orange axis through it.
+            outline(&[(0.25, 0.25), (0.75, 0.25), (0.75, 0.8), (0.25, 0.8)], Stroke::new(thin.width * 1.1, ink));
+            arc(0.5, 0.25, 0.25, std::f32::consts::PI, std::f32::consts::TAU, Stroke::new(thin.width * 1.1, ink));
+            line((0.5, 0.05), (0.5, 0.97), Stroke::new(thin.width * 1.5, orange));
+        }
+        Icon::Axis2Points => {
+            // An orange line through two dots.
+            line((0.08, 0.9), (0.92, 0.1), Stroke::new(thin.width * 1.5, orange));
+            dot(0.3, 0.69, ink);
+            dot(0.7, 0.31, ink);
+        }
         Icon::Section => {
             // A block cut part way: its cut face (orange) facing out, and the cutting plane's edge.
             poly(&[(0.12, 0.42), (0.5, 0.24), (0.5, 0.62), (0.12, 0.8)], blue_dark);
@@ -912,9 +949,9 @@ mod shot_tests {
     #[ignore]
     fn shots() {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
-        crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [520, 80], |ui| {
+        crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [720, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points] {
                     button(ui, icon, "", true, false);
                 }
             });

@@ -472,7 +472,38 @@ impl Default for CombineFeature {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AxisFeature {
     pub name: String,
+    /// Axis Along Edge: the edge (unused when `kind` is set).
     pub edge: EdgeRef,
+    /// Another way of making it (through two points, through a cylinder).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<AxisKind>,
+}
+
+/// A point construction features are made through: the origin, or a body
+/// corner as picked (the nearest corner is found again every build, so it
+/// follows the part).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum PointRef {
+    Origin,
+    Corner(DVec3),
+}
+
+/// How a construction axis is made, besides along an edge.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum AxisKind {
+    TwoPoints([PointRef; 2]),
+    /// Through the middle of a cylindrical face (a hole or a shaft).
+    Cylinder(CylinderRef),
+}
+
+/// How a construction plane is made, besides offset from a plane or at an angle.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum PlaneKind {
+    /// Halfway between two planes or faces (bisecting them if they meet).
+    Midplane(ExtrudeTarget, ExtrudeTarget),
+    ThreePoints([PointRef; 3]),
+    /// Touching a cylindrical face along the line through the point picked.
+    Tangent(CylinderRef),
 }
 
 /// The area of a flat face in its plane's coordinates: (low x, low y, high x, high y).
@@ -519,6 +550,10 @@ pub struct PlaneFeature {
     /// (and `base` / `offset` only remember how it looked when made).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub angle: Option<PlaneAngle>,
+    /// Midplane, through three points or tangent: set, it's made that way
+    /// (then moved `offset` along its normal).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<PlaneKind>,
 }
 
 /// The line a Plane at Angle turns about.

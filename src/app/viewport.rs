@@ -730,7 +730,7 @@ impl OpenCad {
 
         crate::mark("Extrude To Object / Hole To: click the");
         // --- Extrude To Object / Hole To: click the plane or flat face it runs up to ---
-        let picking_target = self.dialog.as_ref().is_some_and(|d| d.picking_target) || self.hole_dialog.as_ref().is_some_and(|d| d.picking_target) || self.section_dialog.as_ref().is_some_and(|d| d.picking);
+        let picking_target = self.dialog.as_ref().is_some_and(|d| d.picking_target) || self.hole_dialog.as_ref().is_some_and(|d| d.picking_target) || self.section_dialog.as_ref().is_some_and(|d| d.picking) || matches!(self.construct_pick, Some(ConstructPick::Midplane(_)));
         if picking_target {
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
@@ -769,8 +769,19 @@ impl OpenCad {
                 if let (Some(t), Some(d)) = (target, self.section_dialog.as_mut()) {
                     (d.at, d.picking) = (Some(t), false);
                 }
+                // Midplane: two picks, then it's made.
+                if let (Some(t), Some(ConstructPick::Midplane(mut picked))) = (target, self.construct_pick.clone()) {
+                    picked.push(t);
+                    match picked[..] {
+                        [a, b] => self.add_construct_plane(model::PlaneKind::Midplane(a, b)),
+                        _ => self.construct_pick = Some(ConstructPick::Midplane(picked)),
+                    }
+                }
             }
             if esc && !typing {
+                if matches!(self.construct_pick, Some(ConstructPick::Midplane(_))) {
+                    self.construct_pick = None;
+                }
                 if let Some(d) = self.section_dialog.as_mut() {
                     d.picking = false;
                 }
@@ -874,6 +885,46 @@ impl OpenCad {
             if esc && !typing {
                 self.cancel_extrude();
                 self.cancel_revolve();
+            }
+        } else if matches!(self.construct_pick, Some(ConstructPick::ThreePoints(_) | ConstructPick::AxisTwoPoints(_) | ConstructPick::Tangent | ConstructPick::AxisCylinder)) {
+            // --- Plane Through Three Points / Axis Through Two Points: click corners;
+            // Tangent Plane / Axis Through Cylinder: click a cylinder ---
+            self.ensure_model(Slot::Committed);
+            self.corner_hover = None;
+            self.cylinder_hover = None;
+            let corners = matches!(self.construct_pick, Some(ConstructPick::ThreePoints(_) | ConstructPick::AxisTwoPoints(_)));
+            if let Some(px) = hover_px {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                if corners {
+                    self.corner_hover = self.corner_under(&view, px, &ray);
+                } else {
+                    self.cylinder_hover = self.cylinder_under(&ray);
+                }
+            }
+            if response.clicked() {
+                use model::{AxisKind, PlaneKind, PointRef::Corner};
+                match (self.construct_pick.clone(), self.corner_hover, self.cylinder_hover) {
+                    (Some(ConstructPick::ThreePoints(mut v)), Some(p), _) => {
+                        v.push(p);
+                        match v[..] {
+                            [a, b, c] => self.add_construct_plane(PlaneKind::ThreePoints([Corner(a), Corner(b), Corner(c)])),
+                            _ => self.construct_pick = Some(ConstructPick::ThreePoints(v)),
+                        }
+                    }
+                    (Some(ConstructPick::AxisTwoPoints(mut v)), Some(p), _) => {
+                        v.push(p);
+                        match v[..] {
+                            [a, b] => self.add_construct_axis(AxisKind::TwoPoints([Corner(a), Corner(b)])),
+                            _ => self.construct_pick = Some(ConstructPick::AxisTwoPoints(v)),
+                        }
+                    }
+                    (Some(ConstructPick::Tangent), _, Some((c, at))) => self.add_construct_plane(PlaneKind::Tangent(c.as_ref(at))),
+                    (Some(ConstructPick::AxisCylinder), _, Some((c, at))) => self.add_construct_axis(AxisKind::Cylinder(c.as_ref(at))),
+                    _ => {}
+                }
+            }
+            if esc && !typing {
+                self.construct_pick = None;
             }
         } else if self.axis_pick {
             // --- construction axis: click a straight edge ---
@@ -3234,6 +3285,33 @@ impl OpenCad {
             if let Some(h) = self.solid_hover.as_ref().filter(|h| matches!(h.pick, measure::Pick::Edge { .. } | measure::Pick::Point(_)) && !self.solid_sel.iter().any(|p| p.pick == h.pick)) {
                 show(h, COL_HOVER, 2.5);
             }
+        }
+
+        // --- draw: construction picks (corners picked and under the cursor, the cylinder under it) ---
+        if let Some(pick) = &self.construct_pick {
+            let picked: &[DVec3] = match pick {
+                ConstructPick::ThreePoints(v) | ConstructPick::AxisTwoPoints(v) => v,
+                _ => &[],
+            };
+            for p in picked {
+                if let Some(px) = view.project(p.as_vec3()) {
+                    painter.circle_filled(to_pos(px), 5.0, COL_SELECT);
+                }
+            }
+            if let Some(px) = self.corner_hover.and_then(|p| view.project(p.as_vec3())) {
+                painter.circle_filled(to_pos(px), 5.0, COL_HOVER);
+            }
+            if let Some((c, _)) = self.cylinder_hover {
+                let u = model::zero_normal(c.axis, DVec3::Z);
+                let v = c.axis.cross(u);
+                for z in [0.0, c.length] {
+                    let pts: Vec<Vec3> = (0..=48).map(|k| { let a = k as f64 / 48.0 * std::f64::consts::TAU; (c.axis_point + c.axis * z + (u * a.cos() + v * a.sin()) * c.radius).as_vec3() }).collect();
+                    for w in pts.windows(2) {
+                        view.line(w[0], w[1], Stroke::new(3.0, COL_HOVER));
+                    }
+                }
+            }
+            painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, pick.hint() + "   (Esc to stop)", egui::FontId::proportional(15.0), Color32::from_gray(220));
         }
 
         crate::mark("draw: measure (over the sketches, so a");

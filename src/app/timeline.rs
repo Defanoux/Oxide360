@@ -284,6 +284,10 @@ impl OpenCad {
             && self.combine_dialog.is_none()
             && self.move_dialog.is_none()
             && self.section_dialog.is_none()
+            && self.construct_pick.is_none()
+            && !self.axis_pick
+            && !self.angle_pick
+            && !self.plane_pick
     }
 
     /// Box select (Shift+drag in solid mode), corners `a`, `b` in screen
@@ -321,6 +325,33 @@ impl OpenCad {
         out
     }
 
+    /// The body corner nearest the cursor (within snap distance, not hidden
+    /// behind a body).
+    pub(crate) fn corner_under(&self, view: &View, px: Vec2, ray: &Ray) -> Option<DVec3> {
+        let model = &self.caches[Slot::Committed as usize].as_ref()?.model;
+        let visible = |b: &&kernel::Body| !self.hidden_bodies.contains(&b.id);
+        let hit = model.bodies.iter().filter(|b| visible(b)).filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir)).fold(f32::MAX, f32::min);
+        let slack = self.camera.distance * 0.01;
+        let in_front = |p: Vec3| (p - ray.origin).dot(ray.dir) <= hit + slack;
+        let mut corner: Option<(f32, DVec3)> = None;
+        for body in model.bodies.iter().filter(|b| visible(b)) {
+            for e in &body.edges {
+                let (Some(&first), Some(&last)) = (e.points.first(), e.points.last()) else { continue };
+                if first.distance(last) < 1e-6 {
+                    continue; // a whole circle has no corner
+                }
+                for p in [first, last] {
+                    let Some(q) = view.project(p) else { continue };
+                    let d = px.distance(q);
+                    if d <= SNAP_PX && corner.is_none_or(|(bd, _)| d < bd) && in_front(p) {
+                        corner = Some((d, p.as_dvec3()));
+                    }
+                }
+            }
+        }
+        corner.map(|(_, p)| p)
+    }
+
     /// Solid mode with nothing else going on: the body edge (nearest, within
     /// snap distance and not hidden behind a body) or else the face under
     /// the cursor, to select.
@@ -351,23 +382,7 @@ impl OpenCad {
             }
         }
         // A corner near the cursor comes first (as in Fusion), then an edge, then the face.
-        let mut corner: Option<(f32, DVec3)> = None;
-        for body in model.bodies.iter().filter(|b| visible(b)) {
-            for e in &body.edges {
-                let (Some(&first), Some(&last)) = (e.points.first(), e.points.last()) else { continue };
-                if first.distance(last) < 1e-6 {
-                    continue; // a whole circle has no corner
-                }
-                for p in [first, last] {
-                    let Some(q) = view.project(p) else { continue };
-                    let d = px.distance(q);
-                    if d <= SNAP_PX && corner.is_none_or(|(bd, _)| d < bd) && in_front(p) {
-                        corner = Some((d, p.as_dvec3()));
-                    }
-                }
-            }
-        }
-        if let Some((_, p)) = corner {
+        if let Some(p) = self.corner_under(view, px, ray) {
             return Some(measure::Picked::point(p));
         }
         let face = hit.and_then(|(_, tri, bi)| model.bodies[bi].tri_face.get(tri).map(|&f| Pick::Face { body: bi, face: f as usize }));

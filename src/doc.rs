@@ -1039,7 +1039,7 @@ mod tests {
         use crate::sketch::FacePlane;
         let mut doc = sample();
         let top = FacePlane::from_face(glam::DVec3::Z, glam::DVec3::new(1.0, 2.0, 5.0));
-        doc.planes.push(PlaneFeature { name: "Plane1".into(), base: top, on_origin: false, offset: -3.5, anchor: [1.0, 2.0], extent: [0.0, 0.0, 6.0, 6.0], angle: None });
+        doc.planes.push(PlaneFeature { name: "Plane1".into(), base: top, on_origin: false, offset: -3.5, anchor: [1.0, 2.0], extent: [0.0, 0.0, 6.0, 6.0], angle: None, kind: None });
         doc.timeline.push(Feature::Plane(0));
         let mut on = Sketch::on_plane("S9".into(), top, 0);
         on.points.push(glam::DVec2::new(1.0, 1.0));

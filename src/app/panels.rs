@@ -721,6 +721,11 @@ impl OpenCad {
                     ToolItem { name: "Offset Plane", icon: Icon::Plane, tip: "Offset Plane: click an origin plane or a face, then set the distance", enabled: true, on: self.plane_pick || self.plane_dialog.as_ref().is_some_and(|d| d.angle.is_none()) },
                     ToolItem { name: "Plane at Angle", icon: Icon::PlaneAngle, tip: "Plane at Angle: click a sketch line, body edge or axis, then set the angle", enabled: true, on: self.angle_pick || angled },
                     ToolItem { name: "Axis Along Edge", icon: Icon::Axis, tip: "Axis Along Edge: click a straight edge of a body", enabled: has_bodies, on: self.axis_pick },
+                    ToolItem { name: "Midplane", icon: Icon::Midplane, tip: "Midplane: click two planes or flat faces — halfway between them (halving the angle if they meet)", enabled: true, on: matches!(self.construct_pick, Some(ConstructPick::Midplane(_))) },
+                    ToolItem { name: "Plane Through Three Points", icon: Icon::Plane3Points, tip: "Plane Through Three Points: click three body corners", enabled: has_bodies, on: matches!(self.construct_pick, Some(ConstructPick::ThreePoints(_))) },
+                    ToolItem { name: "Tangent Plane", icon: Icon::TangentPlane, tip: "Tangent Plane: click a cylinder where the plane should touch it", enabled: has_bodies, on: self.construct_pick == Some(ConstructPick::Tangent) },
+                    ToolItem { name: "Axis Through Cylinder", icon: Icon::AxisCylinder, tip: "Axis Through Cylinder: click a hole or shaft", enabled: has_bodies, on: self.construct_pick == Some(ConstructPick::AxisCylinder) },
+                    ToolItem { name: "Axis Through Two Points", icon: Icon::Axis2Points, tip: "Axis Through Two Points: click two body corners", enabled: has_bodies, on: matches!(self.construct_pick, Some(ConstructPick::AxisTwoPoints(_))) },
                 ];
                 let construct = tool_group(ui, "CONSTRUCT", "Solid ", &items, &[], hidden, order);
                 let copy_mode = self.copy_dialog.as_ref().map(|d| d.mode);
@@ -764,6 +769,18 @@ impl OpenCad {
                         let was = self.axis_pick;
                         self.cancel_all_dialogs();
                         self.axis_pick = !was;
+                    }
+                    Some(name @ ("Midplane" | "Plane Through Three Points" | "Tangent Plane" | "Axis Through Cylinder" | "Axis Through Two Points")) => {
+                        let pick = match name {
+                            "Midplane" => ConstructPick::Midplane(Vec::new()),
+                            "Plane Through Three Points" => ConstructPick::ThreePoints(Vec::new()),
+                            "Tangent Plane" => ConstructPick::Tangent,
+                            "Axis Through Cylinder" => ConstructPick::AxisCylinder,
+                            _ => ConstructPick::AxisTwoPoints(Vec::new()),
+                        };
+                        let same = self.construct_pick.as_ref().is_some_and(|p| std::mem::discriminant(p) == std::mem::discriminant(&pick));
+                        self.cancel_all_dialogs();
+                        self.construct_pick = if same { None } else { Some(pick) };
                     }
                     Some("Mirror") => self.open_copy(CopyMode::Mirror, None),
                     Some("Rectangular Pattern") => self.open_copy(CopyMode::Rectangular, None),

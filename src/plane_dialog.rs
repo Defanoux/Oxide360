@@ -28,12 +28,14 @@ pub struct PlaneDialog {
     pub extent: [f64; 4],
     /// Plane at Angle (else Offset Plane).
     pub angle: Option<AngleSetup>,
+    /// A midplane, three-point or tangent plane being edited (its distance only).
+    pub kind: Option<crate::model::PlaneKind>,
 }
 
 impl PlaneDialog {
     /// Starts 0 mm from what was picked.
     pub fn new(base: FacePlane, on_origin: bool, anchor: [f64; 2], extent: [f64; 4]) -> Self {
-        PlaneDialog { editing: None, base, on_origin, distance: 0.0, anchor, extent, angle: None }
+        PlaneDialog { editing: None, base, on_origin, distance: 0.0, anchor, extent, angle: None, kind: None }
     }
 
     /// Plane at Angle through a line (`o`, `d`), starting at 0° (facing `n0`),
@@ -41,7 +43,7 @@ impl PlaneDialog {
     pub fn at_angle(hinge: Hinge, o: DVec3, d: DVec3, n0: DVec3, size: f64) -> Self {
         let h = size / 2.0;
         let angle = Some(AngleSetup { hinge, line: (o, d, n0), degrees: 0.0, picking_line: false });
-        let mut dialog = PlaneDialog { editing: None, base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: false, distance: 0.0, anchor: [0.0; 2], extent: [-h, -h, h, h], angle };
+        let mut dialog = PlaneDialog { editing: None, base: FacePlane::from_face(DVec3::Z, DVec3::ZERO), on_origin: false, distance: 0.0, anchor: [0.0; 2], extent: [-h, -h, h, h], angle, kind: None };
         dialog.base = dialog.frame();
         dialog
     }
@@ -71,13 +73,13 @@ impl PlaneDialog {
             let back = (-a.degrees).to_radians();
             AngleSetup { hinge: a.hinge, line: (now.origin, d, n * back.cos() + d.cross(n) * back.sin()), degrees: a.degrees, picking_line: false }
         });
-        PlaneDialog { editing: Some(k), base: f.base, on_origin: f.on_origin, distance: f.offset, anchor: f.anchor, extent: f.extent, angle }
+        PlaneDialog { editing: Some(k), base: f.base, on_origin: f.on_origin, distance: f.offset, anchor: f.anchor, extent: f.extent, angle, kind: f.kind }
     }
 
     pub fn feature(&self, name: String) -> PlaneFeature {
         let angle = self.angle.map(|a| PlaneAngle { hinge: a.hinge, degrees: a.degrees });
         let base = if self.angle.is_some() { self.frame() } else { self.base };
-        PlaneFeature { name, base, on_origin: self.on_origin, offset: self.distance, anchor: self.anchor, extent: self.extent, angle }
+        PlaneFeature { name, base, on_origin: self.on_origin, offset: self.distance, anchor: self.anchor, extent: self.extent, angle, kind: self.kind }
     }
 
     /// Where the plane would be right now: the base moved along its normal,
