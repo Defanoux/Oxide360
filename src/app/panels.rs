@@ -785,6 +785,10 @@ impl OpenCad {
                     if icons::button(ui, Icon::Measure, "Measure: click a corner, edge, face, body or sketch geometry — one for its size, two for distance and angle", has_bodies || !self.sketches.is_empty(), self.measure.is_some()).clicked() {
                         self.measure = if self.measure.is_some() { None } else { Some(measure::Measure::default()) };
                     }
+                    let tip = "Section Analysis: see inside — click a plane or flat face to cut the view along (the design isn't changed)";
+                    if icons::button(ui, Icon::Section, tip, has_bodies, self.section_dialog.is_some()).clicked() {
+                        self.section_dialog = if self.section_dialog.is_some() { None } else { Some(section_dialog::SectionDialog::new()) };
+                    }
                 });
             }
         });
@@ -965,9 +969,48 @@ impl OpenCad {
 
     /// Analysis (sections, zebra… later): empty for now, as a placeholder.
     fn browser_analysis(&mut self, ui: &mut egui::Ui) {
-        self.folder(ui, "folder_analysis", Icon::Folder, "Analysis", None, |_, ui| {
-            ui.weak("Nothing yet");
+        let mut edit: Option<usize> = None;
+        let mut delete: Option<usize> = None;
+        self.folder(ui, "folder_analysis", Icon::Folder, "Analysis", None, |app, ui| {
+            if app.sections.is_empty() {
+                ui.weak("Nothing yet (Inspect → Section Analysis)");
+            }
+            for k in 0..app.sections.len() {
+                let r = browser_row(ui, |ui| {
+                    if icons::eye(ui, app.sections[k].shown, "Show or hide this section").clicked() {
+                        let on = !app.sections[k].shown;
+                        // One section at a time, as the view can show one.
+                        for s in app.sections.iter_mut() {
+                            s.shown = false;
+                        }
+                        app.sections[k].shown = on;
+                    }
+                    icons::small(ui, Icon::Section);
+                    ui.selectable_label(false, app.sections[k].name.as_str())
+                })
+                .inner;
+                if r.double_clicked() {
+                    edit = Some(k);
+                }
+                r.context_menu(|ui| {
+                    if ui.button("Edit Section Analysis").clicked() {
+                        edit = Some(k);
+                        ui.close();
+                    }
+                    if ui.button("Delete").clicked() {
+                        delete = Some(k);
+                        ui.close();
+                    }
+                });
+            }
         });
+        if let Some(k) = edit {
+            self.section_dialog = Some(section_dialog::SectionDialog::edit(k, &self.sections[k]));
+        }
+        if let Some(k) = delete {
+            self.sections.remove(k);
+            self.section_dialog = None;
+        }
     }
 
     /// Construction planes and axes.

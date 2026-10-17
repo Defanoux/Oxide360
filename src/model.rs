@@ -146,6 +146,27 @@ pub enum ExtrudeTarget {
     Face { face: FacePlane, anchor: [f64; 2] },
 }
 
+/// Section Analysis (Inspect): the model shown cut by a plane, to see
+/// inside. Display only — nothing in the design is cut.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SectionAnalysis {
+    pub name: String,
+    /// The plane it cuts along (origin plane, construction plane or flat face).
+    pub at: ExtrudeTarget,
+    /// Moved this far along the plane's normal (mm).
+    pub offset: f64,
+    /// Keep the other half.
+    #[serde(default)]
+    pub flip: bool,
+    /// Its eye in the browser's Analysis folder.
+    #[serde(default = "shown")]
+    pub shown: bool,
+}
+
+fn shown() -> bool {
+    true
+}
+
 /// How far an extrude reaches either side of its sketch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Extent {

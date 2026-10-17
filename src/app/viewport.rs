@@ -411,7 +411,8 @@ impl OpenCad {
                 && self.shell_dialog.is_none()
                 && self.offset_dialog.is_none()
                 && self.combine_dialog.is_none()
-                && self.move_dialog.is_none();
+                && self.move_dialog.is_none()
+                && self.section_dialog.is_none();
             // Selected edges and faces whose geometry changed in a rebuild go.
             let now: Vec<bool> = self.solid_sel.iter().map(|p| self.measure_resolve(p.pick).is_some_and(|q| q.geom == p.geom)).collect();
             let mut keep = now.into_iter();
@@ -709,7 +710,7 @@ impl OpenCad {
 
         crate::mark("Extrude To Object / Hole To: click the");
         // --- Extrude To Object / Hole To: click the plane or flat face it runs up to ---
-        let picking_target = self.dialog.as_ref().is_some_and(|d| d.picking_target) || self.hole_dialog.as_ref().is_some_and(|d| d.picking_target);
+        let picking_target = self.dialog.as_ref().is_some_and(|d| d.picking_target) || self.hole_dialog.as_ref().is_some_and(|d| d.picking_target) || self.section_dialog.as_ref().is_some_and(|d| d.picking);
         if picking_target {
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
@@ -745,8 +746,14 @@ impl OpenCad {
                 if let (Some(t), Some(d)) = (target, self.hole_dialog.as_mut()) {
                     (d.hole.target, d.picking_target) = (Some(t), false);
                 }
+                if let (Some(t), Some(d)) = (target, self.section_dialog.as_mut()) {
+                    (d.at, d.picking) = (Some(t), false);
+                }
             }
             if esc && !typing {
+                if let Some(d) = self.section_dialog.as_mut() {
+                    d.picking = false;
+                }
                 if let Some(d) = self.dialog.as_mut() {
                     d.picking_target = false;
                 }
@@ -2215,6 +2222,18 @@ impl OpenCad {
         // The preview's first build still running: show the design as it is meanwhile.
         let slot = if self.ready(slot) { slot } else { Slot::Committed };
         let model = &self.caches[slot as usize].as_ref().expect("built above").model;
+        // Section Analysis: the bodies cut along its plane are drawn in their place
+        // (the open dialog's section, else the one switched on).
+        let section = self
+            .section_dialog
+            .as_ref()
+            .and_then(|d| d.section(String::new()))
+            .or_else(|| self.sections.iter().find(|s| s.shown).cloned())
+            .filter(|_| self.active.is_none() && !previewing);
+        let cuts = section.map(|s| kernel::section(&model.bodies, &model.planes, &s.at, s.offset, s.flip));
+        self.section_error = cuts.as_ref().and_then(|r| r.as_ref().err().cloned());
+        let cuts = cuts.and_then(Result::ok);
+        self.section_on = cuts.is_some();
         self.dialog_error = if let Some(d) = &self.shell_dialog {
             let k = d.editing.unwrap_or(self.shells.len());
             if d.shell.faces.is_empty() && d.shell.bodies.is_empty() { None } else { model.shell_errors.get(k).cloned().flatten() }
@@ -2258,12 +2277,13 @@ impl OpenCad {
         } else {
             model.bodies.iter().enumerate().filter(|(_, b)| self.hidden_bodies.contains(&b.id)).map(|(k, _)| k).collect()
         };
-        let meshes: Vec<(&Mesh, Color32)> = model
+        let mut meshes: Vec<(&Mesh, Color32)> = Vec::new();
+        let shaded: Vec<(usize, &Mesh, Color32)> = model
             .bodies
             .iter()
             .enumerate()
             .filter(|(k, _)| !hidden.contains(k))
-            .map(|(_, b)| {
+            .map(|(k, b)| {
                 let c = if previewing { body_color } else { self.body_color(b.id) };
                 // Bodies selected in the browser (or picked for a mirror / pattern)
                 // are tinted with the selection colour; the one under the cursor lighter.
@@ -2280,12 +2300,37 @@ impl OpenCad {
                 } else {
                     c
                 };
-                (&b.mesh, c)
+                (k, &b.mesh, c)
             })
             .collect();
+        match &cuts {
+            // Cut: each body's remains instead, in its colour.
+            Some(cuts) => {
+                for c in cuts {
+                    if let Some(&(_, _, col)) = shaded.iter().find(|(k, ..)| *k == c.body) {
+                        meshes.push((&c.mesh, col));
+                    }
+                }
+            }
+            None => {
+                for &(_, m, c) in &shaded {
+                    meshes.push((m, c));
+                }
+            }
+        }
         if self.gpu {
             let list: Vec<(&Mesh, [f32; 3])> = meshes.iter().map(|(m, c)| (*m, rgb(*c))).collect();
             let mut scene = gpu::Scene::build(&list, &self.camera, aspect, self.style);
+            // The cut faces in their own colour.
+            if let (Some(cuts), true) = (&cuts, self.style != gpu::Style::Wireframe) {
+                let mut first = 0;
+                for (m, _) in &meshes {
+                    if let Some(c) = cuts.iter().find(|c| std::ptr::eq(&c.mesh, *m)) {
+                        scene.tint(first, &c.cap, [0.86, 0.52, 0.30]);
+                    }
+                    first += m.tris.len();
+                }
+            }
             scene.add_lines(&grid_segments, &self.camera);
             scene.add_lines(&origin_outlines, &self.camera);
             // Shown threads on the bodies: hidden where the part is in front.
@@ -2489,7 +2534,7 @@ impl OpenCad {
 
         crate::mark("draw: the face a sketch would start on");
         // --- draw: the face a sketch would start on ---
-        if let Some((b, face)) = self.face_hover {
+        if let (Some((b, face)), false) = (self.face_hover, self.section_on) {
             let model = self.model(Slot::Committed);
             if let Some(body) = model.bodies.get(b) {
                 let n = face.normal();

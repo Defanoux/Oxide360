@@ -57,6 +57,7 @@ mod solver;
 mod threads;
 mod text;
 mod text_dialog;
+mod section_dialog;
 #[cfg(test)]
 mod ui_shot;
 mod view;
@@ -751,6 +752,10 @@ struct OpenCad {
     revolve_errors: Vec<Option<String>>,
     sketch_pattern: Option<SketchPattern>,   // an open Rectangular / Circular Pattern in a sketch
     text_dialog: Option<text_dialog::TextDialog>, // the Text dialog, on a text in the open sketch
+    sections: Vec<model::SectionAnalysis>,  // Section Analyses (browser → Analysis)
+    section_dialog: Option<section_dialog::SectionDialog>, // the Section Analysis dialog
+    section_error: Option<String>,          // why the section shown couldn't be cut
+    section_on: bool,                       // a section is drawn this frame (the real faces aren't where they look)
     offset_preview: Option<Sketch>,          // the sketch with the offset the cursor would make
     cut_preview: Option<(Tool, sketch::TrimPiece)>, // what Trim would cut / Extend would add, under the cursor
     break_marks: Vec<DVec2>,                  // where Break would split what's under the cursor
@@ -953,6 +958,10 @@ impl Default for OpenCad {
             revolve_errors: Vec::new(),
             sketch_pattern: None,
             text_dialog: None,
+            sections: Vec::new(),
+            section_dialog: None,
+            section_error: None,
+            section_on: false,
             offset_preview: None,
             break_marks: Vec::new(),
             cut_preview: None,
@@ -1197,6 +1206,8 @@ impl OpenCad {
                 let act = self.text_dialog.as_mut().map_or(copy_dialog::Action::None, |d| d.panel(ui, design_units));
                 self.text_dialog_step(act);
             });
+        } else if self.section_dialog.is_some() && self.active.is_none() {
+            float("section").show(&ctx, |ui| self.section_panel(ui));
         } else if self.sketch_pattern.is_some() && self.active.is_some() {
             float("sketch_pattern").show(&ctx, |ui| {
                 let error = self.sketch_pattern.as_ref().and_then(|d| d.preview().err());

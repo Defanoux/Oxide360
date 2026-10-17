@@ -29,6 +29,7 @@ pub enum Icon {
     ArcTangent,
     Ellipse,
     Text,
+    Section,
     Break,
     ControlSpline,
     Plane,
@@ -632,6 +633,13 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             painter.add(egui::Shape::line(pts, Stroke::new(thin.width * 1.2, orange)));
             dot(0.5, 0.5, ink);
         }
+        Icon::Section => {
+            // A block cut part way: its cut face (orange) facing out, and the cutting plane's edge.
+            poly(&[(0.12, 0.42), (0.5, 0.24), (0.5, 0.62), (0.12, 0.8)], blue_dark);
+            poly(&[(0.12, 0.42), (0.5, 0.24), (0.66, 0.32), (0.28, 0.5)], blue);
+            poly(&[(0.28, 0.5), (0.66, 0.32), (0.66, 0.7), (0.28, 0.88)], orange);
+            outline(&[(0.6, 0.06), (0.94, 0.22), (0.94, 0.86), (0.6, 0.7)], Stroke::new(thin.width, ink));
+        }
         Icon::Text => {
             // An outlined capital A on a baseline, its start point marked.
             let s = Stroke::new(thin.width * 1.2, orange);
@@ -906,7 +914,7 @@ mod shot_tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [520, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section] {
                     button(ui, icon, "", true, false);
                 }
             });

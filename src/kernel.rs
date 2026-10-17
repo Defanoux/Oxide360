@@ -664,6 +664,76 @@ fn to_object(plane: &Frame, picked: &[&Region], ex: &Extrude, target: Option<(DV
     Ok((solid, End::Extrude { origin: plane.origin, normal, distance: t }))
 }
 
+/// A body cut by Section Analysis: what's left of it, meshed, and which of
+/// its triangles are on the cut (shown in their own colour).
+#[derive(Clone, Debug)]
+pub struct SectionCut {
+    /// Index into the bodies it was cut from.
+    pub body: usize,
+    pub mesh: Mesh,
+    pub cap: Vec<bool>,
+}
+
+/// Section Analysis: the bodies cut by the plane `at` moved `offset` along
+/// its normal, the half the normal points into taken away (`flip`: the
+/// other half). Display only; the design isn't changed. Remembered, so it
+/// only cuts again when the bodies or the plane change.
+pub fn section(bodies: &[Body], planes: &[Option<FacePlane>], at: &ExtrudeTarget, offset: f64, flip: bool) -> Result<Vec<SectionCut>, String> {
+    thread_local! {
+        static SECTIONS: std::cell::RefCell<Vec<(String, Result<Vec<SectionCut>, String>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    if !offset.is_finite() {
+        return Err("the offset isn't a number".into());
+    }
+    let shapes: Vec<&Shape> = bodies.iter().map(|b| &b.shape).collect();
+    let (q, n) = target_plane(at, planes, &shapes)?;
+    let n = if flip { -n } else { n };
+    let q = q + n * if flip { -offset } else { offset };
+    let key = format!("{:?}|{q:?}|{n:?}", bodies.iter().map(|b| fingerprint(&b.shape)).collect::<Vec<_>>());
+    if let Some(hit) = SECTIONS.with(|c| c.borrow().iter().find(|(k, _)| *k == key).map(|(_, r)| r.clone())) {
+        return hit;
+    }
+    let cut = catch_unwind(AssertUnwindSafe(|| -> Result<Vec<SectionCut>, String> {
+        // A slab on the kept side of the plane, bigger than everything.
+        let (lo, hi) = bodies.iter().fold((DVec3::splat(f64::MAX), DVec3::splat(f64::MIN)), |(lo, hi), b| {
+            let bb = opencascade::bounding_box::aabb(&b.shape);
+            (lo.min(DVec3::new(bb.min().x, bb.min().y, bb.min().z)), hi.max(DVec3::new(bb.max().x, bb.max().y, bb.max().z)))
+        });
+        let size = (hi - lo).length().max(1.0) * 2.0 + (q - (lo + hi) * 0.5).length() * 2.0 + 10.0;
+        let a = n.any_orthonormal_vector();
+        let b = n.cross(a);
+        let corners = [q + (a + b) * size, q + (b - a) * size, q - (a + b) * size, q + (a - b) * size];
+        let edges: Vec<Edge> = (0..4).map(|k| Edge::segment(kv(corners[k]), kv(corners[(k + 1) % 4]))).collect();
+        let slab: Shape = Face::from_wire(&Wire::from_edges(&edges)).extrude(kv(-n * size * 2.0)).into();
+        let mut out = Vec::new();
+        for (i, body) in bodies.iter().enumerate() {
+            let Some(kept) = body.shape.try_intersect(&slab) else { return Err("the kernel couldn't cut a body there".into()) };
+            if kept.volume().abs() < MIN_VOLUME {
+                continue; // all of it is on the side taken away
+            }
+            let (mesh, _) = mesh_tagged(&kept)?;
+            let tol = (hi - lo).length() * 1e-6 + 1e-6;
+            let cap = (0..mesh.tris.len())
+                .map(|t| {
+                    let p = mesh.positions[mesh.tris[t][0] as usize].as_dvec3();
+                    mesh.normal(t).as_dvec3().dot(n) > 0.999 && (p - q).dot(n).abs() < tol
+                })
+                .collect();
+            out.push(SectionCut { body: i, mesh, cap });
+        }
+        Ok(out)
+    }))
+    .unwrap_or_else(|_| Err("the geometry kernel failed cutting the section".into()));
+    SECTIONS.with(|c| {
+        let mut c = c.borrow_mut();
+        c.push((key, cut.clone()));
+        if c.len() > 8 {
+            drop(c.remove(0));
+        }
+    });
+    cut
+}
+
 /// The solid a revolve adds/removes: the picked profiles spun around the axis.
 fn revolve_tool(
     sketches: &[Sketch],
@@ -3518,6 +3588,40 @@ mod tests {
         let m = build4(&[a, b], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &timeline(2, 1));
         assert!(m.sketch_errors[1].is_some());
         assert_eq!(m.projection_lost[1], vec![line]);
+    }
+
+    #[test]
+    fn a_section_keeps_the_half_behind_the_plane_with_its_cut_face() {
+        let mut a = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut a, 0.0, 0.0, 20.0, 10.0);
+        let m = build4(&[a], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &timeline(1, 1));
+        let yz = ExtrudeTarget::Origin(OriginPlane::YZ);
+        let n = OriginPlane::YZ.plane().normal().as_dvec3();
+        // The plane x = 5 (along its normal, whichever way that points).
+        let offset = 5.0 * n.x.signum();
+        let volume = |cuts: &[SectionCut]| -> f64 {
+            // Signed volume of a closed mesh: sum of tetrahedra from the origin.
+            cuts.iter().map(|c| c.mesh.tris.iter().map(|t| {
+                let [p, q, r] = t.map(|i| c.mesh.positions[i as usize].as_dvec3());
+                p.dot(q.cross(r)) / 6.0
+            }).sum::<f64>()).sum()
+        };
+        let kept = section(&m.bodies, &m.planes, &yz, offset, false).unwrap();
+        let other = section(&m.bodies, &m.planes, &yz, offset, true).unwrap();
+        let (v1, v2) = (volume(&kept), volume(&other));
+        assert!((v1 + v2 - 1000.0).abs() < 1e-3, "the two halves make the box: {v1} + {v2}");
+        let small = if n.x > 0.0 { v1 } else { v2 };
+        assert!((small - 250.0).abs() < 1e-3, "the half on the x < 5 side: {small}");
+        // The cut face is marked, and it's the 10 × 5 cross-section.
+        let cap_area: f64 = kept[0].mesh.tris.iter().zip(&kept[0].cap).filter(|(_, c)| **c).map(|(t, _)| {
+            let [p, q, r] = t.map(|i| kept[0].mesh.positions[i as usize].as_dvec3());
+            (q - p).cross(r - p).length() / 2.0
+        }).sum();
+        assert!((cap_area - 50.0).abs() < 1e-3, "{cap_area}");
+        // Past the part: nothing taken away, or nothing left.
+        let all = section(&m.bodies, &m.planes, &yz, 100.0 * n.x.signum(), false).unwrap();
+        let none = section(&m.bodies, &m.planes, &yz, -100.0 * n.x.signum(), false).unwrap();
+        assert!((volume(&all) - 1000.0).abs() < 1e-3 && none.is_empty());
     }
 
     #[test]

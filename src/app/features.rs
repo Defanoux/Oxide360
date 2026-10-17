@@ -1381,6 +1381,39 @@ impl OpenCad {
         self.close_plane_dialog();
     }
 
+    /// The Section Analysis dialog: OK keeps the section (switched on, the
+    /// others off) in the browser's Analysis folder; Cancel drops the changes.
+    pub(crate) fn section_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(d) = self.section_dialog.as_mut() else { return };
+        let name = d.at.map(|t| match t {
+            model::ExtrudeTarget::Origin(op) => format!("{} plane", op.name()),
+            model::ExtrudeTarget::Plane(k) => self.planes.get(k).map_or_else(|| "a plane".into(), |p| p.name.clone()),
+            model::ExtrudeTarget::Face { .. } => "a face".into(),
+        });
+        let act = d.panel(ui, self.units, name, self.section_error.as_deref());
+        let esc = ui.input(|i| i.key_pressed(egui::Key::Escape)) && !d.picking;
+        match act {
+            copy_dialog::Action::Ok => {
+                let Some(d) = self.section_dialog.take() else { return };
+                let k = d.editing.unwrap_or(self.sections.len());
+                let name = self.sections.get(k).map_or_else(|| format!("Section{}", self.sections.len() + 1), |s| s.name.clone());
+                if let Some(s) = d.section(name) {
+                    for other in &mut self.sections {
+                        other.shown = false;
+                    }
+                    if k < self.sections.len() {
+                        self.sections[k] = s;
+                    } else {
+                        self.sections.push(s);
+                    }
+                }
+            }
+            copy_dialog::Action::Cancel => self.section_dialog = None,
+            copy_dialog::Action::None if esc => self.section_dialog = None,
+            copy_dialog::Action::None => {}
+        }
+    }
+
     pub(crate) fn delete_plane(&mut self, k: usize) {
         if self.sketches.iter().any(|s| s.plane_ref == Some(k)) {
             self.notify("A sketch is on that plane — delete the sketch first".into());
@@ -1394,6 +1427,11 @@ impl OpenCad {
             self.notify("A hole runs to that plane — delete it or pick another object first".into());
             return;
         }
+        if self.extrudes.iter().any(|e| e.target == Some(model::ExtrudeTarget::Plane(k))) {
+            self.notify("An extrude runs up to that plane — delete it or pick another object first".into());
+            return;
+        }
+        // (Every refusal is above: from here on the plane goes and later ones shift down.)
         for h in &mut self.holes {
             if let Some(model::ExtrudeTarget::Plane(j)) = &mut h.target {
                 if *j > k {
@@ -1401,10 +1439,16 @@ impl OpenCad {
                 }
             }
         }
-        if self.extrudes.iter().any(|e| e.target == Some(model::ExtrudeTarget::Plane(k))) {
-            self.notify("An extrude runs up to that plane — delete it or pick another object first".into());
-            return;
+        // A section on it goes with it.
+        self.sections.retain(|sa| sa.at != model::ExtrudeTarget::Plane(k));
+        for sa in &mut self.sections {
+            if let model::ExtrudeTarget::Plane(j) = &mut sa.at {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
         }
+        self.section_dialog = None;
         for e in &mut self.extrudes {
             if let Some(model::ExtrudeTarget::Plane(j)) = &mut e.target {
                 if *j > k {

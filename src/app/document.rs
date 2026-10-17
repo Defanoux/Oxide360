@@ -19,6 +19,7 @@ impl OpenCad {
             offset_faces: self.offset_faces.clone(),
             combines: self.combines.clone(),
             moves: self.moves.clone(),
+            sections: self.sections.clone(),
             parameters: self.parameters.clone(),
             feature_exprs: self.feature_exprs.clone(),
             units: self.units,
@@ -342,6 +343,8 @@ impl OpenCad {
         self.combine_dialog = None;
         self.moves = doc.moves.clone();
         self.move_dialog = None;
+        self.sections = doc.sections.clone();
+        self.section_dialog = None;
         self.parameters = doc.parameters.clone();
         self.feature_exprs = doc.feature_exprs.clone();
         self.params_seen = None;
@@ -428,6 +431,7 @@ impl OpenCad {
         self.combine_dialog = None;
         self.moves = doc.moves;
         self.move_dialog = None;
+        self.sections = doc.sections;
         self.parameters = doc.parameters;
         self.feature_exprs = doc.feature_exprs;
         self.params_seen = None;

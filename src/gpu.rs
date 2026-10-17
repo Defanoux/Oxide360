@@ -214,6 +214,18 @@ impl Scene {
         s
     }
 
+    /// Colour some triangles of the mesh whose triangles start at triangle
+    /// `first` (Section Analysis's cut faces).
+    pub fn tint(&mut self, first: usize, which: &[bool], color: [f32; 3]) {
+        for (t, _) in which.iter().enumerate().filter(|(_, on)| **on) {
+            for v in 0..3 {
+                if let Some(x) = self.tris.get_mut((first + t) * 3 + v) {
+                    x[6..9].copy_from_slice(&color);
+                }
+            }
+        }
+    }
+
     /// Add depth-tested lines such as the grid. They're nudged a hair toward
     /// the viewer, so a line lying exactly on a face (the grid under a part
     /// seen from below) shows on that face, while anything properly in front

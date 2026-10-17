@@ -232,6 +232,9 @@ pub struct Document {
     /// Move/Copy features. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub moves: Vec<crate::model::MoveFeature>,
+    /// Section Analyses (the browser's Analysis folder). Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<crate::model::SectionAnalysis>,
     /// The units the design is shown and typed in (Fusion's Document Settings
     /// → Units). Values are always *stored* in mm (see the file header);
     /// older files are mm.
@@ -364,6 +367,12 @@ pub fn validate(doc: &Document) -> Result<(), String> {
         let nums = [h.yaw, h.pitch, h.distance, h.target[0], h.target[1], h.target[2]];
         if nums.iter().any(|v| !v.is_finite()) || h.distance <= 0.0 {
             return Err("the saved Home view is damaged".into());
+        }
+    }
+    for s in &doc.sections {
+        let bad_plane = matches!(s.at, crate::model::ExtrudeTarget::Plane(k) if k >= doc.planes.len());
+        if !s.offset.is_finite() || bad_plane {
+            return Err(format!("the section analysis {:?} is damaged", s.name));
         }
     }
     for n in &doc.view.named_views {
@@ -785,6 +794,7 @@ mod tests {
             offset_faces: Vec::new(),
             combines: Vec::new(),
             moves: Vec::new(),
+            sections: Vec::new(),
             parameters: Vec::new(),
             feature_exprs: Vec::new(),
             units: crate::units::Unit::Mm,
