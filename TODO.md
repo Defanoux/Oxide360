@@ -8,6 +8,8 @@ Ordered by how much each makes opencad a usable part modeller (FEATURES.md
 has the full Fusion list; this is the slice to do now). Fusion's behaviour is
 the spec for each.
 
+- **Right-click marking menu** in the view (Fusion's: Repeat last, Delete, Press Pull, Undo/Redo, Move/Copy, Hole, Sketch ▾ round the cursor, plus a list below) and the **S key Design Shortcuts** box (pinned tools + search).
+
 All of the listed slice is done. Later (big, after the above): components + joints (assemblies), 2D drawings,
 sheet metal, surfaces, CAM.
 
