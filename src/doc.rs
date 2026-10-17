@@ -276,6 +276,18 @@ pub struct ViewState {
     /// Timeline rollback: how many features are built (None: all).
     #[serde(default)]
     pub marker: Option<usize>,
+    /// Views saved by name (the browser's Named Views). Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub named_views: Vec<NamedView>,
+}
+
+/// A camera view saved under a name.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NamedView {
+    pub name: String,
+    pub view: HomeView,
+    #[serde(default)]
+    pub roll: f32,
 }
 
 /// How many times the design has been saved (shown as "v3" by its name, as
@@ -352,6 +364,13 @@ pub fn validate(doc: &Document) -> Result<(), String> {
         let nums = [h.yaw, h.pitch, h.distance, h.target[0], h.target[1], h.target[2]];
         if nums.iter().any(|v| !v.is_finite()) || h.distance <= 0.0 {
             return Err("the saved Home view is damaged".into());
+        }
+    }
+    for n in &doc.view.named_views {
+        let h = n.view;
+        let nums = [h.yaw, h.pitch, h.distance, h.target[0], h.target[1], h.target[2], n.roll];
+        if nums.iter().any(|v| !v.is_finite()) || h.distance <= 0.0 {
+            return Err(format!("the named view {:?} is damaged", n.name));
         }
     }
     for (si, sk) in doc.sketches.iter().enumerate() {
@@ -1164,6 +1183,7 @@ mod tests {
             sketch_shown: vec![(0, true)],
             home: Some(HomeView { yaw: 0.5, pitch: 0.25, target: [1.0, 2.0, 3.0], distance: 150.0 }),
             marker: Some(2),
+            named_views: vec![NamedView { name: "Side".into(), view: HomeView { yaw: 1.0, pitch: 0.0, target: [0.0; 3], distance: 80.0 }, roll: 0.5 }],
         };
         assert_eq!(doc, plain, "view choices don't count as a change");
         let back = from_json(&to_json(&doc)).unwrap();
@@ -1171,6 +1191,7 @@ mod tests {
         assert_eq!(back.view.sketch_shown, vec![(0, true)]);
         assert_eq!(back.view.home, doc.view.home);
         assert_eq!(back.view.marker, Some(2));
+        assert_eq!(back.view.named_views, doc.view.named_views);
         // Not an undo step.
         let mut h = History::default();
         h.reset(plain);

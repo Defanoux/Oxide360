@@ -397,6 +397,31 @@ impl OrbitCamera {
         (Vec2::new(p.dot(r), -p.dot(u)), p.dot(f))
     }
 
+    /// Fit (F6): the same view direction, moved and zoomed so every point
+    /// shows with a margin (a tenth of the view each side). None if there's
+    /// nothing to fit.
+    pub fn fit(&self, pts: &[Vec3], aspect: f32) -> Option<Pose> {
+        let (lo, hi) = pts.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+        if !(lo.x <= hi.x) {
+            return None;
+        }
+        let center = (lo + hi) * 0.5;
+        let (forward, right, up) = self.basis();
+        // How far the points reach from the centre across and up the screen, and in depth.
+        let (mut half_w, mut half_h, mut depth) = (0f32, 0f32, 0f32);
+        for p in pts {
+            let d = *p - center;
+            half_w = half_w.max(d.dot(right).abs());
+            half_h = half_h.max(d.dot(up).abs());
+            depth = depth.max(d.dot(forward).abs());
+        }
+        let need = (half_h.max(half_w / aspect.max(1e-3)) / 0.8).max(1.0);
+        // In perspective the nearest points look bigger: stand back by their depth too.
+        let back = if self.is_ortho() { 0.0 } else { depth };
+        let distance = (need / (FOV_Y * 0.5).tan() + back).clamp(1.0, 50_000.0);
+        Some(Pose { target: center, distance, ..self.pose() })
+    }
+
     /// Looking straight at one face of the cube (front, top, …): the view
     /// cube then offers to roll the view.
     pub fn face_on(&self) -> bool {
@@ -767,5 +792,28 @@ mod tests {
             let (a, b) = (moved(&flat, dx, dy), moved(&c, dx, dy));
             assert!(a.normalize().dot(b.normalize()) > 0.99, "{dx},{dy}: {a} unrolled vs {b} rolled");
         }
+    }
+
+    #[test]
+    fn fit_shows_everything_with_a_margin_in_both_projections() {
+        let pts: Vec<Vec3> = [(0.0, 0.0, 0.0), (400.0, 0.0, 0.0), (400.0, 60.0, 0.0), (0.0, 60.0, 30.0), (200.0, 30.0, 90.0)].map(|(x, y, z)| Vec3::new(x, y, z)).to_vec();
+        for projection in [Projection::Orthographic, Projection::Perspective] {
+            let mut c = OrbitCamera { projection, ..Default::default() };
+            let aspect = 1.6;
+            c.set_pose(c.fit(&pts, aspect).unwrap());
+            let vp = c.view_proj(aspect);
+            let mut biggest = 0f32;
+            for p in &pts {
+                let clip = vp * p.extend(1.0);
+                let ndc = Vec2::new(clip.x, clip.y) / clip.w;
+                assert!(ndc.x.abs() <= 0.95 && ndc.y.abs() <= 0.95, "{projection:?}: {p} at {ndc}");
+                biggest = biggest.max(ndc.x.abs()).max(ndc.y.abs());
+            }
+            assert!(biggest > 0.5, "{projection:?}: it fills the view, not a speck ({biggest})");
+            // The direction is kept.
+            let home = OrbitCamera::default();
+            assert!((c.yaw - home.yaw).abs() < 1e-6 && (c.pitch - home.pitch).abs() < 1e-6);
+        }
+        assert!(OrbitCamera::default().fit(&[], 1.0).is_none());
     }
 }

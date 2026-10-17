@@ -816,6 +816,7 @@ struct OpenCad {
     toolbar_user_delta: f32,    // how far the user scrolled it last frame
     toolbar_inertia: inertia::Inertia,
     home: Pose,      // where Home goes (set it from the view cube menu)
+    named_views: Vec<(String, Pose)>, // views saved by name (browser → Named Views), with the design
     cube_axes: bool, // show the XYZ triad on the view cube
     settings_saved: settings::Settings, // what's on disk, to notice a change
     arrows: Vec<Option<(Vec2, Vec2)>>,  // the drag arrows on screen, last frame (one per handle)
@@ -1016,6 +1017,7 @@ impl Default for OpenCad {
             toolbar_user_delta: 0.0,
             toolbar_inertia: inertia::Inertia::default(),
             home: OrbitCamera::default().pose(),
+            named_views: Vec::new(),
             cube_axes: true,
             settings_saved: settings::Settings::default(),
             arrows: Vec::new(),
@@ -1504,8 +1506,9 @@ impl Tabs {
             }
         } else if !c.queue.is_empty() {
             None
-        } else if c.settle > 0 {
-            c.settle -= 1;
+        } else if c.settle > 0 || waited < 0.2 {
+            // (A few frames, and long enough for egui's little animations to end.)
+            c.settle = c.settle.saturating_sub(1);
             None
         } else if tab.control_busy() && waited < 30.0 {
             None // (a rebuild still running)

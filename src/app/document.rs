@@ -205,6 +205,11 @@ impl OpenCad {
             sketch_shown,
             marker: self.marker,
             home: Some(HomeView { yaw: h.yaw, pitch: h.pitch, target: h.target.to_array(), distance: h.distance }),
+            named_views: self
+                .named_views
+                .iter()
+                .map(|(name, p)| doc::NamedView { name: name.clone(), view: HomeView { yaw: p.yaw, pitch: p.pitch, target: p.target.to_array(), distance: p.distance }, roll: p.roll })
+                .collect(),
         }
     }
 
@@ -217,6 +222,7 @@ impl OpenCad {
             Some(h) => Pose { yaw: h.yaw, pitch: h.pitch, roll: 0.0, target: Vec3::from_array(h.target), distance: h.distance },
             None => OrbitCamera::default().pose(),
         };
+        self.named_views = v.named_views.iter().map(|n| (n.name.clone(), Pose { yaw: n.view.yaw, pitch: n.view.pitch, roll: n.roll, target: Vec3::from_array(n.view.target), distance: n.view.distance })).collect();
     }
 
     /// Write the preferences when one changed (checked every frame; cheap).
@@ -525,6 +531,49 @@ impl OpenCad {
                 Ok(d) => self.reset_with(d, Some(p)),
                 Err(e) => self.alert = Some(format!("Couldn't open the design: {e}")),
             }
+        }
+    }
+
+    /// Fit (F6): glide to show every visible body and sketch, looking the same way.
+    pub(crate) fn fit_view(&mut self, aspect: f32, now: f64) {
+        let mut pts: Vec<Vec3> = Vec::new();
+        if let Some(c) = self.caches[Slot::Committed as usize].as_ref() {
+            for b in c.model.bodies.iter().filter(|b| !self.hidden_bodies.contains(&b.id)) {
+                // Its box's corners are enough.
+                let (lo, hi) = b.mesh.positions.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+                if lo.x <= hi.x {
+                    pts.extend((0..8).map(|k| Vec3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z })));
+                }
+            }
+        }
+        for j in 0..self.sketches.len() {
+            if self.active != Some(j) && !self.pickable_sketch(j) {
+                continue;
+            }
+            let (sk, plane) = (&self.sketches[j], self.plane_of(j));
+            let mut flat: Vec<DVec2> = Vec::new();
+            for (e, ent) in sk.entities.iter().enumerate() {
+                match *ent {
+                    sketch::Entity::Circle { center, radius } => {
+                        let c = sk.points[center];
+                        flat.extend([c - DVec2::splat(radius), c + DVec2::splat(radius)]);
+                    }
+                    sketch::Entity::Arc { .. } => {
+                        if let Some((c, r, _, _)) = sk.arc_geometry(e) {
+                            flat.extend([c - DVec2::splat(r), c + DVec2::splat(r)]);
+                        }
+                    }
+                    sketch::Entity::Spline { s } => flat.extend(sk.spline_curve(s)),
+                    sketch::Entity::Ellipse { .. } => flat.extend(sk.ellipse_curve(e)),
+                    sketch::Entity::Text { .. } => flat.extend(sk.text_box(e).into_iter().flatten()),
+                    _ => flat.extend(sk.entity_points(e).into_iter().map(|p| sk.points[p])),
+                }
+            }
+            pts.extend(flat.into_iter().map(|p| plane.to_world(p)));
+        }
+        match self.camera.fit(&pts, aspect) {
+            Some(to) => self.move_camera(to, now),
+            None => self.notify("Nothing to fit yet".into()),
         }
     }
 

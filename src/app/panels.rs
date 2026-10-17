@@ -805,6 +805,7 @@ impl OpenCad {
                 })
                 .body(|ui| {
                     self.browser_settings(ui);
+                    self.browser_named_views(ui);
                     self.browser_origin(ui);
                     self.browser_analysis(ui);
                     self.browser_construction(ui);
@@ -818,20 +819,26 @@ impl OpenCad {
     /// icon and its name; returns the folder's open/closed state to show its
     /// rows in. `eye`: is anything in it shown, and set when clicked.
     fn folder<R>(&mut self, ui: &mut egui::Ui, id: &str, icon: Icon, name: &str, eye: Option<bool>, body: impl FnOnce(&mut Self, &mut egui::Ui) -> R) -> bool {
+        self.folder_header(ui, id, icon, name, eye, body).0
+    }
+
+    /// As `folder`, also returning its name's row (for a right-click menu on it).
+    fn folder_header<R>(&mut self, ui: &mut egui::Ui, id: &str, icon: Icon, name: &str, eye: Option<bool>, body: impl FnOnce(&mut Self, &mut egui::Ui) -> R) -> (bool, egui::Response) {
         let mut eye_clicked = false;
         let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), egui::Id::new(id), false);
-        state
+        let (_, header, _) = state
             .show_header(ui, |ui| {
                 browser_row(ui, |ui| {
                     if let Some(shown) = eye {
                         eye_clicked = icons::eye(ui, shown, if shown { "Hide everything in it" } else { "Show everything in it" }).clicked();
                     }
                     icons::small(ui, icon);
-                    ui.label(name);
-                });
+                    ui.label(name).interact(egui::Sense::click())
+                })
+                .inner
             })
             .body(|ui| body(self, ui));
-        eye_clicked
+        (eye_clicked, header.inner)
     }
 
     /// Document Settings: the design's units (saved with it).
@@ -895,6 +902,58 @@ impl OpenCad {
         });
         if clicked {
             self.origin_shown.all = !shown;
+        }
+    }
+
+    /// Named Views, as in Fusion: TOP, FRONT, RIGHT and HOME, then the views
+    /// saved by name (right-click the folder to save the current view;
+    /// right-click one to rename or delete it). Click one to go there.
+    fn browser_named_views(&mut self, ui: &mut egui::Ui) {
+        let now = ui.input(|i| i.time);
+        let mut go: Option<Pose> = None;
+        let mut delete: Option<usize> = None;
+        let (_, header) = self.folder_header(ui, "folder_named_views", Icon::Folder, "Named Views", None, |app, ui| {
+            for (name, dir) in [("TOP", glam::Vec3::Z), ("FRONT", glam::Vec3::NEG_Y), ("RIGHT", glam::Vec3::X)] {
+                if browser_row(ui, |ui| ui.selectable_label(false, name)).inner.clicked() {
+                    let (yaw, pitch) = angles_for_dir(dir);
+                    go = Some(Pose { yaw: yaw.to_radians(), pitch: pitch.to_radians(), roll: 0.0, ..app.camera.pose() });
+                }
+            }
+            if browser_row(ui, |ui| ui.selectable_label(false, "HOME")).inner.clicked() {
+                go = Some(app.home);
+            }
+            for k in 0..app.named_views.len() {
+                let r = browser_row(ui, |ui| ui.selectable_label(false, app.named_views[k].0.as_str())).inner;
+                if r.clicked() {
+                    go = Some(app.named_views[k].1);
+                }
+                r.context_menu(|ui| {
+                    ui.label("Name");
+                    ui.text_edit_singleline(&mut app.named_views[k].0);
+                    if ui.button("Update to the current view").clicked() {
+                        app.named_views[k].1 = app.camera.pose();
+                        ui.close();
+                    }
+                    if ui.button("Delete").clicked() {
+                        delete = Some(k);
+                        ui.close();
+                    }
+                });
+            }
+        });
+        // Right-click the folder: save the current view under a new name.
+        header.on_hover_text("Click a view to go there; right-click here to save the current view").context_menu(|ui| {
+            if ui.button("New Named View").clicked() {
+                let n = (1..).find(|n| !self.named_views.iter().any(|(name, _)| *name == format!("Named View{n}"))).unwrap_or(1);
+                self.named_views.push((format!("Named View{n}"), self.camera.pose()));
+                ui.close();
+            }
+        });
+        if let Some(k) = delete {
+            self.named_views.remove(k);
+        }
+        if let Some(to) = go {
+            self.move_camera(to, now);
         }
     }
 

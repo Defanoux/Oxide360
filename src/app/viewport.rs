@@ -104,6 +104,11 @@ impl OpenCad {
                 }
             }
         }
+        // Fit: F6 or a double-click of the middle button (wheel), as in Fusion.
+        let f6 = !ui.ctx().text_edit_focused() && ui.input(|i| i.key_pressed(egui::Key::F6));
+        if f6 || response.double_clicked_by(egui::PointerButton::Middle) {
+            self.fit_view(aspect, now);
+        }
         let painter = ui.painter_at(rect);
         let view = View { painter: &painter, vp: self.camera.view_proj(aspect), min, size, trace: None };
         let grid = GridSpec::for_units(self.camera.distance, self.units);
@@ -3861,6 +3866,10 @@ impl OpenCad {
         egui::Popup::menu(&menu).show(|ui| {
             if ui.button("Go Home").clicked() {
                 self.move_camera(self.home, now);
+                ui.close();
+            }
+            if ui.button("Fit                F6").on_hover_text("Show everything (or double-click the wheel)").clicked() {
+                self.fit_view(aspect, now);
                 ui.close();
             }
             if ui.button("Set current view as Home").clicked() {

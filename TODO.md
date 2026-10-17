@@ -11,8 +11,6 @@ the spec for each.
 **Core solid tools (the gaps you hit modelling a real part)**
 
 **Viewing / selection**
-13. **Zoom to fit** (F6 / double-middle-click) and named views (Front, Top,
-    Right, Home) on the view cube's menu.
 14. **Display modes** — shaded, shaded + edges, wireframe; **Section
     Analysis** (a clipping plane).
 15. **Vertex picking** in 3D and **box select** of bodies/faces.
@@ -46,6 +44,7 @@ sheet metal, surfaces, CAM.
 
 ## Done
 
+- 13 Fit and named views: F6 / double-click the wheel / view cube menu fits every visible body and sketch (same direction, a margin); browser Named Views (TOP, FRONT, RIGHT, HOME; right-click the folder to save the view, right-click one to rename/update/delete; saved with the design). Checked in the running app.
 - 12 Sketch Text: Text tool (click where it starts) and dialog (text, height = capital height, angle, font from the machine's fonts via fontconfig plus egui's bundled ones, bold/italic); its point drags and takes constraints, double-click edits; letters are profiles (font curves smooth in the solid), and picking one letter in Extrude picks the whole text.
 - Solid-mode selection with quick stats (Gavin asked): click a body edge or face (Shift/Ctrl adds, empty space or Esc clears); bottom right shows length, a circle's diameter and circumference, a face's area (a cylinder's diameter), or totals for several.
 - Project from round edges (the view's single-precision circle was refused as "moved"; now checked to 0.001 mm and snapped exact by the build); Fit Point and Control Point Spline are one Spline tool with a ▾.
