@@ -25,11 +25,28 @@ one item at a time, keeping everything building and every test green.
    (or per meaningful step of a big one).
 6. Tick the item in `TODO.md` (move it to Done with a one-line note).
 7. Tell Gavin, in a few short lines: what changed, and **exactly what to try
-   in the app** (you can't see the GUI — he checks it). Then continue with the
+   in the app** (check it yourself first — see below — then he checks it). Then continue with the
    next item unless he said to stop.
 
 If `cargo build` fails in a way you can't fix in a few tries, stop and show the
 error rather than rewriting large areas blind.
+
+## Checking your work in the app
+
+You can drive the real app yourself — do it before telling Gavin what to try:
+
+```
+target/debug/opencad --control 47321 &      # (run in the background)
+target/debug/opencad ctl '{"cmd":"screenshot","path":"<scratchpad>/s.png"}'   # then Read the PNG
+target/debug/opencad ctl '{"cmd":"click","x":41,"y":136}'                   # screenshot pixels
+target/debug/opencad ctl '{"cmd":"state"}'   # timeline, errors, bodies + volumes, sketch, dialogs
+```
+Commands: `screenshot`, `state`, `click` / `double_click` (`button`, `mods`),
+`move`, `drag` (`from`, `to`), `scroll` (`dy`), `key` ("Escape", "R", …),
+`type`, `open` / `save` (`path`), `new`, `wait` (`frames`). Each answers once
+the view has settled and any rebuild is done. In a new session the same
+commands are MCP tools (`.mcp.json`, server `opencad mcp`, which starts the
+app if needed). Stop the app when done; it opens on Gavin's screen.
 
 ## Talking to Gavin
 

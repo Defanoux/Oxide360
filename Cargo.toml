@@ -22,6 +22,8 @@ glam24 = { package = "glam", version = "0.24" }
 # Sketch text: letter outlines from fonts (both already part of egui).
 ab_glyph = "0.2.32"
 epaint_default_fonts = "0.36.2"
+# Screenshots for the control link (already part of the build, through rfd/eframe).
+png = "0.18.1"
 
 [dev-dependencies]
 pollster = "0.4"

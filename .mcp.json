@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "opencad": {
+      "command": "/home/defanoux/opencad/target/debug/opencad",
+      "args": ["mcp"]
+    }
+  }
+}

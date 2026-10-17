@@ -37,6 +37,26 @@ impl OpenCad {
         }
     }
 
+    /// Why a timeline entry failed in the last build (None: it built).
+    pub(crate) fn feature_error(&self, f: Feature) -> Option<String> {
+        match f {
+            Feature::Extrude(k) => self.feature_errors.get(k).cloned().flatten(),
+            Feature::Edge(k) => self.edge_feature_errors.get(k).cloned().flatten(),
+            Feature::Revolve(k) => self.revolve_errors.get(k).cloned().flatten(),
+            Feature::Copy(k) => self.copy_errors.get(k).cloned().flatten(),
+            Feature::Axis(k) => self.axis_errors.get(k).cloned().flatten(),
+            Feature::Plane(k) => self.plane_errors.get(k).cloned().flatten(),
+            Feature::Sketch(k) => self.sketch_errors.get(k).cloned().flatten(),
+            Feature::Remove(k) => self.remove_errors.get(k).cloned().flatten(),
+            Feature::Hole(k) => self.hole_errors.get(k).cloned().flatten(),
+            Feature::Thread(k) => self.thread_errors.get(k).cloned().flatten(),
+            Feature::Shell(k) => self.shell_errors.get(k).cloned().flatten(),
+            Feature::OffsetFace(k) => self.offset_face_errors.get(k).cloned().flatten(),
+            Feature::Combine(k) => self.combine_errors.get(k).cloned().flatten(),
+            Feature::Move(k) => self.move_errors.get(k).cloned().flatten(),
+        }
+    }
+
     /// Where a sketch's plane is, exactly: (origin, x axis, y axis).
     fn sketch_frame(&self, i: usize) -> (DVec3, DVec3, DVec3) {
         let sk = &self.sketches[i];
@@ -546,22 +566,7 @@ impl OpenCad {
                     Feature::Combine(k) => (self.combines[k].name.clone(), self.combine_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
                     Feature::Move(k) => (self.moves[k].name.clone(), self.move_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
                 };
-                let error = match *f {
-                    Feature::Extrude(k) => self.feature_errors.get(k).cloned().flatten(),
-                    Feature::Edge(k) => self.edge_feature_errors.get(k).cloned().flatten(),
-                    Feature::Revolve(k) => self.revolve_errors.get(k).cloned().flatten(),
-                    Feature::Copy(k) => self.copy_errors.get(k).cloned().flatten(),
-                    Feature::Axis(k) => self.axis_errors.get(k).cloned().flatten(),
-                    Feature::Plane(k) => self.plane_errors.get(k).cloned().flatten(),
-                    Feature::Sketch(k) => self.sketch_errors.get(k).cloned().flatten(),
-                    Feature::Remove(k) => self.remove_errors.get(k).cloned().flatten(),
-                    Feature::Hole(k) => self.hole_errors.get(k).cloned().flatten(),
-                    Feature::Thread(k) => self.thread_errors.get(k).cloned().flatten(),
-                    Feature::Shell(k) => self.shell_errors.get(k).cloned().flatten(),
-                    Feature::OffsetFace(k) => self.offset_face_errors.get(k).cloned().flatten(),
-                    Feature::Combine(k) => self.combine_errors.get(k).cloned().flatten(),
-                    Feature::Move(k) => self.move_errors.get(k).cloned().flatten(),
-                };
+                let error = self.feature_error(*f);
                 let icon = match *f {
                     Feature::Sketch(_) => Icon::Sketch,
                     Feature::Extrude(_) => Icon::Extrude,

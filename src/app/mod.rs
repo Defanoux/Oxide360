@@ -6,3 +6,4 @@ mod features;
 mod panels;
 mod timeline;
 mod viewport;
+mod control;

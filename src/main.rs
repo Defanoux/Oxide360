@@ -19,6 +19,7 @@
 
 mod camera;
 mod colors;
+mod control;
 mod copy_dialog;
 mod doc;
 mod export;
@@ -1341,9 +1342,49 @@ struct Tabs {
     current: usize,
     gpu: bool,
     title: String,
+    /// Driven from outside (`--control PORT`): see `control`.
+    control: Option<Control>,
+}
+
+/// The control link's side in the app: requests come in one at a time;
+/// input ones are fed in a frame per step, and each is answered once the
+/// view has settled (and any rebuild finished).
+struct Control {
+    rx: std::sync::mpsc::Receiver<control::Request>,
+    busy: Option<control::Request>,
+    queue: std::collections::VecDeque<control::Step>,
+    /// Frames still to draw before answering.
+    settle: u32,
+    /// When the request being worked on came in (to give up on one stuck).
+    since: f64,
+    asked_shot: bool,
+    shot: Option<std::sync::Arc<egui::ColorImage>>,
 }
 
 impl eframe::App for Tabs {
+    /// The control link's made-up input goes in here, a step per frame, as
+    /// if from the mouse and keyboard; a screenshot it asked for comes back here.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        let Some(c) = self.control.as_mut() else { return };
+        for e in &raw.events {
+            if let egui::Event::Screenshot { image, .. } = e {
+                if std::mem::take(&mut c.asked_shot) {
+                    c.shot = Some(image.clone());
+                }
+            }
+        }
+        if let Some(step) = c.queue.pop_front() {
+            raw.events.push(egui::Event::ModifiersChanged(step.mods));
+            raw.events.extend(step.events);
+            raw.focused = true;
+            // Keys held for it are let go afterwards.
+            if c.queue.is_empty() && !step.mods.is_none() {
+                c.queue.push_back(control::Step { events: Vec::new(), mods: egui::Modifiers::NONE });
+            }
+            ctx.request_repaint();
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let titles: Vec<(String, bool)> = self.tabs.iter().map(|t| (t.tab_title(), t.is_dirty())).collect();
@@ -1388,10 +1429,96 @@ impl eframe::App for Tabs {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
         }
+        self.control_frame(&ctx);
     }
 }
 
 impl Tabs {
+    /// The control link, once a frame: take the next request, and answer the
+    /// one in hand when it's done.
+    fn control_frame(&mut self, ctx: &egui::Context) {
+        use serde_json::{json, Value};
+        let Tabs { control, tabs, current, .. } = self;
+        let Some(c) = control.as_mut() else { return };
+        let tab = &mut tabs[*current];
+        let now = ctx.input(|i| i.time);
+        let ppp = ctx.pixels_per_point();
+        if c.busy.is_none() {
+            if let Ok((req, reply)) = c.rx.try_recv() {
+                let path = || req["path"].as_str().map(str::to_string).ok_or_else(|| "needs \"path\"".to_string());
+                let done = |r: Result<(), String>| r.map_or_else(|e| json!({"error": e}), |_| json!({"ok": true}));
+                let now_answer: Option<Value> = match req["cmd"].as_str().unwrap_or("") {
+                    "state" => Some(tab.control_state()),
+                    "open" => Some(done(path().and_then(|p| tab.control_open(&p)))),
+                    "save" => Some(done(path().and_then(|p| tab.control_save(&p)))),
+                    "new" => {
+                        tab.control_new();
+                        Some(json!({"ok": true}))
+                    }
+                    "screenshot" => {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+                        c.asked_shot = true;
+                        c.shot = None;
+                        None
+                    }
+                    "wait" => None,
+                    _ => match control::steps(&req, 1.0 / ppp) {
+                        Ok(s) => {
+                            c.queue.extend(s);
+                            None
+                        }
+                        Err(e) => Some(json!({"error": e})),
+                    },
+                };
+                match now_answer {
+                    Some(a) => {
+                        let _ = reply.send(a);
+                    }
+                    None => {
+                        c.settle = if req["cmd"] == "wait" { req["frames"].as_u64().unwrap_or(30).min(6000) as u32 } else { 3 };
+                        c.since = now;
+                        c.busy = Some((req, reply));
+                    }
+                }
+            }
+        }
+        let Some((req, _)) = &c.busy else { return };
+        ctx.request_repaint();
+        let waited = now - c.since;
+        let answer = if req["cmd"] == "screenshot" {
+            match c.shot.take() {
+                Some(img) => {
+                    let rgba: Vec<u8> = img.pixels.iter().flat_map(|p| p.to_array()).collect();
+                    let bytes = control::png(img.size[0], img.size[1], &rgba);
+                    let (w, h) = (img.size[0], img.size[1]);
+                    Some(match req["path"].as_str() {
+                        Some(p) => match std::fs::write(p, &bytes) {
+                            Ok(()) => json!({"path": p, "width": w, "height": h, "pixels_per_point": ppp}),
+                            Err(e) => json!({"error": format!("couldn't write {p}: {e}")}),
+                        },
+                        None => json!({"png_base64": control::base64(&bytes), "width": w, "height": h, "pixels_per_point": ppp}),
+                    })
+                }
+                None if waited > 10.0 => Some(json!({"error": "no screenshot came back (is the window minimised?)"})),
+                None => None,
+            }
+        } else if !c.queue.is_empty() {
+            None
+        } else if c.settle > 0 {
+            c.settle -= 1;
+            None
+        } else if tab.control_busy() && waited < 30.0 {
+            None // (a rebuild still running)
+        } else {
+            Some(json!({"ok": true, "notice": tab.toast.as_ref().map(|t| t.0.clone()), "tool": tab.tool_name(), "dialogs_open": tab.control_state()["dialogs"].clone()}))
+        };
+        if let Some(a) = answer {
+            if let Some((_, reply)) = c.busy.take() {
+                let _ = reply.send(a);
+            }
+        }
+    }
+
     /// Bring tab `k` up, carrying the global settings over to it.
     fn show(&mut self, k: usize, settings: &settings::Settings) {
         self.current = k;
@@ -1420,6 +1547,38 @@ fn tol_px(mm_per_px: f64) -> f64 {
 }
 
 fn main() -> eframe::Result {
+    // `opencad ctl [--port N] '<json>'`: one request to a running app.
+    // `opencad mcp [--port N]`: the MCP server (for Claude Code).
+    // `opencad --control [N]`: the app, listening for those.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let port_after = |flag: &str| args.iter().position(|a| a == flag).and_then(|k| args.get(k + 1)).and_then(|p| p.parse().ok());
+    match args.first().map(String::as_str) {
+        Some("ctl") => {
+            let port = port_after("--port").unwrap_or(control::DEFAULT_PORT);
+            let Some(req) = args.iter().skip(1).filter(|a| a.starts_with('{')).last() else {
+                eprintln!("usage: opencad ctl [--port N] '{{\"cmd\": \"state\"}}'");
+                std::process::exit(2);
+            };
+            let req: serde_json::Value = serde_json::from_str(req).unwrap_or_else(|e| {
+                eprintln!("not JSON: {e}");
+                std::process::exit(2)
+            });
+            match control::call(port, &req) {
+                Ok(a) => println!("{}", serde_json::to_string_pretty(&a).unwrap_or_default()),
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+            return Ok(());
+        }
+        Some("mcp") => {
+            control::mcp(port_after("--port").unwrap_or(control::DEFAULT_PORT));
+            return Ok(());
+        }
+        _ => {}
+    }
+    let control_port: Option<u16> = args.iter().position(|a| a == "--control").map(|k| args.get(k + 1).and_then(|p| p.parse().ok()).unwrap_or(control::DEFAULT_PORT));
     opencascade::catch_crashes();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -1441,7 +1600,20 @@ fn main() -> eframe::Result {
             } else {
                 false
             };
-            Ok(Box::new(Tabs { tabs: vec![OpenCad::fresh(&s, gpu)], current: 0, gpu, title: String::new() }))
+            let control = match control_port {
+                Some(port) => {
+                    let ctx = cc.egui_ctx.clone();
+                    match control::serve(port, move || ctx.request_repaint()) {
+                        Ok(rx) => Some(Control { rx, busy: None, queue: Default::default(), settle: 0, since: 0.0, asked_shot: false, shot: None }),
+                        Err(e) => {
+                            eprintln!("opencad: can't listen on port {port}: {e}");
+                            None
+                        }
+                    }
+                }
+                None => None,
+            };
+            Ok(Box::new(Tabs { tabs: vec![OpenCad::fresh(&s, gpu)], current: 0, gpu, title: String::new(), control }))
         }),
     )
 }
