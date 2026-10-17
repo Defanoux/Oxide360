@@ -625,6 +625,8 @@ impl OpenCad {
 
     /// Fit (F6): glide to show every visible body and sketch, looking the same way.
     pub(crate) fn fit_view(&mut self, aspect: f32, now: f64) {
+        // Just opened, still building: finish first, so there's something to fit.
+        self.build_now(Slot::Committed);
         let mut pts: Vec<Vec3> = Vec::new();
         // With a dialog open, what it's previewing counts too.
         let slots: &[Slot] = if self.active.is_none() && !self.free_view() { &[Slot::Committed, Slot::Preview] } else { &[Slot::Committed] };

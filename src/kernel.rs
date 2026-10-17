@@ -4316,6 +4316,50 @@ mod tests {
         assert!(near(boxes(&m, 1), [50.0, 0.0, 0.0], [70.0, 10.0, 5.0]));
     }
 
+    #[test]
+    fn a_revolute_joint_at_two_holes_lays_the_lever_on_the_base_and_turns_it() {
+        use crate::model::{JointKind, JointSnap};
+        // Base 60 × 40 × 10 with a hole Ø6 at (10, 10); lever 50 × 10 × 5 off to the side with a hole at (85, 5).
+        let mut base = Sketch::new("Base".into(), OriginPlane::XY);
+        rect(&mut base, 0.0, 0.0, 60.0, 40.0);
+        circle(&mut base, 10.0, 10.0, 3.0);
+        let mut lever = Sketch::new("Lever".into(), OriginPlane::XY);
+        rect(&mut lever, 80.0, 0.0, 130.0, 10.0);
+        circle(&mut lever, 85.0, 5.0, 3.0);
+        // The regions with a hole: the one that isn't the circle.
+        let ring = |sk: &Sketch| (0..find_regions(sk).len()).find(|&k| find_regions(sk)[k].area() > 100.0).unwrap();
+        let exs = vec![ex(0, vec![ring(&base)], 10.0, Operation::NewBody), ex(1, vec![ring(&lever)], 5.0, Operation::NewBody)];
+        let before = build4(&[base.clone(), lever.clone()], &exs, &[], &timeline(2, 2));
+        // The holes' top rims, as a click would pick them.
+        let rim = |k: usize, z: f64| {
+            before.bodies.iter().find(|b| b.id.feature == Feature::Extrude(k)).unwrap().edges.iter()
+                .find(|e| matches!(e.geom, Geom::Circle { center, .. } if (center.z - z).abs() < 1e-9)).unwrap().at
+        };
+        let run = |angle: f64| {
+            let j = JointFeature { name: "J".into(), a: JointSnap::Circle(rim(1, 5.0)), b: JointSnap::Circle(rim(0, 10.0)), kind: JointKind::Revolute, angle, offset: 0.0, flip: false };
+            let mut bld = Build::start(BuildInputs {
+                sketches: vec![base.clone(), lever.clone()], extrudes: exs.clone(), revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![], plane_features: vec![], removes: vec![], holes: vec![],
+                thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points: vec![], sweeps: vec![], imports: vec![], joints: vec![j], components: vec![],
+                timeline: vec![Feature::Sketch(0), Feature::Sketch(1), Feature::Extrude(0), Feature::Extrude(1), Feature::Joint(0)],
+            });
+            while bld.step(std::time::Duration::MAX) {}
+            let m = bld.finish();
+            assert_eq!(m.joint_errors, vec![None]);
+            exact_bounds(&m.bodies.iter().find(|b| b.id.feature == Feature::Extrude(1)).unwrap().shape).unwrap()
+        };
+        // Its top face down on the base's top (z 10..15), the holes lined up at (10, 10).
+        let (lo, hi) = run(0.0);
+        assert!((lo.z - 10.0).abs() < 1e-6 && (hi.z - 15.0).abs() < 1e-6, "{lo} {hi}");
+        let centre_x = |lo: DVec3, hi: DVec3| (lo.x + hi.x) / 2.0;
+        assert!((hi.x - lo.x - 50.0).abs() < 1e-6 && (hi.y - lo.y - 10.0).abs() < 1e-6, "lying flat along x: {lo} {hi}");
+        // The hole at (10, 10): the lever reaches 5 one way and 45 the other from it.
+        assert!(((lo.x - 10.0).abs() - 5.0).abs() < 1e-6 || ((hi.x - 10.0).abs() - 5.0).abs() < 1e-6, "{lo} {hi} (middle {})", centre_x(lo, hi));
+        // Turned 90° about the hole: now along y, the hole still at (10, 10).
+        let (lo, hi) = run(90.0);
+        assert!((hi.x - lo.x - 10.0).abs() < 1e-6 && (hi.y - lo.y - 50.0).abs() < 1e-6, "turned to lie along y: {lo} {hi}");
+        assert!((lo.x - 5.0).abs() < 1e-6 && (hi.x - 15.0).abs() < 1e-6, "{lo} {hi}");
+    }
+
     fn run_imports(imports: Vec<ImportFeature>) -> Model {
         let timeline = (0..imports.len()).map(Feature::Import).collect();
         let mut b = Build::start(BuildInputs {
