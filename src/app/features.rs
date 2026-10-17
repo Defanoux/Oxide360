@@ -1907,7 +1907,11 @@ impl OpenCad {
             d.feature(String::new()).and_then(|_| self.caches[Slot::Preview as usize].as_ref().and_then(|c| c.model.sweep_errors.get(k).cloned().flatten()))
         });
         let Some(d) = self.sweep_dialog.as_mut() else { return };
-        match d.panel(ui, self.units, error.as_deref()) {
+        let act = d.panel(ui, self.units, error.as_deref());
+        // The preview catches up once a value is let go of or typed in (clicked out of).
+        let busy = ui.ctx().text_edit_focused() || ui.input(|i| i.pointer.any_down());
+        d.settle(busy);
+        match act {
             copy_dialog::Action::Ok => {
                 let Some(d) = self.sweep_dialog.take() else { return };
                 let base = d.mode.name();

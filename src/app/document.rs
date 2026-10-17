@@ -702,7 +702,7 @@ impl OpenCad {
                         }
                     }
                 }
-                if let Some(sf) = self.sweep_dialog.as_ref().and_then(|d| d.feature(String::new())) {
+                if let Some(sf) = self.sweep_dialog.as_ref().and_then(|d| d.shown.clone()) {
                     match self.sweep_dialog.as_ref().and_then(|d| d.editing) {
                         Some(k) => sweeps[k] = sf,
                         None => {

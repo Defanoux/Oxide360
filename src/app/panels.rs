@@ -60,8 +60,11 @@ fn tool_group(ui: &mut egui::Ui, label: &str, scope: &str, items: &[ToolItem], f
                     if r.drag_started() {
                         dragging = Some(it.name);
                     }
-                    // Greyed out it can't be used, but it can still be taken off the toolbar.
-                    let r = if it.enabled { r } else { ui.interact(r.rect, ui.id().with(("tool_off", it.name)), egui::Sense::click()).on_hover_text(it.tip) };
+                    // Greyed out it can't be used, but it can still be moved along or taken off the toolbar.
+                    let r = if it.enabled { r } else { ui.interact(r.rect, ui.id().with(("tool_off", it.name)), egui::Sense::click_and_drag()).on_hover_text(it.tip) };
+                    if !it.enabled && r.drag_started() {
+                        dragging = Some(it.name);
+                    }
                     if let Some((_, kinds)) = families.iter().find(|(n, _)| *n == it.name) {
                         let more = icons::dropdown(ui, &format!("More {} tools", it.name.to_lowercase()));
                         egui::Popup::menu(&more).show(|ui| {
@@ -535,14 +538,16 @@ impl OpenCad {
                 let id = egui::Id::new(("toolbar_group", label));
                 let icons_w: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(0.0);
                 let pad = ((text_w + 6.0 - icons_w) * 0.5).max(0.0);
+                // (The icons' own width: the row's rect, without the spacing after the last.)
                 let row = ui
                     .horizontal(|ui| {
                         ui.add_space(pad);
-                        let start = ui.cursor().min.x;
                         add(ui);
-                        ui.cursor().min.x - start
                     })
-                    .inner;
+                    .response
+                    .rect
+                    .width()
+                    - pad;
                 if (row - icons_w).abs() > 0.5 {
                     ui.ctx().data_mut(|d| d.insert_temp(id, row));
                     ui.ctx().request_repaint();

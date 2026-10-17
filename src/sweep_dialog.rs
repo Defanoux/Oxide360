@@ -62,6 +62,9 @@ pub struct SweepDialog {
     pub section: CoilSection,
     pub size: f64,
     pub op: Operation,
+    /// What the preview shows: `feature()` as it was the last time nothing
+    /// was being dragged or typed (see `settle`).
+    pub shown: Option<SweepFeature>,
 }
 
 impl SweepDialog {
@@ -88,6 +91,7 @@ impl SweepDialog {
             section: CoilSection::Circle,
             size: 2.0,
             op: if has_bodies && mode != Mode::Coil { Operation::Join } else { Operation::NewBody },
+            shown: None,
         }
     }
 
@@ -108,6 +112,14 @@ impl SweepDialog {
             }
         }
         d
+    }
+
+    /// Bring the preview up to date, unless a value is still being dragged
+    /// or typed (`busy`): rebuilding on every step is too slow for a coil.
+    pub fn settle(&mut self, busy: bool) {
+        if !busy {
+            self.shown = self.feature(String::new());
+        }
     }
 
     /// The feature as set so far (None until there's enough to build).
@@ -251,6 +263,19 @@ impl SweepDialog {
 mod tests {
     use super::*;
     use crate::sketch::OriginPlane;
+
+    #[test]
+    fn the_preview_waits_until_dragging_or_typing_stops() {
+        let mut d = SweepDialog::new(Mode::Coil, false);
+        d.at = Some(ExtrudeTarget::Origin(crate::sketch::OriginPlane::XY));
+        d.settle(false);
+        assert!(matches!(d.shown.as_ref().map(|f| &f.kind), Some(SweepKind::Coil { turns, .. }) if *turns == 5.0));
+        d.turns = 8.0;
+        d.settle(true);
+        assert!(matches!(d.shown.as_ref().map(|f| &f.kind), Some(SweepKind::Coil { turns, .. }) if *turns == 5.0), "not while busy");
+        d.settle(false);
+        assert!(matches!(d.shown.as_ref().map(|f| &f.kind), Some(SweepKind::Coil { turns, .. }) if *turns == 8.0));
+    }
 
     #[test]
     fn a_sweep_needs_a_profile_and_a_path_and_profiles_come_from_one_sketch() {
