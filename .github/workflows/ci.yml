@@ -1,0 +1,21 @@
+# Build and test on every push and pull request (Fedora, like the app's home).
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: fedora:44
+    steps:
+      - name: Tools and OpenCASCADE
+        run: dnf install -y git opencascade-devel cmake gcc-c++ rust cargo clang mesa-vulkan-drivers vulkan-loader
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: cargo-${{ hashFiles('Cargo.lock') }}
+      - name: Build
+        run: cargo build --locked
+      - name: Test
+        run: cargo test --locked

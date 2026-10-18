@@ -2,6 +2,9 @@
 name = "oxide360"
 version = "0.1.0"
 edition = "2024"
+description = "A parametric 3D CAD modeller for Linux, written in Rust"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Defanoux/Oxide360"
 
 [dependencies]
 eframe = "0.36.2"
