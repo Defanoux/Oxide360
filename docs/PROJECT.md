@@ -90,20 +90,27 @@ then `flatpak run io.github.Defanoux.Oxide360`. To drive it with the control
 link add `--share=network` (the sandbox otherwise blocks even localhost) and
 write screenshots under the home folder (its `/tmp` is private).
 
-### Flathub (so it's in Discover with automatic updates)
+### Flathub — not possible as things stand (read before trying)
 
-Status: see TODO.md. The local manifest (`packaging/flatpak/`) builds with
-network access for cargo; Flathub builds offline, so its manifest
-(`packaging/flathub/`) lists every crate in `cargo-sources.json` (generated
-by `flatpak-cargo-generator.py` from `Cargo.lock` — regenerate it whenever
-dependencies change) and takes the app source from a git tag. Submitting:
-fork `flathub/flathub`, add the manifest on a branch from `new-pr`, open a PR
-against `new-pr`; reviewers comment, and once merged Flathub gets its own repo
-`flathub/io.github.Defanoux.Oxide360` where later releases are made by
-updating the tag/commit in the manifest.
+Flathub's requirements (docs.flathub.org/docs/for-app-authors/requirements,
+"Generative AI policy", checked 2026-10-18) say: Flathub **manifests must not
+contain AI-generated or AI-assisted content** (disclosure doesn't exempt
+them); **AI tools must not open or automate the submission PR or write its
+description, commits or replies**; and AI-generated code must be disclosed,
+with reviewers free to reject based on how much there is. Oxide360 is almost
+entirely written by Claude, so a Claude must not prepare or submit a Flathub
+PR, and a submission by Gavin (hand-written manifest, full disclosure) would
+likely be rejected. `packaging/flathub/` holds an offline-buildable manifest
+(crates listed in `cargo-sources.json`, generated from `Cargo.lock` with
+flatpak-cargo-generator.py) — usable for our own repository, **not** for a
+Flathub PR.
+
+Instead: our own Flatpak repository (see TODO.md) — built by CI on each
+release tag, signed, published on GitHub Pages, installed from a
+`.flatpakref`; Discover then shows updates from it like any other source.
 
 ## Where things stand
 
 See `TODO.md` → Next. As of 2026-10-18: appearances, 2D drawings, joint
-limits and motion settings, and Flathub are the open items; sheet metal,
+limits and motion settings, and our own Flatpak repository are the open items; sheet metal,
 surfaces and CAM are the far future.

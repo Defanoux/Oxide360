@@ -11,7 +11,7 @@ the spec for each.
 - **Appearances** (Fusion's Appearance, A): materials that look like metal, plastic, wood, glass — shininess and colour, per body or face, separate from Physical Material.
 - **2D drawings**: a drawing sheet with views of the part (front, top, side, iso), dimensions and a title block; export PDF/DXF.
 - **Joint limits** and motion settings (min/max, animation speed).
-- **Flathub**: offline manifest (cargo-sources.json), screenshots in the metainfo, submit to flathub/flathub (new-pr). See docs/PROJECT.md → Shipping.
+- **Own Flatpak repository** (Flathub's AI policy rules it out — see docs/PROJECT.md): CI builds the Flatpak on each release tag, signs it, publishes the repo on GitHub Pages, plus an `Oxide360.flatpakref` so Discover installs it and shows updates.
 
 Later (big): sheet metal, surfaces, CAM, mesh bodies for big STLs.
 

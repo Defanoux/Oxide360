@@ -2,7 +2,7 @@
 # Build it with packaging/flatpak/build.sh (makes Oxide360.flatpak).
 id: io.github.Defanoux.Oxide360
 runtime: org.freedesktop.Platform
-runtime-version: '25.08'
+runtime-version: '26.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
@@ -13,8 +13,6 @@ finish-args:
   - --share=ipc
   # The 3D view draws on the graphics card (Vulkan).
   - --device=dri
-  # Open and save designs anywhere in your home folder (File > Recent reopens them by path).
-  - --filesystem=home
 
 modules:
   - name: opencascade
