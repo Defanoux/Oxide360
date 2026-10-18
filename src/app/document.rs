@@ -277,7 +277,16 @@ impl OpenCad {
             keybinds: self.keymap.to_pairs(),
             toolbar_order: self.toolbar_order.clone(),
             style: self.style,
+            recent: self.recent.clone(),
         }
+    }
+
+    /// `path` was opened or saved: first in File → Recent (merged with what
+    /// other windows put there meanwhile).
+    pub(crate) fn remember_recent(&mut self, path: &std::path::Path) {
+        let mut list = settings::default_path().map(|p| settings::load(&p).recent).unwrap_or_else(|| self.recent.clone());
+        settings::remember(&mut list, path);
+        self.recent = list;
     }
 
     pub(crate) fn is_dirty(&self) -> bool {
@@ -573,6 +582,7 @@ impl OpenCad {
             Ok(()) => {
                 self.version += 1;
                 self.saved = doc;
+                self.remember_recent(&path);
                 self.path = Some(path);
                 true
             }
@@ -616,10 +626,18 @@ impl OpenCad {
             .add_filter("opencad design", &[doc::EXTENSION])
             .pick_file();
         if let Some(p) = picked {
-            match doc::load(&p) {
-                Ok(d) => self.reset_with(d, Some(p)),
-                Err(e) => self.alert = Some(format!("Couldn't open the design: {e}")),
+            self.open_path(p);
+        }
+    }
+
+    /// Open the design at `p` here (its file read and checked first).
+    pub(crate) fn open_path(&mut self, p: PathBuf) {
+        match doc::load(&p) {
+            Ok(d) => {
+                self.remember_recent(&p);
+                self.reset_with(d, Some(p));
             }
+            Err(e) => self.alert = Some(format!("Couldn't open {}: {e}", p.display())),
         }
     }
 
@@ -1116,6 +1134,11 @@ impl OpenCad {
     pub(crate) fn run(&mut self, action: Pending, ctx: &egui::Context) {
         match action {
             Pending::Open => self.open_dialog(),
+            Pending::OpenRecent(k) => {
+                if let Some(p) = self.recent.get(k).cloned() {
+                    self.open_path(p);
+                }
+            }
             Pending::Quit => {
                 self.allow_close = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1129,6 +1152,7 @@ impl OpenCad {
             // Like Fusion: a new design opens in a tab of its own.
             Cmd::New => self.tab_request = Some(TabRequest::New),
             Cmd::Open => self.request(Pending::Open, ctx),
+            Cmd::OpenRecent(k) => self.request(Pending::OpenRecent(k), ctx),
             Cmd::Save => {
                 self.save();
             }

@@ -413,12 +413,15 @@ enum Cmd {
     Export(export::Format),
     /// Insert a STEP / STL file's bodies into this design.
     Import,
+    /// File → Recent: open the design listed `k`th.
+    OpenRecent(usize),
 }
 
 /// What to do once the user has answered "save changes?".
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Pending {
     Open,
+    OpenRecent(usize),
     Quit,
     /// Close this tab (asked by the tab strip's ×).
     CloseTab,
@@ -737,6 +740,7 @@ struct OpenCad {
     joint_errors: Vec<Option<String>>,
     joint_dialog: Option<joint_dialog::JointDialog>,
     joint_hover: Option<(model::JointSnap, DVec3, DVec3)>, // the snap under the mouse: point, Z
+    snap_preview: Vec<DVec3>,              // the hovered face's snap points, shown as dots
     renaming_component: Option<(usize, String)>,
     import_errors: Vec<Option<String>>,
     sweep_dialog: Option<sweep_dialog::SweepDialog>, // the Sweep / Loft dialog
@@ -870,6 +874,7 @@ struct OpenCad {
     named_views: Vec<(String, Pose)>, // views saved by name (browser → Named Views), with the design
     cube_axes: bool, // show the XYZ triad on the view cube
     settings_saved: settings::Settings, // what's on disk, to notice a change
+    recent: Vec<PathBuf>,               // designs opened or saved lately (File → Recent)
     arrows: Vec<Option<(Vec2, Vec2)>>,  // the drag arrows on screen, last frame (one per handle)
     arrow_drag: Option<(usize, f64)>,   // which arrow is being dragged, and its grab offset
     arrow_turn: Option<(f64, f64)>,     // revolve arrow: cursor angle so far (unwrapped, last raw)
@@ -970,6 +975,7 @@ impl Default for OpenCad {
             joint_errors: Vec::new(),
             joint_dialog: None,
             joint_hover: None,
+            snap_preview: Vec::new(),
             sweep_dialog: None,
             import_dialog: None,
             path_hover: None,
@@ -1103,6 +1109,7 @@ impl Default for OpenCad {
             named_views: Vec::new(),
             cube_axes: true,
             settings_saved: settings::Settings::default(),
+            recent: Vec::new(),
             arrows: Vec::new(),
             arrow_drag: None,
             arrow_turn: None,
@@ -1429,6 +1436,7 @@ impl OpenCad {
         self.keymap = keys::Keymap::from_pairs(&s.keybinds);
         self.toolbar_order = s.toolbar_order.clone();
         self.style = s.style;
+        self.recent = s.recent.clone();
         self.settings_saved = s.clone();
     }
 

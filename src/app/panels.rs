@@ -253,6 +253,20 @@ impl OpenCad {
                         ui.close();
                     }
                 }
+                ui.menu_button("Recent", |ui| {
+                    if self.recent.is_empty() {
+                        ui.weak("Nothing opened yet");
+                    }
+                    for (k, p) in self.recent.iter().enumerate() {
+                        let name = p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
+                        let there = p.exists();
+                        let r = ui.add_enabled(there, egui::Button::new(name)).on_hover_text(p.display().to_string()).on_disabled_hover_text(format!("{} (moved or deleted)", p.display()));
+                        if r.clicked() {
+                            self.cmd = Some(Cmd::OpenRecent(k));
+                            ui.close();
+                        }
+                    }
+                });
                 ui.separator();
                 if ui.button("Insert into Design… (STEP, STL)").clicked() {
                     self.cmd = Some(Cmd::Import);

@@ -735,16 +735,15 @@ impl OpenCad {
             self.cancel_thread(); // Esc ends the command, as in Fusion
         }
 
-        // --- Joint: the snap under the mouse (a corner, a round edge's centre, a spot on a flat face); a click takes it ---
+        // --- Joint: the snap under the mouse (a round edge's centre, or the snap point of a flat face nearest the mouse: its middle, a side's middle, a corner); a click takes it ---
         self.joint_hover = None;
+        self.snap_preview.clear();
         if self.joint_dialog.as_ref().is_some_and(|d| d.picking.is_some()) && self.active.is_none() {
             self.ensure_model(Slot::Committed);
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
                 let view = View { painter: &ui.painter_at(rect), vp: self.camera.view_proj(aspect), min, size, trace: None };
-                if let Some(q) = self.corner_under(&view, px, &ray) {
-                    self.joint_hover = Some((model::JointSnap::Corner(q), q, DVec3::Z));
-                } else if let Some((r, c, n)) = self.edge_under(&view, Slot::Committed, px, &ray, false).and_then(|r| {
+                if let Some((r, c, n)) = self.edge_under(&view, Slot::Committed, px, &ray, false).and_then(|r| {
                     self.model(Slot::Committed).bodies.iter().flat_map(|b| &b.edges).find(|e| e.at.mid.distance(r.mid) < 1e-6).and_then(|e| match e.geom {
                         measure::Geom::Circle { center, normal, .. } => Some((r, center, e.at.faces.into_iter().find(|f| f.dot(normal).abs() > 0.99).unwrap_or(normal))),
                         _ => None,
@@ -753,14 +752,14 @@ impl OpenCad {
                     let caps = &self.model(Slot::Committed).caps;
                     let r = EdgeRef { follow: kernel::follow_for_edge(caps, r.mid, r.dir, FOLLOW_TOL), ..r };
                     self.joint_hover = Some((model::JointSnap::Circle(r), c, n.normalize_or_zero()));
-                } else if let Some((t, _, face)) = self.pick_face(&ray) {
-                    let q = (ray.origin + ray.dir * t).as_dvec3();
-                    let snap = model::JointSnap::Face { face: sketch::FacePlane { follow: None, ..face }, anchor: [q.dot(face.u), q.dot(face.v)] };
-                    self.joint_hover = Some((snap, q, face.normal()));
+                } else if let Some((q, n, all)) = self.face_snap_under(&view, px, &ray, None) {
+                    let face = sketch::FacePlane::from_face(n, q);
+                    self.joint_hover = Some((model::JointSnap::Face { face, anchor: [q.dot(face.u), q.dot(face.v)] }, q, n));
+                    self.snap_preview = all;
                 }
             }
-            if let (true, Some((s, ..)), Some(d)) = (response.clicked(), self.joint_hover, self.joint_dialog.as_mut()) {
-                d.pick(s);
+            if let (true, Some((s, p, z)), Some(d)) = (response.clicked(), self.joint_hover, self.joint_dialog.as_mut()) {
+                d.pick_at(s, Some((p, z)));
             }
         }
 
@@ -1044,19 +1043,27 @@ impl OpenCad {
             self.ensure_model(Slot::Committed);
             self.corner_hover = None;
             self.edge_hover = None;
+            self.snap_preview.clear();
+            let mut on_face: Option<(DVec3, DVec3)> = None;
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
-                self.corner_hover = self.corner_under(&view, px, &ray).map(|q| (model::PointRef::Corner(q), q));
-                if self.corner_hover.is_none() {
-                    // Only round edges: a point goes at their centre.
-                    self.edge_hover = self.edge_under(&view, Slot::Committed, px, &ray, false).filter(|r| {
-                        self.model(Slot::Committed).bodies.iter().flat_map(|b| &b.edges).any(|e| e.at.mid.distance(r.mid) < 1e-6 && matches!(e.geom, measure::Geom::Circle { .. }))
-                    });
+                // A round edge: a point goes at its centre.
+                self.edge_hover = self.edge_under(&view, Slot::Committed, px, &ray, false).filter(|r| {
+                    self.model(Slot::Committed).bodies.iter().flat_map(|b| &b.edges).any(|e| e.at.mid.distance(r.mid) < 1e-6 && matches!(e.geom, measure::Geom::Circle { .. }))
+                });
+                // Else the snap point of the face under the mouse nearest it (its middle, a side's middle, a corner).
+                if self.edge_hover.is_none() {
+                    if let Some((q, n, all)) = self.face_snap_under(&view, px, &ray, None) {
+                        self.corner_hover = Some((model::PointRef::Corner(q), q));
+                        on_face = Some((q, n));
+                        self.snap_preview = all;
+                    }
                 }
             }
             if response.clicked() {
-                if let Some((_, q)) = self.corner_hover {
-                    self.add_point(model::PointKind::Corner(q));
+                if let Some((q, n)) = on_face {
+                    let face = sketch::FacePlane::from_face(n, q);
+                    self.add_point(model::PointKind::OnFace { face, anchor: [q.dot(face.u), q.dot(face.v)] });
                 } else if let Some(r) = self.edge_hover {
                     let caps = &self.model(Slot::Committed).caps;
                     let r = EdgeRef { follow: kernel::follow_for_edge(caps, r.mid, r.dir, FOLLOW_TOL), ..r };
@@ -3479,7 +3486,33 @@ impl OpenCad {
             }
         }
 
-        // --- draw: the joint snap under the mouse: a dot, and its Z (a round edge lit whole) ---
+        // --- draw: the hovered face's snap points (small dots) ---
+        for p in &self.snap_preview {
+            if let Some(q) = view.project(p.as_vec3()) {
+                painter.circle_filled(to_pos(q), 3.5, Color32::from_gray(235));
+                painter.circle_stroke(to_pos(q), 3.5, Stroke::new(1.0, Color32::from_gray(40)));
+            }
+        }
+        // --- draw: joint origins (as Fusion's): a disc with its X (red), Y (green) and Z (blue) ---
+        let triad = |p: DVec3, z: DVec3, hot: bool| {
+            let len = self.camera.distance as f64 * 0.06;
+            let x = model::zero_normal(z, DVec3::X);
+            let y = z.cross(x);
+            let Some(o) = view.project(p.as_vec3()) else { return };
+            for (d, c) in [(x, Color32::from_rgb(230, 70, 70)), (y, Color32::from_rgb(90, 200, 90)), (z, Color32::from_rgb(80, 140, 240))] {
+                if let Some(e) = view.project((p + d * len).as_vec3()) {
+                    painter.line_segment([to_pos(o), to_pos(e)], Stroke::new(2.5, c));
+                }
+            }
+            painter.circle_filled(to_pos(o), 6.0, if hot { COL_HOVER } else { Color32::from_gray(225) });
+            painter.circle_stroke(to_pos(o), 6.0, Stroke::new(1.5, Color32::from_gray(30)));
+        };
+        if let Some(d) = &self.joint_dialog {
+            for (p, z) in [d.a_at, d.b_at].into_iter().flatten() {
+                triad(p, z, false);
+            }
+        }
+        // --- draw: the joint snap under the mouse (a round edge lit whole) ---
         if let Some((model::JointSnap::Circle(r), ..)) = self.joint_hover {
             if let Some(e) = self.model(Slot::Committed).bodies.iter().flat_map(|b| &b.edges).find(|e| e.at.mid.distance(r.mid) < 1e-6) {
                 for w in e.points.windows(2) {
@@ -3488,11 +3521,7 @@ impl OpenCad {
             }
         }
         if let Some((_, p, z)) = self.joint_hover {
-            if let (Some(a), Some(b)) = (view.project(p.as_vec3()), view.project((p + z * self.camera.distance as f64 * 0.08).as_vec3())) {
-                painter.line_segment([to_pos(a), to_pos(b)], Stroke::new(2.5, Color32::from_rgb(80, 140, 240)));
-                painter.circle_filled(to_pos(a), 6.0, COL_HOVER);
-                painter.circle_stroke(to_pos(a), 6.0, Stroke::new(1.5, Color32::from_gray(30)));
-            }
+            triad(p, z, true);
         }
         if let Some(d) = self.joint_dialog.as_ref().filter(|d| d.picking.is_some()) {
             let hint = if d.picking == Some(joint_dialog::End::Moves) { "Joint: click a round edge, face or corner on the part that moves" } else { "Joint: click where it goes on another part" };
@@ -3551,7 +3580,7 @@ impl OpenCad {
                 if let Some(px) = self.corner_hover.and_then(|(_, p)| view.project(p.as_vec3())) {
                     painter.circle_filled(to_pos(px), 5.0, COL_HOVER);
                 }
-                painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, "Construction Point: click a body corner, or a round edge for its centre   (Esc to stop)", egui::FontId::proportional(15.0), Color32::from_gray(220));
+                painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, "Construction Point: hover a face and click its middle, a side's middle or a corner — or a round edge for its centre   (Esc to stop)", egui::FontId::proportional(15.0), Color32::from_gray(220));
             }
         }
 

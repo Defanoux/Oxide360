@@ -27,6 +27,10 @@ pub struct JointDialog {
     /// How far it has moved the way the joint lets it (see `JointFeature::motion`).
     pub motion: f64,
     pub picking: Option<End>,
+    /// Where the two ends are (point, Z), for drawing them (set when picked,
+    /// or found when an existing joint is opened).
+    pub a_at: Option<(glam::DVec3, glam::DVec3)>,
+    pub b_at: Option<(glam::DVec3, glam::DVec3)>,
     /// Animating the motion: since when (seconds), and the motion to go back to after.
     pub playing: Option<(f64, f64)>,
 }
@@ -49,11 +53,11 @@ pub fn played(kind: JointKind, from: f64, t: f64) -> f64 {
 
 impl JointDialog {
     pub fn new(name: String) -> Self {
-        JointDialog { editing: None, name, a: None, b: None, kind: JointKind::Rigid, angle: 0.0, offset: 0.0, flip: false, motion: 0.0, picking: Some(End::Moves), playing: None }
+        JointDialog { editing: None, name, a: None, b: None, kind: JointKind::Rigid, angle: 0.0, offset: 0.0, flip: false, motion: 0.0, picking: Some(End::Moves), a_at: None, b_at: None, playing: None }
     }
 
     pub fn edit(k: usize, j: &JointFeature) -> Self {
-        JointDialog { editing: Some(k), name: j.name.clone(), a: Some(j.a), b: Some(j.b), kind: j.kind, angle: j.angle, offset: j.offset, flip: j.flip, motion: j.motion, picking: None, playing: None }
+        JointDialog { editing: Some(k), name: j.name.clone(), a: Some(j.a), b: Some(j.b), kind: j.kind, angle: j.angle, offset: j.offset, flip: j.flip, motion: j.motion, picking: None, a_at: None, b_at: None, playing: None }
     }
 
     /// The joint as set so far (once both ends are picked).
@@ -61,9 +65,14 @@ impl JointDialog {
         Some(JointFeature { name: self.name.clone(), a: self.a?, b: self.b?, kind: self.kind, angle: self.angle, offset: self.offset, flip: self.flip, motion: self.motion })
     }
 
-    /// A click in the view picked `s` for the end being picked; then on to
-    /// the other end if it isn't set yet.
-    pub fn pick(&mut self, s: JointSnap) {
+    /// A click in the view picked `s` (at point, Z: to draw it) for the end
+    /// being picked; then on to the other end if it isn't set yet.
+    pub fn pick_at(&mut self, s: JointSnap, at: Option<(glam::DVec3, glam::DVec3)>) {
+        match self.picking {
+            Some(End::Moves) => self.a_at = at,
+            Some(End::Onto) => self.b_at = at,
+            None => {}
+        }
         match self.picking {
             Some(End::Moves) => {
                 self.a = Some(s);
@@ -193,15 +202,15 @@ mod tests {
     fn clicks_fill_the_moving_end_then_the_other() {
         let mut d = JointDialog::new("Joint1".into());
         assert!(d.feature().is_none());
-        d.pick(JointSnap::Corner(DVec3::X));
+        d.pick_at(JointSnap::Corner(DVec3::X), None);
         assert_eq!((d.a, d.picking), (Some(JointSnap::Corner(DVec3::X)), Some(End::Onto)));
-        d.pick(JointSnap::Corner(DVec3::Y));
+        d.pick_at(JointSnap::Corner(DVec3::Y), Some((DVec3::Y, DVec3::Z)));
         assert_eq!(d.picking, None);
         let j = d.feature().expect("both ends");
         assert_eq!((j.a, j.b, j.kind), (JointSnap::Corner(DVec3::X), JointSnap::Corner(DVec3::Y), JointKind::Rigid));
         // Re-picking the moving end leaves the other as it was.
         d.picking = Some(End::Moves);
-        d.pick(JointSnap::Corner(DVec3::Z));
+        d.pick_at(JointSnap::Corner(DVec3::Z), None);
         assert_eq!((d.a, d.b, d.picking), (Some(JointSnap::Corner(DVec3::Z)), Some(JointSnap::Corner(DVec3::Y)), None));
     }
 }

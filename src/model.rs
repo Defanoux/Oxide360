@@ -656,6 +656,9 @@ pub enum PointKind {
     Corner(DVec3),
     /// At the centre of a circular edge (found again as edges are).
     CircleCentre(EdgeRef),
+    /// At a spot on a flat face — its middle, a side's middle or a corner,
+    /// as snapped to (the face found again as faces are).
+    OnFace { face: FacePlane, anchor: [f64; 2] },
 }
 
 /// How a construction axis is made, besides along an edge.

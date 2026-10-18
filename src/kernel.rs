@@ -1751,6 +1751,7 @@ fn resolve_point(bodies: &[&Shape], p: PointRef, points: &[Option<DVec3>]) -> Re
 fn place_point(bodies: &[&Shape], p: &ConstructionPoint) -> Result<DVec3, String> {
     match p.kind {
         PointKind::Corner(q) => resolve_point(bodies, PointRef::Corner(q), &[]),
+        PointKind::OnFace { face, anchor } => resolve_snap(bodies, &JointSnap::Face { face, anchor }).map(|(_, p, _)| p),
         PointKind::CircleCentre(r) => {
             let all: Vec<(usize, Edge, EdgeRef, Vec<DVec3>)> = bodies.iter().enumerate().flat_map(|(i, b)| shape_edges(b).into_iter().map(move |(e, r, pts)| (i, e, r, pts))).collect();
             let list: Vec<(usize, Edge, EdgeRef)> = all.iter().map(|(i, e, r, _)| (*i, e.clone(), *r)).collect();
@@ -1848,6 +1849,61 @@ pub fn import_file(path: &Path) -> Result<String, String> {
         return Err("the geometry kernel couldn't store it".into());
     }
     Ok(text)
+}
+
+/// The points a click can snap to on the flat face of `body` that mesh
+/// triangle `tri` is part of (as Fusion offers when you hover a face): its
+/// middle, the middle of each straight side, and its corners — plus the
+/// face's outward normal. None when that face isn't flat. (A hole's centre
+/// is picked by its round edge instead.)
+pub fn face_snaps(body: &Body, tri: usize) -> Option<(DVec3, Vec<DVec3>)> {
+    let face = *body.tri_face.get(tri)? as usize;
+    if !matches!(body.faces.get(face), Some(Geom::Plane { .. })) {
+        return None;
+    }
+    let n = body.mesh.normal(tri).as_dvec3();
+    // The middle: the face's own triangles, weighted by area.
+    let (mut sum, mut area) = (DVec3::ZERO, 0.0);
+    for (_, idx) in body.mesh.tris.iter().enumerate().filter(|(t, _)| body.tri_face.get(*t) == Some(&(face as u32))) {
+        let [a, b, c] = idx.map(|i| body.mesh.positions[i as usize].as_dvec3());
+        let w = (b - a).cross(c - a).length() / 2.0;
+        sum += (a + b + c) / 3.0 * w;
+        area += w;
+    }
+    if area <= 0.0 {
+        return None;
+    }
+    // Exactly, from the face itself (the mesh's only approximates a round hole).
+    let exact = catch_unwind(AssertUnwindSafe(|| body.shape.faces().nth(face).map(|f| f.center_of_mass()))).ok().flatten().map(|c| DVec3::new(c.x, c.y, c.z));
+    let centre = exact.unwrap_or(sum / area);
+    let on_plane = |p: DVec3| n.dot(p - centre).abs() < 1e-6 * (1.0 + centre.length());
+    let mut points = vec![centre];
+    let add = |p: DVec3, points: &mut Vec<DVec3>| {
+        if !points.iter().any(|q| q.distance(p) < 1e-6) {
+            points.push(p);
+        }
+    };
+    let sides: Vec<&BodyEdge> = body.edges.iter().filter(|e| e.at.faces.iter().any(|f| f.dot(n) > 0.999)).collect();
+    // Middles of straight sides first, then corners (the ends of straight sides and of arcs).
+    for e in &sides {
+        if let Geom::Line { a, b } = e.geom {
+            if on_plane(a) && on_plane(b) {
+                add((a + b) / 2.0, &mut points);
+            }
+        }
+    }
+    for e in &sides {
+        let ends = match e.geom {
+            Geom::Line { a, b } => Some((a, b)),
+            Geom::Circle { sweep, .. } if sweep < std::f64::consts::TAU - 1e-9 => e.points.first().zip(e.points.last()).map(|(a, b)| (a.as_dvec3(), b.as_dvec3())),
+            _ => None,
+        };
+        if let Some((a, b)) = ends.filter(|(a, b)| on_plane(*a) && on_plane(*b)) {
+            add(a, &mut points);
+            add(b, &mut points);
+        }
+    }
+    Some((n, points))
 }
 
 /// A joint origin in `bodies`: which body it's on, the point, and its Z.
@@ -4323,6 +4379,36 @@ mod tests {
         let m = run(both, vec![]);
         assert!(m.joint_errors[0].is_some());
         assert!(near(boxes(&m, 1), [50.0, 0.0, 0.0], [70.0, 10.0, 5.0]));
+    }
+
+    #[test]
+    fn a_flat_face_offers_its_middle_side_middles_and_corners() {
+        let mut a = Sketch::new("A".into(), OriginPlane::XY);
+        rect(&mut a, 0.0, 0.0, 20.0, 10.0);
+        circle(&mut a, 5.0, 5.0, 2.0);
+        // The block with the hole in it (the region that isn't the circle).
+        let ring = (0..find_regions(&a).len()).find(|&k| find_regions(&a)[k].area() > 50.0).unwrap();
+        let m = build4(&[a], &[ex(0, vec![ring], 5.0, Operation::NewBody)], &[], &timeline(1, 1));
+        let b = &m.bodies[0];
+        let top = (0..b.mesh.tris.len()).find(|&t| b.mesh.normal(t).z > 0.99).unwrap();
+        let (n, pts) = face_snaps(b, top).expect("the top is flat");
+        assert!((n - DVec3::Z).length() < 1e-6);
+        let has = |x: f64, y: f64| pts.iter().any(|p| p.distance(DVec3::new(x, y, 5.0)) < 1e-6);
+        // The middle of the face (its area, the hole taken out: pulled away from the hole's side).
+        let hole = std::f64::consts::PI * 4.0;
+        let cx = (200.0 * 10.0 - hole * 5.0) / (200.0 - hole);
+        assert!((pts[0] - DVec3::new(cx, 5.0, 5.0)).length() < 1e-9, "{:?}", pts[0]);
+        for (x, y) in [(10.0, 0.0), (20.0, 5.0), (10.0, 10.0), (0.0, 5.0), (0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)] {
+            assert!(has(x, y), "({x}, {y}) missing from {pts:?}");
+        }
+        assert_eq!(pts.len(), 9, "middle, 4 side middles, 4 corners — nothing from the hole");
+        // A construction point at the face's middle sits there.
+        let f = FacePlane::from_face(n, pts[0]);
+        let at = place_point(&[&b.shape], &ConstructionPoint { name: "P".into(), kind: crate::model::PointKind::OnFace { face: f, anchor: [pts[0].dot(f.u), pts[0].dot(f.v)] } }).unwrap();
+        assert!(at.distance(pts[0]) < 1e-9, "{at}");
+        // A side face is flat too; the hole's wall isn't.
+        let wall = (0..b.mesh.tris.len()).find(|&t| matches!(b.faces[b.tri_face[t] as usize], Geom::Cylinder { .. })).unwrap();
+        assert!(face_snaps(b, wall).is_none());
     }
 
     #[test]

@@ -333,6 +333,23 @@ impl OpenCad {
         out
     }
 
+    /// The flat face under the cursor (of a shown body, not one made by
+    /// `skip`): the snap point nearest the cursor, the face's normal, and all
+    /// its snap points (see `kernel::face_snaps`) to show.
+    pub(crate) fn face_snap_under(&self, view: &View, px: Vec2, ray: &Ray, skip: Option<Feature>) -> Option<(DVec3, DVec3, Vec<DVec3>)> {
+        let model = &self.caches[Slot::Committed as usize].as_ref()?.model;
+        let (body, _, tri) = model
+            .bodies
+            .iter()
+            .filter(|b| !self.hidden_bodies.contains(&b.id) && Some(b.id.feature) != skip)
+            .filter_map(|b| model::ray_hit_tri(&b.mesh, ray.origin, ray.dir).map(|(t, tri)| (b, t, tri)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))?;
+        let (n, pts) = kernel::face_snaps(body, tri)?;
+        let screen = |p: &DVec3| view.project(p.as_vec3()).map_or(f32::MAX, |q| q.distance(px));
+        let best = *pts.iter().min_by(|a, b| screen(a).total_cmp(&screen(b)))?;
+        Some((best, n, pts))
+    }
+
     /// The body corner nearest the cursor (within snap distance, not hidden
     /// behind a body).
     pub(crate) fn corner_under(&self, view: &View, px: Vec2, ray: &Ray) -> Option<DVec3> {
@@ -849,7 +866,15 @@ impl OpenCad {
             Some(Feature::Axis(_) | Feature::Remove(_) | Feature::Point(_)) => {}
             Some(Feature::Joint(k)) => {
                 self.cancel_all_dialogs();
-                self.joint_dialog = Some(joint_dialog::JointDialog::edit(k, &self.joints[k]));
+                let mut d = joint_dialog::JointDialog::edit(k, &self.joints[k]);
+                // Where the joint is now (both ends meet there).
+                if let Some(c) = self.caches[Slot::Committed as usize].as_ref() {
+                    let shapes: Vec<&opencascade::primitives::Shape> = c.model.bodies.iter().map(|b| &b.shape).collect();
+                    if let Ok((_, p, z)) = kernel::resolve_snap(&shapes, &self.joints[k].b) {
+                        (d.a_at, d.b_at) = (Some((p, -z)), Some((p, z)));
+                    }
+                }
+                self.joint_dialog = Some(d);
             }
             Some(Feature::Import(k)) => {
                 self.cancel_all_dialogs();

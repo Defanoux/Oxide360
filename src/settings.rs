@@ -37,6 +37,18 @@ pub struct Settings {
     pub toolbar_order: Vec<String>,
     /// How bodies are drawn (shaded, with edges, wireframe).
     pub style: crate::gpu::Style,
+    /// Designs opened or saved lately, newest first (File → Recent).
+    pub recent: Vec<PathBuf>,
+}
+
+/// How many designs File → Recent lists.
+pub const RECENT: usize = 10;
+
+/// `path` was opened or saved: first in the list, once, the list kept short.
+pub fn remember(recent: &mut Vec<PathBuf>, path: &Path) {
+    recent.retain(|p| p != path);
+    recent.insert(0, path.to_path_buf());
+    recent.truncate(RECENT);
 }
 
 impl Default for Settings {
@@ -47,6 +59,7 @@ impl Default for Settings {
             keybinds: crate::keys::Keymap::default().to_pairs(),
             toolbar_order: Vec::new(),
             style: crate::gpu::Style::default(),
+            recent: Vec::new(),
         }
     }
 }
@@ -91,7 +104,7 @@ mod tests {
         let d = dir("roundtrip");
         let path = d.join("nested").join("settings.json");
         assert_eq!(load(&path), Settings::default(), "nothing saved yet");
-        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic, measure_unit_own: Some(Unit::In), measure_unit2: Some(Unit::Mm), measure_precision: 5, measure_snap: false, measure_xyz: false, default_units: Unit::In, touchpad_zoom_flip: false, toolbar_hidden: vec!["Trim".into()], keybinds: vec![("Trim".into(), "T".into())], toolbar_order: vec!["Trim".into(), "Fillet".into()], style: crate::gpu::Style::Wireframe };
+        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic, measure_unit_own: Some(Unit::In), measure_unit2: Some(Unit::Mm), measure_precision: 5, measure_snap: false, measure_xyz: false, default_units: Unit::In, touchpad_zoom_flip: false, toolbar_hidden: vec!["Trim".into()], keybinds: vec![("Trim".into(), "T".into())], toolbar_order: vec!["Trim".into(), "Fillet".into()], style: crate::gpu::Style::Wireframe, recent: vec![PathBuf::from("/d/a.opencad")] };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);
         let _ = std::fs::remove_dir_all(&d);
@@ -108,5 +121,18 @@ mod tests {
         std::fs::write(&path, r#"{"touchpad": true}"#).unwrap();
         assert_eq!(load(&path), Settings { touchpad: true, ..Settings::default() });
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn recent_designs_newest_first_once_each_ten_at_most() {
+        let mut r = Vec::new();
+        for k in 0..12 {
+            remember(&mut r, Path::new(&format!("/d/{k}.opencad")));
+        }
+        assert_eq!(r.len(), RECENT);
+        assert_eq!(r[0], PathBuf::from("/d/11.opencad"));
+        remember(&mut r, Path::new("/d/5.opencad"));
+        assert_eq!((r[0].clone(), r.len()), (PathBuf::from("/d/5.opencad"), RECENT));
+        assert_eq!(r.iter().filter(|p| p.ends_with("5.opencad")).count(), 1);
     }
 }
