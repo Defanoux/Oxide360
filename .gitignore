@@ -3,3 +3,4 @@ target/
 packaging/flatpak/build/
 packaging/flatpak/repo/
 packaging/flatpak/.flatpak-builder/
+packaging/flathub/test/

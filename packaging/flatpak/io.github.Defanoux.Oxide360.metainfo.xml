@@ -25,12 +25,31 @@
   <launchable type="desktop-id">io.github.Defanoux.Oxide360.desktop</launchable>
   <url type="homepage">https://github.com/Defanoux/Oxide360</url>
   <url type="bugtracker">https://github.com/Defanoux/Oxide360/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Two parts joined in an assembly, with the timeline below</caption>
+      <image>https://raw.githubusercontent.com/Defanoux/Oxide360/v0.1.1/assets/screenshots/assembly.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Sketching with dimensions</caption>
+      <image>https://raw.githubusercontent.com/Defanoux/Oxide360/v0.1.1/assets/screenshots/sketch.png</image>
+    </screenshot>
+  </screenshots>
+  <branding>
+    <color type="primary" scheme_preference="light">#f0a868</color>
+    <color type="primary" scheme_preference="dark">#7a3410</color>
+  </branding>
   <content_rating type="oars-1.1"/>
   <supports>
     <control>pointing</control>
     <control>keyboard</control>
   </supports>
   <releases>
+    <release version="0.1.1" date="2026-10-18">
+      <description>
+        <p>App store details (screenshots) for Flathub; no changes to the app itself.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-10-18"/>
   </releases>
 </component>

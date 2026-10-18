@@ -1,0 +1,70 @@
+# Flathub build of Oxide360 (offline: every crate is in cargo-sources.json,
+# regenerate it with flatpak-cargo-generator.py whenever Cargo.lock changes).
+id: io.github.Defanoux.Oxide360
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: oxide360
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  # The 3D view draws on the graphics card (Vulkan).
+  - --device=dri
+  # Open and save designs anywhere in your home folder (File > Recent reopens them by path).
+  - --filesystem=home
+
+modules:
+  - name: opencascade
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_LIBRARY_TYPE=Shared
+      # Only the modelling libraries: no Draw test harness, OpenGL viewer or extra formats.
+      - -DBUILD_MODULE_Draw=OFF
+      - -DUSE_TCL=OFF
+      - -DUSE_TK=OFF
+      - -DUSE_OPENGL=OFF
+      - -DUSE_GLES2=OFF
+      - -DUSE_FREEIMAGE=OFF
+      - -DUSE_FFMPEG=OFF
+      - -DUSE_OPENVR=OFF
+      - -DUSE_RAPIDJSON=OFF
+      - -DUSE_DRACO=OFF
+      - -DUSE_TBB=OFF
+      - -DUSE_VTK=OFF
+      - -DBUILD_DOC_Overview=OFF
+    cleanup:
+      - /include
+      - /lib/cmake
+      - /bin
+      - /share/opencascade/samples
+    sources:
+      - type: archive
+        url: https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/V7_9_3.tar.gz
+        sha256: 5ecf094ec6b12d5413dfb851d8c3590c354058aee556e32e408bdfbf8c357d57
+
+  - name: oxide360
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/oxide360/cargo
+        CMAKE_PREFIX_PATH: /app
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline build --release --locked --verbose
+      - install -Dm755 target/release/oxide360 /app/bin/oxide360
+      - install -Dm644 assets/oxide360.svg /app/share/icons/hicolor/scalable/apps/io.github.Defanoux.Oxide360.svg
+      - install -Dm644 packaging/flatpak/io.github.Defanoux.Oxide360.desktop /app/share/applications/io.github.Defanoux.Oxide360.desktop
+      - install -Dm644 packaging/flatpak/io.github.Defanoux.Oxide360.metainfo.xml /app/share/metainfo/io.github.Defanoux.Oxide360.metainfo.xml
+      - install -Dm644 packaging/flatpak/io.github.Defanoux.Oxide360.mime.xml /app/share/mime/packages/io.github.Defanoux.Oxide360.xml
+    sources:
+      - type: git
+        url: https://github.com/Defanoux/Oxide360.git
+        tag: TAG
+        commit: COMMIT
+      - cargo-sources.json
