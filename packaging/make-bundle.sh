@@ -60,7 +60,7 @@ Exec=$here/oxide360 %f
 Icon=$here/oxide360.svg
 Terminal=false
 Categories=Graphics;Engineering;3DGraphics;
-StartupWMClass=oxide360
+StartupWMClass=io.github.Defanoux.Oxide360
 DESKTOP
 update-desktop-database "$apps" 2>/dev/null || true
 echo "Oxide360 is in your app menu (and 'oxide360' runs it from a terminal)."

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-oxide360">
+    <comment>Oxide360 design</comment>
+    <icon name="io.github.Defanoux.Oxide360"/>
+    <glob pattern="*.ox360"/>
+    <glob pattern="*.ocad"/>
+  </mime-type>
+</mime-info>

@@ -113,6 +113,9 @@ const COL_POINT: Color32 = Color32::from_rgb(200, 200, 200);
 const COL_FIXED: Color32 = Color32::from_rgb(230, 80, 80);
 const COL_ORIGIN: Color32 = Color32::from_rgb(240, 180, 60);
 const COL_SNAP: Color32 = Color32::from_rgb(255, 120, 60);
+/// The app's id: the Flatpak's name, and what KDE matches the window to its
+/// menu entry and icon by.
+const APP_ID: &str = "io.github.Defanoux.Oxide360";
 const COL_SELECT: Color32 = Color32::from_rgb(255, 170, 40);
 const COL_INTERFERENCE: Color32 = Color32::from_rgb(230, 60, 60); // where bodies overlap
 const COL_PROJECTED: Color32 = Color32::from_rgb(190, 120, 255); // projected from a body
@@ -1835,11 +1838,13 @@ fn main() -> eframe::Result {
         _ => {}
     }
     let control_port: Option<u16> = args.iter().position(|a| a == "--control").map(|k| args.get(k + 1).and_then(|p| p.parse().ok()).unwrap_or(control::DEFAULT_PORT));
+    // `oxide360 part.ox360`: open that design (a double-clicked file, from the app menu entry).
+    let open_at_start: Option<PathBuf> = args.iter().find(|a| !a.starts_with('-') && a.parse::<u16>().is_err()).map(PathBuf::from).filter(|p| p.is_file());
     opencascade::catch_crashes();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Oxide360")
-            .with_app_id("oxide360")
+            .with_app_id(APP_ID)
             .with_icon(help::app_icon().unwrap_or_default())
             .with_inner_size([1280.0, 800.0]),
         ..Default::default()
@@ -1871,7 +1876,11 @@ fn main() -> eframe::Result {
                 None => None,
             };
             let recovered = recovery::default_dir().map_or_else(Vec::new, |d| recovery::left_behind(&d, recovery::process_alive));
-            Ok(Box::new(Tabs { tabs: vec![OpenCad::fresh(&s, gpu)], current: 0, gpu, title: String::new(), control, recovered }))
+            let mut first = OpenCad::fresh(&s, gpu);
+            if let Some(p) = open_at_start {
+                first.open_path(p);
+            }
+            Ok(Box::new(Tabs { tabs: vec![first], current: 0, gpu, title: String::new(), control, recovered }))
         }),
     )
 }

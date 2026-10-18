@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.Defanoux.Oxide360</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Oxide360</name>
+  <summary>Parametric 3D CAD modeller</summary>
+  <developer id="io.github.defanoux">
+    <name>Defanoux</name>
+  </developer>
+  <description>
+    <p>
+      Oxide360 is a parametric 3D CAD modeller for Linux, written in Rust, in the spirit of Fusion 360.
+      Sketch on planes and faces with constraints and dimensions, turn sketches into exact solids,
+      and change any step later in the timeline.
+    </p>
+    <ul>
+      <li>Sketches: lines, rectangles, circles, arcs, splines, text; constraints and dimensions</li>
+      <li>Solids: extrude, revolve, sweep, loft, holes, threads, fillet, chamfer, shell, patterns</li>
+      <li>Assemblies: components and joints with motion</li>
+      <li>Inspect: measure, section analysis, interference, mass properties</li>
+      <li>Files: STEP, STL, 3MF and OBJ export; STEP and STL import; DXF and SVG sketches</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.Defanoux.Oxide360.desktop</launchable>
+  <url type="homepage">https://github.com/Defanoux/Oxide360</url>
+  <url type="bugtracker">https://github.com/Defanoux/Oxide360/issues</url>
+  <content_rating type="oars-1.1"/>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <releases>
+    <release version="0.1.0" date="2026-10-18"/>
+  </releases>
+</component>

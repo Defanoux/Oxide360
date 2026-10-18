@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Oxide360
+GenericName=3D CAD
+Comment=Parametric 3D CAD: sketch, extrude, fillet, assemble
+Exec=oxide360 %f
+Icon=io.github.Defanoux.Oxide360
+Terminal=false
+Categories=Graphics;Engineering;3DGraphics;
+Keywords=CAD;3D;modelling;modeling;sketch;STEP;STL;Fusion;
+MimeType=application/x-oxide360;
+StartupWMClass=io.github.Defanoux.Oxide360

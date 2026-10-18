@@ -1,2 +1,5 @@
 target/
 /dist
+packaging/flatpak/build/
+packaging/flatpak/repo/
+packaging/flatpak/.flatpak-builder/
