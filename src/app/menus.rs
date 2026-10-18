@@ -15,6 +15,101 @@ enum Mark {
     FinishSketch,
 }
 
+/// A button with an icon before its words (`enabled` false: greyed, no clicks).
+fn icon_button(ui: &mut egui::Ui, icon: Option<Icon>, text: &str, enabled: bool, at: Option<egui::Rect>) -> egui::Response {
+    let font = egui::FontId::proportional(14.0);
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font, Color32::WHITE);
+    let size = egui::vec2(galley.size().x + if icon.is_some() { 34.0 } else { 16.0 }, 28.0);
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, r) = match at {
+        Some(a) => {
+            let rect = egui::Rect::from_center_size(a.center(), size);
+            (rect, ui.interact(rect, ui.id().with(("icon_button", text)), sense))
+        }
+        None => ui.allocate_exact_size(egui::vec2(size.x.max(ui.available_width().min(260.0)), size.y - 2.0), sense),
+    };
+    let fill = if r.hovered() && enabled { Color32::from_gray(70) } else if at.is_some() { Color32::from_gray(45) } else { Color32::TRANSPARENT };
+    ui.painter().rect_filled(rect, 6.0, fill);
+    let mut x = rect.left() + 8.0;
+    if let Some(i) = icon {
+        icons::paint(ui.painter(), egui::Rect::from_min_size(egui::pos2(x, rect.center().y - 10.0), egui::vec2(20.0, 20.0)), i, enabled);
+        x += 26.0;
+    }
+    let ink = if enabled { Color32::from_gray(225) } else { Color32::from_gray(110) };
+    ui.painter().galley_with_override_text_color(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, ink);
+    r
+}
+
+/// The icon a tool's toolbar button has (by its name), for the menus.
+pub(crate) fn tool_icon(name: &str, sketching: bool) -> Option<Icon> {
+    Some(match (name, sketching) {
+        ("Create Sketch", _) => Icon::Sketch,
+        ("Finish Sketch", _) => Icon::FinishSketch,
+        ("Extrude", _) => Icon::Extrude,
+        ("Revolve", _) => Icon::Revolve,
+        ("Sweep", _) => Icon::Sweep,
+        ("Loft", _) => Icon::Loft,
+        ("Pipe", _) => Icon::Pipe,
+        ("Coil", _) => Icon::Coil,
+        ("Hole", _) => Icon::Hole,
+        ("Thread", _) => Icon::Thread,
+        ("Offset Plane", _) => Icon::Plane,
+        ("Plane at Angle", _) => Icon::PlaneAngle,
+        ("Midplane", _) => Icon::Midplane,
+        ("Plane Through Three Points", _) => Icon::Plane3Points,
+        ("Tangent Plane", _) => Icon::TangentPlane,
+        ("Axis Along Edge", _) => Icon::Axis,
+        ("Axis Through Cylinder", _) => Icon::AxisCylinder,
+        ("Axis Through Two Points", _) => Icon::Axis2Points,
+        ("Point", false) => Icon::ConstructPoint,
+        ("Point", true) => Icon::Point,
+        ("Mirror", _) => Icon::Mirror,
+        ("Rectangular Pattern", _) => Icon::RectPattern,
+        ("Circular Pattern", _) => Icon::CircPattern,
+        ("Press Pull", _) => Icon::PressPull,
+        ("Fillet", _) => Icon::Fillet,
+        ("Chamfer", _) => Icon::Chamfer,
+        ("Shell", _) => Icon::Shell,
+        ("Move/Copy", _) => Icon::Move,
+        ("Combine", _) => Icon::Combine,
+        ("Change Parameters", _) => Icon::Parameters,
+        ("Measure", _) => Icon::Measure,
+        ("Undo", _) => Icon::Undo,
+        ("Redo", _) => Icon::Redo,
+        ("Delete", _) => Icon::Remove,
+        ("Look At", _) => Icon::Select,
+        ("Line", _) => Icon::Line,
+        ("Rectangle", _) => Icon::Rectangle,
+        ("Circle", _) => Icon::Circle,
+        ("Arc", _) => Icon::Arc3Point,
+        ("Polygon", _) => Icon::Polygon,
+        ("Slot", _) => Icon::Slot,
+        ("Spline", _) => Icon::Spline,
+        ("Ellipse", _) => Icon::Ellipse,
+        ("Text", _) => Icon::Text,
+        ("Trim", _) => Icon::Trim,
+        ("Break", _) => Icon::Break,
+        ("Extend", _) => Icon::Extend,
+        ("Offset", _) => Icon::Offset,
+        ("Project", _) => Icon::Project,
+        ("Construction", _) => Icon::Construction,
+        ("Dimension", _) => Icon::Dimension,
+        ("Coincident", _) => Icon::Coincident,
+        ("Collinear", _) => Icon::Collinear,
+        ("Concentric", _) => Icon::Concentric,
+        ("Horizontal", _) => Icon::Horizontal,
+        ("Vertical", _) => Icon::Vertical,
+        ("Parallel", _) => Icon::Parallel,
+        ("Perpendicular", _) => Icon::Perpendicular,
+        ("Equal", _) => Icon::Equal,
+        ("Tangent", _) => Icon::Tangent,
+        ("Midpoint", _) => Icon::Midpoint,
+        ("Symmetric", _) => Icon::Symmetric,
+        ("Fix", _) => Icon::Fix,
+        _ => return None,
+    })
+}
+
 impl OpenCad {
     /// Start tool `name` of the mode we're in (and remember it for Repeat and the S box).
     pub(crate) fn run_tool(&mut self, name: &'static str) {
@@ -139,40 +234,47 @@ impl OpenCad {
             Mark::Delete => can_delete,
             _ => true,
         };
-        let labels: Vec<(String, bool)> = slots.iter().map(|&m| (label(m), enabled(m))).collect();
+        let icon_of = |m: Mark| match m {
+            Mark::Repeat => self.last_tool.and_then(|t| tool_icon(t, sketching)),
+            Mark::Undo => Some(Icon::Undo),
+            Mark::Redo => Some(Icon::Redo),
+            Mark::Delete => Some(Icon::Remove),
+            Mark::Tool(t) => tool_icon(t, sketching),
+            Mark::FinishSketch => Some(Icon::FinishSketch),
+        };
+        let labels: Vec<(String, bool, Option<Icon>)> = slots.iter().map(|&m| (label(m), enabled(m), icon_of(m))).collect();
         let mut chosen: Option<Mark> = None;
         let radius = egui::vec2(150.0, 95.0);
         egui::Area::new(egui::Id::new("marking_menu")).order(egui::Order::Foreground).fixed_pos(at - radius - egui::vec2(80.0, 20.0)).show(ctx, |ui| {
             let (area, _) = ui.allocate_exact_size(radius * 2.0 + egui::vec2(160.0, 40.0), egui::Sense::hover());
             let centre = area.center();
             ui.painter().circle_stroke(centre, 9.0, Stroke::new(2.0, Color32::from_gray(200)));
-            for (k, (text, on)) in labels.iter().enumerate() {
+            for (k, (text, on, icon)) in labels.iter().enumerate() {
                 let a = std::f32::consts::TAU * k as f32 / 8.0;
                 let spot = centre + egui::vec2(a.sin() * radius.x, -a.cos() * radius.y);
-                let size = egui::vec2(text.len() as f32 * 7.5 + 24.0, 28.0);
-                let r = ui.put(egui::Rect::from_center_size(spot, size), egui::Button::new(text.as_str()).fill(Color32::from_gray(45)).corner_radius(6.0).sense(if *on { egui::Sense::click() } else { egui::Sense::hover() }));
-                if !on {
-                    ui.painter().rect_filled(r.rect, 6.0, Color32::from_black_alpha(110));
-                }
+                let r = icon_button(ui, *icon, text, *on, Some(egui::Rect::from_center_size(spot, egui::Vec2::ZERO)));
                 if r.clicked() && *on {
                     chosen = Some(slots[k]);
                 }
             }
         });
         // The list under the bottom slot.
-        let list_at = at + egui::vec2(-90.0, radius.y + 24.0);
+        let list_at = at + egui::vec2(-100.0, radius.y + 40.0);
         egui::Area::new(egui::Id::new("marking_list")).order(egui::Order::Foreground).fixed_pos(list_at).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_min_width(180.0);
+                ui.set_width(200.0);
+                let before = ui.cursor().min.y;
                 self.context_rows(ui);
-                ui.separator();
+                if ui.cursor().min.y > before + 1.0 {
+                    ui.separator();
+                }
                 let quick: &[&'static str] = if sketching { &["Trim", "Offset", "Project", "Mirror", "Construction"] } else { &["Extrude", "Fillet", "Shell", "Offset Plane", "Combine"] };
                 for &t in quick {
-                    if ui.button(t).clicked() {
+                    if icon_button(ui, tool_icon(t, sketching), t, true, None).clicked() {
                         chosen = Some(Mark::Tool(t));
                     }
                 }
-                if !sketching && ui.button("Measure").clicked() {
+                if !sketching && icon_button(ui, Some(Icon::Measure), "Measure", true, None).clicked() {
                     self.measure = Some(measure::Measure::default());
                 }
                 ui.separator();
@@ -214,7 +316,8 @@ impl OpenCad {
     /// over every tool of this mode. Enter starts the first match.
     pub(crate) fn shortcut_box(&mut self, ctx: &egui::Context) {
         let Some((at, mut typed)) = self.shortcut_box.clone() else { return };
-        let tools = if self.active.is_some() { shortcuts::SKETCH } else { shortcuts::SOLID };
+        let sketching = self.active.is_some();
+        let tools = if sketching { shortcuts::SKETCH } else { shortcuts::SOLID };
         let mut chosen: Option<&'static str> = None;
         let mut close = false;
         let recent: Vec<&'static str> = self.recent_tools.iter().copied().filter(|t| tools.contains(t)).collect();
@@ -222,11 +325,14 @@ impl OpenCad {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(220.0);
                 ui.strong("Design Shortcuts");
+                // The tools used lately, as icons (as Fusion's pinned row).
                 if !recent.is_empty() {
                     ui.horizontal_wrapped(|ui| {
                         for t in &recent {
-                            if ui.small_button(*t).clicked() {
-                                chosen = Some(t);
+                            if let Some(i) = tool_icon(t, sketching) {
+                                if icons::button(ui, i, t, true, false).clicked() {
+                                    chosen = Some(t);
+                                }
                             }
                         }
                     });
@@ -236,8 +342,12 @@ impl OpenCad {
                 let hits = shortcuts::search(tools, &typed);
                 egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                     for (k, t) in hits.iter().enumerate() {
-                        let r = ui.selectable_label(k == 0 && !typed.is_empty(), *t);
-                        if r.clicked() {
+                        let first = k == 0 && !typed.is_empty();
+                        if first {
+                            let r = ui.cursor();
+                            ui.painter().rect_filled(egui::Rect::from_min_size(r.min, egui::vec2(ui.available_width(), 28.0)), 6.0, Color32::from_rgb(30, 80, 120));
+                        }
+                        if icon_button(ui, tool_icon(t, sketching), t, true, None).clicked() {
                             chosen = Some(t);
                         }
                     }

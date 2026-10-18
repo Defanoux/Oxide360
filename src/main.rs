@@ -421,8 +421,6 @@ enum Cmd {
 /// What to do once the user has answered "save changes?".
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Pending {
-    Open,
-    OpenRecent(usize),
     Quit,
     /// Close this tab (asked by the tab strip's ×).
     CloseTab,
@@ -432,6 +430,9 @@ enum Pending {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum TabRequest {
     New,
+    /// Open the design in `OpenCad::open_in_tab` in a tab of its own (or
+    /// this one, when it's an empty new design), as Fusion does.
+    Open,
     Switch(usize),
     Close(usize),
 }
@@ -761,6 +762,7 @@ struct OpenCad {
     tab_titles: Vec<(String, bool)>,        // every open design's title and unsaved mark (set by the tab holder)
     tab_index: usize,                       // which of them this is
     tab_request: Option<TabRequest>,        // what the tab strip asked for this frame
+    open_in_tab: Option<PathBuf>,           // a design to open in a new tab (with TabRequest::Open)
     close_me: bool,                         // this tab is done (its × was confirmed)
     toolbar_hidden: Vec<String>,            // tools tucked into their group's ▾ list (settings)
     keymap: keys::Keymap,                   // tool keys (settings)
@@ -997,6 +999,7 @@ impl Default for OpenCad {
             tab_titles: Vec::new(),
             tab_index: 0,
             tab_request: None,
+            open_in_tab: None,
             name: None,
             renaming_design: None,
             rename_select_all: false,
@@ -1424,7 +1427,7 @@ impl OpenCad {
         self.copy_quantity_boxes(&ctx);
 
         if let Some(cmd) = self.cmd.take() {
-            self.run_cmd(cmd, &ctx);
+            self.run_cmd(cmd);
         }
         self.modals(&ctx);
         self.record_history(&ctx);
@@ -1558,6 +1561,25 @@ impl eframe::App for Tabs {
             Some(TabRequest::New) => {
                 self.tabs.push(OpenCad::fresh(&settings, self.gpu));
                 self.current = self.tabs.len() - 1;
+            }
+            Some(TabRequest::Open) => {
+                if let Some(path) = tab.open_in_tab.take() {
+                    // An untouched new design gives its tab up; otherwise a tab of its own.
+                    let here = tab.path.is_none() && tab.timeline.is_empty() && !tab.is_dirty();
+                    if !here {
+                        self.tabs.push(OpenCad::fresh(&settings, self.gpu));
+                        self.current = self.tabs.len() - 1;
+                    }
+                    let t = &mut self.tabs[self.current];
+                    t.open_path(path);
+                    // Couldn't be read: the new tab goes again (the alert stays in the old one).
+                    if t.path.is_none() && !here {
+                        let alert = t.alert.take();
+                        self.tabs.pop();
+                        self.current = current;
+                        self.tabs[current].alert = alert;
+                    }
+                }
             }
             Some(TabRequest::Switch(k)) if k < self.tabs.len() => self.show(k, &settings),
             // Closing a tab with unsaved work asks first (in that tab).

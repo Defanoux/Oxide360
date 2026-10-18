@@ -626,7 +626,8 @@ impl OpenCad {
             .add_filter("opencad design", &[doc::EXTENSION])
             .pick_file();
         if let Some(p) = picked {
-            self.open_path(p);
+            self.open_in_tab = Some(p);
+            self.tab_request = Some(TabRequest::Open);
         }
     }
 
@@ -1122,23 +1123,8 @@ impl OpenCad {
         }
     }
 
-    /// New / Open / Quit go through here so unsaved work is never lost silently.
-    pub(crate) fn request(&mut self, action: Pending, ctx: &egui::Context) {
-        if self.is_dirty() {
-            self.confirm = Some(action);
-        } else {
-            self.run(action, ctx);
-        }
-    }
-
     pub(crate) fn run(&mut self, action: Pending, ctx: &egui::Context) {
         match action {
-            Pending::Open => self.open_dialog(),
-            Pending::OpenRecent(k) => {
-                if let Some(p) = self.recent.get(k).cloned() {
-                    self.open_path(p);
-                }
-            }
             Pending::Quit => {
                 self.allow_close = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1147,12 +1133,18 @@ impl OpenCad {
         }
     }
 
-    pub(crate) fn run_cmd(&mut self, cmd: Cmd, ctx: &egui::Context) {
+    pub(crate) fn run_cmd(&mut self, cmd: Cmd) {
         match cmd {
             // Like Fusion: a new design opens in a tab of its own.
             Cmd::New => self.tab_request = Some(TabRequest::New),
-            Cmd::Open => self.request(Pending::Open, ctx),
-            Cmd::OpenRecent(k) => self.request(Pending::OpenRecent(k), ctx),
+            // Like Fusion: a design opens in a tab of its own, so nothing here is lost.
+            Cmd::Open => self.open_dialog(),
+            Cmd::OpenRecent(k) => {
+                if let Some(p) = self.recent.get(k).cloned() {
+                    self.open_in_tab = Some(p);
+                    self.tab_request = Some(TabRequest::Open);
+                }
+            }
             Cmd::Save => {
                 self.save();
             }

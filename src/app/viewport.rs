@@ -3508,7 +3508,17 @@ impl OpenCad {
             painter.circle_stroke(to_pos(o), 6.0, Stroke::new(1.5, Color32::from_gray(30)));
         };
         if let Some(d) = &self.joint_dialog {
-            for (p, z) in [d.a_at, d.b_at].into_iter().flatten() {
+            // With both ends picked the moving one goes where the part does:
+            // onto the other, facing it (or the same way, flipped), slid by
+            // the offset — so the two line up, as Fusion shows them.
+            let moved = match (d.a_at, d.b_at, d.a.is_some() && d.b.is_some()) {
+                (_, Some((pb, zb)), true) => {
+                    let (_, slide) = d.kind.motion(d.motion);
+                    Some((pb + zb * (d.offset + slide), if d.flip { zb } else { -zb }))
+                }
+                (a, ..) => a,
+            };
+            for (p, z) in [moved, d.b_at].into_iter().flatten() {
                 triad(p, z, false);
             }
         }
