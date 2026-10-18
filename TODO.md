@@ -8,6 +8,11 @@ Ordered by how much each makes opencad a usable part modeller (FEATURES.md
 has the full Fusion list; this is the slice to do now). Fusion's behaviour is
 the spec for each.
 
+- **Appearances** (Fusion's Appearance, A): materials that look like metal, plastic, wood, glass — shininess and colour, per body or face, separate from Physical Material.
+- **2D drawings**: a drawing sheet with views of the part (front, top, side, iso), dimensions and a title block; export PDF/DXF.
+- **Joint limits** and motion settings (min/max, animation speed).
+- **GitHub + Flathub**: README, GPL-3.0 LICENSE, CI (build + tests), then a Flatpak.
+
 All of the listed slice is done. Later (big, after the above): components + joints (assemblies), 2D drawings,
 sheet metal, surfaces, CAM.
 
