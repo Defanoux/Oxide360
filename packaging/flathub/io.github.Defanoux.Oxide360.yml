@@ -65,6 +65,6 @@ modules:
     sources:
       - type: git
         url: https://github.com/Defanoux/Oxide360.git
-        tag: TAG
-        commit: COMMIT
+        tag: v0.1.1
+        commit: 6b38822b9bf305754953413d148ce9425cd62849
       - cargo-sources.json
