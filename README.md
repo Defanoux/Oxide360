@@ -33,7 +33,7 @@ Young and moving fast. Designs saved now will keep opening in later versions.
 
 ## Credits
 
-Made by **Gavin** ([Defanoux](https://github.com/Defanoux) · Discord: Defanoux), with Claude (Anthropic).
+Made by **Gavin** ([Defanoux](https://github.com/Defanoux) · Discord: Defanoux · [oxide360@defanoux.uk](mailto:oxide360@defanoux.uk)), with Claude (Anthropic). Bugs and ideas: [open an issue](https://github.com/Defanoux/Oxide360/issues).
 
 Built on [Open CASCADE Technology](https://dev.opencascade.org/) (LGPL 2.1 with exception), [opencascade-rs](https://github.com/bschwind/opencascade-rs) (LGPL 2.1, patched in `vendor/`), [egui](https://github.com/emilk/egui), [wgpu](https://wgpu.rs/), [glam](https://github.com/bitshifter/glam-rs), [serde](https://serde.rs/), [rfd](https://github.com/PolyMeilex/rfd), [ab_glyph](https://github.com/alexheretic/ab-glyph) and [png](https://github.com/image-rs/image-png) (MIT / Apache 2.0).
 

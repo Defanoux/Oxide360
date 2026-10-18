@@ -568,7 +568,8 @@ impl OpenCad {
                 ui.label("A parametric CAD modeller in the spirit of Fusion 360, for Linux.");
                 ui.add_space(4.0);
                 ui.label("Made by Gavin (Defanoux), with Claude (Anthropic).");
-                ui.label("Discord: Defanoux");
+                ui.label("Discord: Defanoux   ·   oxide360@defanoux.uk");
+                ui.hyperlink_to("github.com/Defanoux/Oxide360", "https://github.com/Defanoux/Oxide360");
                 ui.add_space(8.0);
                 ui.strong("Built on");
                 egui::Grid::new("about_libs").num_columns(3).spacing([12.0, 3.0]).show(ui, |ui| {
