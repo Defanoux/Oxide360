@@ -70,7 +70,7 @@ fn stl(bodies: &[Body]) -> Vec<u8> {
     let count: usize = bodies.iter().map(|b| b.mesh.tris.len()).sum();
     let mut out = Vec::with_capacity(84 + 50 * count);
     let mut header = [0u8; 80];
-    let tag = b"opencad binary STL, units: mm";
+    let tag = b"Oxide360 binary STL, units: mm";
     header[..tag.len()].copy_from_slice(tag);
     out.extend_from_slice(&header);
     out.extend_from_slice(&(count as u32).to_le_bytes());
@@ -94,7 +94,7 @@ fn stl(bodies: &[Body]) -> Vec<u8> {
 
 fn obj(bodies: &[Body]) -> String {
     use std::fmt::Write;
-    let mut s = String::from("# opencad OBJ export, units: mm\n");
+    let mut s = String::from("# Oxide360 OBJ export, units: mm\n");
     let mut base = 1; // OBJ indices are 1-based and global across objects
     for b in bodies {
         let _ = writeln!(s, "o {}", b.name);

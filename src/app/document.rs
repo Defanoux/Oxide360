@@ -598,7 +598,7 @@ impl OpenCad {
         let picked = self
             .file_dialog()
             .set_title("Save design")
-            .add_filter("opencad design", &[doc::EXTENSION])
+            .add_filter("Oxide360 design", &[doc::EXTENSION])
             .set_file_name(format!("{stem}.{}", doc::EXTENSION))
             .save_file();
         match picked {
@@ -623,7 +623,7 @@ impl OpenCad {
         let picked = self
             .file_dialog()
             .set_title("Open design")
-            .add_filter("opencad design", &[doc::EXTENSION])
+            .add_filter("Oxide360 design", &[doc::EXTENSION, doc::OLD_EXTENSION])
             .pick_file();
         if let Some(p) = picked {
             self.open_in_tab = Some(p);
@@ -1202,7 +1202,7 @@ impl OpenCad {
         if let Some(msg) = self.alert.clone() {
             let mut ok = false;
             let _ = egui::Modal::new(egui::Id::new("alert")).show(ctx, |ui| {
-                ui.heading("opencad");
+                ui.heading("Oxide360");
                 ui.label(msg.as_str());
                 ui.add_space(8.0);
                 ok = ui.button("OK").clicked();

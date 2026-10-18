@@ -1,6 +1,6 @@
-# opencad — instructions for Claude Code
+# Oxide360 — instructions for Claude Code
 
-opencad is a Fusion 360-style parametric CAD app written from scratch in Rust,
+Oxide360 (formerly opencad; the folder keeps the old name) is a Fusion 360-style parametric CAD app written from scratch in Rust,
 for Gavin's Fedora 44 KDE laptop (Framework, Wayland). Work through `TODO.md`
 one item at a time, keeping everything building and every test green.
 
@@ -36,16 +36,16 @@ error rather than rewriting large areas blind.
 You can drive the real app yourself — do it before telling Gavin what to try:
 
 ```
-target/debug/opencad --control 47321 &      # (run in the background)
-target/debug/opencad ctl '{"cmd":"screenshot","path":"<scratchpad>/s.png"}'   # then Read the PNG
-target/debug/opencad ctl '{"cmd":"click","x":41,"y":136}'                   # screenshot pixels
-target/debug/opencad ctl '{"cmd":"state"}'   # timeline, errors, bodies + volumes, sketch, dialogs
+target/debug/oxide360 --control 47321 &      # (run in the background)
+target/debug/oxide360 ctl '{"cmd":"screenshot","path":"<scratchpad>/s.png"}'   # then Read the PNG
+target/debug/oxide360 ctl '{"cmd":"click","x":41,"y":136}'                   # screenshot pixels
+target/debug/oxide360 ctl '{"cmd":"state"}'   # timeline, errors, bodies + volumes, sketch, dialogs
 ```
 Commands: `screenshot`, `state`, `click` / `double_click` (`button`, `mods`),
 `move`, `drag` (`from`, `to`), `scroll` (`dy`), `key` ("Escape", "R", …),
 `type`, `open` / `save` / `import` (`path`), `new`, `wait` (`frames`). Each answers once
 the view has settled and any rebuild is done. In a new session the same
-commands are MCP tools (`.mcp.json`, server `opencad mcp`, which starts the
+commands are MCP tools (`.mcp.json`, server `oxide360 mcp`, which starts the
 app if needed). Stop the app when done; it opens on Gavin's screen.
 
 ## Talking to Gavin

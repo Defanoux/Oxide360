@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "opencad": {
-      "command": "/home/defanoux/opencad/target/debug/opencad",
+    "oxide360": {
+      "command": "/home/defanoux/opencad/target/debug/oxide360",
       "args": ["mcp"]
     }
   }

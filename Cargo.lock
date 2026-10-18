@@ -2339,26 +2339,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "opencad"
-version = "0.1.0"
-dependencies = [
- "ab_glyph",
- "earcutr",
- "eframe",
- "egui",
- "epaint_default_fonts",
- "glam 0.24.2",
- "glam 0.34.1",
- "opencascade",
- "png",
- "pollster 0.4.0",
- "rfd",
- "serde",
- "serde_json",
- "wgpu",
-]
-
-[[package]]
 name = "opencascade"
 version = "0.3.0"
 dependencies = [
@@ -2424,6 +2404,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
 dependencies = [
  "ttf-parser",
+]
+
+[[package]]
+name = "oxide360"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "earcutr",
+ "eframe",
+ "egui",
+ "epaint_default_fonts",
+ "glam 0.24.2",
+ "glam 0.34.1",
+ "opencascade",
+ "png",
+ "pollster 0.4.0",
+ "rfd",
+ "serde",
+ "serde_json",
+ "wgpu",
 ]
 
 [[package]]

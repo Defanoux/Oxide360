@@ -391,7 +391,7 @@ impl OpenCad {
                         ui.close();
                     }
                     ui.separator();
-                    if ui.button("About opencad").clicked() {
+                    if ui.button("About Oxide360").clicked() {
                         self.help_open = Some(HelpPage::About);
                         ui.close();
                     }
@@ -544,13 +544,13 @@ impl OpenCad {
     }
 
     /// The Help window: Getting Started, or About (version, credits, the
-    /// libraries opencad is built on and their licences).
+    /// libraries Oxide360 is built on and their licences).
     pub(crate) fn help_window(&mut self, ctx: &egui::Context) {
         let Some(page) = self.help_open else { return };
         let mut open = true;
         let title = match page {
             HelpPage::GettingStarted => "Getting Started",
-            HelpPage::About => "About opencad",
+            HelpPage::About => "About Oxide360",
         };
         egui::Window::new(title).id(egui::Id::new("help_window")).open(&mut open).collapsible(false).default_width(460.0).show(ctx, |ui| match page {
             HelpPage::GettingStarted => {
@@ -564,7 +564,7 @@ impl OpenCad {
                 });
             }
             HelpPage::About => {
-                ui.heading(format!("opencad {}", help::version()));
+                ui.heading(format!("Oxide360 {}", help::version()));
                 ui.label("A parametric CAD modeller in the spirit of Fusion 360, for Linux.");
                 ui.add_space(4.0);
                 ui.label("Made by Gavin, with Claude (Anthropic).");

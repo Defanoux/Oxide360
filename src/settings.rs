@@ -64,13 +64,26 @@ impl Default for Settings {
     }
 }
 
-/// `$XDG_CONFIG_HOME/opencad/settings.json`, or `~/.config/opencad/settings.json`.
+/// `$XDG_CONFIG_HOME/oxide360/settings.json`, or `~/.config/oxide360/settings.json`.
+/// (Settings from before the rename, in `opencad/`, are moved over the first time.)
 pub fn default_path() -> Option<PathBuf> {
+    let new = config_dir()?.join("oxide360").join("settings.json");
+    let old = config_dir()?.join("opencad").join("settings.json");
+    if !new.exists() && old.exists() {
+        if let Some(dir) = new.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::copy(&old, &new);
+    }
+    Some(new)
+}
+
+fn config_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".config")))?;
-    Some(base.join("opencad").join("settings.json"))
+    Some(base)
 }
 
 pub fn load(path: &Path) -> Settings {

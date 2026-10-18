@@ -23,7 +23,7 @@ pub fn default_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))?;
-    Some(base.join("opencad").join("recovery"))
+    Some(base.join("oxide360").join("recovery"))
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

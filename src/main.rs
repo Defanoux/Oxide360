@@ -1,4 +1,4 @@
-//! opencad — revolve, rectangle tool, icon toolbar.
+//! Oxide360: a parametric CAD modeller in Rust.
 //! Units: millimetres. World is Z-up.
 //!
 //! Controls
@@ -1617,7 +1617,7 @@ impl eframe::App for Tabs {
             }
         }
         let t = &self.tabs[self.current];
-        let title = format!("{} — opencad", t.tab_title());
+        let title = format!("{} — Oxide360", t.tab_title());
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
@@ -1649,7 +1649,7 @@ impl Tabs {
         }
         let mut choice: Option<bool> = None;
         egui::Window::new("Recover designs?").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
-            ui.label("opencad didn't close properly last time. These designs had unsaved changes:");
+            ui.label("Oxide360 didn't close properly last time. These designs had unsaved changes:");
             for r in &self.recovered {
                 let from = r.original.as_ref().map_or_else(|| "never saved".to_string(), |p| p.display().to_string());
                 ui.label(format!("  {}   ({from})", r.title));
@@ -1803,16 +1803,16 @@ fn tol_px(mm_per_px: f64) -> f64 {
 }
 
 fn main() -> eframe::Result {
-    // `opencad ctl [--port N] '<json>'`: one request to a running app.
-    // `opencad mcp [--port N]`: the MCP server (for Claude Code).
-    // `opencad --control [N]`: the app, listening for those.
+    // `oxide360 ctl [--port N] '<json>'`: one request to a running app.
+    // `oxide360 mcp [--port N]`: the MCP server (for Claude Code).
+    // `oxide360 --control [N]`: the app, listening for those.
     let args: Vec<String> = std::env::args().skip(1).collect();
     let port_after = |flag: &str| args.iter().position(|a| a == flag).and_then(|k| args.get(k + 1)).and_then(|p| p.parse().ok());
     match args.first().map(String::as_str) {
         Some("ctl") => {
             let port = port_after("--port").unwrap_or(control::DEFAULT_PORT);
             let Some(req) = args.iter().skip(1).filter(|a| a.starts_with('{')).last() else {
-                eprintln!("usage: opencad ctl [--port N] '{{\"cmd\": \"state\"}}'");
+                eprintln!("usage: oxide360 ctl [--port N] '{{\"cmd\": \"state\"}}'");
                 std::process::exit(2);
             };
             let req: serde_json::Value = serde_json::from_str(req).unwrap_or_else(|e| {
@@ -1838,13 +1838,13 @@ fn main() -> eframe::Result {
     opencascade::catch_crashes();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("opencad")
-            .with_app_id("opencad")
+            .with_title("Oxide360")
+            .with_app_id("oxide360")
             .with_inner_size([1280.0, 800.0]),
         ..Default::default()
     };
     eframe::run_native(
-        "opencad",
+        "Oxide360",
         options,
         Box::new(|cc| {
             let s = settings::default_path().map(|p| settings::load(&p)).unwrap_or_default();
@@ -1862,7 +1862,7 @@ fn main() -> eframe::Result {
                     match control::serve(port, move || ctx.request_repaint()) {
                         Ok(rx) => Some(Control { rx, busy: None, queue: Default::default(), settle: 0, since: 0.0, asked_shot: false, shot: None }),
                         Err(e) => {
-                            eprintln!("opencad: can't listen on port {port}: {e}");
+                            eprintln!("oxide360: can't listen on port {port}: {e}");
                             None
                         }
                     }

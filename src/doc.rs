@@ -9,9 +9,13 @@ use crate::sketch::{Constraint, Entity, Sketch};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-pub const FORMAT: &str = "opencad";
+pub const FORMAT: &str = "oxide360";
+/// What files from before the rename say (they still open).
+pub const OLD_FORMAT: &str = "opencad";
 pub const VERSION: u32 = 1;
-pub const EXTENSION: &str = "ocad";
+pub const EXTENSION: &str = "ox360";
+/// Designs saved before the rename (they still open).
+pub const OLD_EXTENSION: &str = "ocad";
 
 /// One entry in the timeline, in the order features were created.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -373,12 +377,12 @@ pub fn to_json(doc: &Document) -> String {
 }
 
 pub fn from_json(text: &str) -> Result<Document, String> {
-    let header: FileHeader = serde_json::from_str(text).map_err(|e| format!("not an opencad file ({e})"))?;
-    if header.format != FORMAT {
-        return Err(format!("not an opencad file (format \"{}\")", header.format));
+    let header: FileHeader = serde_json::from_str(text).map_err(|e| format!("not an Oxide360 design ({e})"))?;
+    if header.format != FORMAT && header.format != OLD_FORMAT {
+        return Err(format!("not an Oxide360 design (format \"{}\")", header.format));
     }
     if header.version > VERSION {
-        return Err(format!("made by a newer opencad (file version {}, this app reads {VERSION})", header.version));
+        return Err(format!("made by a newer Oxide360 (file version {}, this app reads {VERSION})", header.version));
     }
     if header.units != "mm" {
         return Err(format!("unsupported units \"{}\"", header.units));
@@ -1058,10 +1062,18 @@ mod tests {
     }
 
     #[test]
+    fn designs_from_before_the_rename_still_open() {
+        let text = to_json(&sample()).replace("\"format\": \"oxide360\"", "\"format\": \"opencad\"");
+        assert_eq!(from_json(&text).unwrap(), sample());
+        let other = to_json(&sample()).replace("\"format\": \"oxide360\"", "\"format\": \"something\"");
+        assert!(from_json(&other).unwrap_err().contains("not an Oxide360 design"));
+    }
+
+    #[test]
     fn json_round_trip_is_exact() {
         let doc = sample();
         let text = to_json(&doc);
-        assert!(text.contains("\"format\": \"opencad\"") && text.contains("\"units\": \"mm\""));
+        assert!(text.contains("\"format\": \"oxide360\"") && text.contains("\"units\": \"mm\""));
         assert_eq!(from_json(&text).unwrap(), doc, "every f64 survives exactly");
     }
 

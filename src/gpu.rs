@@ -298,7 +298,7 @@ impl GrowBuffer {
         if data.len() as u64 > self.capacity {
             self.capacity = (data.len() as u64).next_power_of_two();
             self.buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("opencad vertices"),
+                label: Some("oxide360 vertices"),
                 size: self.capacity,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
@@ -333,21 +333,21 @@ impl Gpu {
     /// `screen_format` is the format of the surface the image is copied onto.
     pub fn new(device: &wgpu::Device, screen_format: wgpu::TextureFormat) -> Self {
         let scene_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("opencad scene"),
+            label: Some("oxide360 scene"),
             source: wgpu::ShaderSource::Wgsl(SCENE_WGSL.into()),
         });
         let blit_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("opencad blit"),
+            label: Some("oxide360 blit"),
             source: wgpu::ShaderSource::Wgsl(BLIT_WGSL.into()),
         });
 
         let uniforms = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("opencad uniforms"),
+            label: Some("oxide360 uniforms"),
             contents: &[0u8; UNIFORM_SIZE as usize],
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let scene_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("opencad scene layout"),
+            label: Some("oxide360 scene layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
@@ -360,12 +360,12 @@ impl Gpu {
             }],
         });
         let scene_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("opencad scene group"),
+            label: Some("oxide360 scene group"),
             layout: &scene_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() }],
         });
         let scene_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("opencad scene pipeline layout"),
+            label: Some("oxide360 scene pipeline layout"),
             bind_group_layouts: &[Some(&scene_layout)],
             immediate_size: 0,
         });
@@ -386,7 +386,7 @@ impl Gpu {
 
         let tri_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3];
         let tri_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("opencad triangles"),
+            label: Some("oxide360 triangles"),
             layout: Some(&scene_pl),
             vertex: wgpu::VertexState {
                 module: &scene_module,
@@ -418,7 +418,7 @@ impl Gpu {
 
         let edge_attrs = wgpu::vertex_attr_array![0 => Float32x3];
         let edge_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("opencad edges"),
+            label: Some("oxide360 edges"),
             layout: Some(&scene_pl),
             vertex: wgpu::VertexState {
                 module: &scene_module,
@@ -445,7 +445,7 @@ impl Gpu {
 
         let line_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
         let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("opencad lines"),
+            label: Some("oxide360 lines"),
             layout: Some(&scene_pl),
             vertex: wgpu::VertexState {
                 module: &scene_module,
@@ -476,7 +476,7 @@ impl Gpu {
 
         // Hidden edges: lines that ignore the depth buffer (drawn after the bodies).
         let xray_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("opencad hidden edges"),
+            label: Some("oxide360 hidden edges"),
             layout: Some(&scene_pl),
             vertex: wgpu::VertexState {
                 module: &scene_module,
@@ -506,7 +506,7 @@ impl Gpu {
         });
 
         let glass_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("opencad glass"),
+            label: Some("oxide360 glass"),
             layout: Some(&scene_pl),
             vertex: wgpu::VertexState {
                 module: &scene_module,
@@ -536,7 +536,7 @@ impl Gpu {
         });
 
         let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("opencad blit layout"),
+            label: Some("oxide360 blit layout"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -557,12 +557,12 @@ impl Gpu {
             ],
         });
         let blit_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("opencad blit pipeline layout"),
+            label: Some("oxide360 blit pipeline layout"),
             bind_group_layouts: &[Some(&blit_layout)],
             immediate_size: 0,
         });
         let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("opencad blit"),
+            label: Some("oxide360 blit"),
             layout: Some(&blit_pl),
             vertex: wgpu::VertexState {
                 module: &blit_module,
@@ -587,7 +587,7 @@ impl Gpu {
             cache: None,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("opencad blit sampler"),
+            label: Some("oxide360 blit sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
@@ -603,12 +603,12 @@ impl Gpu {
             scene_group,
             blit_layout,
             sampler,
-            tris: GrowBuffer::new(device, "opencad triangles"),
-            edges: GrowBuffer::new(device, "opencad edges"),
-            lines: GrowBuffer::new(device, "opencad lines"),
-            glass: GrowBuffer::new(device, "opencad glass"),
+            tris: GrowBuffer::new(device, "oxide360 triangles"),
+            edges: GrowBuffer::new(device, "oxide360 edges"),
+            lines: GrowBuffer::new(device, "oxide360 lines"),
+            glass: GrowBuffer::new(device, "oxide360 glass"),
             xray_pipeline,
-            xray: GrowBuffer::new(device, "opencad hidden edges"),
+            xray: GrowBuffer::new(device, "oxide360 hidden edges"),
             counts: (0, 0, 0, 0),
             xray_count: 0,
             targets: None,
@@ -632,19 +632,19 @@ impl Gpu {
                 view_formats: &[],
             })
         };
-        let msaa = tex("opencad msaa", COLOR_FORMAT, MSAA, wgpu::TextureUsages::RENDER_ATTACHMENT)
+        let msaa = tex("oxide360 msaa", COLOR_FORMAT, MSAA, wgpu::TextureUsages::RENDER_ATTACHMENT)
             .create_view(&Default::default());
-        let depth = tex("opencad depth", DEPTH_FORMAT, MSAA, wgpu::TextureUsages::RENDER_ATTACHMENT)
+        let depth = tex("oxide360 depth", DEPTH_FORMAT, MSAA, wgpu::TextureUsages::RENDER_ATTACHMENT)
             .create_view(&Default::default());
         let resolved = tex(
-            "opencad resolved",
+            "oxide360 resolved",
             COLOR_FORMAT,
             1,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
         );
         let resolved_view = resolved.create_view(&Default::default());
         let blit_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("opencad blit group"),
+            label: Some("oxide360 blit group"),
             layout: &self.blit_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&resolved_view) },
@@ -679,7 +679,7 @@ impl Gpu {
         let t = self.targets.as_ref().expect("targets were just created");
         let resolved_view = t.resolved.create_view(&Default::default());
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("opencad scene"),
+            label: Some("oxide360 scene"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &t.msaa,
                 depth_slice: None,

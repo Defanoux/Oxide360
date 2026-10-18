@@ -60,7 +60,7 @@ pub fn serve(port: u16, wake: impl Fn() + Send + Clone + 'static) -> std::io::Re
 
 /// Send one request to the app on `port` and wait for its answer.
 pub fn call(port: u16, req: &Value) -> Result<Value, String> {
-    let stream = TcpStream::connect(("127.0.0.1", port)).map_err(|e| format!("can't reach opencad on port {port} ({e}); start it with `opencad --control {port}`"))?;
+    let stream = TcpStream::connect(("127.0.0.1", port)).map_err(|e| format!("can't reach Oxide360 on port {port} ({e}); start it with `oxide360 --control {port}`"))?;
     let mut out = stream.try_clone().map_err(|e| e.to_string())?;
     writeln!(out, "{req}").map_err(|e| e.to_string())?;
     let mut line = String::new();
@@ -180,7 +180,7 @@ fn mcp_tools() -> Value {
     let pos = json!({"type": "number"});
     let mods = json!({"type": "array", "items": {"type": "string", "enum": ["shift", "ctrl", "alt"]}, "description": "Modifier keys held"});
     json!([
-        {"name": "screenshot", "description": "A picture of the opencad window as it is now. Positions in other tools are in this picture's pixels.", "inputSchema": {"type": "object", "properties": {}}},
+        {"name": "screenshot", "description": "A picture of the Oxide360 window as it is now. Positions in other tools are in this picture's pixels.", "inputSchema": {"type": "object", "properties": {}}},
         {"name": "state", "description": "What's in the design and on screen, as JSON: timeline features and their errors, bodies and volumes, the open sketch, tool, selection, open dialogs, the last notice.", "inputSchema": {"type": "object", "properties": {}}},
         {"name": "click", "description": "Click at a point of the window (screenshot pixels).", "inputSchema": {"type": "object", "properties": {"x": pos, "y": pos, "button": {"type": "string", "enum": ["left", "right", "middle"]}, "double": {"type": "boolean"}, "mods": mods}, "required": ["x", "y"]}},
         {"name": "move", "description": "Move the pointer to a point (to hover).", "inputSchema": {"type": "object", "properties": {"x": pos, "y": pos}, "required": ["x", "y"]}},
@@ -188,7 +188,7 @@ fn mcp_tools() -> Value {
         {"name": "scroll", "description": "Scroll the wheel at a point (dy > 0 scrolls up / zooms in).", "inputSchema": {"type": "object", "properties": {"x": pos, "y": pos, "dx": pos, "dy": pos, "mods": mods}, "required": ["x", "y", "dy"]}},
         {"name": "key", "description": "Press a key: egui names like \"Escape\", \"Enter\", \"Delete\", \"L\", \"F6\".", "inputSchema": {"type": "object", "properties": {"key": {"type": "string"}, "mods": mods}, "required": ["key"]}},
         {"name": "type", "description": "Type text into the focused box.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
-        {"name": "open", "description": "Open a design file (.opencad).", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+        {"name": "open", "description": "Open a design file (.ox360, or .ocad from before).", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
         {"name": "save", "description": "Save the design to a file.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
         {"name": "import", "description": "Insert a STEP (.step/.stp) or STL file's bodies into the design.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
         {"name": "new", "description": "Throw the open design away and start an empty one (no questions).", "inputSchema": {"type": "object", "properties": {}}}
@@ -222,8 +222,8 @@ pub fn mcp(port: u16) {
             "initialize" => Ok(json!({
                 "protocolVersion": msg["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "opencad", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "Drives the opencad CAD app: take a screenshot first, then click/drag/key at positions in that screenshot; `state` lists the design."
+                "serverInfo": {"name": "oxide360", "version": env!("CARGO_PKG_VERSION")},
+                "instructions": "Drives the Oxide360 CAD app: take a screenshot first, then click/drag/key at positions in that screenshot; `state` lists the design."
             })),
             "tools/list" => Ok(json!({"tools": mcp_tools()})),
             "tools/call" => {
@@ -275,7 +275,7 @@ fn ensure_app(port: u16) -> Result<(), String> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| format!("couldn't start opencad: {e}"))?;
+        .map_err(|e| format!("couldn't start Oxide360: {e}"))?;
     for _ in 0..150 {
         std::thread::sleep(std::time::Duration::from_millis(100));
         if TcpStream::connect(("127.0.0.1", port)).is_ok() {
@@ -284,7 +284,7 @@ fn ensure_app(port: u16) -> Result<(), String> {
             return Ok(());
         }
     }
-    Err("started opencad, but it didn't start listening".into())
+    Err("started Oxide360, but it didn't start listening".into())
 }
 
 #[cfg(test)]
