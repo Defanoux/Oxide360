@@ -26,6 +26,19 @@ pub const LIBRARIES: &[(&str, &str, &str)] = &[
     ("png", "screenshots", "MIT or Apache 2.0"),
 ];
 
+/// The logo (assets/oxide360.svg, drawn at 256 px) as the window's icon.
+pub fn app_icon() -> Option<egui::IconData> {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(&include_bytes!("../assets/oxide360-256.png")[..])).read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buf[..info.buffer_size()].to_vec(),
+        png::ColorType::Rgb => buf[..info.buffer_size()].chunks(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
+        _ => return None,
+    };
+    Some(egui::IconData { rgba, width: info.width, height: info.height })
+}
+
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
@@ -38,6 +51,8 @@ mod tests {
     fn about_names_the_kernel_and_the_version() {
         assert!(LIBRARIES.iter().any(|(n, _, l)| n.contains("CASCADE") && l.contains("LGPL")));
         assert!(!version().is_empty());
+        let icon = app_icon().expect("the logo decodes");
+        assert_eq!((icon.width, icon.height, icon.rgba.len()), (256, 256, 256 * 256 * 4));
         assert!(GETTING_STARTED.iter().all(|(h, t)| !h.is_empty() && t.len() > 40));
     }
 }
