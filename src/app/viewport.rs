@@ -3509,12 +3509,12 @@ impl OpenCad {
         };
         if let Some(d) = &self.joint_dialog {
             // With both ends picked the moving one goes where the part does:
-            // onto the other, facing it (or the same way, flipped), slid by
-            // the offset — so the two line up, as Fusion shows them.
+            // onto the other (slid by the offset), drawn lined up with it —
+            // the same axes, one on top of the other, as Fusion shows them.
             let moved = match (d.a_at, d.b_at, d.a.is_some() && d.b.is_some()) {
                 (_, Some((pb, zb)), true) => {
                     let (_, slide) = d.kind.motion(d.motion);
-                    Some((pb + zb * (d.offset + slide), if d.flip { zb } else { -zb }))
+                    Some((pb + zb * (d.offset + slide), zb))
                 }
                 (a, ..) => a,
             };

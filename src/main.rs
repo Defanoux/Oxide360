@@ -42,6 +42,7 @@ mod origin;
 mod plane_dialog;
 mod pattern;
 mod profile;
+mod help;
 mod hole_dialog;
 mod import_dialog;
 mod joint_dialog;
@@ -402,6 +403,13 @@ fn spline_icon(tool: Tool) -> Icon {
 
 fn rgb(c: Color32) -> [f32; 3] {
     [c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0]
+}
+
+/// The Help window's pages.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum HelpPage {
+    GettingStarted,
+    About,
 }
 
 /// File commands, run after the frame's UI so dialogs never interrupt a widget.
@@ -878,6 +886,7 @@ struct OpenCad {
     cube_axes: bool, // show the XYZ triad on the view cube
     settings_saved: settings::Settings, // what's on disk, to notice a change
     recent: Vec<PathBuf>,               // designs opened or saved lately (File → Recent)
+    help_open: Option<HelpPage>,        // the Help window, on which page
     last_tool: Option<&'static str>,    // the last tool started (the right-click menu's Repeat)
     recent_tools: Vec<&'static str>,    // tools used lately (the S box's top row)
     marking: Option<egui::Pos2>,        // the right-click marking menu, open where clicked
@@ -1118,6 +1127,7 @@ impl Default for OpenCad {
             cube_axes: true,
             settings_saved: settings::Settings::default(),
             recent: Vec::new(),
+            help_open: None,
             last_tool: None,
             recent_tools: Vec::new(),
             marking: None,
@@ -1257,6 +1267,7 @@ impl OpenCad {
 
         egui::Panel::top("titlebar").show(ui, |ui| self.title_bar(ui));
         self.settings_window(&ctx);
+        self.help_window(&ctx);
         // Side-scrollable, so a narrow window doesn't cut the ribbon off.
         egui::Panel::top("toolbar").show(ui, |ui| {
             if self.active.is_some() {

@@ -380,6 +380,22 @@ impl OpenCad {
                 if ui.button("⚙").on_hover_text("Settings").clicked() {
                     self.settings_open = !self.settings_open;
                 }
+                let help = ui.button("?").on_hover_text("Help");
+                egui::Popup::menu(&help).show(|ui| {
+                    if ui.button("Getting Started").clicked() {
+                        self.help_open = Some(HelpPage::GettingStarted);
+                        ui.close();
+                    }
+                    if ui.button("Keyboard Shortcuts").clicked() {
+                        self.keybinds_open = true;
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("About opencad").clicked() {
+                        self.help_open = Some(HelpPage::About);
+                        ui.close();
+                    }
+                });
             });
         });
         // Which workspace you're in, like Fusion's SOLID / SKETCH tabs.
@@ -525,6 +541,48 @@ impl OpenCad {
             self.capturing_key = None;
         }
         self.keybinds_open = open;
+    }
+
+    /// The Help window: Getting Started, or About (version, credits, the
+    /// libraries opencad is built on and their licences).
+    pub(crate) fn help_window(&mut self, ctx: &egui::Context) {
+        let Some(page) = self.help_open else { return };
+        let mut open = true;
+        let title = match page {
+            HelpPage::GettingStarted => "Getting Started",
+            HelpPage::About => "About opencad",
+        };
+        egui::Window::new(title).id(egui::Id::new("help_window")).open(&mut open).collapsible(false).default_width(460.0).show(ctx, |ui| match page {
+            HelpPage::GettingStarted => {
+                egui::ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
+                    for (heading, text) in help::GETTING_STARTED {
+                        ui.strong(*heading);
+                        ui.label(*text);
+                        ui.add_space(6.0);
+                    }
+                    ui.weak("Hover any button for what it does. Keys can be changed in ? > Keyboard Shortcuts.");
+                });
+            }
+            HelpPage::About => {
+                ui.heading(format!("opencad {}", help::version()));
+                ui.label("A parametric CAD modeller in the spirit of Fusion 360, for Linux.");
+                ui.add_space(4.0);
+                ui.label("Made by Gavin, with Claude (Anthropic).");
+                ui.add_space(8.0);
+                ui.strong("Built on");
+                egui::Grid::new("about_libs").num_columns(3).spacing([12.0, 3.0]).show(ui, |ui| {
+                    for (name, what, licence) in help::LIBRARIES {
+                        ui.label(*name);
+                        ui.weak(*what);
+                        ui.label(*licence);
+                        ui.end_row();
+                    }
+                });
+            }
+        });
+        if !open {
+            self.help_open = None;
+        }
     }
 
     /// FINISH SKETCH, kept at the toolbar's right end (outside its scrolling,

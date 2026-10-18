@@ -40,6 +40,12 @@ pub struct JointDialog {
 pub const PLAY_SECONDS: f64 = 4.0;
 pub const SLIDE_SPAN: f64 = 20.0;
 
+/// An angle brought into −180..180 (so quarter turns stay readable: 270 is −90).
+pub fn quarter(deg: f64) -> f64 {
+    let a = deg.rem_euclid(360.0);
+    if a > 180.0 { a - 360.0 } else { a }
+}
+
 /// The motion `t` seconds into an animation that started at `from`.
 pub fn played(kind: JointKind, from: f64, t: f64) -> f64 {
     let k = (t / PLAY_SECONDS).fract();
@@ -120,7 +126,15 @@ impl JointDialog {
         ui.strong("Position");
         egui::Grid::new("joint_position").num_columns(2).show(ui, |ui| {
             ui.label("Angle").on_hover_text("Turns it about the joint's axis where it's put");
-            ui.add(egui::DragValue::new(&mut self.angle).speed(1.0).suffix("°"));
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut self.angle).speed(1.0).suffix("°"));
+                // Quarter turns, the usual fix when it lands turned the wrong way.
+                for (text, by) in [("-90°", -90.0), ("+90°", 90.0)] {
+                    if ui.small_button(text).on_hover_text("Turn it a quarter turn about the joint's axis").clicked() {
+                        self.angle = quarter(self.angle + by);
+                    }
+                }
+            });
             ui.end_row();
             ui.label("Offset").on_hover_text("Lifts it along the joint's axis where it's put");
             ui.add(crate::units::length_drag(&mut self.offset, unit, 0.5));
@@ -180,6 +194,15 @@ impl JointDialog {
 mod tests {
     use super::*;
     use glam::DVec3;
+
+    #[test]
+    fn quarter_turns_wrap_round() {
+        assert_eq!(quarter(90.0), 90.0);
+        assert_eq!(quarter(270.0), -90.0);
+        assert_eq!(quarter(-180.0), 180.0);
+        assert_eq!(quarter(360.0), 0.0);
+        assert_eq!(quarter(-90.0 - 90.0), 180.0);
+    }
 
     #[test]
     fn animating_turns_a_revolute_round_and_slides_a_slider_out_and_back() {
