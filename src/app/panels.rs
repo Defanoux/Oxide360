@@ -538,6 +538,134 @@ impl OpenCad {
         });
     }
 
+    /// A sketch tool by its toolbar name (the toolbar, the right-click menu,
+    /// the S box and Repeat all start tools this way).
+    pub(crate) fn run_sketch_tool(&mut self, name: &'static str) {
+        if !matches!(name, "Select" | "Construction" | "Change Parameters") {
+            self.last_tool = Some(name);
+        }
+        let kind = [Tool::RECTANGLES.as_slice(), &Tool::CIRCLES, &Tool::ARCS, &Tool::POLYGONS, &Tool::SPLINES].concat().into_iter().find(|k| k.name() == name);
+        match (name, kind) {
+            // A kind: it becomes its family's button, as Fusion remembers it.
+            (_, Some(k)) => {
+                if Tool::RECTANGLES.contains(&k) {
+                    self.rect_tool = k;
+                } else if Tool::CIRCLES.contains(&k) {
+                    self.circle_tool = k;
+                } else if Tool::ARCS.contains(&k) {
+                    self.arc_tool = k;
+                } else if Tool::SPLINES.contains(&k) {
+                    self.spline_tool = k;
+                } else {
+                    self.poly_tool = k;
+                }
+                self.editor.set_tool(k);
+            }
+            ("Select", _) => self.editor.set_tool(Tool::Select),
+            ("Line", _) => self.editor.set_tool(Tool::Line),
+            ("Rectangle", _) => self.editor.set_tool(self.rect_tool),
+            ("Point", _) => self.editor.set_tool(Tool::Point),
+            ("Circle", _) => self.editor.set_tool(self.circle_tool),
+            ("Arc", _) => self.editor.set_tool(self.arc_tool),
+            ("Polygon", _) => self.editor.set_tool(self.poly_tool),
+            ("Slot", _) => self.editor.set_tool(Tool::Slot),
+            ("Spline", _) => self.editor.set_tool(self.spline_tool),
+            ("Ellipse", _) => self.editor.set_tool(Tool::Ellipse),
+            ("Text", _) => self.editor.set_tool(Tool::Text),
+            ("Fillet", _) => self.editor.set_tool(Tool::SketchFillet),
+            ("Chamfer", _) => self.editor.set_tool(Tool::SketchChamfer),
+            ("Trim", _) => self.editor.set_tool(Tool::Trim),
+            ("Break", _) => self.editor.set_tool(Tool::Break),
+            ("Extend", _) => self.editor.set_tool(Tool::Extend),
+            ("Offset", _) => self.editor.set_tool(Tool::Offset),
+            ("Rectangular Pattern", _) => self.start_sketch_pattern(SpMode::Rectangular),
+            ("Circular Pattern", _) => self.start_sketch_pattern(SpMode::Circular),
+            ("Mirror", _) => self.start_mirror(),
+            ("Project", _) => self.editor.set_tool(Tool::Project),
+            ("Construction", _) => self.toggle_construction(),
+            ("Change Parameters", _) => self.params_window.open = !self.params_window.open,
+            (c, _) if CONSTRAINT_ACTIONS.contains(&c) => self.constraint_button(c),
+            _ => {}
+        }
+    }
+
+    /// A solid-mode tool by its toolbar name (see `run_sketch_tool`).
+    pub(crate) fn run_solid_tool(&mut self, name: &'static str) {
+        if name != "Change Parameters" {
+            self.last_tool = Some(name);
+        }
+        match name {
+            "Create Sketch" => self.new_sketch_tool(),
+            "Extrude" => self.open_extrude(None),
+            "Revolve" => self.open_revolve(None),
+            name @ ("Sweep" | "Loft" | "Pipe" | "Coil") => {
+                let mode = match name {
+                    "Sweep" => sweep_dialog::Mode::Sweep,
+                    "Loft" => sweep_dialog::Mode::Loft,
+                    "Pipe" => sweep_dialog::Mode::Pipe,
+                    _ => sweep_dialog::Mode::Coil,
+                };
+                if self.sweep_dialog.as_ref().is_some_and(|d| d.mode == mode) {
+                    self.sweep_dialog = None;
+                } else {
+                    self.open_sweep(None, mode);
+                }
+            }
+            "Hole" if self.hole_dialog.is_some() => self.cancel_hole(),
+            "Hole" => self.open_hole(None),
+            "Thread" if self.thread_dialog.is_some() => self.cancel_thread(),
+            "Thread" => self.open_thread(None),
+            "Offset Plane" => {
+                let was = self.plane_pick;
+                self.cancel_all_dialogs();
+                self.plane_pick = !was;
+                self.face_pick = !was;
+            }
+            "Plane at Angle" => {
+                let was = self.angle_pick;
+                self.cancel_all_dialogs();
+                self.angle_pick = !was;
+            }
+            "Axis Along Edge" => {
+                let was = self.axis_pick;
+                self.cancel_all_dialogs();
+                self.axis_pick = !was;
+            }
+            "Point" => {
+                let was = self.point_pick;
+                self.cancel_all_dialogs();
+                self.point_pick = !was;
+            }
+            name @ ("Midplane" | "Plane Through Three Points" | "Tangent Plane" | "Axis Through Cylinder" | "Axis Through Two Points") => {
+                let pick = match name {
+                    "Midplane" => ConstructPick::Midplane(Vec::new()),
+                    "Plane Through Three Points" => ConstructPick::ThreePoints(Vec::new()),
+                    "Tangent Plane" => ConstructPick::Tangent,
+                    "Axis Through Cylinder" => ConstructPick::AxisCylinder,
+                    _ => ConstructPick::AxisTwoPoints(Vec::new()),
+                };
+                let same = self.construct_pick.as_ref().is_some_and(|p| std::mem::discriminant(p) == std::mem::discriminant(&pick));
+                self.cancel_all_dialogs();
+                self.construct_pick = if same { None } else { Some(pick) };
+            }
+            "Mirror" => self.open_copy(CopyMode::Mirror, None),
+            "Rectangular Pattern" => self.open_copy(CopyMode::Rectangular, None),
+            "Circular Pattern" => self.open_copy(CopyMode::Circular, None),
+            "Press Pull" if self.offset_dialog.is_some() => self.cancel_offset(),
+            "Press Pull" => self.open_offset(None, true),
+            "Fillet" => self.open_edge_dialog(None, EdgeKind::Fillet),
+            "Chamfer" => self.open_edge_dialog(None, EdgeKind::Chamfer),
+            "Shell" if self.shell_dialog.is_some() => self.cancel_shell(),
+            "Shell" => self.open_shell(None),
+            "Move/Copy" if self.move_dialog.is_some() => self.cancel_move(),
+            "Move/Copy" => self.open_move(None),
+            "Change Parameters" => self.params_window.open = !self.params_window.open,
+            "Combine" if self.combine_dialog.is_some() => self.cancel_combine(),
+            "Combine" => self.open_combine(None),
+            _ => {}
+        }
+    }
+
     /// The ribbon: quick-access icons (file, save, undo, redo), then tool
     /// groups with their names underneath, like Fusion's toolbar.
     pub(crate) fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -622,35 +750,8 @@ impl OpenCad {
                     ToolItem { name: "Text", icon: Icon::Text, tip: "Text: click where it starts, then type it; its letters are profiles to extrude. Double-click text to edit it", enabled: true, on: t == Tool::Text || self.text_dialog.is_some() },
                 ];
                 let picked = tool_group(ui, "CREATE", "", &items, &families, &mut self.toolbar_hidden, &mut self.toolbar_order);
-                let kind = picked.and_then(|name| Tool::RECTANGLES.into_iter().chain(Tool::CIRCLES).chain(Tool::ARCS).chain(Tool::POLYGONS).chain(Tool::SPLINES).find(|k| k.name() == name));
-                match (picked, kind) {
-                    // A kind: it becomes its family's button, as Fusion remembers it.
-                    (_, Some(k)) => {
-                        if Tool::RECTANGLES.contains(&k) {
-                            self.rect_tool = k;
-                        } else if Tool::CIRCLES.contains(&k) {
-                            self.circle_tool = k;
-                        } else if Tool::ARCS.contains(&k) {
-                            self.arc_tool = k;
-                        } else if Tool::SPLINES.contains(&k) {
-                            self.spline_tool = k;
-                        } else {
-                            self.poly_tool = k;
-                        }
-                        self.editor.set_tool(k);
-                    }
-                    (Some("Select"), _) => self.editor.set_tool(Tool::Select),
-                    (Some("Line"), _) => self.editor.set_tool(Tool::Line),
-                    (Some("Rectangle"), _) => self.editor.set_tool(rect_tool),
-                    (Some("Point"), _) => self.editor.set_tool(Tool::Point),
-                    (Some("Circle"), _) => self.editor.set_tool(circle),
-                    (Some("Arc"), _) => self.editor.set_tool(arc_tool),
-                    (Some("Polygon"), _) => self.editor.set_tool(poly_tool),
-                    (Some("Slot"), _) => self.editor.set_tool(Tool::Slot),
-                    (Some("Spline"), _) => self.editor.set_tool(spline_tool),
-                    (Some("Ellipse"), _) => self.editor.set_tool(Tool::Ellipse),
-                    (Some("Text"), _) => self.editor.set_tool(Tool::Text),
-                    _ => {}
+                if let Some(name) = picked {
+                    self.run_sketch_tool(name);
                 }
                 let _ = i;
                 let t = self.editor.tool;
@@ -669,20 +770,8 @@ impl OpenCad {
                     ToolItem { name: "Construction", icon: Icon::Construction, tip: "Construction: toggle the selected geometry, or what you draw next", enabled: true, on: self.editor.construction },
                     ToolItem { name: "Change Parameters", icon: Icon::Parameters, tip: "Change Parameters: named values (width, depth…) that dimensions and boxes can use", enabled: true, on: self.params_window.open },
                 ];
-                match tool_group(ui, "MODIFY", "", &items, &[], &mut self.toolbar_hidden, &mut self.toolbar_order) {
-                    Some("Fillet") => self.editor.set_tool(Tool::SketchFillet),
-                    Some("Chamfer") => self.editor.set_tool(Tool::SketchChamfer),
-                    Some("Trim") => self.editor.set_tool(Tool::Trim),
-                    Some("Break") => self.editor.set_tool(Tool::Break),
-                    Some("Extend") => self.editor.set_tool(Tool::Extend),
-                    Some("Offset") => self.editor.set_tool(Tool::Offset),
-                    Some("Rectangular Pattern") => self.start_sketch_pattern(SpMode::Rectangular),
-                    Some("Circular Pattern") => self.start_sketch_pattern(SpMode::Circular),
-                    Some("Mirror") => self.start_mirror(),
-                    Some("Project") => self.editor.set_tool(Tool::Project),
-                    Some("Construction") => self.toggle_construction(),
-                    Some("Change Parameters") => self.params_window.open = !self.params_window.open,
-                    _ => {}
+                if let Some(name) = tool_group(ui, "MODIFY", "", &items, &[], &mut self.toolbar_hidden, &mut self.toolbar_order) {
+                    self.run_sketch_tool(name);
                 }
                 let items: Vec<ToolItem> = CONSTRAINT_ACTIONS
                     .into_iter()
@@ -752,7 +841,7 @@ impl OpenCad {
                     ToolItem { name: "Plane Through Three Points", icon: Icon::Plane3Points, tip: "Plane Through Three Points: click three body corners", enabled: has_bodies, on: matches!(self.construct_pick, Some(ConstructPick::ThreePoints(_))) },
                     ToolItem { name: "Tangent Plane", icon: Icon::TangentPlane, tip: "Tangent Plane: click a cylinder where the plane should touch it", enabled: has_bodies, on: self.construct_pick == Some(ConstructPick::Tangent) },
                     ToolItem { name: "Axis Through Cylinder", icon: Icon::AxisCylinder, tip: "Axis Through Cylinder: click a hole or shaft", enabled: has_bodies, on: self.construct_pick == Some(ConstructPick::AxisCylinder) },
-                    ToolItem { name: "Point", icon: Icon::ConstructPoint, tip: "Construction Point: click a body corner, or a round edge (its centre)", enabled: has_bodies, on: self.point_pick },
+                    ToolItem { name: "Point", icon: Icon::ConstructPoint, tip: "Construction Point: a face's middle, a side's middle or a corner, or a round edge's centre", enabled: has_bodies, on: self.point_pick },
                     ToolItem { name: "Axis Through Two Points", icon: Icon::Axis2Points, tip: "Axis Through Two Points: click two body corners", enabled: has_bodies, on: matches!(self.construct_pick, Some(ConstructPick::AxisTwoPoints(_))) },
                 ];
                 let construct = tool_group(ui, "CONSTRUCT", "Solid ", &items, &[], hidden, order);
@@ -774,75 +863,8 @@ impl OpenCad {
                     ToolItem { name: "Combine", icon: Icon::Combine, tip: "Combine: join, cut or intersect bodies — a target body and tool bodies", enabled: self.body_count > 1, on: self.combine_dialog.is_some() },
                 ];
                 let modify = tool_group(ui, "MODIFY", "Solid ", &items, &[], hidden, order);
-                match create.or(construct).or(pattern).or(modify) {
-                    Some("Create Sketch") => self.new_sketch_tool(),
-                    Some("Extrude") => self.open_extrude(None),
-                    Some("Revolve") => self.open_revolve(None),
-                    Some(name @ ("Sweep" | "Loft" | "Pipe" | "Coil")) => {
-                        let mode = match name {
-                            "Sweep" => sweep_dialog::Mode::Sweep,
-                            "Loft" => sweep_dialog::Mode::Loft,
-                            "Pipe" => sweep_dialog::Mode::Pipe,
-                            _ => sweep_dialog::Mode::Coil,
-                        };
-                        if self.sweep_dialog.as_ref().is_some_and(|d| d.mode == mode) {
-                            self.sweep_dialog = None;
-                        } else {
-                            self.open_sweep(None, mode);
-                        }
-                    }
-                    Some("Hole") if self.hole_dialog.is_some() => self.cancel_hole(),
-                    Some("Hole") => self.open_hole(None),
-                    Some("Thread") if self.thread_dialog.is_some() => self.cancel_thread(),
-                    Some("Thread") => self.open_thread(None),
-                    Some("Offset Plane") => {
-                        let was = self.plane_pick;
-                        self.cancel_all_dialogs();
-                        self.plane_pick = !was;
-                        self.face_pick = !was;
-                    }
-                    Some("Plane at Angle") => {
-                        let was = self.angle_pick;
-                        self.cancel_all_dialogs();
-                        self.angle_pick = !was;
-                    }
-                    Some("Axis Along Edge") => {
-                        let was = self.axis_pick;
-                        self.cancel_all_dialogs();
-                        self.axis_pick = !was;
-                    }
-                    Some("Point") => {
-                        let was = self.point_pick;
-                        self.cancel_all_dialogs();
-                        self.point_pick = !was;
-                    }
-                    Some(name @ ("Midplane" | "Plane Through Three Points" | "Tangent Plane" | "Axis Through Cylinder" | "Axis Through Two Points")) => {
-                        let pick = match name {
-                            "Midplane" => ConstructPick::Midplane(Vec::new()),
-                            "Plane Through Three Points" => ConstructPick::ThreePoints(Vec::new()),
-                            "Tangent Plane" => ConstructPick::Tangent,
-                            "Axis Through Cylinder" => ConstructPick::AxisCylinder,
-                            _ => ConstructPick::AxisTwoPoints(Vec::new()),
-                        };
-                        let same = self.construct_pick.as_ref().is_some_and(|p| std::mem::discriminant(p) == std::mem::discriminant(&pick));
-                        self.cancel_all_dialogs();
-                        self.construct_pick = if same { None } else { Some(pick) };
-                    }
-                    Some("Mirror") => self.open_copy(CopyMode::Mirror, None),
-                    Some("Rectangular Pattern") => self.open_copy(CopyMode::Rectangular, None),
-                    Some("Circular Pattern") => self.open_copy(CopyMode::Circular, None),
-                    Some("Press Pull") if self.offset_dialog.is_some() => self.cancel_offset(),
-                    Some("Press Pull") => self.open_offset(None, true),
-                    Some("Fillet") => self.open_edge_dialog(None, EdgeKind::Fillet),
-                    Some("Chamfer") => self.open_edge_dialog(None, EdgeKind::Chamfer),
-                    Some("Shell") if self.shell_dialog.is_some() => self.cancel_shell(),
-                    Some("Shell") => self.open_shell(None),
-                    Some("Move/Copy") if self.move_dialog.is_some() => self.cancel_move(),
-                    Some("Move/Copy") => self.open_move(None),
-                    Some("Change Parameters") => self.params_window.open = !self.params_window.open,
-                    Some("Combine") if self.combine_dialog.is_some() => self.cancel_combine(),
-                    Some("Combine") => self.open_combine(None),
-                    _ => {}
+                if let Some(name) = create.or(construct).or(pattern).or(modify) {
+                    self.run_solid_tool(name);
                 }
                 group(ui, "ASSEMBLE", |ui| {
                     let picked = !self.selected_bodies.is_empty();

@@ -8,8 +8,6 @@ Ordered by how much each makes opencad a usable part modeller (FEATURES.md
 has the full Fusion list; this is the slice to do now). Fusion's behaviour is
 the spec for each.
 
-- **Right-click marking menu** in the view (Fusion's: Repeat last, Delete, Press Pull, Undo/Redo, Move/Copy, Hole, Sketch ▾ round the cursor, plus a list below) and the **S key Design Shortcuts** box (pinned tools + search).
-
 All of the listed slice is done. Later (big, after the above): components + joints (assemblies), 2D drawings,
 sheet metal, surfaces, CAM.
 
@@ -20,6 +18,7 @@ sheet metal, surfaces, CAM.
 
 ## Done
 
+- Right-click marking menu (eight tools round the cursor — Repeat, Undo, Redo, Delete, Press Pull, Hole, Create Sketch, Move/Copy; in a sketch Dimension, Line, Circle, Finish Sketch — and what was clicked plus common tools in a list) and the S key Design Shortcuts box (recent tools, search, Enter); File → Recent; face snap points for Joint / Construction Point; joint origins drawn with X/Y/Z.
 - Assemblies, first steps: Components (right-click bodies or ASSEMBLE → New Component; browser rows with show/hide, select, rename, Move/Copy, Dissolve) and Joints (ASSEMBLE → Joint: corner / round-edge centre / face spot on the moving part, then on another part; rigid, revolute, slider with angle and offset, flip; moves the whole component; a timeline feature). Not yet: joint limits, animating motion, cylindrical/pin-slot/planar/ball, as-built joints, components owning sketches/features.
 - Polish: export writes only visible bodies; a typed circle size dropped by clicking away now says so; tangent-circle errors in red; construction points listed in the browser (show/hide, delete).
 - 21 Inspect: body right-click → Physical Material (17 materials, Steel by default, saved per body) and Properties (material, density, mass, volume, area, centre of mass, exact bounding box); INSPECT → Interference (overlaps between visible bodies, exact volumes, shown in red, recomputed when bodies change). Checked in the running app.

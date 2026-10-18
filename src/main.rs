@@ -46,6 +46,7 @@ mod hole_dialog;
 mod import_dialog;
 mod joint_dialog;
 mod shell_dialog;
+mod shortcuts;
 mod offset_dialog;
 mod combine_dialog;
 mod move_dialog;
@@ -875,6 +876,10 @@ struct OpenCad {
     cube_axes: bool, // show the XYZ triad on the view cube
     settings_saved: settings::Settings, // what's on disk, to notice a change
     recent: Vec<PathBuf>,               // designs opened or saved lately (File → Recent)
+    last_tool: Option<&'static str>,    // the last tool started (the right-click menu's Repeat)
+    recent_tools: Vec<&'static str>,    // tools used lately (the S box's top row)
+    marking: Option<egui::Pos2>,        // the right-click marking menu, open where clicked
+    shortcut_box: Option<(egui::Pos2, String)>, // the S key's Design Shortcuts box: where, what's typed
     arrows: Vec<Option<(Vec2, Vec2)>>,  // the drag arrows on screen, last frame (one per handle)
     arrow_drag: Option<(usize, f64)>,   // which arrow is being dragged, and its grab offset
     arrow_turn: Option<(f64, f64)>,     // revolve arrow: cursor angle so far (unwrapped, last raw)
@@ -1110,6 +1115,10 @@ impl Default for OpenCad {
             cube_axes: true,
             settings_saved: settings::Settings::default(),
             recent: Vec::new(),
+            last_tool: None,
+            recent_tools: Vec::new(),
+            marking: None,
+            shortcut_box: None,
             arrows: Vec::new(),
             arrow_drag: None,
             arrow_turn: None,
@@ -1401,6 +1410,8 @@ impl OpenCad {
         self.timeline_height = egui::Panel::bottom("timeline").show(ui, |ui| self.timeline_bar(ui)).response.rect.height();
         mark("view");
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui));
+        self.marking_menu(&ctx);
+        self.shortcut_box(&ctx);
         mark("after the view");
         self.float_editor(&ctx);
         self.rect_size_boxes(&ctx);
