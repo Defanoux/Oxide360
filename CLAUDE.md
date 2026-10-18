@@ -1,8 +1,21 @@
 # Oxide360 — instructions for Claude Code
 
-Oxide360 (formerly opencad; the folder keeps the old name) is a Fusion 360-style parametric CAD app written from scratch in Rust,
-for Gavin's Fedora 44 KDE laptop (Framework, Wayland). Work through `TODO.md`
-one item at a time, keeping everything building and every test green.
+Oxide360 is a Fusion 360-style parametric CAD app written from scratch in
+Rust (exact OpenCASCADE geometry, egui + wgpu UI). It was called **opencad**
+until 2026-10-17 — you'll still see that name in old commits, the `OpenCad`
+state struct, and the `opencad_try_*` C++ wrappers. Read `docs/PROJECT.md`
+once for the story so far, the decisions already made and how releases work.
+
+- **Owner:** Gavin (GitHub **Defanoux**, Discord Defanoux,
+  oxide360@defanoux.uk). Fedora 44 KDE on a Framework laptop (Wayland).
+- **Repo:** https://github.com/Defanoux/Oxide360 (public, GPL-3.0-or-later).
+  Branch `main`. CI (`.github/workflows/ci.yml`) builds and runs every test
+  on Fedora 44 for each push.
+- **App id:** `io.github.Defanoux.Oxide360` (Flatpak name, desktop file,
+  Wayland app id — keep them identical). Designs are `.ox360`; old `.ocad`
+  still open.
+- **Work list:** `TODO.md` (Next → Polish → Done). `FEATURES.md` is the
+  original Fusion-parity roadmap.
 
 ## How to work (every task)
 
@@ -10,8 +23,8 @@ one item at a time, keeping everything building and every test green.
    choice and say what you chose — don't stop to ask unless it would throw
    away work.
 2. Put logic in the testable modules (`sketch.rs`, `solver.rs`, `profile.rs`,
-   `kernel.rs`, `model.rs`, `doc.rs`, `camera.rs`), not in `main.rs`. `main.rs`
-   should only wire input → those functions → drawing.
+   `kernel.rs`, `model.rs`, `doc.rs`, `camera.rs`, the `*_dialog.rs` files…),
+   not in `main.rs` / `app/`. Those only wire input → those functions → drawing.
 3. Write tests for the new behaviour. Kernel tests check **exact** volumes
    against OpenCASCADE (e.g. a fillet removes r²(1−π/4)·L). Never loosen a
    tolerance or delete a test to get green — fix the code.
@@ -21,15 +34,39 @@ one item at a time, keeping everything building and every test green.
    cargo test 2>&1 | tail -40
    ```
    No new warnings. (The GPU tests use Mesa's lavapipe; they pass headless.)
-5. `git add -A && git commit -m "<what changed>"` — one commit per TODO item
-   (or per meaningful step of a big one).
-6. Tick the item in `TODO.md` (move it to Done with a one-line note).
-7. Tell Gavin, in a few short lines: what changed, and **exactly what to try
-   in the app** (check it yourself first — see below — then he checks it). Then continue with the
-   next item unless he said to stop.
+5. Check it in the running app yourself (below) before telling Gavin.
+6. `git add -A && git commit -m "<what changed>"` — one commit per TODO item
+   (or per meaningful step of a big one), then `git push`. Commits go out as
+   `Defanoux <128421570+Defanoux@users.noreply.github.com>` (set in the
+   repo's git config) — never his personal email.
+7. Tick the item in `TODO.md` (move it to Done with a one-line note).
+8. Tell Gavin, in a few short lines: what changed, and **numbered steps of
+   exactly what to try** (he answers "1 works, 2 works, 3 …"). Then continue
+   with the next item unless he said to stop.
 
 If `cargo build` fails in a way you can't fix in a few tries, stop and show the
 error rather than rewriting large areas blind.
+
+## Talking to Gavin
+
+Plain and short. No filler, no praise. One concrete recommendation, not a
+menu of options. He pastes terminal output and screenshots; read them
+carefully (screenshots are often cropped — look for the detail he means). He
+compares everything to Fusion 360 — when he describes a behaviour, match
+Fusion's; when he shows a Fusion screenshot, copy what it does. If you claim
+you read a doc or link, actually read it. When he asks you to stop after a
+milestone, stop and give him a list of everything changed with steps to try.
+
+Things he has asked for that apply everywhere:
+- A one-off tool drops back to Select after it's used; only tools used many
+  times in a row (Line, quick constraints) stay on. Multi-step tools show a
+  hint at the top of the view ("1 of 3: click …").
+- Picking points on a body: hovering a flat face shows snap dots (middle,
+  side middles, corners — `kernel::face_snaps`); a round edge snaps to its
+  centre and lights up whole.
+- Disabled toolbar tools stay right-clickable and draggable.
+- Numbers typed in dialogs apply when the box is left (Enter / click away),
+  and slow previews (coils, sweeps) wait until a drag is let go.
 
 ## Checking your work in the app
 
@@ -40,92 +77,124 @@ target/debug/oxide360 --control 47321 &      # (run in the background)
 target/debug/oxide360 ctl '{"cmd":"screenshot","path":"<scratchpad>/s.png"}'   # then Read the PNG
 target/debug/oxide360 ctl '{"cmd":"click","x":41,"y":136}'                   # screenshot pixels
 target/debug/oxide360 ctl '{"cmd":"state"}'   # timeline, errors, bodies + volumes, sketch, dialogs
+kill $(pgrep -f -- "--control 4732[1]")      # stop YOUR copy only
 ```
-Commands: `screenshot`, `state`, `click` / `double_click` (`button`, `mods`),
-`move`, `drag` (`from`, `to`), `scroll` (`dy`), `key` ("Escape", "R", …),
-`type`, `open` / `save` / `import` (`path`), `new`, `wait` (`frames`). Each answers once
-the view has settled and any rebuild is done. In a new session the same
-commands are MCP tools (`.mcp.json`, server `oxide360 mcp`, which starts the
-app if needed). Stop the app when done; it opens on Gavin's screen.
+Commands: `screenshot`, `state`, `click` / `double_click` (`button`, `mods`:
+`["shift"]`), `move`, `drag` (`from`, `to`), `scroll` (`dy`), `key`
+("Escape", "R", …), `type`, `open` / `save` / `import` (`path`), `new`,
+`wait` (`frames`). Each answers once the view has settled and any rebuild is
+done. In a new session the same commands are MCP tools (`.mcp.json`, server
+`oxide360 mcp`, which starts the app if needed). The app opens on Gavin's
+screen — stop it when done.
 
-## Talking to Gavin
-
-Plain and short. No filler, no praise. One concrete recommendation, not a menu
-of options. He pastes terminal output and screenshots; read them carefully.
-He compares everything to Fusion 360 — when he describes a behaviour, match
-Fusion's. If you claim you read a doc or link, actually read it.
+Gotchas:
+- Screenshots are physical pixels (scale 1.7 on his screen); the image you
+  Read is shown smaller — multiply what you see by the factor it states.
+- Stop your instance with the `pgrep -f -- "--control 4732[1]"` form: `pgrep
+  -x oxide360` also matches Gavin's own window, and `pkill -f` with a plain
+  pattern kills your own shell.
+- Don't `ctl save` into his real files; `save` also adds to File → Recent.
+- Dialogs can be checked without the GUI: `src/ui_shot.rs` renders egui to a
+  PNG in a test (see `hole_dialog::tests::shots`, run with
+  `SHOT_DIR=<dir> cargo test <name> -- --ignored`).
+- The egui UI font has **no arrows (→ ↑) and no ✓** — they draw as boxes.
+  Use words or ">" in UI text, and draw ticks with lines. · — × Ø ° … ² are fine.
+- The file pickers (rfd, xdg portal) can't be driven by ctl; use `open` /
+  `import` instead.
 
 ## Commands
 
 ```
 cargo run                      # the app
-cargo test                     # all tests (currently 151)
+cargo test                     # all tests (currently ~480)
 cargo test kernel              # one module's tests
 cargo test -- --nocapture NAME # see prints from one test
+packaging/flatpak/build.sh     # Flatpak + dist/Oxide360.flatpak (see docs/PROJECT.md)
 ```
-System packages already installed: `opencascade-devel cmake gcc-c++`.
-Rust toolchain: 1.98 (edition 2024).
+System packages already installed: `opencascade-devel cmake gcc-c++ gh
+flatpak-builder`. Rust 1.98 from Fedora (edition 2024). `gh` is logged in as
+Defanoux.
 
 ## Architecture
 
+Bigger picture: the **document** (`doc.rs`) is plain data — sketches and
+features in a **timeline**. `kernel::Build` evaluates the timeline into
+OpenCASCADE solids a little each frame (per-feature errors, never a crash),
+`kernel::Model` is the result (bodies with meshes, edges, faces). The app
+keeps two kernel caches (`Slot::Committed`, `Slot::Preview` — the open
+dialog's feature added) in `app/document.rs`; `ensure_model` rebuilds only
+when its inputs changed (`KernelCache` compares every feature list — add new
+lists there).
+
 | file | owns |
 |---|---|
-| `main.rs` | the `OpenCad` state struct, small types, constants, `eframe::App::ui`, `main` |
-| `app/*.rs` | the rest of `impl OpenCad`, by topic: `document` (files, undo, kernel cache), `sketching`, `features` (extrude/revolve/pattern/plane/fillet dialogs + drag arrows), `panels` (toolbar, browser, side panels), `timeline` (timeline bar, rename, Measure), `viewport` (input + drawing) |
-| `view.rs` | egui drawing helpers: projection, lines, arcs, grid, dimensions (`linear_`, `diameter_`, `radius_`, `angle_dimension`), dashed lines, view cube. `View.trace` records drawn segments so dimensions can be clicked |
-| `icons.rs` | vector-drawn toolbar icons (`Icon`, `paint`, `button`, `dropdown`). No image files — keep it that way |
-| `camera.rs` | orbit camera, `zoom_at` (toward cursor), rays, view cube cells/labels |
-| `sketch.rs` | 2-D model. `Entity {Line, Circle, Arc, Point}`, `Constraint` (Horizontal, Vertical, Parallel, Perpendicular, Equal, Tangent, Fix, Length, Diameter, Radius, Angle, Distance, OnLine, OnCircle, OnAxis, Midpoint; `ArcEnds` is solver-internal), `Anchor {Point, Free, OnLine, OnAxis}`, `Tool`, `Editor` state machine, hit tests, delete + renumbering, `constraint_options`, tangent circles, `arc_preview`, `rectangle_preview`, `fillet_corner` / `chamfer_corner`, movable dimension labels (`label_shift`) |
-| `solver.rs` | Newton–Gauss constraint solver; `add_constraints` rejects redundant constraints; `drag` uses hop-based stiffness so far points (the opposite rectangle corner) stay put |
-| `profile.rs` | closed regions from the arrangement of lines/circles/arcs (arcs tagged so the kernel rebuilds them exactly) |
-| `model.rs` | `Mesh`, `Extrude`, `Revolve`, `EdgeFeature`, `EdgeRef`, `Follow`, `ray_hit` |
-| `kernel.rs` | OpenCASCADE: faces from regions, extrude/revolve, booleans, fillet/chamfer, flat faces, pickable edges, face-sketch resolution, end-cap following, `build()` evaluates the timeline with per-feature errors |
-| `doc.rs` | `Document` JSON save/load with validation (old files must keep loading — new fields get `#[serde(default)]`), `History` (undo/redo) |
-| `export.rs` | STEP (via kernel), 3MF, STL, OBJ |
-| `gpu.rs` | wgpu depth-buffered rendering of bodies + grid |
+| `main.rs` | the `OpenCad` state struct (one per tab), `Tabs`, small enums (`Cmd`, `Pending`, `TabRequest`, `EditTarget`, `HelpPage`, `ConstructPick`), constants (`APP_ID`, colours), `eframe::App::ui`, `main` (also `ctl` / `mcp` / file argument) |
+| `app/document.rs` | files (open / save / recent / insert / export / sketch DXF-SVG), undo, kernel caches + `inputs()`, autosave, `is_dirty`, body names/colours/materials |
+| `app/sketching.rs` | starting, editing, finishing sketches; sketch tool actions |
+| `app/features.rs` | every solid dialog's panel + commit + delete (extrude, revolve, patterns, planes, axes, points, fillet, hole, thread, shell, press pull, combine, move, sweep family, import, joint, interference, properties) and drag arrows |
+| `app/panels.rs` | title bar (File menu, Help), toolbar (`tool_group`, `run_sketch_tool`, `run_solid_tool` — tools start by name), browser (bodies, components, sketches, construction), settings, help window |
+| `app/menus.rs` | right-click marking menu, S-key Design Shortcuts box, `tool_icon` |
+| `app/timeline.rs` | timeline bar, renaming, Measure, `free_view`, `corner_under`, `face_snap_under` |
+| `app/viewport.rs` | the 3D / sketch view: all input (picking per tool/dialog) and drawing |
+| `app/control.rs` | what the control link reports (`state`) and does (open/save/new) |
+| `control.rs` | the control link: TCP JSON-lines server, `ctl` client, MCP server |
+| `kernel.rs` | OpenCASCADE: faces from regions, every feature, booleans, `Build`/`Model`, edge/face references found again each build, imports, joints (`apply_joint`, `resolve_snap`), `face_snaps`, `interference`, `exact_bounds`, `body_properties` |
+| `model.rs` | feature structs (`Extrude`, `Revolve`, `EdgeFeature`, `HoleFeature`, `SweepFeature`, `ImportFeature` + `Blob`, `JointFeature`/`JointSnap`/`JointKind`, `ConstructionPoint`, …), `Mesh`, `EdgeRef`, `Follow`, `ray_hit` |
+| `doc.rs` | `Document` (everything saved), `Feature` enum (timeline entries), `BodyId` (+ renumbering on delete), JSON save/load + validation (old files must keep loading — new fields get `#[serde(default)]`), `History` (undo/redo) |
+| `sketch.rs` | 2-D model: entities, constraints, `Tool`, `Editor` state machine, hit tests, delete + renumbering, text, projections |
+| `solver.rs` | Newton–Gauss constraint solver (`add_constraints` rejects redundant ones) |
+| `profile.rs` | closed regions of a sketch (what Extrude picks) |
+| `project.rs` | projecting body edges into a sketch, linked so they follow |
+| `spline.rs`, `spline_edit.rs`, `offset.rs`, `pattern.rs`, `rect_input.rs`, `text.rs` | sketch geometry helpers |
+| `camera.rs`, `view.rs`, `gpu.rs`, `icons.rs`, `origin.rs`, `colors.rs`, `handles.rs`, `gizmo.rs`, `inertia.rs` | camera, drawing helpers, wgpu renderer, vector icons (no image files for icons), origin planes, body colours, drag arrows, move arrows+squares, toolbar scrolling |
+| `*_dialog.rs` | one per dialog: its state and egui panel, logic testable without the app |
+| `measure.rs`, `materials.rs`, `assembly.rs` | Measure tool, physical materials + mass, components |
+| `units.rs`, `expr.rs`, `params_window.rs`, `threads.rs`, `keys.rs`, `settings.rs`, `shortcuts.rs`, `help.rs` | units + parsing, parameters/expressions, thread tables, key bindings, preferences file, tool names for menus/search, Help text + app icon |
+| `export.rs`, `sketch_export.rs`, `recovery.rs` | STL/3MF/OBJ export, sketch DXF/SVG, autosave + crash recovery |
+| `ui_shot.rs` | test-only headless UI screenshots |
 | `vendor/opencascade-sys`, `vendor/opencascade` | **patched** OCCT bindings — see below |
+| `packaging/` | `flatpak/` (manifest, desktop, metainfo, MIME, build script), `make-bundle.sh` (plain tarball) |
+| `assets/` | the logo (`oxide360.svg`, and a 256 px PNG used as the window icon) |
 
 ## Rules that keep it from breaking
 
 - **OCCT exceptions abort the process.** They aren't `std::exception`, so they
   can't cross the cxx bridge. Any new OCCT call that can fail gets a C++
-  wrapper with `try { … } catch (...) { return false/nullptr; }` in
-  `vendor/opencascade-sys/include/*.hxx`, a declaration in the matching
+  wrapper with `try { OCC_CATCH_SIGNALS … } catch (...) { return false/nullptr; }`
+  in `vendor/opencascade-sys/include/*.hxx`, a declaration in the matching
   `src/*.rs` bridge, and a `try_*` method in `vendor/opencascade` returning
-  `Option`. Existing ones: `try_fillet_edges`, `try_chamfer_edges`,
-  `try_union/subtract/intersect`, `try_revolve`. Also wrap kernel calls in
-  `catch_unwind`, as `build()` does.
-- **Never write derived data back into the document.** Face sketches store the
-  plane *as picked* (+ `follow`); the kernel re-resolves it every build. Doing
-  otherwise polluted undo history.
+  `Option`. Also wrap kernel calls in `catch_unwind`, as `build()` does.
+  (The vendor crate uses a different glam version: convert with `kv()` /
+  component-wise.)
+- **Never write derived data back into the document.** Face references store
+  the plane *as picked* (+ `follow`); the kernel re-resolves them every build.
 - **Undo** (`History`) records the document once per frame when the mouse is
   up and no text box is focused. Anything that changes the document every
-  frame (drags, a carried dimension label) must be gated so it's one step.
-- **Kernel cache** compares sketches with `Sketch::same_shape` so moving a
-  dimension label doesn't rebuild the model. Keep view-only state out of
-  `same_shape`.
+  frame (drags) must be gated so it's one step.
+- **Kernel cache**: every feature list must be compared in `ensure_model`
+  (a missing one meant edits didn't rebuild). Sketches compare with
+  `Sketch::same_shape` so view-only state doesn't rebuild.
 - **Indices shift on delete.** Deleting an entity/constraint/feature renumbers
-  everything after it. Use `retain_constraints` / `remove_constraint` (they
-  keep `label_shift` in step), `Follow::after_delete`, and the existing
-  `delete_*` functions. Clear selections that hold indices.
+  everything after it. Use the existing `delete_*` functions,
+  `BodyId::after_delete` / `after_maker_delete` (+ `shift_body_keys` /
+  `shift_maker_keys`, which also fix names, colours, materials, components),
+  `retain_constraints`, `Follow::after_delete`. Clear selections that hold
+  indices.
+- **A new timeline feature** touches: `doc::Feature` + validation,
+  `Document` field, `BuildInputs` + `Build` + `Model` errors, the kernel step,
+  `KernelCache`, `inputs()` (preview), `feature_label`, `feature_error`,
+  `feature_name_mut`, timeline name + icon, delete, double-click edit,
+  `is_dirty`, both `reset_with` paths. Grep an existing one (`Joint`) and copy.
 - **Redundant constraints**: add new constraints through
-  `solver::add_constraints`, one at a time when some may be redundant (skip
-  the ones that fail). A tangent at a shared line/arc end uses the
-  perpendicular form (radius ⟂ line); the distance form has a double root
-  there and the solver rejects it.
+  `solver::add_constraints`, one at a time when some may be redundant.
 - Coordinates: Z-up, millimetres; f64 for sketch/kernel geometry, f32 for
   rendering. Front faces −Y; home view is front-right-top.
-- Fusion behaviours already copied (keep them): tool-first constraints
-  (`Tool::Constrain`), one Dimension tool that picks length / diameter /
-  radius / angle / distance from the selection and places by click or by
-  typing; double-click edits a dimension, single click selects it, Delete
-  removes it; drag moves its label.
-- **Linux limitation**: winit doesn't deliver touchpad pinch gestures on
-  Linux. Touchpad mode zooms with Ctrl + two-finger scroll. Don't try to
-  "fix" pinch.
-- Don't add image assets, new heavy dependencies, or network access without
-  a good reason.
+- **Linux limitation**: winit doesn't deliver touchpad pinch on Linux.
+  Touchpad mode zooms with Ctrl + two-finger scroll. Don't try to "fix" pinch.
+- Don't add new heavy dependencies or network access without a good reason.
 
 ## Where new code goes
 
-New logic goes in a testable module (`sketch.rs`, `offset.rs`, …). `app/*.rs` only wires input → those functions → drawing; pick the file by topic and add `pub(crate)` to methods other files call.
+New logic goes in a testable module. `app/*.rs` only wires input → those
+functions → drawing; pick the file by topic and add `pub(crate)` to methods
+other files call.

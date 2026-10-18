@@ -1,20 +1,19 @@
-# opencad TODO
+# Oxide360 TODO
 
 Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Next
 
-Ordered by how much each makes opencad a usable part modeller (FEATURES.md
+Ordered by how much each makes Oxide360 a usable part modeller (FEATURES.md
 has the full Fusion list; this is the slice to do now). Fusion's behaviour is
 the spec for each.
 
 - **Appearances** (Fusion's Appearance, A): materials that look like metal, plastic, wood, glass — shininess and colour, per body or face, separate from Physical Material.
 - **2D drawings**: a drawing sheet with views of the part (front, top, side, iso), dimensions and a title block; export PDF/DXF.
 - **Joint limits** and motion settings (min/max, animation speed).
-- **GitHub + Flathub**: README, GPL-3.0 LICENSE, CI (build + tests), then a Flatpak.
+- **Flathub**: offline manifest (cargo-sources.json), screenshots in the metainfo, submit to flathub/flathub (new-pr). See docs/PROJECT.md → Shipping.
 
-All of the listed slice is done. Later (big, after the above): components + joints (assemblies), 2D drawings,
-sheet metal, surfaces, CAM.
+Later (big): sheet metal, surfaces, CAM, mesh bodies for big STLs.
 
 ## Polish (do when nearby code is touched)
 
@@ -23,6 +22,7 @@ sheet metal, surfaces, CAM.
 
 ## Done
 
+- Shipping: renamed to Oxide360 (app, binary, `.ox360`, settings moved), logo, Help menu with credits, GitHub repo (public, GPL-3.0, CI on Fedora 44), Flatpak (`packaging/flatpak`, `dist/Oxide360.flatpak`), release v0.1.0 with the Flatpak attached; CLAUDE.md + docs/PROJECT.md written for a handoff.
 - Right-click marking menu (eight tools round the cursor — Repeat, Undo, Redo, Delete, Press Pull, Hole, Create Sketch, Move/Copy; in a sketch Dimension, Line, Circle, Finish Sketch — and what was clicked plus common tools in a list) and the S key Design Shortcuts box (recent tools, search, Enter); File → Recent; face snap points for Joint / Construction Point; joint origins drawn with X/Y/Z.
 - Assemblies, first steps: Components (right-click bodies or ASSEMBLE → New Component; browser rows with show/hide, select, rename, Move/Copy, Dissolve) and Joints (ASSEMBLE → Joint: corner / round-edge centre / face spot on the moving part, then on another part; rigid, revolute, slider with angle and offset, flip; moves the whole component; a timeline feature). Not yet: joint limits, animating motion, cylindrical/pin-slot/planar/ball, as-built joints, components owning sketches/features.
 - Polish: export writes only visible bodies; a typed circle size dropped by clicking away now says so; tangent-circle errors in red; construction points listed in the browser (show/hide, delete).
