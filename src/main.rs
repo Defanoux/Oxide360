@@ -1805,6 +1805,8 @@ fn tol_px(mm_per_px: f64) -> f64 {
     SNAP_PX as f64 * mm_per_px
 }
 
+/// Entry point for the Oxide360 application.
+/// Handles command-line arguments, sets up the GUI, and initializes the application state.
 fn main() -> eframe::Result {
     // `oxide360 ctl [--port N] '<json>'`: one request to a running app.
     // `oxide360 mcp [--port N]`: the MCP server (for Claude Code).
