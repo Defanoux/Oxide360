@@ -1886,3 +1886,13 @@ fn main() -> eframe::Result {
         }),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tol_px() {
+        assert_eq!(tol_px(0.5), 5.0);
+    }
+}
