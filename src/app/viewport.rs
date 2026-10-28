@@ -2556,7 +2556,16 @@ impl OpenCad {
                     || self.combine_dialog.as_ref().is_some_and(|d| d.combine.target == Some(b.id) || d.combine.tools.contains(&b.id))
                     || self.move_dialog.as_ref().is_some_and(|d| d.feature.bodies.contains(&b.id));
                 let hovered = self.copy_body_hover == Some(b.id) || self.shell_hover.and_then(|h| h.1) == Some(b.id) || self.combine_hover == Some(b.id) || self.move_hover == Some(b.id) || self.appearance_hover == Some(b.id);
-                let c = if hovered && !picked {
+                // Under the Appearance tool the body a click would change lights up
+                // whole (strongly, so it reads on any look) until it has that look.
+                let has_it = matches!(self.appearance_dialog.as_ref().and_then(|d| d.current), Some(appearance_dialog::Choice::Give(a)) if self.body_appearance(b.id).is_some_and(|x| x.name == a.name))
+                    || (matches!(self.appearance_dialog.as_ref().and_then(|d| d.current), Some(appearance_dialog::Choice::Remove)) && self.body_appearance(b.id).is_none());
+                let appearance_target = self.appearance_hover == Some(b.id) && !has_it;
+                let hovered = hovered && (self.appearance_hover != Some(b.id) || appearance_target);
+                let c = if appearance_target {
+                    let mix = |x: u8, y: u8| ((x as u16 + y as u16) / 2) as u8;
+                    Color32::from_rgb(mix(c.r(), COL_HOVER.r()), mix(c.g(), COL_HOVER.g()), mix(c.b(), COL_HOVER.b()))
+                } else if hovered && !picked {
                     let mix = |x: u8, y: u8| ((x as u16 * 3 + y as u16) / 4) as u8;
                     Color32::from_rgb(mix(c.r(), COL_HOVER.r()), mix(c.g(), COL_HOVER.g()), mix(c.b(), COL_HOVER.b()))
                 } else if self.selected_bodies.contains(&b.id) || picked {
@@ -2565,9 +2574,8 @@ impl OpenCad {
                 } else {
                     c
                 };
-                // Picked / hovered bodies are shaded plain so the tint reads, except
-                // under the Appearance tool: the body just clicked shows its new look.
-                let plain = previewing || picked || self.selected_bodies.contains(&b.id) || (hovered && self.appearance_hover != Some(b.id));
+                // Picked / hovered bodies are shaded plain so the tint reads.
+                let plain = previewing || picked || self.selected_bodies.contains(&b.id) || hovered;
                 let finish = if plain { gpu::Finish::PLAIN } else { self.body_finish(b.id) };
                 (k, &b.mesh, c, finish)
             })

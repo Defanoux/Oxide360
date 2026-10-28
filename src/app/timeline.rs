@@ -286,6 +286,7 @@ impl OpenCad {
             && self.shell_dialog.is_none()
             && self.offset_dialog.is_none()
             && self.combine_dialog.is_none()
+            && self.appearance_dialog.is_none()
             && self.move_dialog.is_none()
             && self.import_dialog.is_none()
             && self.joint_dialog.is_none()
