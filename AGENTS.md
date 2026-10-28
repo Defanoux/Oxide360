@@ -39,7 +39,14 @@ App (impl OpenCad, src/app/)
 - timeline.rs: timeline bar, renaming, Measure · menus.rs: right-click menu, S-key shortcuts
 - control.rs: what the control link asks of a design
 
-Dialogs: *_dialog.rs files, one per feature (hole, shell, sweep, thread, joint, …); params_window.rs
+Dialogs: src/*_dialog.rs (all directly in src/, no subfolder), one per feature; src/params_window.rs
 Rendering: gpu.rs (wgpu solids), view.rs (geometry to egui shapes), camera.rs, origin.rs, gizmo.rs, handles.rs, icons.rs
 Input: keys.rs, shortcuts.rs, rect_input.rs, inertia.rs
 Other: control.rs (drive the app externally), measure.rs, help.rs, ui_shot.rs (test-only UI screenshots)
+
+## Planning (Plan mode)
+- Before planning, read the code you'd change: use the module map, grep, then read the specific functions.
+- Never remove or rewrite existing features unless the user asks.
+- If a design choice is unclear (what gets saved, where UI goes, naming), ask the user with the question tool before writing the plan.
+- Each step: one file, one change, and how to verify it (cargo check, a named test, or what to look for in the app).
+- Order steps so each one compiles alone: new types first, then the code that uses them.
