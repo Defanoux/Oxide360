@@ -36,6 +36,7 @@ impl OpenCad {
             body_colors: self.sorted_body_colors(),
             body_materials: self.sorted_body_materials(),
             body_appearances: self.sorted_body_appearances(),
+            face_appearances: self.face_appearances.clone(),
         }
     }
 
@@ -145,6 +146,7 @@ impl OpenCad {
         self.body_colors = self.body_colors.drain().filter_map(|(id, c)| Some((id.after_delete(revolve, k)?, c))).collect();
         self.body_materials = self.body_materials.drain().filter_map(|(id, m)| Some((id.after_delete(revolve, k)?, m))).collect();
         self.body_appearances = self.body_appearances.drain().filter_map(|(id, a)| Some((id.after_delete(revolve, k)?, a))).collect();
+        self.face_appearances = self.face_appearances.drain(..).filter_map(|f| Some(appearance::FaceAppearance { body: f.body.after_delete(revolve, k)?, ..f })).collect();
         assembly::remap(&mut self.components, |id| id.after_delete(revolve, k));
         self.properties_of = None;
         for c in &mut self.copies {
@@ -181,6 +183,7 @@ impl OpenCad {
         self.body_colors = self.body_colors.drain().filter_map(|(id, c)| Some((id.after_maker_delete(gone)?, c))).collect();
         self.body_materials = self.body_materials.drain().filter_map(|(id, m)| Some((id.after_maker_delete(gone)?, m))).collect();
         self.body_appearances = self.body_appearances.drain().filter_map(|(id, a)| Some((id.after_maker_delete(gone)?, a))).collect();
+        self.face_appearances = self.face_appearances.drain(..).filter_map(|f| Some(appearance::FaceAppearance { body: f.body.after_maker_delete(gone)?, ..f })).collect();
         assembly::remap(&mut self.components, |id| id.after_maker_delete(gone));
         self.properties_of = None;
         for c in &mut self.copies {
@@ -338,6 +341,7 @@ impl OpenCad {
             || self.sections != self.saved.sections
             || self.sorted_body_materials() != self.saved.body_materials
             || self.sorted_body_appearances() != self.saved.body_appearances
+            || self.face_appearances != self.saved.face_appearances
     }
 
     /// Autosave this design if it has changes and it's time (see `recovery`);
@@ -473,6 +477,7 @@ impl OpenCad {
         self.body_colors = doc.body_colors.iter().cloned().collect();
         self.body_materials = doc.body_materials.iter().cloned().collect();
         self.body_appearances = doc.body_appearances.iter().cloned().collect();
+        self.face_appearances = doc.face_appearances.clone();
         self.properties_of = None;
         self.interference = None;
         self.renaming = None;
@@ -569,6 +574,7 @@ impl OpenCad {
         self.body_colors = doc.body_colors.into_iter().collect();
         self.body_materials = doc.body_materials.into_iter().collect();
         self.body_appearances = doc.body_appearances.into_iter().collect();
+        self.face_appearances = doc.face_appearances;
         self.properties_of = None;
         self.interference = None;
         self.renaming = None;

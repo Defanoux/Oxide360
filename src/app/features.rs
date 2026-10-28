@@ -1037,6 +1037,7 @@ impl OpenCad {
     pub(crate) fn close_appearance(&mut self) {
         self.appearance_dialog = None;
         self.appearance_hover = None;
+        self.appearance_face_hover = None;
     }
 
     /// Give a body an appearance, or take its appearance off.
@@ -1051,16 +1052,47 @@ impl OpenCad {
         }
     }
 
+    /// Give face `face` of body `b` (an index into the committed model's
+    /// bodies) its own appearance, or take it off; (`point`, `normal`): where
+    /// it was clicked.
+    pub(crate) fn apply_face_appearance(&mut self, b: usize, face: u32, point: DVec3, normal: DVec3, choice: appearance_dialog::Choice) {
+        let model = self.model(Slot::Committed);
+        let Some(body) = model.bodies.get(b) else { return };
+        let (id, mesh, tri_face) = (body.id, body.mesh.clone(), body.tri_face.clone());
+        let name = match choice {
+            appearance_dialog::Choice::Give(a) => Some(a.name),
+            appearance_dialog::Choice::Remove => None,
+        };
+        let same = |f: &appearance::FaceAppearance| appearance::face_under(&mesh, &tri_face, DVec3::from(f.point), DVec3::from(f.normal)) == Some(face);
+        appearance::set_face(&mut self.face_appearances, id, point, normal, name, same);
+    }
+
+    /// The faces of a body with their own appearance now (later ones win
+    /// where two land on the same face).
+    pub(crate) fn body_face_looks(&self, body: &kernel::Body) -> Vec<(u32, &'static appearance::Appearance)> {
+        let mut out: Vec<(u32, &'static appearance::Appearance)> = Vec::new();
+        for f in self.face_appearances.iter().filter(|f| f.body == body.id) {
+            let (Some(a), Some(face)) = (appearance::by_name(&f.appearance), appearance::face_under(&body.mesh, &body.tri_face, DVec3::from(f.point), DVec3::from(f.normal))) else { continue };
+            out.retain(|(g, _)| *g != face);
+            out.push((face, a));
+        }
+        out
+    }
+
     pub(crate) fn appearance_panel(&mut self, ui: &mut egui::Ui) {
         let mut used: Vec<&'static appearance::Appearance> = Vec::new();
         for a in appearance::LIBRARY {
-            if self.body_ids.iter().any(|&id| self.body_appearance(id).is_some_and(|b| b.name == a.name)) {
+            let on_body = self.body_ids.iter().any(|&id| self.body_appearance(id).is_some_and(|b| b.name == a.name));
+            let on_face = self.face_appearances.iter().any(|f| f.appearance == a.name && self.body_ids.contains(&f.body));
+            if on_body || on_face {
                 used.push(a);
             }
         }
         let picked = self.selected_bodies.clone();
         let Some(d) = self.appearance_dialog.as_mut() else { return };
+        let faces = d.faces;
         match d.panel(ui, &used, picked.len()) {
+            appearance_dialog::Action::Picked(_) if faces => {}
             appearance_dialog::Action::Picked(choice) => {
                 // Given to the selected bodies, which then let go so it shows.
                 for id in picked {

@@ -741,6 +741,7 @@ struct OpenCad {
     combine_dialog: Option<CombineDialog>,
     appearance_dialog: Option<AppearanceDialog>, // Appearance (A), while open
     appearance_hover: Option<BodyId>,            // the body a click would give it to
+    appearance_face_hover: Option<(usize, u32, glam::DVec3, glam::DVec3)>, // Faces: body index, face, point, normal
     combine_errors: Vec<Option<String>>,
     combine_hover: Option<BodyId>,             // the body a click would pick (Combine)
     moves: Vec<model::MoveFeature>,            // Move/Copy features
@@ -851,6 +852,7 @@ struct OpenCad {
     body_colors: HashMap<BodyId, [u8; 3]>,
     body_materials: HashMap<BodyId, String>, // physical materials the user gave bodies
     body_appearances: HashMap<BodyId, String>, // appearances the user gave bodies (names)
+    face_appearances: Vec<appearance::FaceAppearance>, // faces with their own appearance
     properties_of: Option<BodyId>,           // the body whose Properties window is open
     interference: Option<Interference>,      // Inspect → Interference, while open  // colours the user gave bodies
     body_ids: Vec<BodyId>,                  // the bodies of the last build, in order
@@ -982,6 +984,7 @@ impl Default for OpenCad {
             combine_dialog: None,
             appearance_dialog: None,
             appearance_hover: None,
+            appearance_face_hover: None,
             combine_errors: Vec::new(),
             combine_hover: None,
             moves: Vec::new(),
@@ -1095,6 +1098,7 @@ impl Default for OpenCad {
             body_colors: HashMap::new(),
             body_materials: HashMap::new(),
             body_appearances: HashMap::new(),
+            face_appearances: Vec::new(),
             properties_of: None,
             interference: None,
             body_ids: Vec::new(),

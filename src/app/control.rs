@@ -28,7 +28,7 @@ impl OpenCad {
                 .map(|b| {
                     let (volume, area, center) = kernel::body_properties(&b.shape);
                     let m = self.body_material(b.id);
-                    json!({"name": self.body_name(b.id), "material": m.name, "appearance": self.body_appearance(b.id).map(|a| a.name), "mass_g": materials::mass_g(volume, m.density), "made_by": self.feature_label(b.id.feature), "volume_mm3": volume, "area_mm2": area, "center": [center.x, center.y, center.z], "hidden": self.hidden_bodies.contains(&b.id)})
+                    json!({"name": self.body_name(b.id), "material": m.name, "appearance": self.body_appearance(b.id).map(|a| a.name), "face_appearances": self.body_face_looks(b).iter().map(|(_, a)| a.name).collect::<Vec<_>>(), "mass_g": materials::mass_g(volume, m.density), "made_by": self.feature_label(b.id.feature), "volume_mm3": volume, "area_mm2": area, "center": [center.x, center.y, center.z], "hidden": self.hidden_bodies.contains(&b.id)})
                 })
                 .collect()
         });

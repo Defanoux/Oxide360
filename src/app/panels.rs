@@ -1459,9 +1459,16 @@ impl OpenCad {
                             self.open_appearance();
                             ui.close();
                         }
-                        if let Some(a) = self.body_appearance(id) {
-                            if ui.button("Remove Appearance").on_hover_text(format!("Back to its own colour (now {})", a.name)).clicked() {
+                        let face_looks = self.face_appearances.iter().filter(|f| f.body == id).count();
+                        if self.body_appearance(id).is_some() || face_looks > 0 {
+                            let now = match (self.body_appearance(id), face_looks) {
+                                (Some(a), 0) => a.name.to_string(),
+                                (Some(a), n) => format!("{}, and {n} face{}", a.name, if n == 1 { "" } else { "s" }),
+                                (None, n) => format!("{n} face{}", if n == 1 { "" } else { "s" }),
+                            };
+                            if ui.button("Remove Appearance").on_hover_text(format!("Back to its own colour (now {now})")).clicked() {
                                 self.body_appearances.remove(&id);
+                                self.face_appearances.retain(|f| f.body != id);
                                 ui.close();
                             }
                         }

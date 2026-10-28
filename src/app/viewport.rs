@@ -651,7 +651,30 @@ impl OpenCad {
         crate::mark("Appearance: click bodies");
         // --- Appearance: click bodies to give them the picked appearance ---
         self.appearance_hover = None;
-        if let (Some(choice), None) = (self.appearance_dialog.as_ref().and_then(|d| d.current), self.active) {
+        self.appearance_face_hover = None;
+        let on_faces = self.appearance_dialog.as_ref().is_some_and(|d| d.faces);
+        if let (Some(choice), None, true) = (self.appearance_dialog.as_ref().and_then(|d| d.current), self.active, on_faces) {
+            // Faces: the face under the mouse (any face, flat or curved).
+            self.ensure_model(Slot::Committed);
+            if let Some(px) = hover_px {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                let model = self.model(Slot::Committed);
+                self.appearance_face_hover = model
+                    .bodies
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| !self.hidden_bodies.contains(&b.id))
+                    .filter_map(|(k, b)| model::ray_hit_tri(&b.mesh, ray.origin, ray.dir).map(|(t, tri)| (t, k, tri)))
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .and_then(|(t, k, tri)| {
+                        let b = &model.bodies[k];
+                        Some((k, *b.tri_face.get(tri)?, ray.at(t).as_dvec3(), b.mesh.normal(tri).as_dvec3()))
+                    });
+            }
+            if let (true, Some((k, face, p, n))) = (response.clicked(), self.appearance_face_hover) {
+                self.apply_face_appearance(k, face, p, n, choice);
+            }
+        } else if let (Some(choice), None) = (self.appearance_dialog.as_ref().and_then(|d| d.current), self.active) {
             self.ensure_model(Slot::Committed);
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
@@ -2543,7 +2566,8 @@ impl OpenCad {
             model.bodies.iter().enumerate().filter(|(_, b)| self.hidden_bodies.contains(&b.id)).map(|(k, _)| k).collect()
         };
         let mut meshes: Vec<(&Mesh, Color32, gpu::Finish)> = Vec::new();
-        let shaded: Vec<(usize, &Mesh, Color32, gpu::Finish)> = model
+        // (body index, mesh, colour, finish, shown with its own looks — faces too)
+        let shaded: Vec<(usize, &Mesh, Color32, gpu::Finish, bool)> = model
             .bodies
             .iter()
             .enumerate()
@@ -2577,20 +2601,20 @@ impl OpenCad {
                 // Picked / hovered bodies are shaded plain so the tint reads.
                 let plain = previewing || picked || self.selected_bodies.contains(&b.id) || hovered;
                 let finish = if plain { gpu::Finish::PLAIN } else { self.body_finish(b.id) };
-                (k, &b.mesh, c, finish)
+                (k, &b.mesh, c, finish, !plain)
             })
             .collect();
         match &cuts {
             // Cut: each body's remains instead, in its colour.
             Some(cuts) => {
                 for c in cuts {
-                    if let Some(&(_, _, col, finish)) = shaded.iter().find(|(k, ..)| *k == c.body) {
+                    if let Some(&(_, _, col, finish, _)) = shaded.iter().find(|(k, ..)| *k == c.body) {
                         meshes.push((&c.mesh, col, finish));
                     }
                 }
             }
             None => {
-                for &(_, m, c, finish) in &shaded {
+                for &(_, m, c, finish, _) in &shaded {
                     meshes.push((m, c, finish));
                 }
             }
@@ -2604,6 +2628,33 @@ impl OpenCad {
                 for (m, ..) in &meshes {
                     if let Some(c) = cuts.iter().find(|c| std::ptr::eq(&c.mesh, *m)) {
                         scene.tint(first, &c.cap, [0.86, 0.52, 0.30]);
+                    }
+                    first += m.tris.len();
+                }
+            }
+            // Faces with their own appearance (not on a section's cut pieces),
+            // and under the Appearance tool's Faces the one a click would change, lit.
+            if cuts.is_none() {
+                let mut first = 0;
+                for &(k, m, c, _, looks) in &shaded {
+                    let body = &model.bodies[k];
+                    let looks = if looks { self.body_face_looks(body) } else { Vec::new() };
+                    for &(face, a) in &looks {
+                        let which: Vec<bool> = body.tri_face.iter().map(|&f| f == face).collect();
+                        let color = rgb(Color32::from_rgb(a.color[0], a.color[1], a.color[2]));
+                        scene.restyle(first, &which, color, gpu::Finish { metal: a.metal, gloss: a.gloss, opacity: a.opacity });
+                    }
+                    let has_it = |face: u32| match self.appearance_dialog.as_ref().and_then(|d| d.current) {
+                        Some(appearance_dialog::Choice::Give(a)) => looks.iter().any(|(f, b)| *f == face && b.name == a.name),
+                        Some(appearance_dialog::Choice::Remove) => !looks.iter().any(|(f, _)| *f == face),
+                        None => false,
+                    };
+                    if let Some((_, face, ..)) = self.appearance_face_hover.filter(|h| h.0 == k && !has_it(h.1)) {
+                        let under = looks.iter().find(|(f, _)| *f == face).map_or(c, |(_, a)| Color32::from_rgb(a.color[0], a.color[1], a.color[2]));
+                        let mix = |x: u8, y: u8| ((x as u16 + y as u16) / 2) as u8;
+                        let lit = Color32::from_rgb(mix(under.r(), COL_HOVER.r()), mix(under.g(), COL_HOVER.g()), mix(under.b(), COL_HOVER.b()));
+                        let which: Vec<bool> = body.tri_face.iter().map(|&f| f == face).collect();
+                        scene.restyle(first, &which, rgb(lit), gpu::Finish::PLAIN);
                     }
                     first += m.tris.len();
                 }
@@ -2781,9 +2832,9 @@ impl OpenCad {
         if let Some(d) = &self.appearance_dialog {
             let hint = match d.current {
                 None => "Pick an appearance in the Appearance box".to_string(),
-                Some(appearance_dialog::Choice::Give(a)) => format!("Click bodies to make them {}   (Esc when done)", a.name),
-                Some(appearance_dialog::Choice::Remove) => "Click bodies to take their appearance off   (Esc when done)".to_string(),
+                Some(_) => format!("{}   (Esc when done)", d.hint(0).trim_end_matches('.')),
             };
+
             painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
         }
 

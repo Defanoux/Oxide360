@@ -1,5 +1,6 @@
 //! The Appearance dialog (Fusion's, A): pick an appearance from the library
-//! (or the ones already in the design), then click bodies to give it to them.
+//! (or the ones already in the design), then click bodies — or, with Apply To:
+//! Faces, single faces — to give it to them.
 //! It stays open until Close, like Fusion's.
 
 use crate::appearance::{self, Appearance, Category};
@@ -17,6 +18,8 @@ pub enum Choice {
 pub struct AppearanceDialog {
     pub current: Option<Choice>,
     pub search: String,
+    /// Apply To: Faces (else whole bodies).
+    pub faces: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -73,17 +76,28 @@ pub fn swatch(ui: &mut egui::Ui, a: &Appearance, size: f32) -> egui::Response {
 }
 
 impl AppearanceDialog {
+    /// What to do next, in words.
+    pub fn hint(&self, bodies_picked: usize) -> String {
+        let what = if self.faces { "faces" } else { "bodies" };
+        match (self.current, bodies_picked) {
+            (None, n) if n > 0 && !self.faces => format!("Pick an appearance for the {n} selected {}.", if n == 1 { "body" } else { "bodies" }),
+            (None, _) => format!("Pick an appearance, then click {what} in the view."),
+            (Some(Choice::Give(a)), _) => format!("Click {what} to make them {}.", a.name),
+            (Some(Choice::Remove), _) => format!("Click {what} to take their appearance off."),
+        }
+    }
+
     /// `in_design`: the appearances bodies have now; `bodies_picked`: how
     /// many bodies were selected when it opened (a pick goes to them).
     pub fn panel(&mut self, ui: &mut egui::Ui, in_design: &[&'static Appearance], bodies_picked: usize) -> Action {
         let mut action = Action::None;
         ui.heading("Appearance");
-        ui.label(match (self.current, bodies_picked) {
-            (None, 0) => "Pick an appearance, then click bodies in the view.".to_string(),
-            (None, n) => format!("Pick an appearance for the {n} selected {}.", if n == 1 { "body" } else { "bodies" }),
-            (Some(Choice::Give(a)), _) => format!("Click bodies to make them {}.", a.name),
-            (Some(Choice::Remove), _) => "Click bodies to take their appearance off.".to_string(),
+        ui.horizontal(|ui| {
+            ui.label("Apply To");
+            ui.selectable_value(&mut self.faces, false, "Bodies").on_hover_text("A click gives the whole body the appearance");
+            ui.selectable_value(&mut self.faces, true, "Faces").on_hover_text("A click gives one face its own appearance, over its body's");
         });
+        ui.label(self.hint(bodies_picked));
         ui.separator();
         let mut row = |ui: &mut egui::Ui, choice: Choice, current: &mut Option<Choice>| {
             let on = *current == Some(choice);
@@ -157,15 +171,25 @@ mod tests {
     }
 
     #[test]
+    fn the_hint_says_bodies_or_faces() {
+        let mut d = AppearanceDialog { current: appearance::by_name("Oak").map(Choice::Give), ..Default::default() };
+        assert_eq!(d.hint(0), "Click bodies to make them Oak.");
+        d.faces = true;
+        assert_eq!(d.hint(3), "Click faces to make them Oak.");
+        d.current = None;
+        assert_eq!(d.hint(3), "Pick an appearance, then click faces in the view.", "selected bodies only take a pick in Bodies");
+    }
+
+    #[test]
     #[ignore]
     fn shots() {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
-        let mut d = AppearanceDialog { current: appearance::by_name("Oak").map(Choice::Give), search: String::new() };
+        let mut d = AppearanceDialog { current: appearance::by_name("Oak").map(Choice::Give), search: String::new(), faces: true };
         let used = [appearance::by_name("Oak").unwrap(), appearance::by_name("Glass - Clear").unwrap()];
         crate::ui_shot::shot(&format!("{dir}/appearance.png"), [340, 420], |ui| {
             d.panel(ui, &used, 0);
         });
-        let mut d = AppearanceDialog { current: None, search: "polished".into() };
+        let mut d = AppearanceDialog { current: None, search: "polished".into(), faces: false };
         crate::ui_shot::shot(&format!("{dir}/appearance_search.png"), [340, 420], |ui| {
             d.panel(ui, &[], 2);
         });

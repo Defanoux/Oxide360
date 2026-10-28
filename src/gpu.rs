@@ -260,6 +260,18 @@ impl Scene {
         }
     }
 
+    /// Give some triangles of the mesh whose triangles start at triangle
+    /// `first` a look of their own (faces with their own appearance).
+    pub fn restyle(&mut self, first: usize, which: &[bool], color: [f32; 3], finish: Finish) {
+        for (t, _) in which.iter().enumerate().filter(|(_, on)| **on) {
+            for v in 0..3 {
+                if let Some(x) = self.tris.get_mut((first + t) * 3 + v) {
+                    x[6..12].copy_from_slice(&[color[0], color[1], color[2], finish.metal, finish.gloss, finish.opacity]);
+                }
+            }
+        }
+    }
+
     /// Add depth-tested lines such as the grid. They're nudged a hair toward
     /// the viewer, so a line lying exactly on a face (the grid under a part
     /// seen from below) shows on that face, while anything properly in front
@@ -1048,6 +1060,21 @@ mod tests {
         assert!(glossy > plain + plain / 20, "gloss adds highlights: {glossy} vs {plain}");
         assert!(rubber >= plain && rubber < glossy, "rubber is nearly plain: {rubber}");
         assert!(metal.abs_diff(plain) > plain / 20, "metal looks different: {metal} vs {plain}");
+    }
+
+    #[test]
+    fn restyled_triangles_take_their_own_look() {
+        let m = rect_body(0.0, 0.0, 10.0, 10.0, 10.0);
+        let cam = OrbitCamera::default();
+        let mut s = Scene::build(&[(&m, [0.5, 0.5, 0.5], Finish::PLAIN), (&m, [0.5, 0.5, 0.5], Finish::PLAIN)], &cam, 1.5, Style::Shaded);
+        let n = m.tris.len();
+        let mut which = vec![false; n];
+        which[1] = true;
+        let glass = Finish { metal: 0.0, gloss: 1.0, opacity: 0.3 };
+        s.restyle(n, &which, [1.0, 0.0, 0.0], glass);
+        let looks: Vec<usize> = (0..2 * n).filter(|t| s.tris[t * 3][6..12] == [1.0, 0.0, 0.0, 0.0, 1.0, 0.3]).collect();
+        assert_eq!(looks, [n + 1], "only that triangle of the second body");
+        assert_eq!(split_clear(&s.tris).1.len(), 3, "and it's drawn see-through");
     }
 
     #[test]
