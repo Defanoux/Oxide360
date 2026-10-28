@@ -289,6 +289,9 @@ pub struct Document {
     /// Physical materials the user gave bodies (others are Steel).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub body_materials: Vec<(BodyId, String)>,
+    /// Appearances the user gave bodies, by name (`appearance::LIBRARY`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body_appearances: Vec<(BodyId, String)>,
 }
 
 /// Viewing choices saved with a design: hidden bodies, sketch visibility
@@ -850,6 +853,7 @@ mod tests {
             body_names: Vec::new(),
             body_colors: Vec::new(),
             body_materials: Vec::new(),
+            body_appearances: Vec::new(),
         }
     }
 
@@ -1338,6 +1342,16 @@ mod tests {
         assert_eq!(from_json(&to_json(&doc)).unwrap().body_materials[0].1, "PLA");
         let v: serde_json::Value = serde_json::from_str(&to_json(&sample())).unwrap();
         assert!(v["document"].get("body_materials").is_none(), "nothing stored when all are steel");
+    }
+
+    #[test]
+    fn body_appearances_save_and_old_files_have_none() {
+        let mut doc = sample();
+        doc.body_appearances = vec![(BodyId { feature: Feature::Extrude(0), piece: 0 }, "Brass - Polished".into())];
+        assert_eq!(from_json(&to_json(&doc)).unwrap().body_appearances[0].1, "Brass - Polished");
+        let json = to_json(&sample());
+        assert!(!json.contains("body_appearances"), "nothing stored when none chosen");
+        assert!(from_json(&json).unwrap().body_appearances.is_empty());
     }
 
     #[test]

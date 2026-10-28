@@ -72,6 +72,7 @@ pub(crate) fn tool_icon(name: &str, sketching: bool) -> Option<Icon> {
         ("Shell", _) => Icon::Shell,
         ("Move/Copy", _) => Icon::Move,
         ("Combine", _) => Icon::Combine,
+        ("Appearance", _) => Icon::Appearance,
         ("Change Parameters", _) => Icon::Parameters,
         ("Measure", _) => Icon::Measure,
         ("Undo", _) => Icon::Undo,

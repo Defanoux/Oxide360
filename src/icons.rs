@@ -42,6 +42,7 @@ pub enum Icon {
     Coil,
     Import,
     Joint,
+    Appearance,
     Component,
     Interference,
     Break,
@@ -699,6 +700,13 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             line((0.5, 0.5), (0.5, 0.9), s);
             poly(&[(0.2, 0.35), (0.55, 0.2), (0.85, 0.35), (0.5, 0.5)], blue);
         }
+        Icon::Appearance => {
+            // Three paint balls: metal, red plastic, wood, each with a highlight.
+            for (x, y, c) in [(0.3, 0.32, Color32::from_rgb(175, 180, 188)), (0.7, 0.36, Color32::from_rgb(205, 45, 45)), (0.5, 0.7, Color32::from_rgb(190, 145, 95))] {
+                painter.circle_filled(p(x, y), w * 0.2, tint(c));
+                painter.circle_filled(p(x - 0.07, y - 0.07), w * 0.05, tint(Color32::from_gray(245)));
+            }
+        }
         Icon::Joint => {
             // Two blocks meeting at a pin (orange).
             poly(&[(0.1, 0.55), (0.48, 0.55), (0.48, 0.9), (0.1, 0.9)], blue_dark);
@@ -1027,7 +1035,7 @@ mod shot_tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [720, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil, Icon::Import, Icon::Interference, Icon::Component, Icon::Joint] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil, Icon::Import, Icon::Interference, Icon::Component, Icon::Joint, Icon::Appearance] {
                     button(ui, icon, "", true, false);
                 }
             });

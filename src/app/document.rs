@@ -35,6 +35,7 @@ impl OpenCad {
             body_names: self.sorted_body_names(),
             body_colors: self.sorted_body_colors(),
             body_materials: self.sorted_body_materials(),
+            body_appearances: self.sorted_body_appearances(),
         }
     }
 
@@ -92,15 +93,34 @@ impl OpenCad {
         materials::by_name(self.body_materials.get(&id).map_or(materials::DEFAULT, String::as_str))
     }
 
+    pub(crate) fn sorted_body_appearances(&self) -> Vec<(BodyId, String)> {
+        let mut v: Vec<(BodyId, String)> = self.body_appearances.iter().map(|(&k, a)| (k, a.clone())).collect();
+        v.sort();
+        v
+    }
+
+    /// A body's appearance, if it has one this version knows.
+    pub(crate) fn body_appearance(&self, id: BodyId) -> Option<&'static appearance::Appearance> {
+        self.body_appearances.get(&id).and_then(|n| appearance::by_name(n))
+    }
+
+    /// How a body's surface is shaded: its appearance's finish, else plain.
+    pub(crate) fn body_finish(&self, id: BodyId) -> gpu::Finish {
+        self.body_appearance(id).map_or(gpu::Finish::PLAIN, |a| gpu::Finish { metal: a.metal, gloss: a.gloss, opacity: a.opacity })
+    }
+
     pub(crate) fn sorted_body_colors(&self) -> Vec<(BodyId, [u8; 3])> {
         let mut v: Vec<(BodyId, [u8; 3])> = self.body_colors.iter().map(|(&k, &c)| (k, c)).collect();
         v.sort();
         v
     }
 
-    /// A body's colour: the one the user picked, else a default by the order
-    /// bodies were made in.
+    /// A body's colour: its appearance's, else the one the user picked, else
+    /// a default by the order bodies were made in.
     pub(crate) fn body_color(&self, id: BodyId) -> Color32 {
+        if let Some(a) = self.body_appearance(id) {
+            return Color32::from_rgb(a.color[0], a.color[1], a.color[2]);
+        }
         // By how old the body is among the bodies there are now, so no two share a default.
         let at = |b: &BodyId| (self.timeline.iter().position(|f| *f == b.feature).unwrap_or(usize::MAX), b.piece);
         let rank = colors::rank(self.body_ids.iter().map(at), &at(&id));
@@ -124,6 +144,7 @@ impl OpenCad {
         self.body_names = self.body_names.drain().filter_map(|(id, n)| Some((id.after_delete(revolve, k)?, n))).collect();
         self.body_colors = self.body_colors.drain().filter_map(|(id, c)| Some((id.after_delete(revolve, k)?, c))).collect();
         self.body_materials = self.body_materials.drain().filter_map(|(id, m)| Some((id.after_delete(revolve, k)?, m))).collect();
+        self.body_appearances = self.body_appearances.drain().filter_map(|(id, a)| Some((id.after_delete(revolve, k)?, a))).collect();
         assembly::remap(&mut self.components, |id| id.after_delete(revolve, k));
         self.properties_of = None;
         for c in &mut self.copies {
@@ -159,6 +180,7 @@ impl OpenCad {
         self.body_names = self.body_names.drain().filter_map(|(id, n)| Some((id.after_maker_delete(gone)?, n))).collect();
         self.body_colors = self.body_colors.drain().filter_map(|(id, c)| Some((id.after_maker_delete(gone)?, c))).collect();
         self.body_materials = self.body_materials.drain().filter_map(|(id, m)| Some((id.after_maker_delete(gone)?, m))).collect();
+        self.body_appearances = self.body_appearances.drain().filter_map(|(id, a)| Some((id.after_maker_delete(gone)?, a))).collect();
         assembly::remap(&mut self.components, |id| id.after_maker_delete(gone));
         self.properties_of = None;
         for c in &mut self.copies {
@@ -315,6 +337,7 @@ impl OpenCad {
             || self.joints != self.saved.joints
             || self.sections != self.saved.sections
             || self.sorted_body_materials() != self.saved.body_materials
+            || self.sorted_body_appearances() != self.saved.body_appearances
     }
 
     /// Autosave this design if it has changes and it's time (see `recovery`);
@@ -449,6 +472,7 @@ impl OpenCad {
         self.body_names = doc.body_names.iter().cloned().collect();
         self.body_colors = doc.body_colors.iter().cloned().collect();
         self.body_materials = doc.body_materials.iter().cloned().collect();
+        self.body_appearances = doc.body_appearances.iter().cloned().collect();
         self.properties_of = None;
         self.interference = None;
         self.renaming = None;
@@ -544,6 +568,7 @@ impl OpenCad {
         self.body_names = doc.body_names.into_iter().collect();
         self.body_colors = doc.body_colors.into_iter().collect();
         self.body_materials = doc.body_materials.into_iter().collect();
+        self.body_appearances = doc.body_appearances.into_iter().collect();
         self.properties_of = None;
         self.interference = None;
         self.renaming = None;

@@ -722,6 +722,8 @@ impl OpenCad {
             "Change Parameters" => self.params_window.open = !self.params_window.open,
             "Combine" if self.combine_dialog.is_some() => self.cancel_combine(),
             "Combine" => self.open_combine(None),
+            "Appearance" if self.appearance_dialog.is_some() => self.close_appearance(),
+            "Appearance" => self.open_appearance(),
             _ => {}
         }
     }
@@ -921,6 +923,7 @@ impl OpenCad {
                     ToolItem { name: "Move/Copy", icon: Icon::Move, tip: "Move/Copy (M): move or turn bodies — drag the arrows and rings, type distances and angles, or turn about an axis", enabled: has_bodies, on: self.move_dialog.is_some() },
                     ToolItem { name: "Change Parameters", icon: Icon::Parameters, tip: "Change Parameters: named values (width, depth…) that dimensions and boxes can use", enabled: true, on: self.params_window.open },
                     ToolItem { name: "Combine", icon: Icon::Combine, tip: "Combine: join, cut or intersect bodies — a target body and tool bodies", enabled: self.body_count > 1, on: self.combine_dialog.is_some() },
+                    ToolItem { name: "Appearance", icon: Icon::Appearance, tip: "Appearance (A): make bodies look like metal, plastic, paint, rubber, glass or wood — pick one, then click bodies", enabled: has_bodies, on: self.appearance_dialog.is_some() },
                 ];
                 let modify = tool_group(ui, "MODIFY", "Solid ", &items, &[], hidden, order);
                 if let Some(name) = create.or(construct).or(pattern).or(modify) {
@@ -1440,12 +1443,27 @@ impl OpenCad {
                             let c = self.body_color(id);
                             let mut c = c;
                             if egui::color_picker::color_picker_color32(ui, &mut c, egui::color_picker::Alpha::Opaque) {
+                                // A colour of its own replaces the appearance.
+                                self.body_appearances.remove(&id);
                                 self.body_colors.insert(id, [c.r(), c.g(), c.b()]);
                             }
                         });
                         if self.body_colors.contains_key(&id) && ui.button("Use the default color").clicked() {
                             self.body_colors.remove(&id);
                             ui.close();
+                        }
+                        if ui.button("Appearance…").on_hover_text("Make it look like metal, plastic, paint, rubber, glass or wood (A)").clicked() {
+                            if !self.selected_bodies.contains(&id) {
+                                self.selected_bodies = vec![id];
+                            }
+                            self.open_appearance();
+                            ui.close();
+                        }
+                        if let Some(a) = self.body_appearance(id) {
+                            if ui.button("Remove Appearance").on_hover_text(format!("Back to its own colour (now {})", a.name)).clicked() {
+                                self.body_appearances.remove(&id);
+                                ui.close();
+                            }
                         }
                         ui.menu_button("Physical Material", |ui| {
                             let now = self.body_material(id).name;

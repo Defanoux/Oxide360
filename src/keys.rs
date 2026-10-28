@@ -25,10 +25,11 @@ pub enum Action {
     PressPull,
     Move,
     Measure,
+    Appearance,
 }
 
 impl Action {
-    pub const ALL: [Action; 17] = [
+    pub const ALL: [Action; 18] = [
         Action::Line,
         Action::Rectangle,
         Action::Circle,
@@ -46,6 +47,7 @@ impl Action {
         Action::PressPull,
         Action::Move,
         Action::Measure,
+        Action::Appearance,
     ];
 
     /// Its name (also how it's saved).
@@ -68,6 +70,7 @@ impl Action {
             Action::PressPull => "Press Pull",
             Action::Move => "Move/Copy",
             Action::Measure => "Measure",
+            Action::Appearance => "Appearance",
         }
     }
 
@@ -91,12 +94,13 @@ impl Action {
             Action::PressPull => "Move a face, change a fillet, or extrude a profile",
             Action::Move => "Move or turn bodies (or copies of them)",
             Action::Measure => "Measure distances, sizes and angles",
+            Action::Appearance => "Make bodies look like metal, plastic, wood, glass…",
         }
     }
 
     /// Does it work while sketching (else in the 3D view)?
     pub fn in_sketch(self) -> bool {
-        !matches!(self, Action::NewSketch | Action::Extrude | Action::Fillet | Action::Hole | Action::PressPull | Action::Move | Action::Measure)
+        !matches!(self, Action::NewSketch | Action::Extrude | Action::Fillet | Action::Hole | Action::PressPull | Action::Move | Action::Measure | Action::Appearance)
     }
 
     pub fn default_key(self) -> Option<Key> {
@@ -118,6 +122,7 @@ impl Action {
             Action::PressPull => Key::Q,
             Action::Move => Key::M,
             Action::Measure => Key::I,
+            Action::Appearance => Key::A,
         })
     }
 

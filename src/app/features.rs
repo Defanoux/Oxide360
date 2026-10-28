@@ -1023,6 +1023,56 @@ impl OpenCad {
         self.cancel_combine();
     }
 
+    /// Open the Appearance dialog; bodies selected beforehand get the first
+    /// appearance picked.
+    pub(crate) fn open_appearance(&mut self) {
+        let selected = self.selected_bodies.clone();
+        self.finish_sketch();
+        self.cancel_all_dialogs();
+        self.message = None;
+        self.selected_bodies = selected;
+        self.appearance_dialog = Some(AppearanceDialog::default());
+    }
+
+    pub(crate) fn close_appearance(&mut self) {
+        self.appearance_dialog = None;
+        self.appearance_hover = None;
+    }
+
+    /// Give a body an appearance, or take its appearance off.
+    pub(crate) fn apply_appearance(&mut self, id: BodyId, choice: appearance_dialog::Choice) {
+        match choice {
+            appearance_dialog::Choice::Give(a) => {
+                self.body_appearances.insert(id, a.name.to_string());
+            }
+            appearance_dialog::Choice::Remove => {
+                self.body_appearances.remove(&id);
+            }
+        }
+    }
+
+    pub(crate) fn appearance_panel(&mut self, ui: &mut egui::Ui) {
+        let mut used: Vec<&'static appearance::Appearance> = Vec::new();
+        for a in appearance::LIBRARY {
+            if self.body_ids.iter().any(|&id| self.body_appearance(id).is_some_and(|b| b.name == a.name)) {
+                used.push(a);
+            }
+        }
+        let picked = self.selected_bodies.clone();
+        let Some(d) = self.appearance_dialog.as_mut() else { return };
+        match d.panel(ui, &used, picked.len()) {
+            appearance_dialog::Action::Picked(choice) => {
+                // Given to the selected bodies, which then let go so it shows.
+                for id in picked {
+                    self.apply_appearance(id, choice);
+                }
+                self.selected_bodies.clear();
+            }
+            appearance_dialog::Action::Close => self.close_appearance(),
+            appearance_dialog::Action::None => {}
+        }
+    }
+
     pub(crate) fn combine_panel(&mut self, ui: &mut egui::Ui) {
         let error = self.dialog_error.clone();
         let Some(d) = self.combine_dialog.as_ref() else { return };
@@ -1336,6 +1386,7 @@ impl OpenCad {
         self.shell_dialog = None;
         self.offset_dialog = None;
         self.combine_dialog = None;
+        self.close_appearance();
         self.move_dialog = None;
         self.thread_dialog = None;
         self.face_pick = false;

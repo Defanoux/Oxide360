@@ -17,6 +17,8 @@
 //!     Delete = delete selection
 //!   Ctrl+Z = undo anything, Ctrl+Shift+Z / Ctrl+Y = redo
 
+mod appearance;
+mod appearance_dialog;
 mod camera;
 mod colors;
 mod control;
@@ -89,6 +91,7 @@ use plane_dialog::PlaneDialog;
 use hole_dialog::HoleDialog;
 use shell_dialog::ShellDialog;
 use offset_dialog::OffsetDialog;
+use appearance_dialog::AppearanceDialog;
 use combine_dialog::CombineDialog;
 use move_dialog::MoveDialog;
 use thread_dialog::ThreadDialog;
@@ -185,6 +188,8 @@ impl OpenCad {
                 "Shell"
             } else if self.combine_dialog.is_some() {
                 "Combine"
+            } else if self.appearance_dialog.is_some() {
+                "Appearance"
             } else if self.move_dialog.is_some() {
                 "Move/Copy"
             } else if let Some(d) = &self.offset_dialog {
@@ -734,6 +739,8 @@ struct OpenCad {
     press_pull_go: Option<PressPullHover>,     // a fillet / profile Press Pull hands on to (next frame)
     combines: Vec<model::CombineFeature>,      // Combine features
     combine_dialog: Option<CombineDialog>,
+    appearance_dialog: Option<AppearanceDialog>, // Appearance (A), while open
+    appearance_hover: Option<BodyId>,            // the body a click would give it to
     combine_errors: Vec<Option<String>>,
     combine_hover: Option<BodyId>,             // the body a click would pick (Combine)
     moves: Vec<model::MoveFeature>,            // Move/Copy features
@@ -843,6 +850,7 @@ struct OpenCad {
     body_names: HashMap<BodyId, String>,    // names the user gave bodies
     body_colors: HashMap<BodyId, [u8; 3]>,
     body_materials: HashMap<BodyId, String>, // physical materials the user gave bodies
+    body_appearances: HashMap<BodyId, String>, // appearances the user gave bodies (names)
     properties_of: Option<BodyId>,           // the body whose Properties window is open
     interference: Option<Interference>,      // Inspect → Interference, while open  // colours the user gave bodies
     body_ids: Vec<BodyId>,                  // the bodies of the last build, in order
@@ -972,6 +980,8 @@ impl Default for OpenCad {
             press_pull_go: None,
             combines: Vec::new(),
             combine_dialog: None,
+            appearance_dialog: None,
+            appearance_hover: None,
             combine_errors: Vec::new(),
             combine_hover: None,
             moves: Vec::new(),
@@ -1084,6 +1094,7 @@ impl Default for OpenCad {
             body_names: HashMap::new(),
             body_colors: HashMap::new(),
             body_materials: HashMap::new(),
+            body_appearances: HashMap::new(),
             properties_of: None,
             interference: None,
             body_ids: Vec::new(),
@@ -1362,6 +1373,8 @@ impl OpenCad {
             float("move").show(&ctx, |ui| self.move_panel(ui));
         } else if self.combine_dialog.is_some() && self.active.is_none() {
             float("combine").show(&ctx, |ui| self.combine_panel(ui));
+        } else if self.appearance_dialog.is_some() && self.active.is_none() {
+            float("appearance").show(&ctx, |ui| self.appearance_panel(ui));
         } else if self.offset_dialog.is_some() && self.active.is_none() {
             float("offset").show(&ctx, |ui| {
                 let error = self.dialog_error.clone();

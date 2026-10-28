@@ -15,7 +15,7 @@ use wgpu::util::DeviceExt;
 const MSAA: u32 = 4;
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-const TRI_STRIDE: u64 = 36; // pos, normal, colour: 3 × vec3<f32>
+const TRI_STRIDE: u64 = 48; // pos, normal, colour, finish: 4 × vec3<f32>
 const EDGE_STRIDE: u64 = 12; // pos: vec3<f32>
 const LINE_STRIDE: u64 = 28; // pos: vec3<f32>, colour: vec4<f32>
 const UNIFORM_SIZE: u64 = 112; // mat4 + 3 × vec4
@@ -24,21 +24,38 @@ const SCENE_WGSL: &str = r#"
 struct U { view_proj: mat4x4<f32>, head: vec4<f32>, key: vec4<f32>, edge: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: U;
 
-struct TriOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec3<f32> };
+struct TriOut { @builtin(position) clip: vec4<f32>, @location(0) color: vec4<f32> };
 
+// finish: (metal, gloss, opacity); (0, 0, 1) is the plain look.
 @vertex
-fn vs_tri(@location(0) pos: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) color: vec3<f32>) -> TriOut {
+fn vs_tri(@location(0) pos: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) color: vec3<f32>, @location(3) finish: vec3<f32>) -> TriOut {
     var o: TriOut;
     o.clip = u.view_proj * vec4<f32>(pos, 1.0);
     let n = normalize(normal);
+    let metal = finish.x;
+    let gloss = finish.y;
     let k = 0.30 + 0.50 * max(dot(n, u.head.xyz), 0.0) + 0.30 * max(dot(n, u.key.xyz), 0.0);
-    o.color = min(color * k, vec3<f32>(1.0));
+    // The surroundings a face mirrors (a studio: light above, dark floor),
+    // blurred toward grey the less glossy it is. The headlight is the view.
+    let nv = max(dot(n, u.head.xyz), 1e-4);
+    let r = 2.0 * nv * n - u.head.xyz;
+    let sky = mix(0.95, 0.7, clamp(r.z, 0.0, 1.0));
+    let env = mix(0.5, mix(0.22, sky, smoothstep(-0.08, 0.08, r.z)), gloss);
+    // Metals mirror it tinted by their colour; the rest a little, more at grazing angles.
+    let mirror = metal * 0.85 + (1.0 - metal) * gloss * (0.08 + 0.4 * pow(1.0 - nv, 5.0));
+    let diffuse = color * k * (1.0 - 0.75 * metal);
+    let tint = mix(vec3<f32>(1.0), color, metal);
+    // Highlights from both lights; glossier = smaller and brighter.
+    let power = exp2(3.0 + 6.0 * gloss);
+    let half_key = normalize(u.key.xyz + u.head.xyz);
+    let spec = gloss * (0.6 * pow(max(dot(n, half_key), 1e-4), power) + 0.2 * pow(nv, power));
+    o.color = vec4<f32>(min(diffuse + tint * (env * mirror + spec), vec3<f32>(1.0)), finish.z);
     return o;
 }
 
 @fragment
 fn fs_tri(i: TriOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(i.color, 1.0);
+    return i.color;
 }
 
 @vertex
@@ -130,6 +147,22 @@ impl Style {
     }
 }
 
+/// How a body's surface looks besides its colour (from its appearance).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Finish {
+    /// 0..1: 1 for metals.
+    pub metal: f32,
+    /// 0..1: highlight size and strength.
+    pub gloss: f32,
+    /// 0..1: below 1 the body is see-through.
+    pub opacity: f32,
+}
+
+impl Finish {
+    /// No appearance: the usual flat shading.
+    pub const PLAIN: Finish = Finish { metal: 0.0, gloss: 0.0, opacity: 1.0 };
+}
+
 /// One frame's worth of geometry, already flattened for the GPU.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scene {
@@ -137,8 +170,9 @@ pub struct Scene {
     pub head_light: Vec3,
     pub key_light: Vec3,
     pub edge_color: [f32; 4],
-    /// Per vertex: position, normal, colour (gamma 0..1). Three per triangle.
-    pub tris: Vec<[f32; 9]>,
+    /// Per vertex: position, normal, colour (gamma 0..1), finish (metal,
+    /// gloss, opacity). Three per triangle.
+    pub tris: Vec<[f32; 12]>,
     /// Line list: pairs of positions.
     pub edges: Vec<[f32; 3]>,
     /// Coloured, depth-tested lines (grid, axes): pairs of position + RGBA.
@@ -156,7 +190,7 @@ impl Scene {
     /// drew (sharp corners + silhouettes), nudged toward the viewer so they
     /// win the depth test against their own faces but stay hidden behind
     /// other geometry.
-    pub fn build(meshes: &[(&Mesh, [f32; 3])], cam: &OrbitCamera, aspect: f32, style: Style) -> Scene {
+    pub fn build(meshes: &[(&Mesh, [f32; 3], Finish)], cam: &OrbitCamera, aspect: f32, style: Style) -> Scene {
         let mut s = Scene {
             view_proj: cam.view_proj(aspect),
             head_light: -cam.basis().0,
@@ -166,7 +200,7 @@ impl Scene {
             ..Default::default()
         };
         let nudge = cam.distance * 0.002;
-        for (mesh, color) in meshes {
+        for (mesh, color, finish) in meshes {
             let front: Vec<bool> = (0..mesh.tris.len())
                 .map(|t| {
                     let [a, b, c] = mesh.tris[t].map(|i| mesh.positions[i as usize]);
@@ -178,7 +212,7 @@ impl Scene {
                     let n = mesh.normal(t);
                     for &i in tri {
                         let p = mesh.positions[i as usize];
-                        s.tris.push([p.x, p.y, p.z, n.x, n.y, n.z, color[0], color[1], color[2]]);
+                        s.tris.push([p.x, p.y, p.z, n.x, n.y, n.z, color[0], color[1], color[2], finish.metal, finish.gloss, finish.opacity]);
                     }
                 }
             }
@@ -261,6 +295,12 @@ impl Scene {
     }
 }
 
+/// Solid triangles, then see-through ones (drawn after, blended, not hiding
+/// what's behind them).
+fn split_clear(tris: &[[f32; 12]]) -> (Vec<[f32; 12]>, Vec<[f32; 12]>) {
+    tris.iter().partition(|v| v[11] >= 1.0)
+}
+
 fn f32_bytes<const N: usize>(items: &[[f32; N]]) -> Vec<u8> {
     items.iter().flatten().flat_map(|f| f.to_le_bytes()).collect()
 }
@@ -310,6 +350,7 @@ impl GrowBuffer {
 
 pub struct Gpu {
     tri_pipeline: wgpu::RenderPipeline,
+    clear_pipeline: wgpu::RenderPipeline,
     edge_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     glass_pipeline: wgpu::RenderPipeline,
@@ -319,6 +360,8 @@ pub struct Gpu {
     blit_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     tris: GrowBuffer,
+    clear: GrowBuffer,
+    clear_count: u32,
     edges: GrowBuffer,
     lines: GrowBuffer,
     glass: GrowBuffer,
@@ -384,9 +427,14 @@ impl Gpu {
             write_mask: wgpu::ColorWrites::ALL,
         })];
 
-        let tri_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3];
-        let tri_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("oxide360 triangles"),
+        let tri_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x3];
+        let blended = [Some(wgpu::ColorTargetState {
+            format: COLOR_FORMAT,
+            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
+        let tri_pipeline_with = |label: &str, solid: bool| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
             layout: Some(&scene_pl),
             vertex: wgpu::VertexState {
                 module: &scene_module,
@@ -404,17 +452,20 @@ impl Gpu {
                 cull_mode: Some(wgpu::Face::Back),
                 ..Default::default()
             },
-            depth_stencil: Some(depth(true)),
+            depth_stencil: Some(depth(solid)),
             multisample: msaa,
             fragment: Some(wgpu::FragmentState {
                 module: &scene_module,
                 entry_point: Some("fs_tri"),
                 compilation_options: Default::default(),
-                targets: &opaque,
+                targets: if solid { &opaque } else { &blended },
             }),
             multiview_mask: None,
             cache: None,
         });
+        let tri_pipeline = tri_pipeline_with("oxide360 triangles", true);
+        // See-through bodies (glass): blended over what's behind, hiding nothing.
+        let clear_pipeline = tri_pipeline_with("oxide360 clear triangles", false);
 
         let edge_attrs = wgpu::vertex_attr_array![0 => Float32x3];
         let edge_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -595,6 +646,7 @@ impl Gpu {
 
         Gpu {
             tri_pipeline,
+            clear_pipeline,
             edge_pipeline,
             line_pipeline,
             glass_pipeline,
@@ -604,6 +656,8 @@ impl Gpu {
             blit_layout,
             sampler,
             tris: GrowBuffer::new(device, "oxide360 triangles"),
+            clear: GrowBuffer::new(device, "oxide360 clear triangles"),
+            clear_count: 0,
             edges: GrowBuffer::new(device, "oxide360 edges"),
             lines: GrowBuffer::new(device, "oxide360 lines"),
             glass: GrowBuffer::new(device, "oxide360 glass"),
@@ -668,11 +722,14 @@ impl Gpu {
         }
         self.ensure_targets(device, size);
         queue.write_buffer(&self.uniforms, 0, &scene.uniform_bytes());
-        self.tris.upload(device, queue, &f32_bytes(&scene.tris));
+        let (solid, clear) = split_clear(&scene.tris);
+        self.tris.upload(device, queue, &f32_bytes(&solid));
+        self.clear.upload(device, queue, &f32_bytes(&clear));
+        self.clear_count = clear.len() as u32;
         self.edges.upload(device, queue, &f32_bytes(&scene.edges));
         self.lines.upload(device, queue, &f32_bytes(&scene.lines));
         self.glass.upload(device, queue, &f32_bytes(&scene.glass));
-        self.counts = (scene.tris.len() as u32, scene.edges.len() as u32, scene.lines.len() as u32, scene.glass.len() as u32);
+        self.counts = (solid.len() as u32, scene.edges.len() as u32, scene.lines.len() as u32, scene.glass.len() as u32);
         self.xray.upload(device, queue, &f32_bytes(&scene.xray));
         self.xray_count = scene.xray.len() as u32;
 
@@ -698,6 +755,11 @@ impl Gpu {
             pass.set_pipeline(&self.tri_pipeline);
             pass.set_vertex_buffer(0, self.tris.buffer.slice(..self.counts.0 as u64 * TRI_STRIDE));
             pass.draw(0..self.counts.0, 0..1);
+        }
+        if self.clear_count > 0 {
+            pass.set_pipeline(&self.clear_pipeline);
+            pass.set_vertex_buffer(0, self.clear.buffer.slice(..self.clear_count as u64 * TRI_STRIDE));
+            pass.draw(0..self.clear_count, 0..1);
         }
         if self.counts.3 > 0 {
             pass.set_pipeline(&self.glass_pipeline);
@@ -817,8 +879,8 @@ mod tests {
         let short = rect_body(-40.0, -10.0, 40.0, 10.0, 5.0);
         let cam = top_camera();
         for order in [[0usize, 1], [1, 0]] {
-            let bodies = [(&tall, [1.0, 0.0, 0.0]), (&short, [0.0, 1.0, 0.0])];
-            let list: Vec<(&Mesh, [f32; 3])> = order.iter().map(|&i| bodies[i]).collect();
+            let bodies = [(&tall, [1.0, 0.0, 0.0], Finish::PLAIN), (&short, [0.0, 1.0, 0.0], Finish::PLAIN)];
+            let list: Vec<(&Mesh, [f32; 3], Finish)> = order.iter().map(|&i| bodies[i]).collect();
             let scene = Scene::build(&list, &cam, 1.0, Style::ShadedEdges);
             let Some(px) = render_pixels(&scene, [64, 64], wgpu::TextureFormat::Rgba8Unorm) else {
                 eprintln!("no GPU adapter available; skipping");
@@ -842,7 +904,7 @@ mod tests {
         let _ = Gpu::new(&device, wgpu::TextureFormat::Bgra8UnormSrgb);
         let mut gpu = Gpu::new(&device, wgpu::TextureFormat::Rgba8Unorm);
         let tall = rect_body(-20.0, -20.0, 20.0, 20.0, 30.0);
-        let scene = Scene::build(&[(&tall, [1.0, 0.0, 0.0])], &top_camera(), 1.0, Style::ShadedEdges);
+        let scene = Scene::build(&[(&tall, [1.0, 0.0, 0.0], Finish::PLAIN)], &top_camera(), 1.0, Style::ShadedEdges);
         let mut enc = device.create_command_encoder(&Default::default());
         gpu.render(&device, &queue, &mut enc, [32, 32], &scene);
         // A stand-in for egui's screen: opaque blue, then the image on top.
@@ -902,7 +964,7 @@ mod tests {
         let look = |pitch: f32| {
             let mut cam = top_camera();
             cam.look_from(-90.0, pitch);
-            let mut scene = Scene::build(&[(&block, [1.0, 0.0, 0.0])], &cam, 1.0, Style::ShadedEdges);
+            let mut scene = Scene::build(&[(&block, [1.0, 0.0, 0.0], Finish::PLAIN)], &cam, 1.0, Style::ShadedEdges);
             scene.add_lines(&line, &cam);
             render_pixels(&scene, [64, 64], wgpu::TextureFormat::Rgba8Unorm)
         };
@@ -927,7 +989,7 @@ mod tests {
         };
         let look = |z: f32| {
             let cam = top_camera();
-            let mut scene = Scene::build(&[(&block, [1.0, 0.0, 0.0])], &cam, 1.0, Style::ShadedEdges);
+            let mut scene = Scene::build(&[(&block, [1.0, 0.0, 0.0], Finish::PLAIN)], &cam, 1.0, Style::ShadedEdges);
             scene.add_glass(&quad_at(z), &cam);
             render_pixels(&scene, [64, 64], wgpu::TextureFormat::Rgba8Unorm)
         };
@@ -943,7 +1005,7 @@ mod tests {
     fn scene_flattening_matches_mesh() {
         let m = rect_body(0.0, 0.0, 10.0, 10.0, 10.0);
         let cam = OrbitCamera::default();
-        let s = Scene::build(&[(&m, [0.5, 0.5, 0.5])], &cam, 1.5, Style::ShadedEdges);
+        let s = Scene::build(&[(&m, [0.5, 0.5, 0.5], Finish::PLAIN)], &cam, 1.5, Style::ShadedEdges);
         assert_eq!(s.tris.len(), m.tris.len() * 3);
         assert_eq!(s.edges.len() % 2, 0);
         assert!(!s.edges.is_empty() && s.edges.len() <= 2 * 12, "only visible box edges");
@@ -955,7 +1017,7 @@ mod tests {
     fn visual_styles_draw_what_they_say() {
         let m = rect_body(0.0, 0.0, 10.0, 10.0, 10.0);
         let cam = OrbitCamera::default();
-        let build = |st| Scene::build(&[(&m, [0.5, 0.5, 0.5])], &cam, 1.5, st);
+        let build = |st| Scene::build(&[(&m, [0.5, 0.5, 0.5], Finish::PLAIN)], &cam, 1.5, st);
         let shaded = build(Style::Shaded);
         assert!(!shaded.tris.is_empty() && shaded.edges.is_empty());
         // From the home corner three of a box's twelve edges are behind it.
@@ -965,5 +1027,83 @@ mod tests {
         let wire = build(Style::Wireframe);
         assert!(wire.tris.is_empty(), "no faces");
         assert_eq!(wire.edges.len(), 2 * 12, "all twelve edges");
+    }
+
+
+    #[test]
+    fn gloss_and_metal_change_how_a_body_is_lit() {
+        let m = rect_body(-20.0, -20.0, 20.0, 20.0, 30.0);
+        let mut cam = OrbitCamera::default();
+        cam.distance = 120.0;
+        // The body's pixels, added up (red + green + blue).
+        let light = |finish: Finish| {
+            let scene = Scene::build(&[(&m, [0.6, 0.6, 0.6], finish)], &cam, 1.0, Style::Shaded);
+            let px = render_pixels(&scene, [96, 96], wgpu::TextureFormat::Rgba8Unorm)?;
+            Some(px.chunks(4).filter(|p| p[3] == 255).map(|p| p[0] as u32 + p[1] as u32 + p[2] as u32).sum::<u32>())
+        };
+        let Some(plain) = light(Finish::PLAIN) else { return };
+        let glossy = light(Finish { metal: 0.0, gloss: 0.8, opacity: 1.0 }).unwrap();
+        let rubber = light(Finish { metal: 0.0, gloss: 0.08, opacity: 1.0 }).unwrap();
+        let metal = light(Finish { metal: 1.0, gloss: 0.5, opacity: 1.0 }).unwrap();
+        assert!(glossy > plain + plain / 20, "gloss adds highlights: {glossy} vs {plain}");
+        assert!(rubber >= plain && rubber < glossy, "rubber is nearly plain: {rubber}");
+        assert!(metal.abs_diff(plain) > plain / 20, "metal looks different: {metal} vs {plain}");
+    }
+
+    #[test]
+    fn see_through_bodies_show_what_is_behind() {
+        // From above: a clear red block standing on a wide green slab.
+        let block = rect_body(-20.0, -20.0, 20.0, 20.0, 30.0);
+        let slab = rect_body(-40.0, -40.0, 40.0, 0.0, 5.0);
+        let glass = Finish { metal: 0.0, gloss: 1.0, opacity: 0.3 };
+        let scene = Scene::build(&[(&block, [1.0, 0.0, 0.0], glass), (&slab, [0.0, 1.0, 0.0], Finish::PLAIN)], &top_camera(), 1.0, Style::Shaded);
+        let Some(px) = render_pixels(&scene, [64, 64], wgpu::TextureFormat::Rgba8Unorm) else { return };
+        let at = |x: usize, y: usize| &px[(y * 64 + x) * 4..(y * 64 + x) * 4 + 4];
+        // Lower half of the image is y < 0: the slab under the block.
+        let over_slab = at(32, 40);
+        assert!(over_slab[1] > 60 && over_slab[0] > 60 && over_slab[3] == 255, "green through red glass: {over_slab:?}");
+        let over_nothing = at(32, 24);
+        assert!(over_nothing[3] > 0 && over_nothing[3] < 200, "the background shows through: {over_nothing:?}");
+    }
+
+    /// A row of boxes in a few appearances, for looking at:
+    /// `SHOT_DIR=<dir> cargo test appearance_sheet -- --ignored`.
+    #[test]
+    #[ignore]
+    fn appearance_sheet() {
+        let m = rect_body(-20.0, -20.0, 20.0, 20.0, 30.0);
+        let mut cam = OrbitCamera::default();
+        cam.distance = 120.0;
+        let looks: Vec<(&str, [u8; 3], Finish)> = vec![("plain", [140, 160, 190], Finish::PLAIN)]
+            .into_iter()
+            .chain(["Steel - Satin", "Aluminum - Polished", "Brass - Polished", "Plastic - Glossy (Red)", "Plastic - Matte (Grey)", "Rubber - Black", "Paint - Enamel Glossy (Blue)", "Oak", "Glass - Clear"].iter().map(|n| {
+                let a = crate::appearance::by_name(n).unwrap();
+                (*n, a.color, Finish { metal: a.metal, gloss: a.gloss, opacity: a.opacity })
+            }))
+            .collect();
+        let n = 160usize;
+        let mut sheet = vec![0u8; looks.len() * n * n * 4];
+        for (i, (_, c, f)) in looks.iter().enumerate() {
+            let col = c.map(|v| v as f32 / 255.0);
+            let scene = Scene::build(&[(&m, col, *f)], &cam, 1.0, Style::ShadedEdges);
+            let px = render_pixels(&scene, [n as u32, n as u32], wgpu::TextureFormat::Rgba8Unorm).unwrap();
+            for y in 0..n {
+                for x in 0..n {
+                    let s = &px[(y * n + x) * 4..][..4];
+                    let a = s[3] as f32 / 255.0;
+                    let bg = [62.0, 66.0, 74.0];
+                    let d = ((y * looks.len() * n) + i * n + x) * 4;
+                    for k in 0..3 {
+                        sheet[d + k] = (s[k] as f32 + bg[k] * (1.0 - a)).min(255.0) as u8;
+                    }
+                    sheet[d + 3] = 255;
+                }
+            }
+        }
+        let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
+        let f = std::fs::File::create(format!("{dir}/appearances.png")).unwrap();
+        let mut enc = png::Encoder::new(f, (looks.len() * n) as u32, n as u32);
+        enc.set_color(png::ColorType::Rgba);
+        enc.write_header().unwrap().write_image_data(&sheet).unwrap();
     }
 }

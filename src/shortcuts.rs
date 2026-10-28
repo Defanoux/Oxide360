@@ -7,7 +7,7 @@ pub const SOLID: &[&str] = &[
     "Create Sketch", "Extrude", "Revolve", "Sweep", "Loft", "Pipe", "Coil", "Hole", "Thread",
     "Offset Plane", "Plane at Angle", "Midplane", "Plane Through Three Points", "Tangent Plane", "Axis Along Edge", "Axis Through Cylinder", "Axis Through Two Points", "Point",
     "Mirror", "Rectangular Pattern", "Circular Pattern",
-    "Press Pull", "Fillet", "Chamfer", "Shell", "Move/Copy", "Combine", "Change Parameters",
+    "Press Pull", "Fillet", "Chamfer", "Shell", "Move/Copy", "Combine", "Appearance", "Change Parameters",
 ];
 
 /// Sketch-mode tools (the names `run_sketch_tool` takes).

@@ -232,7 +232,7 @@ impl OpenCad {
             (pressed(A::Line), pressed(A::Rectangle), pressed(A::Circle), pressed(A::GridSnap), pressed(A::Dimension), pressed(A::Construction), pressed(A::Project));
         let (key_trim, key_extend, key_offset) = (pressed(A::Trim), pressed(A::Extend), pressed(A::Offset));
         let (key_n, key_e, key_f, key_i) = (pressed(A::NewSketch), pressed(A::Extrude), pressed(A::Fillet), pressed(A::Measure));
-        let (key_h, key_q, key_m) = (pressed(A::Hole), pressed(A::PressPull), pressed(A::Move));
+        let (key_h, key_q, key_m, key_a) = (pressed(A::Hole), pressed(A::PressPull), pressed(A::Move), pressed(A::Appearance));
         let (esc, del, undo) = ui.input(|i| {
             (
                 i.key_pressed(egui::Key::Escape),
@@ -646,6 +646,30 @@ impl OpenCad {
             }
         } else if self.combine_dialog.is_some() && esc && !typing {
             self.cancel_combine();
+        }
+
+        crate::mark("Appearance: click bodies");
+        // --- Appearance: click bodies to give them the picked appearance ---
+        self.appearance_hover = None;
+        if let (Some(choice), None) = (self.appearance_dialog.as_ref().and_then(|d| d.current), self.active) {
+            self.ensure_model(Slot::Committed);
+            if let Some(px) = hover_px {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                let model = self.model(Slot::Committed);
+                self.appearance_hover = model
+                    .bodies
+                    .iter()
+                    .filter(|b| !self.hidden_bodies.contains(&b.id))
+                    .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir).map(|t| (b.id, t)))
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(id, _)| id);
+            }
+            if let (true, Some(id)) = (response.clicked(), self.appearance_hover) {
+                self.apply_appearance(id, choice);
+            }
+        }
+        if self.appearance_dialog.is_some() && esc && !typing {
+            self.close_appearance();
         }
 
         crate::mark("Offset Face / Press Pull: click faces");
@@ -1228,6 +1252,12 @@ impl OpenCad {
             self.open_move(None);
         } else if !sketching && key_q && !typing {
             self.open_offset(None, true);
+        } else if !sketching && key_a && !typing && self.body_count > 0 {
+            if self.appearance_dialog.is_some() {
+                self.close_appearance();
+            } else {
+                self.open_appearance();
+            }
         } else if !sketching && key_i && !typing {
             self.measure = if self.measure.is_some() { None } else { Some(measure::Measure::default()) };
         }
@@ -2512,8 +2542,8 @@ impl OpenCad {
         } else {
             model.bodies.iter().enumerate().filter(|(_, b)| self.hidden_bodies.contains(&b.id)).map(|(k, _)| k).collect()
         };
-        let mut meshes: Vec<(&Mesh, Color32)> = Vec::new();
-        let shaded: Vec<(usize, &Mesh, Color32)> = model
+        let mut meshes: Vec<(&Mesh, Color32, gpu::Finish)> = Vec::new();
+        let shaded: Vec<(usize, &Mesh, Color32, gpu::Finish)> = model
             .bodies
             .iter()
             .enumerate()
@@ -2525,7 +2555,7 @@ impl OpenCad {
                 let picked = self.copy_dialog.as_ref().is_some_and(|d| d.bodies.contains(&b.id)) || self.shell_dialog.as_ref().is_some_and(|d| d.shell.bodies.contains(&b.id))
                     || self.combine_dialog.as_ref().is_some_and(|d| d.combine.target == Some(b.id) || d.combine.tools.contains(&b.id))
                     || self.move_dialog.as_ref().is_some_and(|d| d.feature.bodies.contains(&b.id));
-                let hovered = self.copy_body_hover == Some(b.id) || self.shell_hover.and_then(|h| h.1) == Some(b.id) || self.combine_hover == Some(b.id) || self.move_hover == Some(b.id);
+                let hovered = self.copy_body_hover == Some(b.id) || self.shell_hover.and_then(|h| h.1) == Some(b.id) || self.combine_hover == Some(b.id) || self.move_hover == Some(b.id) || self.appearance_hover == Some(b.id);
                 let c = if hovered && !picked {
                     let mix = |x: u8, y: u8| ((x as u16 * 3 + y as u16) / 4) as u8;
                     Color32::from_rgb(mix(c.r(), COL_HOVER.r()), mix(c.g(), COL_HOVER.g()), mix(c.b(), COL_HOVER.b()))
@@ -2535,31 +2565,33 @@ impl OpenCad {
                 } else {
                     c
                 };
-                (k, &b.mesh, c)
+                // Picked / hovered bodies keep their tint plain, so it reads.
+                let finish = if previewing || hovered || picked || self.selected_bodies.contains(&b.id) { gpu::Finish::PLAIN } else { self.body_finish(b.id) };
+                (k, &b.mesh, c, finish)
             })
             .collect();
         match &cuts {
             // Cut: each body's remains instead, in its colour.
             Some(cuts) => {
                 for c in cuts {
-                    if let Some(&(_, _, col)) = shaded.iter().find(|(k, ..)| *k == c.body) {
-                        meshes.push((&c.mesh, col));
+                    if let Some(&(_, _, col, finish)) = shaded.iter().find(|(k, ..)| *k == c.body) {
+                        meshes.push((&c.mesh, col, finish));
                     }
                 }
             }
             None => {
-                for &(_, m, c) in &shaded {
-                    meshes.push((m, c));
+                for &(_, m, c, finish) in &shaded {
+                    meshes.push((m, c, finish));
                 }
             }
         }
         if self.gpu {
-            let list: Vec<(&Mesh, [f32; 3])> = meshes.iter().map(|(m, c)| (*m, rgb(*c))).collect();
+            let list: Vec<(&Mesh, [f32; 3], gpu::Finish)> = meshes.iter().map(|(m, c, f)| (*m, rgb(*c), *f)).collect();
             let mut scene = gpu::Scene::build(&list, &self.camera, aspect, self.style);
             // The cut faces in their own colour.
             if let (Some(cuts), true) = (&cuts, self.style != gpu::Style::Wireframe) {
                 let mut first = 0;
-                for (m, _) in &meshes {
+                for (m, ..) in &meshes {
                     if let Some(c) = cuts.iter().find(|c| std::ptr::eq(&c.mesh, *m)) {
                         scene.tint(first, &c.cap, [0.86, 0.52, 0.30]);
                     }
@@ -2578,7 +2610,7 @@ impl OpenCad {
                 SceneCallback { scene, size_points: [rect.width(), rect.height()] },
             )));
         } else {
-            view.solids(&meshes, &self.camera);
+            view.solids(&meshes.iter().map(|(m, c, _)| (*m, *c)).collect::<Vec<_>>(), &self.camera);
         }
 
         // (Drawn over the bodies.)
@@ -2732,6 +2764,15 @@ impl OpenCad {
             let hint = match field {
                 combine_dialog::Field::Target => "Click the target body (the one kept)   (Esc when done)",
                 combine_dialog::Field::Tools => "Click the tool bodies; click one again to drop it   (Esc when done)",
+            };
+            painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
+        }
+
+        if let Some(d) = &self.appearance_dialog {
+            let hint = match d.current {
+                None => "Pick an appearance in the Appearance box".to_string(),
+                Some(appearance_dialog::Choice::Give(a)) => format!("Click bodies to make them {}   (Esc when done)", a.name),
+                Some(appearance_dialog::Choice::Remove) => "Click bodies to take their appearance off   (Esc when done)".to_string(),
             };
             painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
         }
