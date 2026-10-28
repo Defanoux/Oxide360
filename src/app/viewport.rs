@@ -2565,8 +2565,10 @@ impl OpenCad {
                 } else {
                     c
                 };
-                // Picked / hovered bodies keep their tint plain, so it reads.
-                let finish = if previewing || hovered || picked || self.selected_bodies.contains(&b.id) { gpu::Finish::PLAIN } else { self.body_finish(b.id) };
+                // Picked / hovered bodies are shaded plain so the tint reads, except
+                // under the Appearance tool: the body just clicked shows its new look.
+                let plain = previewing || picked || self.selected_bodies.contains(&b.id) || (hovered && self.appearance_hover != Some(b.id));
+                let finish = if plain { gpu::Finish::PLAIN } else { self.body_finish(b.id) };
                 (k, &b.mesh, c, finish)
             })
             .collect();

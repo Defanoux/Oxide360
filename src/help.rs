@@ -6,7 +6,7 @@
 pub const GETTING_STARTED: &[(&str, &str)] = &[
     ("Look around", "Drag with the left mouse button to orbit, the right (or middle) to pan, the wheel to zoom toward the cursor. F6 fits everything; the view cube's faces and corners turn the view; its house goes Home."),
     ("Sketch", "CREATE > Create Sketch (N), then click a plane or a flat face. Draw with Line (L), Rectangle (R), Circle (C)… Dimension (D) sets sizes; double-click a dimension to type a new value. FINISH SKETCH (top right) when done."),
-    ("Make it solid", "Extrude (E): click a closed area of a sketch, drag the arrow or type the distance. Revolve, Sweep, Loft, Hole and the rest are under CREATE; Fillet (F), Shell, Move/Copy (M) under MODIFY."),
+    ("Make it solid", "Extrude (E): click a closed area of a sketch, drag the arrow or type the distance. Revolve, Sweep, Loft, Hole and the rest are under CREATE; Fillet (F), Shell, Move/Copy (M), Appearance (A: metal, plastic, wood, glass looks) under MODIFY."),
     ("Change your mind", "Everything you make is in the timeline at the bottom: double-click a step to edit it, right-click to delete or suppress it, drag the marker back to see the part as it was. Ctrl+Z undoes."),
     ("Find a tool", "Press S and type part of its name. Right-click in the view for the marking menu: the common tools round the cursor, and what you clicked on in the list below."),
     ("Several parts", "Right-click bodies in the browser > Create Component, then ASSEMBLE > Joint to put one part onto another (rigid, turning or sliding)."),

@@ -148,7 +148,7 @@ lists there).
 | `spline.rs`, `spline_edit.rs`, `offset.rs`, `pattern.rs`, `rect_input.rs`, `text.rs` | sketch geometry helpers |
 | `camera.rs`, `view.rs`, `gpu.rs`, `icons.rs`, `origin.rs`, `colors.rs`, `handles.rs`, `gizmo.rs`, `inertia.rs` | camera, drawing helpers, wgpu renderer, vector icons (no image files for icons), origin planes, body colours, drag arrows, move arrows+squares, toolbar scrolling |
 | `*_dialog.rs` | one per dialog: its state and egui panel, logic testable without the app |
-| `measure.rs`, `materials.rs`, `assembly.rs` | Measure tool, physical materials + mass, components |
+| `measure.rs`, `materials.rs`, `appearance.rs`, `assembly.rs` | Measure tool, physical materials + mass, appearances (looks), components |
 | `units.rs`, `expr.rs`, `params_window.rs`, `threads.rs`, `keys.rs`, `settings.rs`, `shortcuts.rs`, `help.rs` | units + parsing, parameters/expressions, thread tables, key bindings, preferences file, tool names for menus/search, Help text + app icon |
 | `export.rs`, `sketch_export.rs`, `recovery.rs` | STL/3MF/OBJ export, sketch DXF/SVG, autosave + crash recovery |
 | `ui_shot.rs` | test-only headless UI screenshots |
