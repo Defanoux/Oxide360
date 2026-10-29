@@ -137,6 +137,7 @@ lists there).
 | `app/timeline.rs` | timeline bar, renaming, Measure, `free_view`, `corner_under`, `face_snap_under` |
 | `app/viewport.rs` | the 3D / sketch view: all input (picking per tool/dialog) and drawing |
 | `app/control.rs` | what the control link reports (`state`) and does (open/save/new) |
+| `app/drawing.rs` | the DRAWING workspace: sheet on screen (pan/zoom/fit), its toolbar, Export PDF / DXF |
 | `control.rs` | the control link: TCP JSON-lines server, `ctl` client, MCP server |
 | `kernel.rs` | OpenCASCADE: faces from regions, every feature, booleans, `Build`/`Model`, edge/face references found again each build, imports, joints (`apply_joint`, `resolve_snap`), `face_snaps`, `interference`, `exact_bounds`, `body_properties` |
 | `model.rs` | feature structs (`Extrude`, `Revolve`, `EdgeFeature`, `HoleFeature`, `SweepFeature`, `ImportFeature` + `Blob`, `JointFeature`/`JointSnap`/`JointKind`, `ConstructionPoint`, …), `Mesh`, `EdgeRef`, `Follow`, `ray_hit` |
@@ -151,6 +152,7 @@ lists there).
 | `measure.rs`, `materials.rs`, `appearance.rs`, `assembly.rs` | Measure tool, physical materials + mass, appearances (looks), components |
 | `units.rs`, `expr.rs`, `params_window.rs`, `threads.rs`, `keys.rs`, `settings.rs`, `shortcuts.rs`, `help.rs` | units + parsing, parameters/expressions, thread tables, key bindings, preferences file, tool names for menus/search, Help text + app icon |
 | `export.rs`, `sketch_export.rs`, `recovery.rs` | STL/3MF/OBJ export, sketch DXF/SVG, autosave + crash recovery |
+| `drawing.rs`, `drawing_export.rs` | 2-D drawing sheet (settings, first-angle layout, scales, title block) from `kernel::hlr_view` lines; PDF + DXF writers |
 | `ui_shot.rs` | test-only headless UI screenshots |
 | `vendor/opencascade-sys`, `vendor/opencascade` | **patched** OCCT bindings — see below |
 | `packaging/` | `flatpak/` (manifest, desktop, metainfo, MIME, build script), `make-bundle.sh` (plain tarball) |
