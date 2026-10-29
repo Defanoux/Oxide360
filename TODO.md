@@ -4,17 +4,20 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 
 ## Next
 
-Ordered by how much each makes Oxide360 a usable part modeller (FEATURES.md
-has the full Fusion list; this is the slice to do now). Fusion's behaviour is
-the spec for each.
+Focus: solid and sketch modelling for 3D printing (Gavin, 2026-10-29).
+Fusion's behaviour is the spec for each; FEATURES.md has the full Fusion list.
 
-- **Drawing views placed by hand** (Fusion's Base View / Projected View): pick a base view's direction and scale, click to place it, drag projected views off it; move or delete views.
-- **Drawing centre marks and centre lines** on holes and cylinders, automatically.
-- **Drawing dimensions** (Fusion's Drawing > Dimension): click edges or two points in a view for a length, a circle for its diameter; ISO arrows and text, kept when the part changes; in the PDF/DXF too.
+- **Split Body** (MODIFY): split a body with an origin / construction plane or a flat face (extended); each side its own body; timeline feature.
+- **Scale** (MODIFY): bodies, uniform or X/Y/Z, about a point; timeline feature.
+- **Insert SVG / DXF** into a sketch (Fusion's Insert): curves become sketch lines, arcs, circles and splines, placed and scaled before OK.
+- **3D Print checks**: overhang shading (faces steeper than a set angle from the bed), a watertight / manifold check, and "face on bed" — turn a picked face down before export.
+- **Emboss** (CREATE): sketch text or profiles raised or cut into a curved face.
+- **Pattern along path**, **Draft**.
 - **Joint limits** and motion settings (min/max, animation speed).
 - **Own Flatpak repository** (Flathub's AI policy rules it out — see docs/PROJECT.md): CI builds the Flatpak on each release tag, signs it, publishes the repo on GitHub Pages, plus an `Oxide360.flatpakref` so Discover installs it and shows updates.
 
 Later (big): sheet metal, surfaces, CAM, mesh bodies for big STLs.
+Later (drawings, on hold — few users): views placed by hand (Base / Projected View), centre marks and centre lines, dimensions.
 
 ## Polish (do when nearby code is touched)
 
