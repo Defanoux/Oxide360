@@ -148,6 +148,9 @@ impl OpenCad {
         self.body_materials = self.body_materials.drain().filter_map(|(id, m)| Some((id.after_delete(revolve, k)?, m))).collect();
         self.body_appearances = self.body_appearances.drain().filter_map(|(id, a)| Some((id.after_delete(revolve, k)?, a))).collect();
         self.face_appearances = self.face_appearances.drain(..).filter_map(|f| Some(appearance::FaceAppearance { body: f.body.after_delete(revolve, k)?, ..f })).collect();
+        if let Some(d) = self.drawing.as_mut() {
+            d.bodies = d.bodies.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
+        }
         assembly::remap(&mut self.components, |id| id.after_delete(revolve, k));
         self.properties_of = None;
         for c in &mut self.copies {
@@ -185,6 +188,9 @@ impl OpenCad {
         self.body_materials = self.body_materials.drain().filter_map(|(id, m)| Some((id.after_maker_delete(gone)?, m))).collect();
         self.body_appearances = self.body_appearances.drain().filter_map(|(id, a)| Some((id.after_maker_delete(gone)?, a))).collect();
         self.face_appearances = self.face_appearances.drain(..).filter_map(|f| Some(appearance::FaceAppearance { body: f.body.after_maker_delete(gone)?, ..f })).collect();
+        if let Some(d) = self.drawing.as_mut() {
+            d.bodies = d.bodies.iter().filter_map(|id| id.after_maker_delete(gone)).collect();
+        }
         assembly::remap(&mut self.components, |id| id.after_maker_delete(gone));
         self.properties_of = None;
         for c in &mut self.copies {

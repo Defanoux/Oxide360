@@ -24,7 +24,12 @@ impl OpenCad {
         self.ensure_model(Slot::Committed);
         let settings = self.drawing_settings();
         let model = self.model(Slot::Committed);
-        let shown: Vec<&kernel::Body> = model.bodies.iter().filter(|b| !self.hidden_bodies.contains(&b.id)).collect();
+        // The bodies picked in Draw, else every visible one.
+        let shown: Vec<&kernel::Body> = if settings.bodies.is_empty() {
+            model.bodies.iter().filter(|b| !self.hidden_bodies.contains(&b.id)).collect()
+        } else {
+            model.bodies.iter().filter(|b| settings.bodies.contains(&b.id)).collect()
+        };
         let shapes: Vec<_> = shown.iter().map(|b| &b.shape).collect();
         let views: Vec<(ViewKind, kernel::ViewLines)> = settings
             .views
@@ -42,18 +47,74 @@ impl OpenCad {
             [] => String::new(),
             _ => "Various".to_string(),
         };
-        let name = self.file_name().trim_end_matches(".ox360").trim_end_matches(".ocad").to_string();
-        let title = if settings.title.trim().is_empty() { name } else { settings.title.clone() };
+        let title = if settings.title.trim().is_empty() { self.drawing_default_title(&settings) } else { settings.title.clone() };
         let date = drawing::today();
         drawing::sheet(&settings, &views, &drawing::TitleInfo { title: &title, drawn_by: &settings.drawn_by, material: &material, date: &date })
     }
 
-    /// The DRAWING toolbar: sheet, scale, views, hidden lines, title block, export.
+    /// The title block's title when none is typed: the one component or body
+    /// drawn (as Fusion names a component's drawing), else the design's name.
+    fn drawing_default_title(&self, s: &DrawingSettings) -> String {
+        if !s.bodies.is_empty() {
+            let mut picked = s.bodies.clone();
+            picked.sort();
+            if let Some(c) = self.components.iter().find(|c| {
+                let mut own = c.bodies.clone();
+                own.sort();
+                own == picked
+            }) {
+                return c.name.clone();
+            }
+            if let [one] = s.bodies.as_slice() {
+                return self.body_name(*one);
+            }
+        }
+        self.file_name().trim_end_matches(".ox360").trim_end_matches(".ocad").to_string()
+    }
+
+    /// The Draw menu: the whole design, or components and bodies ticked.
+    fn drawing_contents_menu(&mut self, ui: &mut egui::Ui, s: &mut DrawingSettings) {
+        let label = match s.bodies.as_slice() {
+            [] => "Whole design".to_string(),
+            [one] => self.body_name(*one),
+            many => format!("{} bodies", many.len()),
+        };
+        ui.label("Draw");
+        ui.menu_button(label, |ui| {
+            if ui.radio(s.bodies.is_empty(), "Whole design").on_hover_text("Every visible body").clicked() {
+                s.bodies.clear();
+            }
+            if !self.components.is_empty() {
+                ui.separator();
+                ui.weak("Components");
+                for c in &self.components {
+                    let mut on = !c.bodies.is_empty() && c.bodies.iter().all(|b| s.bodies.contains(b));
+                    if ui.checkbox(&mut on, &c.name).changed() {
+                        drawing::pick_bodies(&mut s.bodies, &c.bodies, on);
+                    }
+                }
+            }
+            ui.separator();
+            ui.weak("Bodies");
+            for &id in &self.body_ids {
+                let mut on = s.bodies.contains(&id);
+                if ui.checkbox(&mut on, self.body_name(id)).changed() {
+                    drawing::pick_bodies(&mut s.bodies, &[id], on);
+                }
+            }
+        });
+    }
+
+    /// The DRAWING toolbar: what's drawn, sheet, scale, views, hidden lines,
+    /// title block, export.
     pub(crate) fn drawing_toolbar(&mut self, ui: &mut egui::Ui) {
         let mut s = self.drawing_settings();
         let before = s.clone();
         let scale_now = self.drawing_scale_shown;
+        let title_hint = self.drawing_default_title(&s);
         ui.horizontal(|ui| {
+            self.drawing_contents_menu(ui, &mut s);
+            ui.add_space(8.0);
             ui.label("Sheet");
             egui::ComboBox::from_id_salt("drawing_sheet").selected_text(s.sheet.name()).width(60.0).show_ui(ui, |ui| {
                 for size in SheetSize::ALL {
@@ -87,7 +148,7 @@ impl OpenCad {
             ui.checkbox(&mut s.hidden_lines, "Hidden lines").on_hover_text("Edges behind, dashed (not in the iso view)");
             ui.add_space(8.0);
             ui.label("Title");
-            ui.add(egui::TextEdit::singleline(&mut s.title).hint_text(self.file_name().trim_end_matches(".ox360").trim_end_matches(".ocad")).desired_width(120.0));
+            ui.add(egui::TextEdit::singleline(&mut s.title).hint_text(title_hint).desired_width(120.0));
             ui.label("Drawn by");
             ui.add(egui::TextEdit::singleline(&mut s.drawn_by).desired_width(90.0));
             ui.add_space(8.0);

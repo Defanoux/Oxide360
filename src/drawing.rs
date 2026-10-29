@@ -7,6 +7,7 @@
 //! The sheet is a list of lines and texts in paper millimetres (origin at
 //! the bottom left, Y up), drawn on screen and written to PDF / DXF alike.
 
+use crate::doc::BodyId;
 use crate::kernel::ViewLines;
 use glam::{DVec2, DVec3};
 use serde::{Deserialize, Serialize};
@@ -92,6 +93,10 @@ pub struct DrawingSettings {
     pub title: String,
     #[serde(default)]
     pub drawn_by: String,
+    /// What's drawn: these bodies (picked one by one or by component);
+    /// empty means the whole design (every visible body).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bodies: Vec<BodyId>,
 }
 
 fn yes() -> bool {
@@ -104,7 +109,16 @@ fn all_views() -> Vec<ViewKind> {
 
 impl Default for DrawingSettings {
     fn default() -> Self {
-        DrawingSettings { sheet: SheetSize::A3, scale: None, hidden_lines: true, views: all_views(), title: String::new(), drawn_by: String::new() }
+        DrawingSettings { sheet: SheetSize::A3, scale: None, hidden_lines: true, views: all_views(), title: String::new(), drawn_by: String::new(), bodies: Vec::new() }
+    }
+}
+
+/// Tick (`on`) or untick these bodies in what's drawn (a component's
+/// bodies go together). Unticking the last leaves the whole design.
+pub fn pick_bodies(chosen: &mut Vec<BodyId>, ids: &[BodyId], on: bool) {
+    chosen.retain(|b| !ids.contains(b));
+    if on {
+        chosen.extend_from_slice(ids);
     }
 }
 
@@ -124,8 +138,6 @@ fn round_text(x: f64) -> String {
 /// Inside the border, and the gap round views (room for dimensions later).
 const BORDER: f64 = 10.0;
 const GAP: f64 = 15.0;
-/// The least room kept for the iso view, right of the front view.
-const ISO_ROOM: f64 = 60.0;
 /// The title block, bottom right.
 pub const TITLE_SIZE: DVec2 = DVec2::new(180.0, 36.0);
 
@@ -145,21 +157,25 @@ pub fn layout(settings: &DrawingSettings, bounds: &[(ViewKind, (DVec2, DVec2))])
     let (front, top, right, iso) = (size(ViewKind::Front), size(ViewKind::Top), size(ViewKind::Right), size(ViewKind::Iso));
     let paper = settings.sheet.size();
     let inner = paper - DVec2::splat(2.0 * BORDER);
-    // The front, top and right views share the sheet's scale (leaving room
-    // for the iso, which gets its own if it has to, as Fusion's can).
+    let (left, top_edge) = (BORDER + GAP, paper.y - BORDER - GAP);
+    // The iso goes right of the front view, above the title block, at the
+    // sheet's scale or smaller (Fusion's can have its own).
+    let iso_room = |s: f64| DVec2::new(paper.x - BORDER - GAP - (left + (right.x + front.x) * s + 2.0 * GAP), top_edge - (BORDER + TITLE_SIZE.y + GAP));
+    let iso_scale_at = |s: f64| SCALES.into_iter().filter(|&k| k <= s).find(|&k| (iso * k).cmple(iso_room(s)).all()).unwrap_or(SCALES[SCALES.len() - 1]);
+    // The front, top and right views share the sheet's scale; it's only
+    // taken if the iso then fits at most one standard step smaller.
     let fits = |s: f64| {
-        let wide = (right.x + front.x) * s + 3.0 * GAP + ISO_ROOM <= inner.x;
+        let wide = (right.x + front.x) * s + 3.0 * GAP <= inner.x;
         let left_tall = (front.y + top.y) * s + 3.0 * GAP <= inner.y;
         // The top view, under the front, mustn't run into the title block.
         let clear = right.x * s + front.x.max(top.x) * s + 2.0 * GAP <= inner.x - TITLE_SIZE.x || top.y * s + 2.0 * GAP + TITLE_SIZE.y <= inner.y - front.y * s;
-        wide && left_tall && clear
+        let one_step_down = SCALES.into_iter().find(|&k| k < s).unwrap_or(s);
+        let iso_ok = iso.x == 0.0 || (iso * one_step_down).cmple(iso_room(s)).all();
+        wide && left_tall && clear && iso_ok
     };
     let scale = settings.scale.unwrap_or_else(|| SCALES.into_iter().find(|&s| fits(s)).unwrap_or(SCALES[SCALES.len() - 1]));
     let s = scale;
-    let (left, top_edge) = (BORDER + GAP, paper.y - BORDER - GAP);
-    // The iso: to the right of the front view, above the title block.
-    let room = DVec2::new(paper.x - BORDER - GAP - (left + (right.x + front.x) * s + 2.0 * GAP), top_edge - (BORDER + TITLE_SIZE.y + GAP));
-    let iso_scale = SCALES.into_iter().filter(|&k| k <= s).find(|&k| (iso * k).cmple(room).all()).unwrap_or(SCALES[SCALES.len() - 1]);
+    let iso_scale = iso_scale_at(s);
     // The front, top and right views as one group, centred in the room left
     // of the iso (and above the title block if it would reach it).
     let (right_gap, top_gap) = (if right.x > 0.0 { GAP } else { 0.0 }, if top.y > 0.0 { GAP } else { 0.0 });
@@ -424,6 +440,32 @@ mod tests {
         assert!(none.lines.iter().all(|(p, _)| *p != Pen::Dashed), "hidden lines off");
         let front_only = sheet(&DrawingSettings { views: vec![ViewKind::Front], ..Default::default() }, &views, &info());
         assert_eq!(front_only.lines.iter().filter(|(p, _)| *p == Pen::Dashed).count(), 1);
+    }
+
+    #[test]
+    fn the_iso_is_at_most_one_scale_step_smaller() {
+        // A long flat part: the views at 2:1 would leave the iso a corner.
+        let views = box_views(110.0, 60.0, 15.0);
+        let bounds: Vec<_> = views.iter().map(|(k, v)| (*k, v.bounds().unwrap())).collect();
+        let (scale, placed) = layout(&DrawingSettings::default(), &bounds);
+        let iso = placed.iter().find(|p| p.kind == ViewKind::Iso).unwrap().scale;
+        let one_down = SCALES.into_iter().find(|&k| k < scale).unwrap();
+        assert!(iso >= one_down, "sheet {scale}, iso {iso}");
+    }
+
+    #[test]
+    fn bodies_and_components_are_picked_and_dropped() {
+        use crate::doc::Feature;
+        let b = |k| BodyId { feature: Feature::Extrude(k), piece: 0 };
+        let mut chosen = Vec::new();
+        pick_bodies(&mut chosen, &[b(0), b(1)], true);
+        pick_bodies(&mut chosen, &[b(2)], true);
+        pick_bodies(&mut chosen, &[b(1)], true);
+        assert_eq!(chosen, [b(0), b(2), b(1)], "no body twice");
+        pick_bodies(&mut chosen, &[b(0), b(1)], false);
+        assert_eq!(chosen, [b(2)]);
+        pick_bodies(&mut chosen, &[b(2)], false);
+        assert!(chosen.is_empty(), "nothing picked: the whole design");
     }
 
     #[test]
