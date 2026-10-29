@@ -8,3 +8,4 @@ mod timeline;
 mod viewport;
 mod control;
 mod menus;
+mod drawing;

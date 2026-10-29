@@ -25,6 +25,8 @@ const OCCT_LIBS: &[&str] = &[
     "TKBool",
     "TKBO",
     "TKOffset",
+    // opencad patch: hidden-line removal (2-D drawings).
+    "TKHLR",
     "TKXSBase",
     "TKCAF",
     "TKLCAF",
@@ -76,6 +78,7 @@ fn main() {
         "src/gc.rs",
         "src/gc_pnts.rs",
         "src/gp.rs",
+        "src/hlr.rs",
         "src/if_select.rs",
         "src/iges_control.rs",
         "src/law.rs",

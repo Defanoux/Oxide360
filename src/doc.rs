@@ -295,6 +295,9 @@ pub struct Document {
     /// Faces given their own appearance (over their body's).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub face_appearances: Vec<crate::appearance::FaceAppearance>,
+    /// The 2-D drawing's settings (None: never changed from the defaults).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drawing: Option<crate::drawing::DrawingSettings>,
 }
 
 /// Viewing choices saved with a design: hidden bodies, sketch visibility
@@ -858,6 +861,7 @@ mod tests {
             body_materials: Vec::new(),
             body_appearances: Vec::new(),
             face_appearances: Vec::new(),
+            drawing: None,
         }
     }
 
@@ -1359,6 +1363,15 @@ mod tests {
         doc.face_appearances = vec![crate::appearance::FaceAppearance { body: BodyId { feature: Feature::Extrude(0), piece: 0 }, point: [1.0, 2.0, 3.0], normal: [0.0, 0.0, 1.0], appearance: "Oak".into() }];
         assert_eq!(from_json(&to_json(&doc)).unwrap().face_appearances, doc.face_appearances);
         assert!(!json.contains("face_appearances"));
+    }
+
+    #[test]
+    fn drawing_settings_save_and_old_files_have_none() {
+        let mut doc = sample();
+        assert!(!to_json(&doc).contains("\"drawing\""));
+        let s = crate::drawing::DrawingSettings { sheet: crate::drawing::SheetSize::A4, scale: Some(0.5), title: "Bracket".into(), ..Default::default() };
+        doc.drawing = Some(s.clone());
+        assert_eq!(from_json(&to_json(&doc)).unwrap().drawing, Some(s));
     }
 
     #[test]

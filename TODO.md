@@ -8,7 +8,7 @@ Ordered by how much each makes Oxide360 a usable part modeller (FEATURES.md
 has the full Fusion list; this is the slice to do now). Fusion's behaviour is
 the spec for each.
 
-- **2D drawings**: a drawing sheet with views of the part (front, top, side, iso), dimensions and a title block; export PDF/DXF.
+- **Drawing dimensions** (Fusion's Drawing > Dimension): click edges or two points in a view for a length, a circle for its diameter; ISO arrows and text, kept when the part changes; in the PDF/DXF too.
 - **Joint limits** and motion settings (min/max, animation speed).
 - **Own Flatpak repository** (Flathub's AI policy rules it out — see docs/PROJECT.md): CI builds the Flatpak on each release tag, signs it, publishes the repo on GitHub Pages, plus an `Oxide360.flatpakref` so Discover installs it and shows updates.
 
@@ -21,6 +21,7 @@ Later (big): sheet metal, surfaces, CAM, mesh bodies for big STLs.
 
 ## Done
 
+- 2D drawings: DRAWING workspace (beside SOLID / SKETCH): an A4 / A3 / A2 sheet with front, top, right (ISO first-angle: top below, right to the left) and iso views of the visible bodies, exact hidden-line removal by OpenCASCADE (hidden edges dashed, none drawn under visible ones), auto standard scale (iso its own if it must, labelled), views centred, border and title block (title, drawn by, date, material, units, scale, size, projection symbol); Export PDF (true size, vector) and DXF (layers VISIBLE / THIN / HIDDEN dashed / TEXT, checked with ezdxf); settings saved with the design; ctl/MCP export_drawing. Not yet: dimensions, section/detail views, more sheets.
 - Appearances (A; MODIFY > Appearance; body right-click > Appearance… / Remove Appearance): 42 looks in Metal, Plastic, Paint, Rubber, Glass, Wood with search and In This Design; pick one, click bodies (selected bodies get the first pick); saved per body, separate from Physical Material; a picked body colour replaces it. Shading: gloss highlights and studio reflections (metals mirror the sky, tinted), glass see-through; bodies without one render exactly as before. Not yet: textures (wood grain).
 - Appearances on faces: Apply To: Bodies | Faces in the Appearance box; in Faces the face under the mouse lights (flat or curved) and a click gives it its own look over its body's; stored as where it was clicked and found again each build (follows a taller extrude); body right-click > Remove Appearance clears its faces too. Not shown on Section Analysis cut pieces.
 - Shipping: renamed to Oxide360 (app, binary, `.ox360`, settings moved), logo, Help menu with credits, GitHub repo (public, GPL-3.0, CI on Fedora 44), Flatpak (`packaging/flatpak`, `dist/Oxide360.flatpak`), release v0.1.0 with the Flatpak attached; CLAUDE.md + docs/PROJECT.md written for a handoff.

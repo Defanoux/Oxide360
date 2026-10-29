@@ -79,6 +79,7 @@ impl OpenCad {
             "bodies": bodies,
             "sketch": sketch,
             "tool": self.tool_name(),
+            "workspace": if self.drawing_open { "DRAWING" } else if self.active.is_some() { "SKETCH" } else { "SOLID" },
             "dialogs": open,
             "notice": self.toast.as_ref().map(|t| t.0.clone()),
             "alert": self.alert,

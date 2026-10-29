@@ -2647,6 +2647,186 @@ pub fn exact_bounds(shape: &Shape) -> Option<(DVec3, DVec3)> {
     Some((DVec3::new(lo.x, lo.y, lo.z), DVec3::new(hi.x, hi.y, hi.z)))
 }
 
+/// The lines of a 2-D drawing view (exact hidden-line removal by
+/// OpenCASCADE), as polylines in paper millimetres at 1:1, Y up the paper.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ViewLines {
+    /// Sharp edges you can see.
+    pub visible: Vec<Vec<DVec2>>,
+    /// Outlines of curved faces you can see (a cylinder's sides).
+    pub outline: Vec<Vec<DVec2>>,
+    /// Smooth edges you can see (where a fillet meets a face; drawn thin).
+    pub smooth: Vec<Vec<DVec2>>,
+    /// Edges and outlines behind (dashed).
+    pub hidden: Vec<Vec<DVec2>>,
+}
+
+impl ViewLines {
+    /// Every line, for sizing the view.
+    pub fn all(&self) -> impl Iterator<Item = &Vec<DVec2>> {
+        self.visible.iter().chain(&self.outline).chain(&self.smooth).chain(&self.hidden)
+    }
+
+    /// The box round every line (min, max), if there are any.
+    pub fn bounds(&self) -> Option<(DVec2, DVec2)> {
+        self.all().flatten().fold(None, |b, &p| Some(b.map_or((p, p), |(lo, hi): (DVec2, DVec2)| (lo.min(p), hi.max(p)))))
+    }
+}
+
+thread_local! {
+    static VIEWS: std::cell::RefCell<Vec<(String, Option<ViewLines>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The bodies seen from the side `toward_viewer` points to, `right` along
+/// the paper's X (Y is toward_viewer × right). Remembered for the same bodies
+/// and direction: it's slow on a detailed part. None if OpenCASCADE fails.
+pub fn hlr_view(bodies: &[&Shape], toward_viewer: DVec3, right: DVec3) -> Option<ViewLines> {
+    let key = key_of(&format!("{}|{toward_viewer:?}|{right:?}", bodies.iter().map(|s| fingerprint(s)).collect::<Vec<_>>().join(";")));
+    if let Some(found) = VIEWS.with(|c| c.borrow().iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone())) {
+        return found;
+    }
+    let found = hlr_view_now(bodies, toward_viewer, right);
+    VIEWS.with(|c| {
+        let mut c = c.borrow_mut();
+        c.push((key, found.clone()));
+        // Views hold many points: keep fewer than the other memos.
+        if c.len() > 24 {
+            c.remove(0);
+        }
+    });
+    found
+}
+
+fn hlr_view_now(bodies: &[&Shape], toward_viewer: DVec3, right: DVec3) -> Option<ViewLines> {
+    if bodies.is_empty() {
+        return Some(ViewLines::default());
+    }
+    let all: Shape = opencascade::primitives::Compound::from_shapes(bodies.iter().copied()).into();
+    let lines = catch_unwind(AssertUnwindSafe(|| all.try_hlr(toward_viewer.to_array(), right.to_array(), 0.01))).ok().flatten()?;
+    let mut v = ViewLines::default();
+    let mut hidden = Vec::new();
+    for (kind, pts) in lines {
+        let pts: Vec<DVec2> = pts.into_iter().map(DVec2::from).collect();
+        match kind {
+            0 => v.visible.push(pts),
+            1 => v.outline.push(pts),
+            2 => v.smooth.push(pts),
+            _ => hidden.push(pts),
+        }
+    }
+    v.hidden = drop_covered(hidden, v.visible.iter().chain(&v.outline).chain(&v.smooth));
+    Some(v)
+}
+
+/// The parts of `lines` not lying on `seen` (a back edge right behind a
+/// front one isn't drawn dashed over it).
+fn drop_covered<'a>(lines: Vec<Vec<DVec2>>, seen: impl Iterator<Item = &'a Vec<DVec2>>) -> Vec<Vec<DVec2>> {
+    let segs: Vec<(DVec2, DVec2)> = seen.flat_map(|l| l.windows(2).map(|w| (w[0], w[1]))).collect();
+    let Some((lo, hi)) = segs.iter().flat_map(|&(a, b)| [a, b]).fold(None, |r, p| Some(r.map_or((p, p), |(lo, hi): (DVec2, DVec2)| (lo.min(p), hi.max(p))))) else { return lines };
+    let tol = 1e-6 * (1.0 + (hi - lo).length());
+    // The seen segments by grid cell, so each test looks at a few.
+    let cell = ((hi - lo).max_element() / 64.0).max(1e-3);
+    let at = |p: DVec2| (((p.x - lo.x) / cell).floor() as i64, ((p.y - lo.y) / cell).floor() as i64);
+    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (i, &(a, b)) in segs.iter().enumerate() {
+        let (c0, c1) = (at(a.min(b) - tol), at(a.max(b) + tol));
+        for x in c0.0..=c1.0 {
+            for y in c0.1..=c1.1 {
+                grid.entry((x, y)).or_default().push(i);
+            }
+        }
+    }
+    let on_seen = |p: DVec2| {
+        grid.get(&at(p)).is_some_and(|ids| {
+            ids.iter().any(|&i| {
+                let (a, b) = segs[i];
+                let d = b - a;
+                let t = if d.length_squared() > 0.0 { ((p - a).dot(d) / d.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+                (a + d * t).distance(p) <= tol
+            })
+        })
+    };
+    let mut out = Vec::new();
+    for line in lines {
+        let mut run: Vec<DVec2> = Vec::new();
+        for w in line.windows(2) {
+            // Covered when both ends and the middle lie on seen lines.
+            let covered = on_seen(w[0]) && on_seen(w[1]) && on_seen((w[0] + w[1]) * 0.5);
+            if covered {
+                if run.len() > 1 {
+                    out.push(std::mem::take(&mut run));
+                }
+                run.clear();
+            } else {
+                if run.is_empty() {
+                    run.push(w[0]);
+                }
+                run.push(w[1]);
+            }
+        }
+        if run.len() > 1 {
+            out.push(run);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod hlr_tests {
+    use super::*;
+
+    fn block(lo: DVec3, hi: DVec3) -> Shape {
+        Shape::box_from_corners(kv(lo), kv(hi))
+    }
+
+    fn close(a: DVec2, b: DVec2) -> bool {
+        a.distance(b) < 1e-6
+    }
+
+    #[test]
+    fn a_box_from_the_front_and_the_top_is_exactly_its_size() {
+        let b = block(DVec3::ZERO, DVec3::new(10.0, 20.0, 30.0));
+        let front = hlr_view(&[&b], DVec3::NEG_Y, DVec3::X).unwrap();
+        let (lo, hi) = front.bounds().unwrap();
+        assert!(close(lo, DVec2::new(0.0, 0.0)) && close(hi, DVec2::new(10.0, 30.0)), "front: {lo} {hi}");
+        assert!(front.hidden.is_empty(), "the back edges lie under the front ones: not drawn");
+        assert_eq!(front.visible.len(), 4, "four sides of a rectangle");
+        let top = hlr_view(&[&b], DVec3::Z, DVec3::X).unwrap();
+        let (lo, hi) = top.bounds().unwrap();
+        assert!(close(lo, DVec2::ZERO) && close(hi, DVec2::new(10.0, 20.0)), "top, Y up the paper: {lo} {hi}");
+    }
+
+    #[test]
+    fn a_hole_behind_the_front_face_is_hidden_lines() {
+        // A 40 x 20 x 10 block with a 6 mm hole straight down through it at x = 12.
+        let b = block(DVec3::ZERO, DVec3::new(40.0, 20.0, 10.0));
+        let hole = Shape::cylinder(kv(DVec3::new(12.0, 10.0, -1.0)), 3.0, kv(DVec3::Z), 12.0);
+        let part = b.try_subtract(&hole).unwrap();
+        let front = hlr_view(&[&part], DVec3::NEG_Y, DVec3::X).unwrap();
+        let xs: Vec<f64> = front.hidden.iter().flatten().map(|p| p.x).collect();
+        assert!(!xs.is_empty(), "the hole shows as hidden lines");
+        let (lo, hi) = xs.iter().fold((f64::MAX, f64::MIN), |(a, b), &x| (a.min(x), b.max(x)));
+        assert!((lo - 9.0).abs() < 1e-6 && (hi - 15.0).abs() < 1e-6, "its sides at 12 ± 3: {lo} {hi}");
+        // From the top it's a visible circle of radius 3 round (12, 10).
+        let top = hlr_view(&[&part], DVec3::Z, DVec3::X).unwrap();
+        let on_circle = top.visible.iter().flatten().filter(|p| ((**p - DVec2::new(12.0, 10.0)).length() - 3.0).abs() < 1e-6).count();
+        assert!(on_circle > 8, "the hole's edge seen from above");
+    }
+
+    #[test]
+    fn a_cylinder_from_the_side_has_outlines_at_its_radius() {
+        let c = Shape::cylinder(kv(DVec3::ZERO), 5.0, kv(DVec3::Z), 20.0);
+        let front = hlr_view(&[&c], DVec3::NEG_Y, DVec3::X).unwrap();
+        // Its sides: one is an outline, the other its seam edge lying on it.
+        let mut sides: Vec<f64> = front.visible.iter().chain(&front.outline).filter(|l| l.iter().all(|p| (p.x - l[0].x).abs() < 1e-6)).map(|l| l[0].x).collect();
+        sides.sort_by(f64::total_cmp);
+        assert!(sides.len() == 2 && (sides[0] + 5.0).abs() < 1e-6 && (sides[1] - 5.0).abs() < 1e-6, "{sides:?}");
+        assert!(front.hidden.is_empty(), "the back half of the end circles lies on the front half: not drawn");
+        let (lo, hi) = front.bounds().unwrap();
+        assert!(close(lo, DVec2::new(-5.0, 0.0)) && close(hi, DVec2::new(5.0, 20.0)), "{lo} {hi}");
+    }
+}
+
 /// Where bodies overlap (Fusion's Inspect → Interference): each pair (by
 /// index) that shares volume, with the shared solid. Touching isn't overlapping.
 pub fn interference(bodies: &[&Shape]) -> Vec<(usize, usize, Shape)> {

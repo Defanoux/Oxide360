@@ -24,6 +24,8 @@ mod colors;
 mod control;
 mod copy_dialog;
 mod doc;
+mod drawing;
+mod drawing_export;
 mod export;
 mod gizmo;
 mod gpu;
@@ -853,6 +855,10 @@ struct OpenCad {
     body_materials: HashMap<BodyId, String>, // physical materials the user gave bodies
     body_appearances: HashMap<BodyId, String>, // appearances the user gave bodies (names)
     face_appearances: Vec<appearance::FaceAppearance>, // faces with their own appearance
+    drawing: Option<drawing::DrawingSettings>, // the 2-D drawing's settings, once changed
+    drawing_open: bool,                         // in the DRAWING workspace
+    drawing_cam: Option<(egui::Pos2, f32)>,     // the sheet's corner on screen, px per mm (None: fit)
+    drawing_scale_shown: f64,                   // the scale Auto picked last frame
     properties_of: Option<BodyId>,           // the body whose Properties window is open
     interference: Option<Interference>,      // Inspect → Interference, while open  // colours the user gave bodies
     body_ids: Vec<BodyId>,                  // the bodies of the last build, in order
@@ -1099,6 +1105,10 @@ impl Default for OpenCad {
             body_materials: HashMap::new(),
             body_appearances: HashMap::new(),
             face_appearances: Vec::new(),
+            drawing: None,
+            drawing_open: false,
+            drawing_cam: None,
+            drawing_scale_shown: 1.0,
             properties_of: None,
             interference: None,
             body_ids: Vec::new(),
@@ -1723,6 +1733,7 @@ impl Tabs {
                     "open" => Some(done(path().and_then(|p| tab.control_open(&p)))),
                     "save" => Some(done(path().and_then(|p| tab.control_save(&p)))),
                     "import" => Some(done(path().and_then(|p| tab.import_path(std::path::Path::new(&p))))),
+                    "export_drawing" => Some(done(path().and_then(|p| tab.export_drawing_to(std::path::Path::new(&p))))),
                     "new" => {
                         tab.control_new();
                         Some(json!({"ok": true}))

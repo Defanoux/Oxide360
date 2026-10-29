@@ -289,6 +289,30 @@ impl Shape {
         (!made.is_null()).then(|| Self::from_shape(&made))
     }
 
+    /// opencad patch: hidden-line removal — the lines of the shape seen from
+    /// the side `toward_viewer` points to, `right` to the right on the paper,
+    /// as (kind, polyline in paper mm). Kinds: 0 visible sharp edges, 1
+    /// visible outlines, 2 visible smooth edges, 3 hidden edges, 4 hidden
+    /// outlines.
+    pub fn try_hlr(&self, toward_viewer: [f64; 3], right: [f64; 3], deflection: f64) -> Option<Vec<(u8, Vec<[f64; 2]>)>> {
+        let [nx, ny, nz] = toward_viewer;
+        let [xx, xy, xz] = right;
+        let flat = ffi::hlr::opencad_try_hlr(&self.inner, nx, ny, nz, xx, xy, xz, deflection);
+        if flat.is_null() {
+            return None;
+        }
+        let v: Vec<f64> = flat.iter().copied().collect();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i + 1 < v.len() {
+            let (kind, n) = (v[i] as u8, v[i + 1] as usize);
+            let pts = v.get(i + 2..i + 2 + 2 * n)?;
+            out.push((kind, pts.chunks(2).map(|p| [p[0], p[1]]).collect()));
+            i += 2 + 2 * n;
+        }
+        Some(out)
+    }
+
     /// opencad patch: grown (or, negative, shrunk) by `offset` all round.
     pub fn try_offset(&self, offset: f64, rounded: bool) -> Option<Self> {
         let made = ffi::b_rep_offset_api::opencad_try_offset_shape(&self.inner, offset, rounded);

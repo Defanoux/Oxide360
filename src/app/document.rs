@@ -37,6 +37,7 @@ impl OpenCad {
             body_materials: self.sorted_body_materials(),
             body_appearances: self.sorted_body_appearances(),
             face_appearances: self.face_appearances.clone(),
+            drawing: self.drawing.clone(),
         }
     }
 
@@ -342,6 +343,7 @@ impl OpenCad {
             || self.sorted_body_materials() != self.saved.body_materials
             || self.sorted_body_appearances() != self.saved.body_appearances
             || self.face_appearances != self.saved.face_appearances
+            || self.drawing != self.saved.drawing
     }
 
     /// Autosave this design if it has changes and it's time (see `recovery`);
@@ -478,6 +480,7 @@ impl OpenCad {
         self.body_materials = doc.body_materials.iter().cloned().collect();
         self.body_appearances = doc.body_appearances.iter().cloned().collect();
         self.face_appearances = doc.face_appearances.clone();
+        self.drawing = doc.drawing.clone();
         self.properties_of = None;
         self.interference = None;
         self.renaming = None;
@@ -575,6 +578,7 @@ impl OpenCad {
         self.body_materials = doc.body_materials.into_iter().collect();
         self.body_appearances = doc.body_appearances.into_iter().collect();
         self.face_appearances = doc.face_appearances;
+        self.drawing = doc.drawing;
         self.properties_of = None;
         self.interference = None;
         self.renaming = None;

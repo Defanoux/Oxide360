@@ -4,6 +4,10 @@ use crate::*;
 
 impl OpenCad {
     pub(crate) fn viewport(&mut self, ui: &mut egui::Ui) {
+        if self.drawing_open {
+            self.drawing_view(ui);
+            return;
+        }
         // Press Pull clicked a fillet or a profile last frame: open its tool now.
         match self.press_pull_go.take() {
             Some(PressPullHover::Fillet(k)) => self.open_edge_dialog(Some(k), EdgeKind::Fillet),

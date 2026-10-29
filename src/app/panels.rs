@@ -399,12 +399,26 @@ impl OpenCad {
             });
         });
         // Which workspace you're in, like Fusion's SOLID / SKETCH tabs.
+        // DRAWING switches to the 2-D drawing sheet; SOLID back.
         let sketching = self.active.is_some();
+        let drawing = self.drawing_open;
         ui.horizontal(|ui| {
-            for (name, on) in [("SOLID", !sketching), ("SKETCH", sketching)] {
+            for (name, on) in [("SOLID", !sketching && !drawing), ("SKETCH", sketching && !drawing), ("DRAWING", drawing)] {
                 let text = egui::RichText::new(name).size(12.0);
                 let text = if on { text.color(Color32::from_rgb(110, 170, 255)).strong() } else { text.color(Color32::from_gray(110)) };
-                ui.label(text);
+                let tip = match name {
+                    "SOLID" => "Back to the 3-D design",
+                    "SKETCH" => "Sketching (double-click a sketch to edit it)",
+                    _ => "A 2-D drawing of the part: front, top, right and iso views, title block, PDF / DXF",
+                };
+                let r = ui.add(egui::Label::new(text).sense(egui::Sense::click())).on_hover_text(tip);
+                if r.clicked() {
+                    match name {
+                        "SOLID" => self.drawing_open = false,
+                        "DRAWING" if !drawing => self.open_drawing(),
+                        _ => {}
+                    }
+                }
                 ui.add_space(10.0);
             }
             if let Some(i) = self.active {
@@ -731,6 +745,10 @@ impl OpenCad {
     /// The ribbon: quick-access icons (file, save, undo, redo), then tool
     /// groups with their names underneath, like Fusion's toolbar.
     pub(crate) fn toolbar(&mut self, ui: &mut egui::Ui) {
+        if self.drawing_open {
+            self.drawing_toolbar(ui);
+            return;
+        }
         // One group: a row of icons with a small label centred under it. The
         // label area is exactly as wide as the icons (a centred layout would
         // stretch across the whole toolbar and push the other groups away).

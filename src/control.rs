@@ -191,6 +191,7 @@ fn mcp_tools() -> Value {
         {"name": "open", "description": "Open a design file (.ox360, or .ocad from before).", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
         {"name": "save", "description": "Save the design to a file.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
         {"name": "import", "description": "Insert a STEP (.step/.stp) or STL file's bodies into the design.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+        {"name": "export_drawing", "description": "Write the design's 2-D drawing sheet to a .pdf or .dxf file.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
         {"name": "new", "description": "Throw the open design away and start an empty one (no questions).", "inputSchema": {"type": "object", "properties": {}}}
     ])
 }
