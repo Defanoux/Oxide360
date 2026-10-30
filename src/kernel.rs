@@ -715,6 +715,9 @@ pub fn section_plane(bodies: &[Body], q: DVec3, n: DVec3) -> Result<Vec<SectionC
     if !(q.is_finite() && n.is_finite()) || n.length() < 1e-9 {
         return Err("the plane isn't usable".into());
     }
+    if bodies.is_empty() {
+        return Ok(Vec::new()); // (no box to build round nothing: OCCT would abort)
+    }
     let n = n.normalize();
     let key = format!("{:?}|{q:?}|{n:?}", bodies.iter().map(|b| fingerprint(&b.shape)).collect::<Vec<_>>());
     if let Some(hit) = SECTIONS.with(|c| c.borrow().iter().find(|(k, _)| *k == key).map(|(_, r)| r.clone())) {
@@ -760,6 +763,8 @@ pub fn section_plane(bodies: &[Body], q: DVec3, n: DVec3) -> Result<Vec<SectionC
 /// the box `lo`..`hi` reaches: a slab to cut bodies with.
 fn half_space(q: DVec3, n: DVec3, lo: DVec3, hi: DVec3) -> Shape {
     let size = (hi - lo).length().max(1.0) * 2.0 + (q - (lo + hi) * 0.5).length() * 2.0 + 10.0;
+    // Empty or broken bounds would give NaN corners, and OCCT aborts on those.
+    let size = if size.is_finite() { size } else { 1.0e4 };
     let a = n.any_orthonormal_vector();
     let b = n.cross(a);
     let corners = [q + (a + b) * size, q + (b - a) * size, q - (a + b) * size, q + (a - b) * size];
@@ -4536,6 +4541,8 @@ mod tests {
         let below = section_plane(&m.bodies, DVec3::new(0.0, 0.0, 2.0), DVec3::Z * 3.0).unwrap();
         assert!((volume(&below) - 400.0).abs() < 1e-3, "20 × 10 × 2 left: {}", volume(&below));
         assert!(section_plane(&m.bodies, DVec3::ZERO, DVec3::ZERO).is_err());
+        // No bodies (a sketch before the first feature, edited with Slice on).
+        assert!(section_plane(&[], DVec3::ZERO, DVec3::Z).unwrap().is_empty());
     }
 
     #[test]
