@@ -211,22 +211,57 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             arc(0.5, 0.2, 0.3, 0.2, 2.8, s);
             arrow_head((0.2, 0.26), (0.3, 0.38), orange);
         }
-        Icon::Fillet => {
-            // A block whose top-right corner is rounded (still convex).
-            let mut pts = vec![(0.15, 0.85), (0.15, 0.15), (0.5, 0.15)];
-            for i in 1..=8 {
-                let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::FRAC_PI_2 * i as f32 / 8.0;
-                pts.push((0.5 + 0.35 * a.cos(), 0.5 + 0.35 * a.sin()));
+        Icon::Fillet | Icon::Chamfer => {
+            // A block seen from above (three faces), its top-right edge rounded
+            // (Fillet, the round shaded orange) or bevelled flat (Chamfer).
+            let fillet = icon == Icon::Fillet;
+            let pt = |x: f32, y: f32| Pos2::new(o.x + x * w, o.y + y * w);
+            let lerp = |a: (f32, f32), b: (f32, f32), t: f32| (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+            let (t0, t1, t2, t3) = ((0.5, 0.1), (0.9, 0.3), (0.5, 0.5), (0.1, 0.3));
+            let down = |q: (f32, f32), d: f32| (q.0, q.1 + d);
+            let (b1, b2, b3) = (down(t1, 0.42), down(t2, 0.42), down(t3, 0.42));
+            // Where the round (or bevel) starts on the top and on the right face.
+            let k = 0.36;
+            let (p, q) = (lerp(t2, t3, k), lerp(t1, t0, k));
+            let (r, s2) = (down(t2, 0.42 * k), down(t1, 0.42 * k));
+            // The edge's profile from the top to the right face (curved round the old corner for a fillet).
+            let n = 8;
+            let curve = |a: (f32, f32), c: (f32, f32), b: (f32, f32), t: f32| {
+                if fillet {
+                    let u = 1.0 - t;
+                    (u * u * a.0 + 2.0 * u * t * c.0 + t * t * b.0, u * u * a.1 + 2.0 * u * t * c.1 + t * t * b.1)
+                } else {
+                    lerp(a, b, t)
+                }
+            };
+            let top = tint(Color32::from_rgb(140, 190, 245));
+            poly(&[t0, q, p, t3], top);
+            poly(&[r, s2, b1, b2], blue_dark);
+            let mut left = vec![t3, p];
+            left.extend((1..n).map(|i| curve(p, t2, r, i as f32 / n as f32)));
+            left.extend([r, b2, b3]);
+            poly(&left, blue);
+            // The round itself: light orange where it faces up, darker as it turns down.
+            let shade = |t: f32| {
+                let (a, b) = ([252.0, 200.0, 110.0], [205.0, 120.0, 35.0]);
+                let t = if fillet { t } else { 0.35 };
+                tint(Color32::from_rgb((a[0] + (b[0] - a[0]) * t) as u8, (a[1] + (b[1] - a[1]) * t) as u8, (a[2] + (b[2] - a[2]) * t) as u8))
+            };
+            // One mesh, colour blended along the round (no seams between strips).
+            let steps = if fillet { n } else { 1 };
+            let mut m = egui::Mesh::default();
+            for i in 0..=steps {
+                let t = i as f32 / steps as f32;
+                let (a, z) = (curve(p, t2, r, t), curve(q, t1, s2, t));
+                m.colored_vertex(pt(a.0, a.1), shade(t));
+                m.colored_vertex(pt(z.0, z.1), shade(t));
+                if i > 0 {
+                    let k = 2 * i as u32;
+                    m.add_triangle(k - 2, k - 1, k + 1);
+                    m.add_triangle(k - 2, k + 1, k);
+                }
             }
-            pts.push((0.85, 0.85));
-            poly(&pts, blue);
-            arc(0.5, 0.5, 0.35, -std::f32::consts::FRAC_PI_2, 0.0, Stroke::new(thin.width * 1.4, orange));
-            line((0.15, 0.85), (0.85, 0.85), thin);
-        }
-        Icon::Chamfer => {
-            poly(&[(0.15, 0.85), (0.15, 0.15), (0.5, 0.15), (0.85, 0.5), (0.85, 0.85)], blue);
-            line((0.5, 0.15), (0.85, 0.5), Stroke::new(thin.width * 1.4, orange));
-            line((0.15, 0.85), (0.85, 0.85), thin);
+            painter.add(egui::Shape::mesh(m));
         }
         Icon::Polygon => {
             let pts: Vec<(f32, f32)> = (0..6)
