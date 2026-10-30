@@ -118,8 +118,9 @@ const GREEN: Color32 = Color32::from_rgb(90, 200, 110);
 
 /// Draw `icon` inside `rect`. `ink` is the line colour (grey when disabled).
 pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
-    let ink = if enabled { Color32::from_gray(220) } else { Color32::from_gray(95) };
-    let tint = |c: Color32| if enabled { c } else { Color32::from_gray(95) };
+    let pal = crate::theme::now();
+    let ink = if enabled { pal.ink } else { pal.ink_off };
+    let tint = |c: Color32| if enabled { c } else { pal.ink_off };
     let (blue, blue_dark, orange, green) = (tint(BLUE), tint(BLUE_DARK), tint(ORANGE), tint(GREEN));
     let w = rect.width().min(rect.height());
     let o = rect.center() - egui::vec2(w, w) * 0.5;
@@ -964,9 +965,9 @@ pub fn option(ui: &mut egui::Ui, icon: Icon, label: &str, tooltip: &str, enabled
     let label = label.to_string();
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, label.clone()));
     let bg = if selected {
-        Some(Color32::from_rgb(40, 80, 130))
+        Some(crate::theme::now().accent.gamma_multiply(0.45))
     } else if enabled && response.hovered() {
-        Some(Color32::from_gray(60))
+        Some(crate::theme::now().raised)
     } else {
         None
     };
@@ -988,9 +989,9 @@ pub fn button_sized(ui: &mut egui::Ui, icon: Icon, tooltip: &str, enabled: bool,
     let sense = if enabled { egui::Sense::click_and_drag() } else { egui::Sense::hover() };
     let (rect, response) = ui.allocate_exact_size(size, sense);
     let bg = if selected {
-        Some(Color32::from_rgb(40, 80, 130))
+        Some(crate::theme::now().accent.gamma_multiply(0.45))
     } else if enabled && response.hovered() {
-        Some(Color32::from_gray(60))
+        Some(crate::theme::now().raised)
     } else {
         None
     };
@@ -1001,11 +1002,25 @@ pub fn button_sized(ui: &mut egui::Ui, icon: Icon, tooltip: &str, enabled: bool,
     response.on_hover_text(tooltip)
 }
 
+/// A small chevron button: pointing up (fold away) or down (bring back).
+pub fn chevron(ui: &mut egui::Ui, up: bool, tooltip: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::click());
+    let pal = crate::theme::now();
+    if response.hovered() {
+        ui.painter().rect_filled(rect, 3.0, pal.raised);
+    }
+    let c = rect.center();
+    let (dx, dy) = (5.0, if up { -2.5 } else { 2.5 });
+    let pts = vec![c + egui::vec2(-dx, -dy), c + egui::vec2(0.0, dy), c + egui::vec2(dx, -dy)];
+    ui.painter().add(egui::Shape::line(pts, Stroke::new(1.8, pal.ink)));
+    response.on_hover_text(tooltip)
+}
+
 /// A narrow ▾ button that opens a menu next to an icon button.
 pub fn dropdown(ui: &mut egui::Ui, tooltip: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(14.0, 34.0), egui::Sense::click());
     if response.hovered() {
-        ui.painter().rect_filled(rect, 3.0, Color32::from_gray(60));
+        ui.painter().rect_filled(rect, 3.0, crate::theme::now().raised);
     }
     let c = rect.center();
     let ink = Color32::from_gray(200);
@@ -1032,9 +1047,9 @@ pub fn timeline_button(
     let (rect, response) = ui.allocate_exact_size(egui::vec2(32.0, 36.0), egui::Sense::click_and_drag());
     let body = Rect::from_min_size(rect.min, egui::vec2(32.0, 30.0));
     let bg = if selected {
-        Some(Color32::from_rgb(40, 80, 130))
+        Some(crate::theme::now().accent.gamma_multiply(0.45))
     } else if response.hovered() {
-        Some(Color32::from_gray(60))
+        Some(crate::theme::now().raised)
     } else {
         None
     };

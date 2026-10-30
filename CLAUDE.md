@@ -154,6 +154,7 @@ lists there).
 | `export.rs`, `sketch_export.rs`, `recovery.rs` | STL/3MF/OBJ export, sketch DXF/SVG, autosave + crash recovery |
 | `sketch_palette.rs` | the Sketch Palette (show switches, Slice) |
 | `sketch_import.rs` | Insert SVG / DXF: reading drawings into sketch curves |
+| `theme.rs` | colour themes (Dark, Slate, Light): egui visuals, view background, grid and icon ink — use `theme::now()` instead of fixed greys on panels |
 | `print3d.rs` | Print Check: printers, overhangs, fit, best orientations (`kernel::lay_flat` turns it) |
 | `drawing.rs`, `drawing_export.rs` | 2-D drawing sheet (settings, first-angle layout, scales, title block) from `kernel::hlr_view` lines; PDF + DXF writers |
 | `ui_shot.rs` | test-only headless UI screenshots |

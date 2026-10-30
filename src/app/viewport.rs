@@ -2392,7 +2392,7 @@ impl OpenCad {
 
         crate::mark("draw: background, grid, axes");
         // --- draw: background, grid, axes ---
-        painter.rect_filled(rect, 0.0, Color32::from_gray(38));
+        painter.rect_filled(rect, 0.0, theme::now().view);
         let rel = self.camera.target - dplane.origin;
         let centre = DVec2::new(rel.dot(dplane.u) as f64, rel.dot(dplane.v) as f64);
         let extent = (GRID_HALF_LINES as f64 * grid.step + centre.abs().max_element()) as f32;
@@ -2435,8 +2435,9 @@ impl OpenCad {
             sketch::grid_lines(&dplane, centre, grid, GRID_HALF_LINES)
                 .into_iter()
                 .map(|(a, b, major)| {
-                    let g = if major { 85.0 / 255.0 } else { 60.0 / 255.0 };
-                    (a, b, [g, g, g, 1.0])
+                    let (minor_c, major_c) = theme::grid();
+                    let g = if major { major_c } else { minor_c };
+                    (a, b, [g[0], g[1], g[2], 1.0])
                 })
                 .collect()
         } else {
@@ -4571,7 +4572,9 @@ impl OpenCad {
 
         // View cube controls, placed after everything else so they draw on top:
         // Home at the top-left, the view options menu at the bottom-right.
-        let icon = Color32::from_gray(215);
+        // (Buttons in the theme's colours; the roll arrows sit on the view itself.)
+        let icon = theme::now().ink;
+        let on_view = Color32::from_gray(215);
         let home_rect = egui::Rect::from_center_size(cube_center + egui::vec2(-CUBE_MARGIN * 0.82, -CUBE_MARGIN * 0.82), egui::vec2(26.0, 24.0));
         let home = ui.put(home_rect, egui::Button::new("")).on_hover_text("Home view");
         View::house_icon(ui.painter(), home_rect.shrink2(egui::vec2(7.0, 6.0)), icon);
@@ -4587,7 +4590,7 @@ impl OpenCad {
                 let mid = (from + to) / 2.0;
                 let spot = egui::Rect::from_center_size(around + egui::vec2(mid.cos(), mid.sin()) * radius, egui::vec2(40.0, 40.0));
                 let r = ui.interact(spot, ui.id().with(("roll", clockwise)), egui::Sense::click()).on_hover_text(tip);
-                let col = if r.hovered() { COL_ARROW_HOT } else { icon };
+                let col = if r.hovered() { COL_ARROW_HOT } else { on_view };
                 View::roll_arrow(ui.painter(), around, radius, from, to, col);
                 if r.clicked() {
                     let to = self.camera.rolled(clockwise);

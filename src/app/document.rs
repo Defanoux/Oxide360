@@ -327,6 +327,7 @@ impl OpenCad {
             printer: self.printer.clone(),
             printer_custom: self.printer_custom,
             overhang_limit: self.overhang_limit,
+            theme: self.theme,
         }
     }
 

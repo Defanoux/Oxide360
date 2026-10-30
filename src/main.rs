@@ -60,6 +60,7 @@ mod print3d;
 mod print_check_dialog;
 mod sketch_import;
 mod sketch_palette;
+mod theme;
 mod split_dialog;
 mod move_dialog;
 mod expr;
@@ -718,6 +719,8 @@ struct OpenCad {
     printer: String,                        // Print Check settings (kept between runs)
     printer_custom: [f64; 3],
     overhang_limit: f64,
+    theme: theme::Theme,                    // the colour theme (Settings)
+    toolbar_folded: bool,                   // the toolbar is folded away (the chevron by SOLID / SKETCH)
     undo: Vec<Sketch>,
     dof: Option<usize>,
     message: Option<String>,
@@ -981,6 +984,8 @@ impl Default for OpenCad {
             printer: print3d::PRINTERS[0].name.to_string(),
             printer_custom: [200.0, 200.0, 200.0],
             overhang_limit: 45.0,
+            theme: theme::Theme::default(),
+            toolbar_folded: false,
             undo: Vec::new(),
             dof: None,
             message: None,
@@ -1351,36 +1356,46 @@ impl OpenCad {
         egui::Panel::top("titlebar").show(ui, |ui| self.title_bar(ui));
         self.settings_window(&ctx);
         self.help_window(&ctx);
-        // Side-scrollable, so a narrow window doesn't cut the ribbon off.
-        egui::Panel::top("toolbar").show(ui, |ui| {
-            if self.active.is_some() {
-                // Only as wide as its label.
-                let label_w = ui.painter().layout_no_wrap("FINISH SKETCH".into(), egui::FontId::proportional(11.0), Color32::WHITE).size().x;
-                egui::Panel::right("finish_sketch").resizable(false).exact_size(label_w + 20.0).show(ui, |ui| self.finish_sketch_group(ui));
-            }
-            // Carry-on scrolling: a flick keeps gliding a little (see `inertia`).
-            let dt = ui.input(|i| i.stable_dt);
-            let glide = self.toolbar_inertia.step(self.toolbar_user_delta, dt);
-            let offset_in = (self.toolbar_x + glide.unwrap_or(0.0)).max(0.0);
-            // A solid scrollbar in its own strip under the group names (a
-            // floating one sat over them and caught clicks meant for the ▾s).
-            ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
-            let out = egui::ScrollArea::horizontal()
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-                .auto_shrink([false, true])
-                .horizontal_scroll_offset(offset_in)
-                .show(ui, |ui| self.toolbar(ui));
-            let offset_out = out.state.offset.x;
-            self.toolbar_user_delta = offset_out - offset_in;
-            if glide.is_some() && self.toolbar_user_delta != 0.0 && (offset_out <= 0.0 || offset_out >= out.content_size.x - out.inner_rect.width() - 0.5) {
-                self.toolbar_inertia.stop(); // hit an end of the bar
-                self.toolbar_user_delta = 0.0;
-            }
-            self.toolbar_x = offset_out;
-            if self.toolbar_inertia.is_gliding() || self.toolbar_user_delta != 0.0 {
-                ui.ctx().request_repaint();
-            }
-        });
+        // Side-scrollable, so a narrow window doesn't cut the ribbon off. A
+        // rounded card floating on the title bar's colour; it folds away.
+        let pal = theme::now();
+        let card = egui::Frame::new()
+            .fill(pal.card)
+            .corner_radius(8.0)
+            .stroke(egui::Stroke::new(1.0, pal.raised))
+            .inner_margin(egui::Margin { left: 6, right: 6, top: 4, bottom: 2 })
+            .outer_margin(egui::Margin { left: 8, right: 8, top: 0, bottom: 6 });
+        if !self.toolbar_folded {
+            egui::Panel::top("toolbar").frame(card).show_separator_line(false).show(ui, |ui| {
+                if self.active.is_some() {
+                    // Only as wide as its label.
+                    let label_w = ui.painter().layout_no_wrap("FINISH SKETCH".into(), egui::FontId::proportional(11.0), Color32::WHITE).size().x;
+                    egui::Panel::right("finish_sketch").resizable(false).exact_size(label_w + 20.0).show(ui, |ui| self.finish_sketch_group(ui));
+                }
+                // Carry-on scrolling: a flick keeps gliding a little (see `inertia`).
+                let dt = ui.input(|i| i.stable_dt);
+                let glide = self.toolbar_inertia.step(self.toolbar_user_delta, dt);
+                let offset_in = (self.toolbar_x + glide.unwrap_or(0.0)).max(0.0);
+                // A solid scrollbar in its own strip under the group names (a
+                // floating one sat over them and caught clicks meant for the ▾s).
+                ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
+                let out = egui::ScrollArea::horizontal()
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                    .auto_shrink([false, true])
+                    .horizontal_scroll_offset(offset_in)
+                    .show(ui, |ui| self.toolbar(ui));
+                let offset_out = out.state.offset.x;
+                self.toolbar_user_delta = offset_out - offset_in;
+                if glide.is_some() && self.toolbar_user_delta != 0.0 && (offset_out <= 0.0 || offset_out >= out.content_size.x - out.inner_rect.width() - 0.5) {
+                    self.toolbar_inertia.stop(); // hit an end of the bar
+                    self.toolbar_user_delta = 0.0;
+                }
+                self.toolbar_x = offset_out;
+                if self.toolbar_inertia.is_gliding() || self.toolbar_user_delta != 0.0 {
+                    ui.ctx().request_repaint();
+                }
+            });
+        }
 
         self.properties_window(&ctx);
         // Tool dialogs float over the view's right side, like Fusion's.
@@ -1597,6 +1612,7 @@ impl OpenCad {
         self.printer = s.printer.clone();
         self.printer_custom = s.printer_custom;
         self.overhang_limit = if s.overhang_limit.is_finite() { s.overhang_limit.clamp(10.0, 85.0) } else { 45.0 };
+        self.theme = s.theme;
         self.settings_saved = s.clone();
     }
 
@@ -1653,6 +1669,8 @@ struct Tabs {
     control: Option<Control>,
     /// Autosaves left by a run that didn't close properly: offered at start.
     recovered: Vec<recovery::Recovered>,
+    /// The theme has been applied to egui at least once.
+    themed: bool,
 }
 
 /// The control link's side in the app: requests come in one at a time;
@@ -1700,8 +1718,20 @@ impl eframe::App for Tabs {
         let current = self.current;
         let tab = &mut self.tabs[current];
         (tab.tab_titles, tab.tab_index) = (titles, current);
+        // The theme (switched in Settings): egui's look, and what icons and the view draw with.
+        if theme::current() != tab.theme || !self.themed {
+            theme::set(tab.theme);
+            ctx.set_visuals(theme::visuals(tab.theme));
+            self.themed = true;
+        }
         tab.tab_ui(ui);
         let settings = tab.current_settings();
+        // One theme for every tab.
+        let chosen = self.tabs[current].theme;
+        for t in &mut self.tabs {
+            t.theme = chosen;
+        }
+        let tab = &mut self.tabs[current];
         let close_me = std::mem::take(&mut tab.close_me);
         match tab.tab_request.take() {
             Some(TabRequest::New) => {
@@ -2022,7 +2052,7 @@ fn main() -> eframe::Result {
             if let Some(p) = open_at_start {
                 first.open_path(p);
             }
-            Ok(Box::new(Tabs { tabs: vec![first], current: 0, gpu, title: String::new(), control, recovered }))
+            Ok(Box::new(Tabs { tabs: vec![first], current: 0, gpu, title: String::new(), control, recovered, themed: false }))
         }),
     )
 }

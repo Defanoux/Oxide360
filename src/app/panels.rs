@@ -6,7 +6,10 @@ use crate::*;
 /// shows between the rows (as in Fusion).
 fn browser_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
     egui::Frame::new()
-        .fill(Color32::from_rgba_unmultiplied(30, 30, 30, 215))
+        .fill({
+            let c = theme::now().panel;
+            Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 215)
+        })
         .corner_radius(4.0)
         .inner_margin(egui::Margin::symmetric(5, 1))
         .show(ui, |ui| ui.horizontal(add).inner)
@@ -323,7 +326,7 @@ impl OpenCad {
                 // An asterisk while there are changes since the last save.
                 let text = if *dirty { format!("{title}*") } else { title.clone() };
                 egui::Frame::new()
-                    .fill(if current { Color32::from_gray(58) } else { Color32::from_gray(36) })
+                    .fill(if current { theme::now().raised } else { theme::now().card })
                     .corner_radius(5.0)
                     .inner_margin(egui::Margin::symmetric(8, 3))
                     .show(ui, |ui| {
@@ -345,7 +348,7 @@ impl OpenCad {
                                     rename_done = Some(None);
                                 }
                             } else {
-                                let label = egui::RichText::new(text).color(if current { Color32::WHITE } else { Color32::from_gray(160) });
+                                let label = egui::RichText::new(text).color(if current { theme::now().text } else { theme::now().weak });
                                 let r = ui.add(egui::Label::new(label).sense(egui::Sense::click())).on_hover_text("Right-click to rename");
                                 if r.clicked() && !current {
                                     self.tab_request = Some(TabRequest::Switch(k));
@@ -378,6 +381,8 @@ impl OpenCad {
                 self.tab_request = Some(TabRequest::New);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // The version, as the GitHub releases name it (v0.1.1).
+                ui.weak(concat!("v", env!("CARGO_PKG_VERSION"))).on_hover_text(concat!("Oxide360 ", env!("CARGO_PKG_VERSION")));
                 if ui.button("⚙").on_hover_text("Settings").clicked() {
                     self.settings_open = !self.settings_open;
                 }
@@ -406,7 +411,7 @@ impl OpenCad {
         ui.horizontal(|ui| {
             for (name, on) in [("SOLID", !sketching && !drawing), ("SKETCH", sketching && !drawing), ("DRAWING", drawing)] {
                 let text = egui::RichText::new(name).size(12.0);
-                let text = if on { text.color(Color32::from_rgb(110, 170, 255)).strong() } else { text.color(Color32::from_gray(110)) };
+                let text = if on { text.color(theme::now().accent).strong() } else { text.color(theme::now().weak) };
                 let tip = match name {
                     "SOLID" => "Back to the 3-D design",
                     "SKETCH" => "Sketching (double-click a sketch to edit it)",
@@ -425,6 +430,13 @@ impl OpenCad {
             if let Some(i) = self.active {
                 ui.weak(format!("— editing {}", self.sketches[i].name));
             }
+            // Fold the toolbar away for more view (and bring it back).
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let tip = if self.toolbar_folded { "Show the toolbar" } else { "Hide the toolbar (more room to look at the design)" };
+                if icons::chevron(ui, !self.toolbar_folded, tip).clicked() {
+                    self.toolbar_folded = !self.toolbar_folded;
+                }
+            });
         });
     }
 
@@ -439,6 +451,13 @@ impl OpenCad {
         let mut open = self.settings_open;
         egui::Window::new("Settings").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             egui::Grid::new("settings_grid").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+                ui.label("Theme");
+                ui.horizontal(|ui| {
+                    for t in theme::Theme::ALL {
+                        ui.radio_value(&mut self.theme, t, t.name());
+                    }
+                });
+                ui.end_row();
                 ui.label("Input device");
                 ui.horizontal(|ui| {
                     ui.radio_value(&mut self.touchpad, false, "Mouse").on_hover_text("Scroll zooms · right/middle-drag pans");
