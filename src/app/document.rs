@@ -18,6 +18,7 @@ impl OpenCad {
             shells: self.shells.clone(),
             offset_faces: self.offset_faces.clone(),
             combines: self.combines.clone(),
+            splits: self.splits.clone(),
             moves: self.moves.clone(),
             points: self.points.clone(),
             sweeps: self.sweeps.clone(),
@@ -166,6 +167,9 @@ impl OpenCad {
             c.target = c.target.and_then(|id| id.after_delete(revolve, k));
             c.tools = c.tools.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
         }
+        for sp in &mut self.splits {
+            sp.bodies = sp.bodies.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
+        }
         for m in &mut self.moves {
             m.bodies = m.bodies.iter().filter_map(|id| id.after_delete(revolve, k)).collect();
         }
@@ -208,6 +212,9 @@ impl OpenCad {
         for c in &mut self.combines {
             c.target = c.target.and_then(|id| id.after_maker_delete(gone));
             c.tools = c.tools.iter().filter_map(|id| id.after_maker_delete(gone)).collect();
+        }
+        for sp in &mut self.splits {
+            sp.bodies = sp.bodies.iter().filter_map(|id| id.after_maker_delete(gone)).collect();
         }
         self.selected_bodies.clear();
         self.renaming = None;
@@ -333,6 +340,7 @@ impl OpenCad {
             || self.shells != self.saved.shells
             || self.offset_faces != self.saved.offset_faces
             || self.combines != self.saved.combines
+            || self.splits != self.saved.splits
             || self.moves != self.saved.moves
             || self.parameters != self.saved.parameters
             || self.feature_exprs != self.saved.feature_exprs
@@ -444,6 +452,8 @@ impl OpenCad {
         self.offset_dialog = None;
         self.combines = doc.combines.clone();
         self.combine_dialog = None;
+        self.splits = doc.splits.clone();
+        self.split_dialog = None;
         self.moves = doc.moves.clone();
         self.move_dialog = None;
         self.sections = doc.sections.clone();
@@ -548,6 +558,8 @@ impl OpenCad {
         self.offset_dialog = None;
         self.combines = doc.combines;
         self.combine_dialog = None;
+        self.splits = doc.splits;
+        self.split_dialog = None;
         self.moves = doc.moves;
         self.move_dialog = None;
         self.sections = doc.sections;
@@ -746,6 +758,7 @@ impl OpenCad {
         let mut shells = self.shells.clone();
         let mut offset_faces = self.offset_faces.clone();
         let mut combines = self.combines.clone();
+        let mut splits = self.splits.clone();
         let mut moves = self.moves.clone();
         let mut sweeps = self.sweeps.clone();
         let mut imports = self.imports.clone();
@@ -854,6 +867,15 @@ impl OpenCad {
                         }
                     }
                 }
+                if let Some(d) = self.split_dialog.as_ref().filter(|d| d.ready()) {
+                    match d.editing {
+                        Some(k) => splits[k] = d.split.clone(),
+                        None => {
+                            splits.push(d.split.clone());
+                            timeline.push(Feature::Split(splits.len() - 1));
+                        }
+                    }
+                }
                 if let Some(d) = self.offset_dialog.as_ref().filter(|d| !d.offset.faces.is_empty()) {
                     match d.editing {
                         Some(k) => offset_faces[k] = d.offset.clone(),
@@ -914,6 +936,7 @@ impl OpenCad {
             shells,
             offset_faces,
             combines,
+            splits,
             moves,
             points: self.points.clone(),
             sweeps,
@@ -943,6 +966,7 @@ impl OpenCad {
                 && c.shells == inp.shells
                 && c.offset_faces == inp.offset_faces
                 && c.combines == inp.combines
+                && c.splits == inp.splits
                 && c.moves == inp.moves
                 && c.points == inp.points
                 && c.sweeps == inp.sweeps
@@ -996,6 +1020,7 @@ impl OpenCad {
             shells: inp.shells,
             offset_faces: inp.offset_faces,
             combines: inp.combines,
+            splits: inp.splits,
             moves: inp.moves,
             points: inp.points,
             sweeps: inp.sweeps,
@@ -1076,6 +1101,7 @@ impl OpenCad {
             Feature::Shell(k) => self.shells.get(k).map(|s| s.name.clone()),
             Feature::OffsetFace(k) => self.offset_faces.get(k).map(|f| f.name.clone()),
             Feature::Combine(k) => self.combines.get(k).map(|c| c.name.clone()),
+            Feature::Split(k) => self.splits.get(k).map(|c| c.name.clone()),
             Feature::Move(k) => self.moves.get(k).map(|m| m.name.clone()),
             Feature::Point(k) => self.points.get(k).map(|p| p.name.clone()),
             Feature::Sweep(k) => self.sweeps.get(k).map(|s| s.name.clone()),

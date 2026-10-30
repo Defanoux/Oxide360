@@ -53,6 +53,8 @@ pub enum Feature {
     Import(usize),
     /// A joint moving one component onto another (index into `joints`).
     Joint(usize),
+    /// Bodies split along a plane (index into `splits`).
+    Split(usize),
 }
 
 /// Put `f` into the timeline at the rollback marker (the end when there is
@@ -93,6 +95,7 @@ pub fn renumbered(f: Feature, gone: Feature) -> Option<Feature> {
         (Feature::OffsetFace(i), Feature::OffsetFace(k)) if i > k => Feature::OffsetFace(i - 1),
         (Feature::Combine(i), Feature::Combine(k)) if i > k => Feature::Combine(i - 1),
         (Feature::Move(i), Feature::Move(k)) if i > k => Feature::Move(i - 1),
+        (Feature::Split(i), Feature::Split(k)) if i > k => Feature::Split(i - 1),
         (f, _) => f,
     })
 }
@@ -177,6 +180,7 @@ impl BodyId {
             (Feature::Move(j), Feature::Move(k)) if j > k => Feature::Move(j - 1),
             (Feature::Sweep(j), Feature::Sweep(k)) if j > k => Feature::Sweep(j - 1),
             (Feature::Import(j), Feature::Import(k)) if j > k => Feature::Import(j - 1),
+            (Feature::Split(j), Feature::Split(k)) if j > k => Feature::Split(j - 1),
             (f, _) => f,
         };
         Some(BodyId { feature, piece: self.piece })
@@ -237,6 +241,9 @@ pub struct Document {
     /// Combine features. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub combines: Vec<crate::model::CombineFeature>,
+    /// Split Body features. Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub splits: Vec<crate::model::SplitFeature>,
     /// User parameters (Change Parameters). Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parameters: Vec<crate::expr::UserParameter>,
@@ -605,6 +612,18 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             return Err(format!("{}: invalid body or operation", c.name));
         }
     }
+    for sp in &doc.splits {
+        // Bodies are made by features in the timeline.
+        let made = |id: &BodyId| doc.timeline.contains(&id.feature);
+        let at_ok = match sp.at {
+            Some(crate::model::ExtrudeTarget::Plane(j)) => j < doc.planes.len(),
+            Some(crate::model::ExtrudeTarget::Face { face, anchor }) => face.origin.is_finite() && face.u.is_finite() && face.v.is_finite() && anchor.iter().all(|a| a.is_finite()),
+            _ => true,
+        };
+        if !(at_ok && sp.bodies.iter().all(made)) {
+            return Err(format!("{}: invalid body or plane", sp.name));
+        }
+    }
     for of in &doc.offset_faces {
         let ok = of.distance.is_finite() && of.faces.iter().all(|f| f.face.origin.is_finite() && f.face.u.is_finite() && f.face.v.is_finite() && f.anchor.iter().all(|a| a.is_finite()));
         if !ok {
@@ -676,6 +695,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     let mut seen_sw = vec![false; doc.sweeps.len()];
     let mut seen_im = vec![false; doc.imports.len()];
     let mut seen_j = vec![false; doc.joints.len()];
+    let mut seen_sp = vec![false; doc.splits.len()];
     for f in &doc.timeline {
         let slot = match *f {
             Feature::Sketch(i) => seen_s.get_mut(i),
@@ -696,6 +716,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Feature::Sweep(i) => seen_sw.get_mut(i),
             Feature::Import(i) => seen_im.get_mut(i),
             Feature::Joint(i) => seen_j.get_mut(i),
+            Feature::Split(i) => seen_sp.get_mut(i),
         };
         match slot {
             Some(s) if !*s => *s = true,
@@ -705,7 +726,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     if doc.suppressed.iter().any(|f| !doc.timeline.contains(f)) {
         return Err("a suppressed feature isn't in the timeline".into());
     }
-    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).chain(&seen_sh).chain(&seen_of).chain(&seen_cb).chain(&seen_mv).chain(&seen_pt).chain(&seen_sw).chain(&seen_im).chain(&seen_j).any(|s| !s) {
+    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).chain(&seen_sh).chain(&seen_of).chain(&seen_cb).chain(&seen_mv).chain(&seen_pt).chain(&seen_sw).chain(&seen_im).chain(&seen_j).chain(&seen_sp).any(|s| !s) {
         return Err("timeline is missing a feature".into());
     }
     Ok(())
@@ -842,6 +863,7 @@ mod tests {
             shells: Vec::new(),
             offset_faces: Vec::new(),
             combines: Vec::new(),
+            splits: Vec::new(),
             moves: Vec::new(),
             sections: Vec::new(),
             points: Vec::new(),
@@ -995,6 +1017,30 @@ mod tests {
         let mut bad = doc.clone();
         bad.timeline.pop();
         assert!(validate(&bad).is_err(), "an offset face missing from the timeline");
+    }
+
+    #[test]
+    fn splits_save_and_bad_ones_are_refused() {
+        use crate::model::{ExtrudeTarget, SplitFeature};
+        use crate::sketch::OriginPlane;
+        let mut doc = sample();
+        doc.splits.push(SplitFeature { name: "Split1".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], at: Some(ExtrudeTarget::Origin(OriginPlane::XY)) });
+        doc.timeline.push(Feature::Split(0));
+        assert_eq!(from_json(&to_json(&doc)).unwrap().splits, doc.splits);
+        assert!(!to_json(&sample()).contains("splits"), "nothing stored when there are none");
+        let mut bad = doc.clone();
+        bad.splits[0].at = Some(ExtrudeTarget::Plane(3));
+        assert!(validate(&bad).is_err(), "a plane that isn't there");
+        let mut bad = doc.clone();
+        bad.splits[0].bodies = vec![BodyId { feature: Feature::Extrude(9), piece: 0 }];
+        assert!(validate(&bad).is_err(), "a body no feature makes");
+        let mut bad = doc;
+        bad.timeline.pop();
+        assert!(validate(&bad).is_err(), "missing from the timeline");
+        // Deleting a split renumbers later splits' bodies; its own go.
+        let id = |k| BodyId { feature: Feature::Split(k), piece: 0 };
+        assert_eq!(id(0).after_maker_delete(Feature::Split(0)), None);
+        assert_eq!(id(2).after_maker_delete(Feature::Split(0)), Some(id(1)));
     }
 
     #[test]

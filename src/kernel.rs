@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{Blob, ImportFeature, JointFeature, JointSnap, SweepFeature, SweepKind, AxisKind, ConstructionPoint, PlaneKind, PointKind, PointRef, MoveFeature, MoveKind, CombineFeature, OffsetFaceFeature, ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{Blob, ImportFeature, JointFeature, JointSnap, SweepFeature, SweepKind, AxisKind, ConstructionPoint, PlaneKind, PointKind, PointRef, MoveFeature, MoveKind, CombineFeature, SplitFeature, OffsetFaceFeature, ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::measure::{self, Geom};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
@@ -165,6 +165,7 @@ impl Model {
             + n(&self.shell_errors)
             + n(&self.offset_face_errors)
             + n(&self.combine_errors)
+            + n(&self.split_errors)
             + n(&self.move_errors)
             + n(&self.point_errors)
             + n(&self.sweep_errors)
@@ -210,6 +211,8 @@ pub struct Model {
     pub offset_face_errors: Vec<Option<String>>,
     /// One entry per Combine.
     pub combine_errors: Vec<Option<String>>,
+    /// One entry per Split Body.
+    pub split_errors: Vec<Option<String>>,
     /// One entry per Move/Copy.
     pub move_errors: Vec<Option<String>>,
     /// Where each Move/Copy turns its bodies about (the middle of their box
@@ -713,12 +716,7 @@ pub fn section(bodies: &[Body], planes: &[Option<FacePlane>], at: &ExtrudeTarget
             let bb = opencascade::bounding_box::aabb(&b.shape);
             (lo.min(DVec3::new(bb.min().x, bb.min().y, bb.min().z)), hi.max(DVec3::new(bb.max().x, bb.max().y, bb.max().z)))
         });
-        let size = (hi - lo).length().max(1.0) * 2.0 + (q - (lo + hi) * 0.5).length() * 2.0 + 10.0;
-        let a = n.any_orthonormal_vector();
-        let b = n.cross(a);
-        let corners = [q + (a + b) * size, q + (b - a) * size, q - (a + b) * size, q + (a - b) * size];
-        let edges: Vec<Edge> = (0..4).map(|k| Edge::segment(kv(corners[k]), kv(corners[(k + 1) % 4]))).collect();
-        let slab: Shape = Face::from_wire(&Wire::from_edges(&edges)).extrude(kv(-n * size * 2.0)).into();
+        let slab = half_space(q, n, lo, hi);
         let mut out = Vec::new();
         for (i, body) in bodies.iter().enumerate() {
             let Some(kept) = body.shape.try_intersect(&slab) else { return Err("the kernel couldn't cut a body there".into()) };
@@ -746,6 +744,121 @@ pub fn section(bodies: &[Body], planes: &[Option<FacePlane>], at: &ExtrudeTarget
         }
     });
     cut
+}
+
+/// Everything behind the plane through `q` facing `n`, as far as anything in
+/// the box `lo`..`hi` reaches: a slab to cut bodies with.
+fn half_space(q: DVec3, n: DVec3, lo: DVec3, hi: DVec3) -> Shape {
+    let size = (hi - lo).length().max(1.0) * 2.0 + (q - (lo + hi) * 0.5).length() * 2.0 + 10.0;
+    let a = n.any_orthonormal_vector();
+    let b = n.cross(a);
+    let corners = [q + (a + b) * size, q + (b - a) * size, q - (a + b) * size, q + (a - b) * size];
+    let edges: Vec<Edge> = (0..4).map(|k| Edge::segment(kv(corners[k]), kv(corners[(k + 1) % 4]))).collect();
+    Face::from_wire(&Wire::from_edges(&edges)).extrude(kv(-n * size * 2.0)).into()
+}
+
+/// Split Body: each picked body cut along the plane. The pieces on the side
+/// the plane faces keep the body's id; those behind it become new bodies
+/// (`Split(k)`, pieces 0, 1…).
+fn apply_split(current: Tagged, sp: &SplitFeature, k: usize, planes: &[Option<FacePlane>]) -> Result<(Tagged, Option<BodyId>), String> {
+    let at = sp.at.ok_or("pick the plane or face to split along")?;
+    if sp.bodies.is_empty() {
+        return Err("pick the bodies to split".into());
+    }
+    if sp.bodies.iter().any(|b| !current.iter().any(|(_, id)| id == b)) {
+        return Err("a body it splits is gone — edit it and pick again".into());
+    }
+    let all: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
+    let (q, n) = target_plane(&at, planes, &all)?;
+    let failed = || "the kernel couldn't split the body there".to_string();
+    let mut out: Tagged = Vec::new();
+    let mut behind: Tagged = Vec::new();
+    let mut cut_any = false;
+    let mut piece = 0;
+    for (s, id) in current {
+        if !sp.bodies.contains(&id) {
+            out.push((s, id));
+            continue;
+        }
+        let bb = opencascade::bounding_box::aabb(&s);
+        let (lo, hi) = (DVec3::new(bb.min().x, bb.min().y, bb.min().z), DVec3::new(bb.max().x, bb.max().y, bb.max().z));
+        let slab = half_space(q, n, lo, hi);
+        let solids = |shape: Option<Shape>| -> Result<Vec<Shape>, String> { Ok(shape.ok_or_else(failed)?.solids().into_iter().filter(|p| p.volume() > MIN_VOLUME).collect()) };
+        let front = solids(s.try_subtract(&slab))?;
+        let back = solids(s.try_intersect(&slab))?;
+        if front.is_empty() || back.is_empty() {
+            out.push((s, id)); // the plane misses it: left whole
+            continue;
+        }
+        cut_any = true;
+        out.extend(front.into_iter().map(|p| (p, id)));
+        for p in back {
+            behind.push((p, BodyId { feature: Feature::Split(k), piece }));
+            piece += 1;
+        }
+    }
+    if !cut_any {
+        return Err("the plane doesn't go through the body".into());
+    }
+    out.extend(behind);
+    Ok((uniquify(out), Some(BodyId { feature: Feature::Split(k), piece: 0 })))
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+    use crate::sketch::OriginPlane;
+
+    fn block(lo: DVec3, hi: DVec3) -> Shape {
+        Shape::box_from_corners(kv(lo), kv(hi))
+    }
+
+    fn id(k: usize) -> BodyId {
+        BodyId { feature: Feature::Extrude(k), piece: 0 }
+    }
+
+    fn near(a: f64, b: f64) -> bool {
+        (a - b).abs() <= 1e-9 * b.abs().max(1.0)
+    }
+
+    fn split(at: ExtrudeTarget, bodies: Tagged, picked: &[BodyId], planes: &[Option<FacePlane>]) -> Result<Tagged, String> {
+        let sp = SplitFeature { name: "Split1".into(), bodies: picked.to_vec(), at: Some(at) };
+        apply_split(bodies, &sp, 0, planes).map(|(t, _)| t)
+    }
+
+    #[test]
+    fn a_box_splits_exactly_and_the_top_keeps_the_body() {
+        // 10 x 20 x 30 from z = -10: the XY plane leaves 20 mm above, 10 below.
+        let b = block(DVec3::new(0.0, 0.0, -10.0), DVec3::new(10.0, 20.0, 20.0));
+        let out = split(ExtrudeTarget::Origin(OriginPlane::XY), vec![(b, id(0))], &[id(0)], &[]).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].1, id(0), "the side the plane faces keeps the body");
+        assert!(near(out[0].0.volume(), 10.0 * 20.0 * 20.0), "{}", out[0].0.volume());
+        assert_eq!(out[1].1, BodyId { feature: Feature::Split(0), piece: 0 });
+        assert!(near(out[1].0.volume(), 10.0 * 20.0 * 10.0), "{}", out[1].0.volume());
+    }
+
+    #[test]
+    fn construction_planes_and_faces_split_and_a_miss_is_an_error() {
+        let tall = block(DVec3::ZERO, DVec3::new(10.0, 10.0, 30.0));
+        // A construction plane 12 mm up.
+        let plane = FacePlane::from_face(DVec3::Z, DVec3::new(0.0, 0.0, 12.0));
+        let out = split(ExtrudeTarget::Plane(0), vec![(tall.clone(), id(0))], &[id(0)], &[Some(plane)]).unwrap();
+        assert!(near(out[0].0.volume(), 10.0 * 10.0 * 18.0) && near(out[1].0.volume(), 10.0 * 10.0 * 12.0));
+        // The top face of a short block beside it, carried on past its edges.
+        let short = block(DVec3::new(20.0, 0.0, 0.0), DVec3::new(30.0, 10.0, 5.0));
+        let spot = DVec3::new(25.0, 5.0, 5.0);
+        let face = FacePlane::from_face(DVec3::Z, spot);
+        let at = ExtrudeTarget::Face { face, anchor: [spot.dot(face.u), spot.dot(face.v)] };
+        let out = split(at, vec![(tall.clone(), id(0)), (short, id(1))], &[id(0)], &[]).unwrap();
+        assert_eq!(out.len(), 3, "the tall one in two, the short one untouched");
+        assert!(near(out[0].0.volume(), 10.0 * 10.0 * 25.0) && near(out[2].0.volume(), 10.0 * 10.0 * 5.0));
+        assert!(near(out[1].0.volume(), 10.0 * 10.0 * 5.0) && out[1].1 == id(1));
+        // A plane above everything.
+        let high = FacePlane::from_face(DVec3::Z, DVec3::new(0.0, 0.0, 99.0));
+        let Err(e) = split(ExtrudeTarget::Plane(0), vec![(tall, id(0))], &[id(0)], &[Some(high)]) else { panic!("a plane that misses split it") };
+        assert!(e.contains("doesn't go through"), "{e}");
+    }
 }
 
 /// A chain of sketch curves (lines, arcs, splines, or one circle) as a wire,
@@ -3116,6 +3229,7 @@ pub struct BuildInputs {
     pub shells: Vec<ShellFeature>,
     pub offset_faces: Vec<OffsetFaceFeature>,
     pub combines: Vec<CombineFeature>,
+    pub splits: Vec<SplitFeature>,
     pub moves: Vec<MoveFeature>,
     pub points: Vec<ConstructionPoint>,
     pub sweeps: Vec<SweepFeature>,
@@ -3177,6 +3291,7 @@ pub struct Build {
     shell_errors: Vec<Option<String>>,
     offset_face_errors: Vec<Option<String>>,
     combine_errors: Vec<Option<String>>,
+    split_errors: Vec<Option<String>>,
     move_errors: Vec<Option<String>>,
     move_pivots: Vec<Option<DVec3>>,
     threads: Vec<CosmeticThread>,
@@ -3207,7 +3322,7 @@ pub struct Build {
 impl Build {
     pub fn start(inp: BuildInputs) -> Build {
         opencascade::catch_crashes();
-        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, moves, points, sweeps, imports, joints, components: _, timeline: _ } = &inp;
+        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, splits, moves, points, sweeps, imports, joints, components: _, timeline: _ } = &inp;
         let sweep_errors: Vec<Option<String>> = vec![None; sweeps.len()];
         let import_errors: Vec<Option<String>> = vec![None; imports.len()];
         let joint_errors: Vec<Option<String>> = vec![None; joints.len()];
@@ -3215,6 +3330,7 @@ impl Build {
         let _ = (extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, sketches, shells);
         let offset_face_errors: Vec<Option<String>> = vec![None; offset_faces.len()];
         let combine_errors: Vec<Option<String>> = vec![None; combines.len()];
+        let split_errors: Vec<Option<String>> = vec![None; splits.len()];
         let (move_errors, move_pivots): (Vec<Option<String>>, Vec<Option<DVec3>>) = (vec![None; moves.len()], vec![None; moves.len()]);
         let hole_errors: Vec<Option<String>> = vec![None; holes.len()];
         let thread_errors: Vec<Option<String>> = vec![None; thread_features.len()];
@@ -3240,7 +3356,7 @@ impl Build {
         let timing = std::env::var_os("OPENCAD_TIMING").is_some();
         let started = std::time::Instant::now();
         let step = std::time::Instant::now();
-        Build { next: 0, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step, inp }
+        Build { next: 0, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step, inp }
     }
 
     /// How far it's got: (entries built, all of them, the one being built next).
@@ -3258,8 +3374,8 @@ impl Build {
     pub fn step(&mut self, budget: std::time::Duration) -> bool {
         let began = std::time::Instant::now();
         let first = self.next;
-        let Build { inp, next, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step } = self;
-        let BuildInputs { sketches: _, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, moves, points, sweeps, imports, joints, components, timeline } = &*inp;
+        let Build { inp, next, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step } = self;
+        let BuildInputs { sketches: _, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, splits, moves, points, sweeps, imports, joints, components, timeline } = &*inp;
         let _ = (&timing, &started);
         loop {
             if *next >= timeline.len() {
@@ -3291,6 +3407,7 @@ impl Build {
                 Feature::Shell(k) => shells.get(k).map(|sf| format!("{f:?}|{sf:?}")),
                 Feature::OffsetFace(k) => offset_faces.get(k).map(|of| format!("{f:?}|{of:?}")),
                 Feature::Combine(k) => combines.get(k).map(|c| format!("{f:?}|{c:?}")),
+                Feature::Split(k) => splits.get(k).map(|c| format!("{f:?}|{c:?}")),
                 Feature::Move(k) => moves.get(k).map(|m| format!("{f:?}|{m:?}|{axes:?}")),
                 _ => None,
             }
@@ -3600,6 +3717,15 @@ impl Build {
                     let r = catch_unwind(AssertUnwindSafe(|| apply_combine(current, c)));
                     (r, &mut combine_errors[k])
                 }
+                Feature::Split(k) => {
+                    let Some(sp) = splits.get(k) else {
+                        *shapes = current;
+                        continue;
+                    };
+                    let planes_now = &planes;
+                    let r = catch_unwind(AssertUnwindSafe(|| apply_split(current, sp, k, planes_now)));
+                    (r, &mut split_errors[k])
+                }
                 Feature::Remove(k) => {
                     // Take the bodies out; the rest carry on.
                     if let Some(rf) = removes.get(k) {
@@ -3662,7 +3788,7 @@ impl Build {
 
     /// The model built (bodies analysed for picking and Measure).
     pub fn finish(self) -> Model {
-        let Build { inp: _, next: _, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live: _, linked, lost, touched_by, timing, started, mut step } = self;
+        let Build { inp: _, next: _, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live: _, linked, lost, touched_by, timing, started, mut step } = self;
     if timing {
         eprintln!("  {:>8.1} ms  last feature; analysing bodies…", step.elapsed().as_secs_f64() * 1e3);
         step = std::time::Instant::now();
@@ -3690,7 +3816,7 @@ impl Build {
         eprintln!("  {:>8.1} ms  bodies; build {:.1} ms in all", step.elapsed().as_secs_f64() * 1e3, started.elapsed().as_secs_f64() * 1e3);
     }
     let caps = caps_of(&extrude_ends, &revolve_ends);
-    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, move_errors, move_pivots, threads, caps, touched: touched_by, linked_sketches: linked, projection_lost: lost, points: point_pos, point_errors, sweep_errors, import_errors, joint_errors }
+    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, move_errors, move_pivots, threads, caps, touched: touched_by, linked_sketches: linked, projection_lost: lost, points: point_pos, point_errors, sweep_errors, import_errors, joint_errors }
     }
 }
 
@@ -3726,6 +3852,7 @@ pub fn build_all(
         shells: shells.to_vec(),
         offset_faces: Vec::new(),
         combines: Vec::new(),
+        splits: Vec::new(),
         moves: Vec::new(),
         points: Vec::new(),
         sweeps: Vec::new(),
@@ -4457,7 +4584,7 @@ mod tests {
             kind: Some(PlaneKind::ThreePoints([PointRef::Point(0), PointRef::Point(1), PointRef::Corner(DVec3::new(0.0, 0.0, 5.0))])) };
         let mut b = Build::start(BuildInputs {
             sketches: vec![a], extrudes: vec![ex(0, vec![0, 1], 5.0, Operation::NewBody)], revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![],
-            plane_features: vec![plane], removes: vec![], holes: vec![], thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points, sweeps: vec![], imports: vec![], joints: vec![], components: vec![],
+            plane_features: vec![plane], removes: vec![], holes: vec![], thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], splits: vec![], moves: vec![], points, sweeps: vec![], imports: vec![], joints: vec![], components: vec![],
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Point(0), Feature::Point(1), Feature::Plane(0)],
         });
         while b.step(std::time::Duration::MAX) {}
@@ -4521,7 +4648,7 @@ mod tests {
         let run = |j: JointFeature, components: Vec<Component>| {
             let mut bld = Build::start(BuildInputs {
                 sketches: vec![a.clone(), b.clone(), c.clone()], extrudes: exs.clone(), revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![], plane_features: vec![], removes: vec![], holes: vec![],
-                thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points: vec![], sweeps: vec![], imports: vec![], joints: vec![j], components,
+                thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], splits: vec![], moves: vec![], points: vec![], sweeps: vec![], imports: vec![], joints: vec![j], components,
                 timeline: vec![Feature::Sketch(0), Feature::Sketch(1), Feature::Sketch(2), Feature::Extrude(0), Feature::Extrude(1), Feature::Extrude(2), Feature::Joint(0)],
             });
             while bld.step(std::time::Duration::MAX) {}
@@ -4614,7 +4741,7 @@ mod tests {
             let j = JointFeature { name: "J".into(), a: JointSnap::Circle(rim(1, 5.0)), b: JointSnap::Circle(rim(0, 10.0)), kind: JointKind::Revolute, angle, offset: 0.0, flip: false, motion: 0.0 };
             let mut bld = Build::start(BuildInputs {
                 sketches: vec![base.clone(), lever.clone()], extrudes: exs.clone(), revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![], plane_features: vec![], removes: vec![], holes: vec![],
-                thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points: vec![], sweeps: vec![], imports: vec![], joints: vec![j], components: vec![],
+                thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], splits: vec![], moves: vec![], points: vec![], sweeps: vec![], imports: vec![], joints: vec![j], components: vec![],
                 timeline: vec![Feature::Sketch(0), Feature::Sketch(1), Feature::Extrude(0), Feature::Extrude(1), Feature::Joint(0)],
             });
             while bld.step(std::time::Duration::MAX) {}
@@ -4639,7 +4766,7 @@ mod tests {
         let timeline = (0..imports.len()).map(Feature::Import).collect();
         let mut b = Build::start(BuildInputs {
             sketches: vec![], extrudes: vec![], revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![], plane_features: vec![], removes: vec![], holes: vec![],
-            thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points: vec![], sweeps: vec![], imports, joints: vec![], components: vec![], timeline,
+            thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], splits: vec![], moves: vec![], points: vec![], sweeps: vec![], imports, joints: vec![], components: vec![], timeline,
         });
         while b.step(std::time::Duration::MAX) {}
         b.finish()
@@ -4695,7 +4822,7 @@ mod tests {
     fn run_sweeps(sketches: Vec<Sketch>, planes: Vec<PlaneFeature>, sweeps: Vec<SweepFeature>, timeline: Vec<Feature>) -> Model {
         let mut b = Build::start(BuildInputs {
             sketches, extrudes: vec![], revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![], plane_features: planes, removes: vec![], holes: vec![],
-            thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], moves: vec![], points: vec![], sweeps, imports: vec![], joints: vec![], components: vec![], timeline,
+            thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], splits: vec![], moves: vec![], points: vec![], sweeps, imports: vec![], joints: vec![], components: vec![], timeline,
         });
         while b.step(std::time::Duration::MAX) {}
         b.finish()

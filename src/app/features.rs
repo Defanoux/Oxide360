@@ -1105,6 +1105,86 @@ impl OpenCad {
         }
     }
 
+    /// Open the Split Body dialog (a new one — bodies selected beforehand
+    /// fill it — or Split `editing`).
+    pub(crate) fn open_split(&mut self, editing: Option<usize>) {
+        let selected: Vec<BodyId> = self.selected_bodies.clone();
+        self.finish_sketch();
+        self.cancel_all_dialogs();
+        self.message = None;
+        self.split_dialog = Some(match editing.and_then(|k| self.splits.get(k).map(|s| (k, s))) {
+            Some((k, s)) => SplitDialog::from_feature(k, s),
+            None => SplitDialog::new(format!("Split{}", self.splits.len() + 1), &selected),
+        });
+    }
+
+    pub(crate) fn commit_split(&mut self) {
+        let Some(d) = self.split_dialog.as_ref() else { return };
+        if !d.ready() {
+            self.message = Some("Pick the bodies and the plane or face to split along".into());
+            return;
+        }
+        if let Some(e) = self.dialog_error.clone() {
+            self.message = Some(format!("Can't split: {e}"));
+            return;
+        }
+        let sp = d.split.clone();
+        match d.editing {
+            Some(k) => self.splits[k] = sp,
+            None => {
+                self.splits.push(sp);
+                self.timeline_insert(Feature::Split(self.splits.len() - 1));
+            }
+        }
+        self.cancel_split();
+    }
+
+    pub(crate) fn cancel_split(&mut self) {
+        self.split_dialog = None;
+        self.split_hover = None;
+    }
+
+    pub(crate) fn delete_split(&mut self, k: usize) {
+        if k >= self.splits.len() {
+            return;
+        }
+        self.cancel_split();
+        self.splits.remove(k);
+        self.timeline_remove(Feature::Split(k));
+        for f in &mut self.timeline {
+            if let Feature::Split(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+        // The pieces it made are gone; later splits' pieces renumber.
+        self.shift_maker_keys(Feature::Split(k));
+    }
+
+    /// What to call a picked plane or face in a dialog.
+    pub(crate) fn target_name(&self, t: model::ExtrudeTarget) -> String {
+        match t {
+            model::ExtrudeTarget::Origin(op) => format!("{} plane", op.name()),
+            model::ExtrudeTarget::Plane(k) => self.planes.get(k).map_or_else(|| "a plane".into(), |p| p.name.clone()),
+            model::ExtrudeTarget::Face { .. } => "a face".into(),
+        }
+    }
+
+    pub(crate) fn split_panel(&mut self, ui: &mut egui::Ui) {
+        let error = self.dialog_error.clone();
+        let Some(d) = self.split_dialog.as_ref() else { return };
+        let ids: Vec<BodyId> = self.body_ids.iter().copied().chain(d.split.bodies.iter().copied()).collect();
+        let names: Vec<(BodyId, String)> = ids.into_iter().map(|id| (id, self.body_name(id))).collect();
+        let tool = d.split.at.map(|t| self.target_name(t));
+        let Some(d) = self.split_dialog.as_mut() else { return };
+        match d.panel(ui, &names, tool, error.as_deref()) {
+            copy_dialog::Action::Ok => self.commit_split(),
+            copy_dialog::Action::Cancel => self.cancel_split(),
+            copy_dialog::Action::None => {}
+        }
+    }
+
     pub(crate) fn combine_panel(&mut self, ui: &mut egui::Ui) {
         let error = self.dialog_error.clone();
         let Some(d) = self.combine_dialog.as_ref() else { return };
@@ -1127,6 +1207,9 @@ impl OpenCad {
         if let Some(d) = self.combine_dialog.as_ref().filter(|d| d.picking.is_some()) {
             return Some(d.combine.target.into_iter().chain(d.combine.tools.iter().copied()).collect());
         }
+        if let Some(d) = self.split_dialog.as_ref().filter(|d| d.picking == Some(split_dialog::Field::Bodies)) {
+            return Some(d.split.bodies.clone());
+        }
         if let Some(d) = self.shell_dialog.as_ref().filter(|d| d.picking == Some(shell_dialog::Field::Bodies)) {
             return Some(d.shell.bodies.clone());
         }
@@ -1142,6 +1225,8 @@ impl OpenCad {
             d.toggle_body(id);
         } else if let Some(d) = self.combine_dialog.as_mut().filter(|d| d.picking.is_some()) {
             d.click(id);
+        } else if let Some(d) = self.split_dialog.as_mut().filter(|d| d.picking == Some(split_dialog::Field::Bodies)) {
+            d.click_body(id);
         } else if let Some(d) = self.shell_dialog.as_mut().filter(|d| d.picking == Some(shell_dialog::Field::Bodies)) {
             d.toggle_body(id);
         } else if let Some(d) = self.copy_dialog.as_mut().filter(|d| d.picking == Some(copy_dialog::Field::Bodies)) {
@@ -1418,6 +1503,7 @@ impl OpenCad {
         self.shell_dialog = None;
         self.offset_dialog = None;
         self.combine_dialog = None;
+        self.cancel_split();
         self.close_appearance();
         self.move_dialog = None;
         self.thread_dialog = None;
@@ -1597,6 +1683,17 @@ impl OpenCad {
         if self.extrudes.iter().any(|e| e.target == Some(model::ExtrudeTarget::Plane(k))) {
             self.notify("An extrude runs up to that plane — delete it or pick another object first".into());
             return;
+        }
+        if self.splits.iter().any(|s| s.at == Some(model::ExtrudeTarget::Plane(k))) {
+            self.notify("A split is along that plane — delete it or pick another plane first".into());
+            return;
+        }
+        for sp in &mut self.splits {
+            if let Some(model::ExtrudeTarget::Plane(j)) = &mut sp.at {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
         }
         // (Every refusal is above: from here on the plane goes and later ones shift down.)
         for h in &mut self.holes {

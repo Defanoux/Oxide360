@@ -621,6 +621,24 @@ impl Default for CombineFeature {
     }
 }
 
+/// Fusion's Split Body: bodies cut in two along a plane — an origin or
+/// construction plane, or a flat face carried on past its edges. The piece on
+/// the side the plane faces keeps the body; the pieces behind become new
+/// bodies (named after the split).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SplitFeature {
+    pub name: String,
+    pub bodies: Vec<crate::doc::BodyId>,
+    /// The splitting plane, as picked.
+    pub at: Option<ExtrudeTarget>,
+}
+
+impl Default for SplitFeature {
+    fn default() -> Self {
+        SplitFeature { name: "Split1".into(), bodies: Vec::new(), at: None }
+    }
+}
+
 /// A construction axis: along a straight edge of a body.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AxisFeature {

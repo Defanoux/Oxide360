@@ -7,7 +7,6 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 Focus: solid and sketch modelling for 3D printing (Gavin, 2026-10-29).
 Fusion's behaviour is the spec for each; FEATURES.md has the full Fusion list.
 
-- **Split Body** (MODIFY): split a body with an origin / construction plane or a flat face (extended); each side its own body; timeline feature.
 - **Scale** (MODIFY): bodies, uniform or X/Y/Z, about a point; timeline feature.
 - **Insert SVG / DXF** into a sketch (Fusion's Insert): curves become sketch lines, arcs, circles and splines, placed and scaled before OK.
 - **3D Print checks**: overhang shading (faces steeper than a set angle from the bed), a watertight / manifold check, and "face on bed" — turn a picked face down before export.
@@ -26,6 +25,7 @@ Later (drawings, on hold — few users): views placed by hand (Base / Projected 
 
 ## Done
 
+- Split Body (MODIFY; also in the S box): bodies cut along an origin plane, construction plane or flat face carried past its edges; the side the plane faces keeps the body, the pieces behind become new bodies (Split1…); exact OCCT, timeline feature with edit / delete (later bodies renumber), preview shows the new piece in its own colour. Picking a plane for Split, Section Analysis, Hole To or Coil now shows the origin planes even when the Origin folder is hidden. Not yet: a body or sketch curve as the splitting tool, Split Face.
 - Drawing: Draw menu — the whole design (visible bodies) or chosen components / bodies, saved with the design and renumbered when bodies are deleted; the title block names the one component or body drawn when no title is typed. The iso view is never more than one standard scale smaller than the sheet (it was left tiny).
 - 2D drawings: DRAWING workspace (beside SOLID / SKETCH): an A4 / A3 / A2 sheet with front, top, right (ISO first-angle: top below, right to the left) and iso views of the visible bodies, exact hidden-line removal by OpenCASCADE (hidden edges dashed, none drawn under visible ones), auto standard scale (iso its own if it must, labelled), views centred, border and title block (title, drawn by, date, material, units, scale, size, projection symbol); Export PDF (true size, vector) and DXF (layers VISIBLE / THIN / HIDDEN dashed / TEXT, checked with ezdxf); settings saved with the design; ctl/MCP export_drawing. Not yet: dimensions, section/detail views, more sheets.
 - Appearances (A; MODIFY > Appearance; body right-click > Appearance… / Remove Appearance): 42 looks in Metal, Plastic, Paint, Rubber, Glass, Wood with search and In This Design; pick one, click bodies (selected bodies get the first pick); saved per body, separate from Physical Material; a picked body colour replaces it. Shading: gloss highlights and studio reflections (metals mirror the sky, tinted), glass see-through; bodies without one render exactly as before. Not yet: textures (wood grain).

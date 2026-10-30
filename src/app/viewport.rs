@@ -699,6 +699,34 @@ impl OpenCad {
             self.close_appearance();
         }
 
+        crate::mark("Split Body: click the bodies");
+        // --- Split Body: click the bodies to split (the plane is picked below) ---
+        self.split_hover = None;
+        if self.split_dialog.as_ref().is_some_and(|d| d.picking == Some(split_dialog::Field::Bodies)) && self.active.is_none() {
+            self.ensure_model(Slot::Committed);
+            if let Some(px) = hover_px {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                let model = self.model(Slot::Committed);
+                self.split_hover = model
+                    .bodies
+                    .iter()
+                    .filter(|b| !self.hidden_bodies.contains(&b.id))
+                    .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir).map(|t| (b.id, t)))
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(id, _)| id);
+            }
+            if let (true, Some(id), Some(d)) = (response.clicked(), self.split_hover, self.split_dialog.as_mut()) {
+                d.click_body(id);
+            }
+            if esc && !typing {
+                if let Some(d) = self.split_dialog.as_mut() {
+                    d.picking = None;
+                }
+            }
+        } else if self.split_dialog.as_ref().is_some_and(|d| d.picking.is_none()) && esc && !typing {
+            self.cancel_split();
+        }
+
         crate::mark("Offset Face / Press Pull: click faces");
         // --- Offset Face / Press Pull: click flat faces to move; Press Pull also
         // takes a fillet (edit it) or a sketch profile (extrude it) ---
@@ -847,7 +875,7 @@ impl OpenCad {
 
         crate::mark("Extrude To Object / Hole To: click the");
         // --- Extrude To Object / Hole To: click the plane or flat face it runs up to ---
-        let picking_target = self.dialog.as_ref().is_some_and(|d| d.picking_target) || self.hole_dialog.as_ref().is_some_and(|d| d.picking_target) || self.section_dialog.as_ref().is_some_and(|d| d.picking) || matches!(self.construct_pick, Some(ConstructPick::Midplane(_))) || self.sweep_dialog.as_ref().is_some_and(|d| d.picking_plane);
+        let picking_target = self.dialog.as_ref().is_some_and(|d| d.picking_target) || self.hole_dialog.as_ref().is_some_and(|d| d.picking_target) || self.section_dialog.as_ref().is_some_and(|d| d.picking) || matches!(self.construct_pick, Some(ConstructPick::Midplane(_))) || self.sweep_dialog.as_ref().is_some_and(|d| d.picking_plane) || self.split_dialog.as_ref().is_some_and(|d| d.picking == Some(split_dialog::Field::Tool));
         if picking_target {
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
@@ -886,6 +914,9 @@ impl OpenCad {
                 if let (Some(t), Some(d)) = (target, self.section_dialog.as_mut()) {
                     (d.at, d.picking) = (Some(t), false);
                 }
+                if let (Some(t), Some(d)) = (target, self.split_dialog.as_mut()) {
+                    d.set_tool(t);
+                }
                 // Coil: its plane, and on a face the spot clicked is its centre.
                 if let (Some(t), Some(d)) = (target, self.sweep_dialog.as_mut().filter(|d| d.picking_plane)) {
                     d.at = Some(t);
@@ -915,6 +946,9 @@ impl OpenCad {
                 }
                 if let Some(d) = self.section_dialog.as_mut() {
                     d.picking = false;
+                }
+                if let Some(d) = self.split_dialog.as_mut() {
+                    d.picking = None;
                 }
                 if let Some(d) = self.dialog.as_mut() {
                     d.picking_target = false;
@@ -2294,11 +2328,15 @@ impl OpenCad {
         let sketching = self.active.is_some();
         let origin_size = origin::size_for(self.camera.distance);
         // Create Sketch shows the whole origin, whatever the browser says.
-        // Picking an axis or a mirror plane shows the whole origin too.
+        // Picking an axis, a mirror plane or any plane a command needs shows the whole origin too.
         let picking_axis = self.copy_dialog.as_ref().is_some_and(|d| d.picking_axis || d.mode == CopyMode::Mirror)
             || self.dialog.as_ref().is_some_and(|d| d.picking_target || d.extent == model::Extent::ToObject)
             || self.angle_pick
-            || self.plane_dialog.as_ref().is_some_and(|d| d.picking_line());
+            || self.plane_dialog.as_ref().is_some_and(|d| d.picking_line())
+            || self.split_dialog.as_ref().is_some_and(|d| d.picking == Some(split_dialog::Field::Tool))
+            || self.section_dialog.as_ref().is_some_and(|d| d.picking)
+            || self.hole_dialog.as_ref().is_some_and(|d| d.picking_target)
+            || self.sweep_dialog.as_ref().is_some_and(|d| d.picking_plane);
         let shown = if self.face_pick || picking_axis { origin::Shown::default() } else { self.origin_shown };
         let show_origin = !sketching && (shown.all || self.face_pick || picking_axis);
         let mirror_plane = self.copy_dialog.as_ref().filter(|d| d.mode == CopyMode::Mirror && d.plane_set).map(|d| (d.mirror_custom, d.plane));
@@ -2311,6 +2349,7 @@ impl OpenCad {
             .into_iter()
             .chain(self.hole_dialog.as_ref().and_then(|d| d.hole.target))
             .chain(self.section_dialog.as_ref().and_then(|d| d.at))
+            .chain(self.split_dialog.as_ref().and_then(|d| d.split.at))
             .chain(match &self.construct_pick {
                 Some(ConstructPick::Midplane(t)) => t.clone(),
                 _ => Vec::new(),
@@ -2479,7 +2518,7 @@ impl OpenCad {
 
         crate::mark("draw: bodies (from the kernel; with an");
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
-        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some() || self.move_dialog.is_some() || self.sweep_dialog.is_some() || self.import_dialog.is_some() || self.joint_dialog.is_some();
+        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some() || self.move_dialog.is_some() || self.sweep_dialog.is_some() || self.import_dialog.is_some() || self.joint_dialog.is_some() || self.split_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
         self.ensure_model(Slot::Committed);
         self.adopt_linked_sketches();
@@ -2496,6 +2535,7 @@ impl OpenCad {
         self.shell_errors = self.model(Slot::Committed).shell_errors.clone();
         self.offset_face_errors = self.model(Slot::Committed).offset_face_errors.clone();
         self.combine_errors = self.model(Slot::Committed).combine_errors.clone();
+        self.split_errors = self.model(Slot::Committed).split_errors.clone();
         self.move_errors = self.model(Slot::Committed).move_errors.clone();
         self.point_errors = self.model(Slot::Committed).point_errors.clone();
         self.sweep_errors = self.model(Slot::Committed).sweep_errors.clone();
@@ -2535,6 +2575,9 @@ impl OpenCad {
         } else if let Some(d) = &self.combine_dialog {
             let k = d.editing.unwrap_or(self.combines.len());
             if d.ready() { model.combine_errors.get(k).cloned().flatten() } else { None }
+        } else if let Some(d) = &self.split_dialog {
+            let k = d.editing.unwrap_or(self.splits.len());
+            if d.ready() { model.split_errors.get(k).cloned().flatten() } else { None }
         } else if let Some(d) = &self.offset_dialog {
             let k = d.editing.unwrap_or(self.offset_faces.len());
             if d.offset.faces.is_empty() { None } else { model.offset_face_errors.get(k).cloned().flatten() }
@@ -2577,13 +2620,15 @@ impl OpenCad {
             .enumerate()
             .filter(|(k, _)| !hidden.contains(k))
             .map(|(k, b)| {
-                let c = if previewing { body_color } else { self.body_color(b.id) };
+                // A split's preview keeps each body's colour, so the new piece shows apart.
+                let c = if previewing && self.split_dialog.is_none() { body_color } else { self.body_color(b.id) };
                 // Bodies selected in the browser (or picked for a mirror / pattern)
                 // are tinted with the selection colour; the one under the cursor lighter.
                 let picked = self.copy_dialog.as_ref().is_some_and(|d| d.bodies.contains(&b.id)) || self.shell_dialog.as_ref().is_some_and(|d| d.shell.bodies.contains(&b.id))
                     || self.combine_dialog.as_ref().is_some_and(|d| d.combine.target == Some(b.id) || d.combine.tools.contains(&b.id))
-                    || self.move_dialog.as_ref().is_some_and(|d| d.feature.bodies.contains(&b.id));
-                let hovered = self.copy_body_hover == Some(b.id) || self.shell_hover.and_then(|h| h.1) == Some(b.id) || self.combine_hover == Some(b.id) || self.move_hover == Some(b.id) || self.appearance_hover == Some(b.id);
+                    || self.move_dialog.as_ref().is_some_and(|d| d.feature.bodies.contains(&b.id))
+                    || self.split_dialog.as_ref().is_some_and(|d| d.picking == Some(split_dialog::Field::Bodies) && d.split.bodies.contains(&b.id));
+                let hovered = self.copy_body_hover == Some(b.id) || self.shell_hover.and_then(|h| h.1) == Some(b.id) || self.combine_hover == Some(b.id) || self.move_hover == Some(b.id) || self.appearance_hover == Some(b.id) || self.split_hover == Some(b.id);
                 // Under the Appearance tool the body a click would change lights up
                 // whole (strongly, so it reads on any look) until it has that look.
                 let has_it = matches!(self.appearance_dialog.as_ref().and_then(|d| d.current), Some(appearance_dialog::Choice::Give(a)) if self.body_appearance(b.id).is_some_and(|x| x.name == a.name))
@@ -2824,6 +2869,9 @@ impl OpenCad {
 
         if self.move_dialog.as_ref().is_some_and(|d| d.picking) {
             painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, "Click the bodies to move; click one again to drop it   (Esc when done)", egui::FontId::proportional(15.0), Color32::from_gray(220));
+        }
+        if let Some(hint) = self.split_dialog.as_ref().and_then(|d| d.hint()) {
+            painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
         }
         if let Some(field) = self.combine_dialog.as_ref().and_then(|d| d.picking) {
             let hint = match field {
