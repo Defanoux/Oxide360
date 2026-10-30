@@ -55,6 +55,8 @@ mod shortcuts;
 mod offset_dialog;
 mod combine_dialog;
 mod scale_dialog;
+mod insert_drawing_dialog;
+mod sketch_import;
 mod sketch_palette;
 mod split_dialog;
 mod move_dialog;
@@ -441,6 +443,8 @@ enum Cmd {
     Export(export::Format),
     /// Insert a STEP / STL file's bodies into this design.
     Import,
+    /// Insert an SVG / DXF drawing's curves into the open sketch.
+    InsertDrawing,
     /// File → Recent: open the design listed `k`th.
     OpenRecent(usize),
 }
@@ -705,6 +709,7 @@ struct OpenCad {
     editor: Editor,
     grid_snap: bool,
     sketch_options: sketch_palette::Options, // the Sketch Palette's show / slice switches
+    insert_drawing: Option<insert_drawing_dialog::InsertDrawingDialog>, // Insert SVG / DXF, being placed
     undo: Vec<Sketch>,
     dof: Option<usize>,
     message: Option<String>,
@@ -961,6 +966,7 @@ impl Default for OpenCad {
             editor: Editor::default(),
             grid_snap: true,
             sketch_options: sketch_palette::Options::default(),
+            insert_drawing: None,
             undo: Vec::new(),
             dof: None,
             message: None,
@@ -1375,7 +1381,18 @@ impl OpenCad {
                 .collapsible(false)
                 .default_width(240.0)
         };
-        if self.text_dialog.is_some() && self.active.is_some() {
+        if self.insert_drawing.is_some() && self.active.is_some() {
+            float("insert_drawing").show(&ctx, |ui| {
+                let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                let act = self.insert_drawing.as_mut().map_or(copy_dialog::Action::None, |d| d.panel(ui, design_units));
+                match act {
+                    copy_dialog::Action::Ok => self.commit_insert_drawing(),
+                    copy_dialog::Action::Cancel => self.insert_drawing = None,
+                    copy_dialog::Action::None if esc => self.insert_drawing = None,
+                    copy_dialog::Action::None => {}
+                }
+            });
+        } else if self.text_dialog.is_some() && self.active.is_some() {
             float("text").show(&ctx, |ui| {
                 let act = self.text_dialog.as_mut().map_or(copy_dialog::Action::None, |d| d.panel(ui, design_units));
                 self.text_dialog_step(act);
@@ -1490,7 +1507,9 @@ impl OpenCad {
             float("measure").show(&ctx, |ui| self.measure_panel(ui));
         }
         // The Sketch Palette: the view's right, under the view cube.
-        if self.active.is_some() && self.view_rect.width() > 0.0 {
+        // (Out of the way while a sketch dialog is open there.)
+        let sketch_dialog = self.insert_drawing.is_some() || self.text_dialog.is_some() || self.sketch_pattern.is_some();
+        if self.active.is_some() && !sketch_dialog && self.view_rect.width() > 0.0 {
             let at = self.view_rect.right_top() + egui::vec2(-12.0, CUBE_TOP + CUBE_MARGIN);
             let construction = self.editor.construction;
             let mut action = sketch_palette::Action::None;
@@ -1792,7 +1811,14 @@ impl Tabs {
                     "state" => Some(tab.control_state()),
                     "open" => Some(done(path().and_then(|p| tab.control_open(&p)))),
                     "save" => Some(done(path().and_then(|p| tab.control_save(&p)))),
-                    "import" => Some(done(path().and_then(|p| tab.import_path(std::path::Path::new(&p))))),
+                    "import" => Some(done(path().and_then(|p| {
+                        let p = std::path::Path::new(&p);
+                        // A drawing goes into the open sketch; a part into the design.
+                        match p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+                            Some("svg" | "dxf") => tab.insert_drawing_path(p),
+                            _ => tab.import_path(p),
+                        }
+                    }))),
                     "export_drawing" => Some(done(path().and_then(|p| tab.export_drawing_to(std::path::Path::new(&p))))),
                     "new" => {
                         tab.control_new();

@@ -208,11 +208,42 @@ impl OpenCad {
         self.turn = None;
     }
 
+    /// An SVG / DXF file's curves, to be placed in the open sketch (the
+    /// Insert SVG / DXF dialog), as Fusion's Insert SVG / Insert DXF.
+    pub(crate) fn insert_drawing_path(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let file = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        if self.active.is_none() {
+            return Err("Start or edit a sketch first: the drawing goes into it.".into());
+        }
+        let drawing = sketch_import::read(path).map_err(|e| format!("Couldn't insert {file}: {e}"))?;
+        if drawing.curves.is_empty() {
+            return Err(format!("{file} has no lines or curves to insert."));
+        }
+        self.editor.set_tool(Tool::Select);
+        self.insert_drawing = Some(insert_drawing_dialog::InsertDrawingDialog::new(file, drawing));
+        Ok(())
+    }
+
+    /// OK in Insert SVG / DXF: the curves join the sketch (one undo step).
+    pub(crate) fn commit_insert_drawing(&mut self) {
+        let (Some(i), Some(d)) = (self.active, self.insert_drawing.take()) else { return };
+        if !d.ready() {
+            return;
+        }
+        let placed = d.placed();
+        let r = apply_edit(&mut self.sketches[i], Some(&mut self.undo), |sk| {
+            sketch_import::add_to_sketch(sk, &placed);
+        });
+        self.report(r);
+        self.notify(format!("Inserted {} curves from {}", placed.len(), d.name));
+    }
+
     /// Leave sketch mode. An empty sketch nothing depends on is discarded.
     /// Returns the index of a removed sketch so callers can fix up indices.
     pub(crate) fn finish_sketch(&mut self) -> Option<usize> {
         self.cancel_sketch_pattern();
         self.text_dialog = None; // (its text is in the sketch already)
+        self.insert_drawing = None;
         let i = self.active.take()?;
         self.editor = Editor::default();
         self.undo.clear();

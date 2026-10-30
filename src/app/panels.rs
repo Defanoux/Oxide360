@@ -658,6 +658,7 @@ impl OpenCad {
             ("Project", _) => self.editor.set_tool(Tool::Project),
             ("Construction", _) => self.toggle_construction(),
             ("Change Parameters", _) => self.params_window.open = !self.params_window.open,
+            ("Insert SVG / DXF", _) => self.cmd = Some(Cmd::InsertDrawing),
             (c, _) if CONSTRAINT_ACTIONS.contains(&c) => self.constraint_button(c),
             _ => {}
         }
@@ -886,6 +887,11 @@ impl OpenCad {
                 if let Some(label) = tool_group(ui, "CONSTRAINTS", "", &items, &[], &mut self.toolbar_hidden, &mut self.toolbar_order) {
                     self.constraint_button(label);
                 }
+                group(ui, "INSERT", |ui| {
+                    if icons::button(ui, Icon::Import, "Insert SVG / DXF: a drawing's lines and curves into this sketch — place, turn and scale it, then OK", true, self.insert_drawing.is_some()).clicked() {
+                        self.run_sketch_tool("Insert SVG / DXF");
+                    }
+                });
                 group(ui, "OPTIONS", |ui| {
                     if icons::button(ui, Icon::Grid, "Grid snap (G, or Ctrl+G any time)", true, self.grid_snap).clicked() {
                         self.grid_snap = !self.grid_snap;

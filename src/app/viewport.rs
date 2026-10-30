@@ -3389,6 +3389,14 @@ impl OpenCad {
                     }
                 }
             }
+            if let (true, Some(d)) = (active, &self.insert_drawing) {
+                // Insert SVG / DXF: the curves where OK would put them.
+                for c in d.placed() {
+                    for w in c.sample().windows(2) {
+                        view.line(plane.to_world(w[0]), plane.to_world(w[1]), Stroke::new(1.5, COL_PREVIEW));
+                    }
+                }
+            }
             if active {
                 // Control Point Splines show their control frame, dashed.
                 for &(s, _) in &sk.control_splines {

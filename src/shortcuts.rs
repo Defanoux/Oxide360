@@ -13,7 +13,7 @@ pub const SOLID: &[&str] = &[
 /// Sketch-mode tools (the names `run_sketch_tool` takes).
 pub const SKETCH: &[&str] = &[
     "Line", "Rectangle", "Circle", "Arc", "Polygon", "Point", "Slot", "Spline", "Ellipse", "Text",
-    "Fillet", "Chamfer", "Trim", "Break", "Extend", "Offset", "Rectangular Pattern", "Circular Pattern", "Mirror", "Project", "Construction", "Change Parameters",
+    "Fillet", "Chamfer", "Trim", "Break", "Extend", "Offset", "Rectangular Pattern", "Circular Pattern", "Mirror", "Project", "Construction", "Change Parameters", "Insert SVG / DXF",
     "Dimension", "Coincident", "Collinear", "Concentric", "Horizontal", "Vertical", "Parallel", "Perpendicular", "Equal", "Tangent", "Midpoint", "Symmetric", "Fix",
 ];
 

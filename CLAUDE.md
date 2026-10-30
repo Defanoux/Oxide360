@@ -153,6 +153,7 @@ lists there).
 | `units.rs`, `expr.rs`, `params_window.rs`, `threads.rs`, `keys.rs`, `settings.rs`, `shortcuts.rs`, `help.rs` | units + parsing, parameters/expressions, thread tables, key bindings, preferences file, tool names for menus/search, Help text + app icon |
 | `export.rs`, `sketch_export.rs`, `recovery.rs` | STL/3MF/OBJ export, sketch DXF/SVG, autosave + crash recovery |
 | `sketch_palette.rs` | the Sketch Palette (show switches, Slice) |
+| `sketch_import.rs` | Insert SVG / DXF: reading drawings into sketch curves |
 | `drawing.rs`, `drawing_export.rs` | 2-D drawing sheet (settings, first-angle layout, scales, title block) from `kernel::hlr_view` lines; PDF + DXF writers |
 | `ui_shot.rs` | test-only headless UI screenshots |
 | `vendor/opencascade-sys`, `vendor/opencascade` | **patched** OCCT bindings — see below |

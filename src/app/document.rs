@@ -1245,6 +1245,14 @@ impl OpenCad {
                 self.save_as();
             }
             Cmd::Export(f) => self.export(f),
+            Cmd::InsertDrawing => {
+                let picked = self.file_dialog().set_title("Insert SVG / DXF").add_filter("SVG or DXF drawing", &["svg", "dxf", "SVG", "DXF"]).pick_file();
+                if let Some(p) = picked {
+                    if let Err(e) = self.insert_drawing_path(&p) {
+                        self.alert = Some(e);
+                    }
+                }
+            }
             Cmd::Import => {
                 let picked = self.file_dialog().set_title("Insert into Design").add_filter("STEP or STL", &["step", "stp", "stl", "STEP", "STP", "STL"]).pick_file();
                 if let Some(p) = picked {

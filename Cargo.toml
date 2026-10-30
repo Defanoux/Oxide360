@@ -27,6 +27,10 @@ ab_glyph = "0.2.32"
 epaint_default_fonts = "0.36.2"
 # Screenshots for the control link (already part of the build, through rfd/eframe).
 png = "0.18.1"
+# Insert SVG into a sketch: path data (kurbo) and the XML around it (quick-xml),
+# both already part of the build through egui / wayland.
+kurbo = "0.13.1"
+quick-xml = "0.41.0"
 
 [dev-dependencies]
 pollster = "0.4"
