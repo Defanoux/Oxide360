@@ -17,6 +17,7 @@ Later (drawings, on hold — few users): views placed by hand (Base / Projected 
 
 ## Polish (do when nearby code is touched)
 
+- `kernel::tests::offset_faces_primitive_moves_a_face_exactly` failed once in ~16 full `cargo test` runs (2026-10-30), never alone in 40: an intermittent OCCT offset result under parallel load. Catch the message next time it shows.
 - Old files' edge/face references lack `faces` / `follow`; re-derive them on
   load from the built model.
 
