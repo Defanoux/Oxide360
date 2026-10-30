@@ -2442,6 +2442,26 @@ impl OpenCad {
         } else {
             Vec::new()
         };
+        // Print Check: the printer's bed (centred on the origin) and its build volume, faintly.
+        if self.print_check && !sketching {
+            let [x, y, z] = print3d::printer(&self.printer, self.printer_custom).size.map(|v| v as f32 / 2.0);
+            let z = z * 2.0;
+            let c = |h: f32| [Vec3::new(-x, -y, h), Vec3::new(x, -y, h), Vec3::new(x, y, h), Vec3::new(-x, y, h)];
+            let (bed, top) = (c(0.0), c(z));
+            for k in 0..4 {
+                grid_segments.push((bed[k], bed[(k + 1) % 4], [0.55, 0.75, 0.95, 1.0]));
+                grid_segments.push((top[k], top[(k + 1) % 4], [0.35, 0.40, 0.45, 1.0]));
+                grid_segments.push((bed[k], top[k], [0.35, 0.40, 0.45, 1.0]));
+            }
+            // A 10 mm grid on the bed.
+            let (nx, ny) = ((x / 10.0) as i32, (y / 10.0) as i32);
+            for i in -nx..=nx {
+                grid_segments.push((Vec3::new(i as f32 * 10.0, -y, 0.0), Vec3::new(i as f32 * 10.0, y, 0.0), [0.30, 0.33, 0.36, 1.0]));
+            }
+            for j in -ny..=ny {
+                grid_segments.push((Vec3::new(-x, j as f32 * 10.0, 0.0), Vec3::new(x, j as f32 * 10.0, 0.0), [0.30, 0.33, 0.36, 1.0]));
+            }
+        }
         let axes: Vec<(Vec3, Vec3, Vec3)> = if sketching {
             vec![(dplane.u * -extent, dplane.u * extent, dplane.u), (dplane.v * -extent, dplane.v * extent, dplane.v)]
         } else if show_origin {
@@ -2592,6 +2612,7 @@ impl OpenCad {
             }
         }
 
+        self.print_check_update();
         crate::mark("draw: bodies (from the kernel; with an");
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
         let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some() || self.move_dialog.is_some() || self.sweep_dialog.is_some() || self.import_dialog.is_some() || self.joint_dialog.is_some() || self.split_dialog.is_some() || self.scale_dialog.is_some();
@@ -2795,6 +2816,20 @@ impl OpenCad {
                         scene.restyle(first, &which, rgb(lit), gpu::Finish::PLAIN);
                     }
                     first += m.tris.len();
+                }
+            }
+            // Print Check: overhangs needing support, yellow (just past the limit) to red (a ceiling).
+            if self.print_check && !sketching && cuts.is_none() {
+                let all: Vec<&Mesh> = shaded.iter().map(|s| s.1).collect();
+                if let Some((lo, hi)) = print3d::bounds(&all) {
+                    let tol = (hi - lo).length() * 1e-5 + 1e-6;
+                    let mut first = 0;
+                    for &(_, m, ..) in &shaded {
+                        let (marks, _) = print3d::mesh_overhangs(m, self.overhang_limit, lo.z, tol);
+                        let colors: Vec<Option<[f32; 3]>> = marks.iter().map(|t| t.map(print3d::overhang_color)).collect();
+                        scene.recolor(first, &colors);
+                        first += m.tris.len();
+                    }
                 }
             }
             scene.add_lines(&grid_segments, &self.camera);

@@ -45,6 +45,7 @@ pub enum Icon {
     Appearance,
     Split,
     Scale,
+    PrintCheck,
     Component,
     Interference,
     Break,
@@ -460,6 +461,13 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             poly(&[(0.08, 0.56), (0.44, 0.56), (0.44, 0.92), (0.08, 0.92)], blue);
             line((0.46, 0.54), (0.8, 0.2), Stroke::new(thin.width * 1.3, ink));
             arrow_head((0.84, 0.16), (0.66, 0.34), ink);
+        }
+        Icon::PrintCheck => {
+            // A printer's nozzle laying down a part on the bed, its overhang shaded.
+            poly(&[(0.38, 0.06), (0.62, 0.06), (0.62, 0.22), (0.5, 0.34), (0.38, 0.22)], orange);
+            line((0.06, 0.92), (0.94, 0.92), Stroke::new(thin.width * 1.4, ink));
+            poly(&[(0.22, 0.86), (0.5, 0.86), (0.5, 0.5), (0.22, 0.5)], blue);
+            poly(&[(0.5, 0.5), (0.8, 0.5), (0.8, 0.62), (0.5, 0.62)], tint(Color32::from_rgb(220, 70, 50)));
         }
         Icon::Combine => {
             // Two overlapping blocks: the target (blue) and a tool (orange outline) merging into it.
@@ -1055,7 +1063,7 @@ mod shot_tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [720, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil, Icon::Import, Icon::Interference, Icon::Component, Icon::Joint, Icon::Appearance, Icon::Split, Icon::Scale] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil, Icon::Import, Icon::Interference, Icon::Component, Icon::Joint, Icon::Appearance, Icon::Split, Icon::Scale, Icon::PrintCheck] {
                     button(ui, icon, "", true, false);
                 }
             });

@@ -56,6 +56,8 @@ mod offset_dialog;
 mod combine_dialog;
 mod scale_dialog;
 mod insert_drawing_dialog;
+mod print3d;
+mod print_check_dialog;
 mod sketch_import;
 mod sketch_palette;
 mod split_dialog;
@@ -710,6 +712,12 @@ struct OpenCad {
     grid_snap: bool,
     sketch_options: sketch_palette::Options, // the Sketch Palette's show / slice switches
     insert_drawing: Option<insert_drawing_dialog::InsertDrawingDialog>, // Insert SVG / DXF, being placed
+    print_check: bool,                      // the Print Check window is open
+    print_found: print_check_dialog::Findings, // what it found (kept, the orientations are slow-ish)
+    print_key: String,                      // what `print_found.best` was worked out for
+    printer: String,                        // Print Check settings (kept between runs)
+    printer_custom: [f64; 3],
+    overhang_limit: f64,
     undo: Vec<Sketch>,
     dof: Option<usize>,
     message: Option<String>,
@@ -967,6 +975,12 @@ impl Default for OpenCad {
             grid_snap: true,
             sketch_options: sketch_palette::Options::default(),
             insert_drawing: None,
+            print_check: false,
+            print_found: Default::default(),
+            print_key: String::new(),
+            printer: print3d::PRINTERS[0].name.to_string(),
+            printer_custom: [200.0, 200.0, 200.0],
+            overhang_limit: 45.0,
             undo: Vec::new(),
             dof: None,
             message: None,
@@ -1505,6 +1519,15 @@ impl OpenCad {
             float("revolve").show(&ctx, |ui| self.revolve_panel(ui));
         } else if self.measure.is_some() {
             float("measure").show(&ctx, |ui| self.measure_panel(ui));
+        } else if self.print_check && self.active.is_none() {
+            float("print_check").show(&ctx, |ui| {
+                let found = self.print_found.clone();
+                match print_check_dialog::panel(ui, &mut self.printer, &mut self.printer_custom, &mut self.overhang_limit, &found) {
+                    print_check_dialog::Action::Close => self.print_check = false,
+                    print_check_dialog::Action::LayFlat(k) => self.lay_flat(k),
+                    print_check_dialog::Action::None => {}
+                }
+            });
         }
         // The Sketch Palette: the view's right, under the view cube.
         // (Out of the way while a sketch dialog is open there.)
@@ -1571,6 +1594,9 @@ impl OpenCad {
         self.toolbar_order = s.toolbar_order.clone();
         self.style = s.style;
         self.recent = s.recent.clone();
+        self.printer = s.printer.clone();
+        self.printer_custom = s.printer_custom;
+        self.overhang_limit = if s.overhang_limit.is_finite() { s.overhang_limit.clamp(10.0, 85.0) } else { 45.0 };
         self.settings_saved = s.clone();
     }
 

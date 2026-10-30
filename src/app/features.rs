@@ -1553,6 +1553,51 @@ impl OpenCad {
     }
 
     /// Close whichever tool dialog or pick mode is open.
+    /// Print Check: what it finds for the bodies shown (the orientations only
+    /// when the bodies or the limit changed).
+    pub(crate) fn print_check_update(&mut self) {
+        if !self.print_check || self.active.is_some() {
+            return;
+        }
+        let limit = self.overhang_limit;
+        let model = self.model(Slot::Committed);
+        let shown: Vec<&kernel::Body> = model.bodies.iter().filter(|b| !self.hidden_bodies.contains(&b.id)).collect();
+        let meshes: Vec<&Mesh> = shown.iter().map(|b| &b.mesh).collect();
+        let printer = print3d::printer(&self.printer, self.printer_custom);
+        let bounds = print3d::bounds(&meshes);
+        let support = bounds.map_or(0.0, |(lo, hi)| {
+            let tol = (hi - lo).length() * 1e-5 + 1e-6;
+            meshes.iter().map(|m| print3d::mesh_overhangs(m, limit, lo.z, tol).1).sum()
+        });
+        let key = format!("{:?}|{:?}|{limit}|{bounds:?}", shown.iter().map(|b| b.id).collect::<Vec<_>>(), meshes.iter().map(|m| m.tris.len()).collect::<Vec<_>>());
+        let best = if key == self.print_key { self.print_found.best.clone() } else { print3d::orientations(&meshes, limit, 3) };
+        self.print_found = print_check_dialog::Findings {
+            size: bounds.map(|(lo, hi)| hi - lo),
+            too_big: bounds.and_then(|(lo, hi)| print3d::too_big(hi - lo, &printer)),
+            support,
+            best,
+        };
+        self.print_key = key;
+    }
+
+    /// Print Check's Lay Flat: the bodies shown turned onto suggestion `k`,
+    /// set on the bed and centred — a Move in the timeline (undo takes it back).
+    pub(crate) fn lay_flat(&mut self, k: usize) {
+        let Some(o) = self.print_found.best.get(k).copied() else { return };
+        let model = self.model(Slot::Committed);
+        let shown: Vec<&kernel::Body> = model.bodies.iter().filter(|b| !self.hidden_bodies.contains(&b.id)).collect();
+        let ids: Vec<BodyId> = shown.iter().map(|b| b.id).collect();
+        let shapes: Vec<&opencascade::primitives::Shape> = shown.iter().map(|b| &b.shape).collect();
+        let Some(kind) = kernel::lay_flat(&shapes, o.down) else {
+            self.message = Some("Couldn't lay it flat: the geometry kernel failed turning it".into());
+            return;
+        };
+        let n = self.moves.iter().filter(|m| m.name.starts_with("Lay Flat")).count() + 1;
+        self.moves.push(model::MoveFeature { name: format!("Lay Flat{n}"), bodies: ids, kind, copy: false });
+        self.timeline_insert(Feature::Move(self.moves.len() - 1));
+        self.print_key.clear();
+    }
+
     pub(crate) fn cancel_all_dialogs(&mut self) {
         self.import_dialog = None;
         self.joint_dialog = None;

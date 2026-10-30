@@ -260,6 +260,19 @@ impl Scene {
         }
     }
 
+    /// Recolour triangles one by one (from triangle `first`); None leaves one as it is.
+    pub fn recolor(&mut self, first: usize, colors: &[Option<[f32; 3]>]) {
+        for (t, c) in colors.iter().enumerate() {
+            if let Some(c) = c {
+                for v in 0..3 {
+                    if let Some(x) = self.tris.get_mut((first + t) * 3 + v) {
+                        x[6..9].copy_from_slice(c);
+                    }
+                }
+            }
+        }
+    }
+
     /// Give some triangles of the mesh whose triangles start at triangle
     /// `first` a look of their own (faces with their own appearance).
     pub fn restyle(&mut self, first: usize, which: &[bool], color: [f32; 3], finish: Finish) {

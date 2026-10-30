@@ -7,7 +7,6 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 Focus: solid and sketch modelling for 3D printing (Gavin, 2026-10-29).
 Fusion's behaviour is the spec for each; FEATURES.md has the full Fusion list.
 
-- **3D Print checks**: overhang shading (faces steeper than a set angle from the bed), a watertight / manifold check, and "face on bed" — turn a picked face down before export.
 - **Emboss** (CREATE): sketch text or profiles raised or cut into a curved face.
 - **Pattern along path**, **Draft**.
 - **Joint limits** and motion settings (min/max, animation speed).
@@ -23,6 +22,7 @@ Later (drawings, on hold — few users): views placed by hand (Base / Projected 
 
 ## Done
 
+- Print Check (INSPECT; S box): printer (Bambu P1S / P1P / X1C / A1 / A1 mini, Prusa MK4 / MINI+, Ender-3 V2, or a custom size; kept in Settings) with its bed and build volume drawn; fits or too big by how much (turned 90° if that fits); overhangs past a set limit (45°) shaded yellow to red and their area; the best faces to lay it on (only faces the whole part sits on — nothing through the bed), least support, then most bed contact, then shortest; Lay Flat turns it onto one, on the bed and centred, as a Move in the timeline. Not yet: thin-wall / small-hole checks, bridges counted as fine.
 - Insert SVG / DXF (sketch toolbar INSERT; ctl/MCP `import` with an .svg/.dxf while sketching): lines, exact arcs and circles, ellipses, Béziers as exact control-point splines, DXF splines and polyline bulges; ends that meet share a point so closed shapes make profiles; SVG sizes from width/height + viewBox (else 96 px/in), Y up, groups and transforms; DXF units from $INSUNITS; placed with X / Y / angle / scale (Centre / Corner on Origin) with a preview, one undo step. Left out and listed: SVG text (convert to paths), DXF blocks and text. Not yet: insert into a new sketch from solid mode, drag to place.
 - Scale (MODIFY; also in the S box): bodies scaled by one factor (exact geometry) or X / Y / Z factors (curved faces become B-splines), about the origin, the bodies' bottom centre (stays on the bed) or a picked point (face snap dots, round edge centres); timeline feature with edit / delete, live preview. Body Properties / mass now use OCCT's adaptive volume (the quick one was ~1% off on B-spline faces). Not yet: scaling sketches, a drag handle.
 - Sketch Palette (Fusion's, at the view's right while a sketch is open, sized to its rows): Construction (the toolbar icon, kept in step with it), Look At, Sketch Grid, Snap, Slice (bodies in front of the sketch plane cut away, the cut face shown; Flip cuts the other side), Show Profile / Points / Dimensions / Constraints / Projected Geometries, Finish Sketch. 3D Sketch is a placeholder (greyed). Switches last for the session, not saved.

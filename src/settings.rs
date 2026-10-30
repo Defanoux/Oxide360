@@ -39,6 +39,11 @@ pub struct Settings {
     pub style: crate::gpu::Style,
     /// Designs opened or saved lately, newest first (File → Recent).
     pub recent: Vec<PathBuf>,
+    /// Print Check: the printer (by name; "Custom" uses `printer_custom`) and
+    /// how far a face may lean out before it needs support (degrees).
+    pub printer: String,
+    pub printer_custom: [f64; 3],
+    pub overhang_limit: f64,
 }
 
 /// How many designs File → Recent lists.
@@ -60,6 +65,9 @@ impl Default for Settings {
             toolbar_order: Vec::new(),
             style: crate::gpu::Style::default(),
             recent: Vec::new(),
+            printer: crate::print3d::PRINTERS[0].name.to_string(),
+            printer_custom: [200.0, 200.0, 200.0],
+            overhang_limit: 45.0,
         }
     }
 }
@@ -117,7 +125,7 @@ mod tests {
         let d = dir("roundtrip");
         let path = d.join("nested").join("settings.json");
         assert_eq!(load(&path), Settings::default(), "nothing saved yet");
-        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic, measure_unit_own: Some(Unit::In), measure_unit2: Some(Unit::Mm), measure_precision: 5, measure_snap: false, measure_xyz: false, default_units: Unit::In, touchpad_zoom_flip: false, toolbar_hidden: vec!["Trim".into()], keybinds: vec![("Trim".into(), "T".into())], toolbar_order: vec!["Trim".into(), "Fillet".into()], style: crate::gpu::Style::Wireframe, recent: vec![PathBuf::from("/d/a.opencad")] };
+        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic, measure_unit_own: Some(Unit::In), measure_unit2: Some(Unit::Mm), measure_precision: 5, measure_snap: false, measure_xyz: false, default_units: Unit::In, touchpad_zoom_flip: false, toolbar_hidden: vec!["Trim".into()], keybinds: vec![("Trim".into(), "T".into())], toolbar_order: vec!["Trim".into(), "Fillet".into()], style: crate::gpu::Style::Wireframe, recent: vec![PathBuf::from("/d/a.opencad")], printer: "Custom".into(), printer_custom: [100.0, 120.0, 130.0], overhang_limit: 50.0 };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);
         let _ = std::fs::remove_dir_all(&d);

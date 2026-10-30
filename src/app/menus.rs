@@ -74,6 +74,7 @@ pub(crate) fn tool_icon(name: &str, sketching: bool) -> Option<Icon> {
         ("Combine", _) => Icon::Combine,
         ("Split Body", _) => Icon::Split,
         ("Insert SVG / DXF", _) => Icon::Import,
+        ("Print Check", _) => Icon::PrintCheck,
         ("Scale", _) => Icon::Scale,
         ("Appearance", _) => Icon::Appearance,
         ("Change Parameters", _) => Icon::Parameters,

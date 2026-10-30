@@ -742,6 +742,10 @@ impl OpenCad {
             "Split Body" => self.open_split(None),
             "Scale" if self.scale_dialog.is_some() => self.cancel_scale(),
             "Scale" => self.open_scale(None),
+            "Print Check" => {
+                self.print_check = !self.print_check;
+                self.print_key.clear(); // worked out afresh
+            }
             "Appearance" if self.appearance_dialog.is_some() => self.close_appearance(),
             "Appearance" => self.open_appearance(),
             _ => {}
@@ -983,6 +987,10 @@ impl OpenCad {
                     let tip = "Section Analysis: see inside — click a plane or flat face to cut the view along (the design isn't changed)";
                     if icons::button(ui, Icon::Section, tip, has_bodies, self.section_dialog.is_some()).clicked() {
                         self.section_dialog = if self.section_dialog.is_some() { None } else { Some(section_dialog::SectionDialog::new()) };
+                    }
+                    let tip = "Print Check: does it fit your printer, does it need support (overhangs shaded), and the best face to lay it on";
+                    if icons::button(ui, Icon::PrintCheck, tip, has_bodies, self.print_check).clicked() {
+                        self.run_solid_tool("Print Check");
                     }
                     let tip = "Interference: find where the visible bodies overlap, and by how much";
                     if icons::button(ui, Icon::Interference, tip, has_bodies, self.interference.is_some()).clicked() {

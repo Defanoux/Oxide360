@@ -858,6 +858,37 @@ fn apply_scale(current: Tagged, sc: &ScaleFeature) -> Result<(Tagged, Option<Bod
 }
 
 #[cfg(test)]
+mod lay_flat_tests {
+    use super::*;
+
+    #[test]
+    fn a_wedge_lies_on_its_slope_on_the_bed() {
+        // The top corner of a 20 × 10 × 10 block, cut off at 45° (x + z ≥ 30): a
+        // triangular prism whose slope faces (−1, 0, −1)/√2.
+        let block = Shape::box_from_corners(kv(DVec3::new(5.0, 5.0, 5.0)), kv(DVec3::new(25.0, 15.0, 15.0)));
+        let cutter = half_space(DVec3::new(25.0, 10.0, 5.0), DVec3::new(1.0, 0.0, 1.0).normalize(), DVec3::splat(0.0), DVec3::splat(30.0));
+        let wedge = block.try_subtract(&cutter).unwrap();
+        let v = wedge.volume();
+        assert!((v - 500.0).abs() < 1e-6, "{v}");
+        let n = -DVec3::new(1.0, 0.0, 1.0).normalize();
+        let MoveKind::Free { offset, angles } = lay_flat(&[&wedge], n).unwrap() else { panic!() };
+        let mf = MoveFeature { name: "Lay Flat1".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: MoveKind::Free { offset, angles }, copy: false };
+        let pivot = box_middle(&[&wedge]).unwrap();
+        let (out, _) = apply_move(vec![(wedge, mf.bodies[0])], &mf, 0, &[], pivot).unwrap();
+        let (lo, hi) = exact_bounds(&out[0].0).unwrap();
+        assert!(lo.z.abs() < 1e-6, "on the bed: {lo}");
+        assert!((lo.x + hi.x).abs() < 1e-6 && (lo.y + hi.y).abs() < 1e-6, "centred: {lo} {hi}");
+        assert!((out[0].0.volume() - v).abs() < 1e-6 * v);
+        // On its slope it stands as tall as the corner is far from the slope: 10/√2.
+        assert!((hi.z - 5.0 * 2f64.sqrt()).abs() < 1e-6, "height {}", hi.z);
+        // …and as wide as the slope is long (10√2) one way, 10 the other.
+        let (w, d) = (hi.x - lo.x, hi.y - lo.y);
+        let (w, d) = (w.max(d), w.min(d));
+        assert!((w - 10.0 * 2f64.sqrt()).abs() < 1e-6 && (d - 10.0).abs() < 1e-6, "{w} × {d}");
+    }
+}
+
+#[cfg(test)]
 mod scale_tests {
     use super::*;
 
@@ -2583,6 +2614,34 @@ fn box_middle(shapes: &[&Shape]) -> Option<DVec3> {
         hi = hi.max(DVec3::new(bb.max().x, bb.max().y, bb.max().z));
     }
     (!shapes.is_empty()).then(|| (lo + hi) * 0.5)
+}
+
+/// Lay Flat (Print Check): the Free Move that turns the bodies so the face
+/// direction `down` points at the bed, then sets them on it (lowest point at
+/// z = 0), centred on the origin. Measured on the turned solids themselves,
+/// exactly as Move will turn them.
+pub fn lay_flat(shapes: &[&Shape], down: DVec3) -> Option<MoveKind> {
+    let angles = crate::print3d::turn_down(down);
+    let pivot = box_middle(shapes)?;
+    catch_unwind(AssertUnwindSafe(|| {
+        let mut lo = DVec3::splat(f64::MAX);
+        let mut hi = DVec3::splat(f64::MIN);
+        for s in shapes {
+            let mut out = (*s).clone();
+            for (axis, deg) in [DVec3::X, DVec3::Y, DVec3::Z].into_iter().zip(angles) {
+                if deg != 0.0 {
+                    out = out.rotated_about(kv(pivot), kv(axis), deg.to_radians());
+                }
+            }
+            let (l, h) = exact_bounds(&out)?;
+            lo = lo.min(l);
+            hi = hi.max(h);
+        }
+        let offset = [-(lo.x + hi.x) / 2.0, -(lo.y + hi.y) / 2.0, -lo.z];
+        Some(MoveKind::Free { offset, angles })
+    }))
+    .ok()
+    .flatten()
 }
 
 /// Move/Copy: the bodies picked, moved (keeping their ids, in place in the

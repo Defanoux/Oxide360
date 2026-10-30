@@ -324,6 +324,9 @@ impl OpenCad {
             toolbar_order: self.toolbar_order.clone(),
             style: self.style,
             recent: self.recent.clone(),
+            printer: self.printer.clone(),
+            printer_custom: self.printer_custom,
+            overhang_limit: self.overhang_limit,
         }
     }
 
