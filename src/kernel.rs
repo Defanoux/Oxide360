@@ -696,9 +696,6 @@ pub struct SectionCut {
 /// other half). Display only; the design isn't changed. Remembered, so it
 /// only cuts again when the bodies or the plane change.
 pub fn section(bodies: &[Body], planes: &[Option<FacePlane>], at: &ExtrudeTarget, offset: f64, flip: bool) -> Result<Vec<SectionCut>, String> {
-    thread_local! {
-        static SECTIONS: std::cell::RefCell<Vec<(String, Result<Vec<SectionCut>, String>)>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
     if !offset.is_finite() {
         return Err("the offset isn't a number".into());
     }
@@ -706,6 +703,19 @@ pub fn section(bodies: &[Body], planes: &[Option<FacePlane>], at: &ExtrudeTarget
     let (q, n) = target_plane(at, planes, &shapes)?;
     let n = if flip { -n } else { n };
     let q = q + n * if flip { -offset } else { offset };
+    section_plane(bodies, q, n)
+}
+
+/// The bodies cut along the plane through `q` with normal `n`: what's on the
+/// side `n` points to is taken away (Section Analysis, the Sketch Palette's Slice).
+pub fn section_plane(bodies: &[Body], q: DVec3, n: DVec3) -> Result<Vec<SectionCut>, String> {
+    thread_local! {
+        static SECTIONS: std::cell::RefCell<Vec<(String, Result<Vec<SectionCut>, String>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    if !(q.is_finite() && n.is_finite()) || n.length() < 1e-9 {
+        return Err("the plane isn't usable".into());
+    }
+    let n = n.normalize();
     let key = format!("{:?}|{q:?}|{n:?}", bodies.iter().map(|b| fingerprint(&b.shape)).collect::<Vec<_>>());
     if let Some(hit) = SECTIONS.with(|c| c.borrow().iter().find(|(k, _)| *k == key).map(|(_, r)| r.clone())) {
         return hit;
@@ -4522,6 +4532,10 @@ mod tests {
         let all = section(&m.bodies, &m.planes, &yz, 100.0 * n.x.signum(), false).unwrap();
         let none = section(&m.bodies, &m.planes, &yz, -100.0 * n.x.signum(), false).unwrap();
         assert!((volume(&all) - 1000.0).abs() < 1e-3 && none.is_empty());
+        // Slice: any plane by point and normal; the side the normal points to goes.
+        let below = section_plane(&m.bodies, DVec3::new(0.0, 0.0, 2.0), DVec3::Z * 3.0).unwrap();
+        assert!((volume(&below) - 400.0).abs() < 1e-3, "20 × 10 × 2 left: {}", volume(&below));
+        assert!(section_plane(&m.bodies, DVec3::ZERO, DVec3::ZERO).is_err());
     }
 
     #[test]

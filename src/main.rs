@@ -54,6 +54,7 @@ mod shell_dialog;
 mod shortcuts;
 mod offset_dialog;
 mod combine_dialog;
+mod sketch_palette;
 mod split_dialog;
 mod move_dialog;
 mod expr;
@@ -697,6 +698,7 @@ struct OpenCad {
     active: Option<usize>,
     editor: Editor,
     grid_snap: bool,
+    sketch_options: sketch_palette::Options, // the Sketch Palette's show / slice switches
     undo: Vec<Sketch>,
     dof: Option<usize>,
     message: Option<String>,
@@ -948,6 +950,7 @@ impl Default for OpenCad {
             active: None,
             editor: Editor::default(),
             grid_snap: true,
+            sketch_options: sketch_palette::Options::default(),
             undo: Vec::new(),
             dof: None,
             message: None,
@@ -1467,6 +1470,27 @@ impl OpenCad {
             float("revolve").show(&ctx, |ui| self.revolve_panel(ui));
         } else if self.measure.is_some() {
             float("measure").show(&ctx, |ui| self.measure_panel(ui));
+        }
+        // The Sketch Palette: the view's right, under the view cube.
+        if self.active.is_some() && self.view_rect.width() > 0.0 {
+            let at = self.view_rect.right_top() + egui::vec2(-12.0, CUBE_TOP + CUBE_MARGIN);
+            let construction = self.editor.construction;
+            let mut action = sketch_palette::Action::None;
+            egui::Window::new("SKETCH PALETTE").id(egui::Id::new("sketch_palette")).pivot(egui::Align2::RIGHT_TOP).fixed_pos(at).resizable(false).collapsible(true).show(&ctx, |ui| {
+                action = sketch_palette::panel(ui, &mut self.sketch_options, &mut self.grid_snap, construction);
+            });
+            match action {
+                sketch_palette::Action::Construction => self.toggle_construction(),
+                sketch_palette::Action::LookAt => {
+                    if let Some(i) = self.active {
+                        self.look_at(self.sketches[i].view_angles(), None);
+                    }
+                }
+                sketch_palette::Action::Finish => {
+                    self.finish_sketch();
+                }
+                sketch_palette::Action::None => {}
+            }
         }
         mark("timeline bar");
         self.timeline_height = egui::Panel::bottom("timeline").show(ui, |ui| self.timeline_bar(ui)).response.rect.height();

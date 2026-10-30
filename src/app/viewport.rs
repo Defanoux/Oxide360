@@ -2355,7 +2355,7 @@ impl OpenCad {
                 _ => Vec::new(),
             })
             .collect();
-        let mut grid_segments: Vec<(Vec3, Vec3, [f32; 4])> = if sketching {
+        let mut grid_segments: Vec<(Vec3, Vec3, [f32; 4])> = if sketching && self.sketch_options.grid {
             sketch::grid_lines(&dplane, centre, grid, GRID_HALF_LINES)
                 .into_iter()
                 .map(|(a, b, major)| {
@@ -2565,6 +2565,14 @@ impl OpenCad {
         let cuts = section.map(|s| kernel::section(&model.bodies, &model.planes, &s.at, s.offset, s.flip));
         self.section_error = cuts.as_ref().and_then(|r| r.as_ref().err().cloned());
         let cuts = cuts.and_then(Result::ok);
+        // The Sketch Palette's Slice: what's in front of the sketch plane cut away.
+        let cuts = match self.active.filter(|_| self.sketch_options.slice && !previewing) {
+            Some(i) => {
+                let p = self.plane_of(i);
+                kernel::section_plane(&model.bodies, p.origin.as_dvec3(), p.normal().as_dvec3()).ok()
+            }
+            None => cuts,
+        };
         self.section_on = cuts.is_some();
         self.dialog_error = if let Some(d) = &self.shell_dialog {
             let k = d.editing.unwrap_or(self.shells.len());
@@ -3173,7 +3181,7 @@ impl OpenCad {
                     view.fill_region(&plane, r, profile_fill(alpha));
                 }
             }
-        } else if let Some(i) = self.active {
+        } else if let Some(i) = self.active.filter(|_| self.sketch_options.profile) {
             let plane = self.plane_of(i);
             for r in regions.get(i).into_iter().flatten() {
                 view.fill_region(&plane, r, profile_fill(28)); // shows which loops are closed
@@ -3235,6 +3243,9 @@ impl OpenCad {
                 if col == base && lost.contains(&e) {
                     col = COL_FIXED;
                 } else if col == base && sk.is_projected(e) {
+                    if active && !self.sketch_options.projected {
+                        continue; // Sketch Palette: projected geometry hidden
+                    }
                     col = COL_PROJECTED;
                 }
                 let stroke = Stroke::new(if active { 2.0 } else { 1.5 }, col);
@@ -3415,6 +3426,10 @@ impl OpenCad {
             for (id, px) in projected.iter().enumerate() {
                 if let Some(px) = *px {
                     let sel = Sel::Point(id);
+                    // Sketch Palette: points hidden, but the origin and the picked / hovered one still show.
+                    if !self.sketch_options.points && id != Sketch::ORIGIN && !self.editor.selection.contains(&sel) && hovered != Some(sel) {
+                        continue;
+                    }
                     let col = if self.editor.selection.contains(&sel) || hovered == Some(sel) {
                         colour_of(sel)
                     } else if id == Sketch::ORIGIN {
@@ -3446,6 +3461,10 @@ impl OpenCad {
             let mut glyphs: Vec<Vec<(usize, &str)>> = vec![Vec::new(); sk.entities.len()];
             let mut point_glyphs: Vec<Vec<(usize, &str)>> = vec![Vec::new(); sk.points.len()];
             for (ci, c) in sk.constraints.iter().enumerate() {
+                // Sketch Palette: dimensions / constraint glyphs hidden (and not picked).
+                if !(if c.value().is_some() { self.sketch_options.dimensions } else { self.sketch_options.constraints }) {
+                    continue;
+                }
                 let label = match *c {
                     // An offset's pieces share one dimension, on the first.
                     Constraint::Offset(..) if sk.offset_group(ci).first() != Some(&ci) => None,
