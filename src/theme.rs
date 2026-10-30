@@ -50,7 +50,10 @@ pub struct Palette {
     pub accent: Color32,
     /// The current tab's and a hovered tool's background.
     pub raised: Color32,
+    /// The toolbar's tool icons in each workspace: solid, sketch, drawing.
+    pub tools: [Color32; 3],
 }
+
 
 pub fn palette(t: Theme) -> Palette {
     match t {
@@ -65,6 +68,7 @@ pub fn palette(t: Theme) -> Palette {
             ink_off: Color32::from_gray(95),
             accent: Color32::from_rgb(110, 170, 255),
             raised: Color32::from_gray(58),
+            tools: [Color32::from_rgb(240, 160, 50), Color32::from_rgb(90, 200, 110), Color32::from_rgb(235, 95, 85)],
         },
         Theme::Slate => Palette {
             view: Color32::from_rgb(44, 56, 68),
@@ -77,6 +81,7 @@ pub fn palette(t: Theme) -> Palette {
             ink_off: Color32::from_rgb(90, 102, 116),
             accent: Color32::from_rgb(80, 145, 255),
             raised: Color32::from_rgb(52, 64, 78),
+            tools: [Color32::from_rgb(245, 165, 60), Color32::from_rgb(95, 210, 125), Color32::from_rgb(240, 100, 90)],
         },
         Theme::Light => Palette {
             view: Color32::from_rgb(92, 97, 104),
@@ -89,6 +94,7 @@ pub fn palette(t: Theme) -> Palette {
             ink_off: Color32::from_gray(170),
             accent: Color32::from_rgb(25, 105, 215),
             raised: Color32::from_rgb(208, 214, 222),
+            tools: [Color32::from_rgb(215, 115, 15), Color32::from_rgb(35, 150, 65), Color32::from_rgb(200, 50, 40)],
         },
     }
 }
@@ -150,6 +156,11 @@ mod tests {
                     let d = (bright(fg) - bright(bg)).abs();
                     assert!(d > 110.0, "{t:?}: {what} on the {on} only {d} apart");
                 }
+            }
+            // Each workspace's tool colour stands out from the card.
+            for c in p.tools {
+                let d = (bright(c) - bright(p.card)).abs();
+                assert!(d > 60.0, "{t:?}: a tool colour only {d} from the card");
             }
             // Greyed-out icons still show, but fainter than live ones.
             let (live, off) = ((bright(p.ink) - bright(p.card)).abs(), (bright(p.ink_off) - bright(p.card)).abs());

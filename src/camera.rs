@@ -155,9 +155,11 @@ impl OrbitCamera {
         self.pitch = (self.pitch + dy * SENS).clamp(-MAX_PITCH, MAX_PITCH);
     }
 
-    pub fn pan(&mut self, dx: f32, dy: f32) {
+    /// Slide the view by (`dx`, `dy`) screen points in a view `view_h` points
+    /// tall: what's at the target's depth moves exactly with the cursor.
+    pub fn pan(&mut self, dx: f32, dy: f32, view_h: f32) {
         let (_, right, up) = self.basis();
-        let scale = self.distance * 0.0015;
+        let scale = 2.0 * self.half_height() / view_h.max(1.0);
         self.target += (-right * dx + up * dy) * scale;
     }
 
@@ -718,6 +720,20 @@ mod tests {
             assert!(p.normal.dot(mid) > 0.0);
             // …and on the side its view looks from.
             assert!(p.normal.dot(p.dir) > 0.0, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn panning_keeps_the_point_under_the_cursor() {
+        for projection in [Projection::Perspective, Projection::Orthographic] {
+            let mut cam = OrbitCamera { projection, ..Default::default() };
+            let (min, size) = (Vec2::ZERO, Vec2::new(1200.0, 800.0));
+            let spot = cam.target;
+            let before = project(&(cam.proj(size.x / size.y) * cam.view()), spot, min, size).unwrap();
+            cam.pan(100.0, -40.0, size.y);
+            let after = project(&(cam.proj(size.x / size.y) * cam.view()), spot, min, size).unwrap();
+            let moved = after - before;
+            assert!((moved - Vec2::new(100.0, -40.0)).length() < 0.01, "{projection:?}: moved {moved}");
         }
     }
 

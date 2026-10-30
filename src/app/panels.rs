@@ -866,8 +866,8 @@ impl OpenCad {
                 let t = self.editor.tool;
                 let pattern_on = |m: SpMode| self.sketch_pattern.as_ref().is_some_and(|d| d.mode == m);
                 let items = [
-                    ToolItem { name: "Fillet", icon: Icon::Fillet, tip: "Fillet: click a corner (or its two lines), type the radius", enabled: true, on: t == Tool::SketchFillet },
-                    ToolItem { name: "Chamfer", icon: Icon::Chamfer, tip: "Chamfer: click a corner (or its two lines), type the distance — or two, like 2, 5 (first = first line)", enabled: true, on: t == Tool::SketchChamfer },
+                    ToolItem { name: "Fillet", icon: Icon::SketchFillet, tip: "Fillet: click a corner (or its two lines), type the radius", enabled: true, on: t == Tool::SketchFillet },
+                    ToolItem { name: "Chamfer", icon: Icon::SketchChamfer, tip: "Chamfer: click a corner (or its two lines), type the distance — or two, like 2, 5 (first = first line)", enabled: true, on: t == Tool::SketchChamfer },
                     ToolItem { name: "Trim", icon: Icon::Trim, tip: "Trim: click the part of a line, circle, arc or spline to remove, back to the nearest crossings", enabled: true, on: t == Tool::Trim },
                     ToolItem { name: "Break", icon: Icon::Break, tip: "Break: click a line, circle, arc or spline to split it where things cross it (nothing is removed)", enabled: true, on: t == Tool::Break },
                     ToolItem { name: "Extend", icon: Icon::Extend, tip: "Extend: click a line near the end to run it on to the next geometry", enabled: true, on: t == Tool::Extend },

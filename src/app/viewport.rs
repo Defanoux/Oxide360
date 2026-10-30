@@ -21,11 +21,14 @@ impl OpenCad {
         }
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
         self.view_rect = rect;
+        // The part of the view below the floating toolbar: what sits at the
+        // view's top (view cube, browser, hints) goes there.
+        let over = egui::Rect::from_min_max(rect.min + egui::vec2(0.0, self.toolbar_cover), rect.max);
         let sketching = self.active.is_some();
 
         crate::mark("view cube: sits on top of the viewport");
         // --- view cube: sits on top of the viewport, so it gets clicks first ---
-        let cube_center = rect.right_top() + egui::vec2(-CUBE_MARGIN, CUBE_TOP);
+        let cube_center = over.right_top() + egui::vec2(-CUBE_MARGIN, CUBE_TOP);
         let cube_rect = egui::Rect::from_center_size(cube_center, egui::vec2(CUBE_MARGIN * 1.8, CUBE_MARGIN * 1.8));
         let cube_resp = ui.interact(cube_rect, ui.id().with("view_cube"), egui::Sense::click());
         let cells = cube_cells();
@@ -112,7 +115,7 @@ impl OpenCad {
             self.turn = None;
             self.camera.orbit(d.x, d.y);
         } else if response.dragged_by(egui::PointerButton::Secondary) || middle {
-            self.camera.pan(d.x, d.y);
+            self.camera.pan(d.x, d.y, size.y);
         }
         if response.hovered() {
             // Zoom toward whatever is under the cursor.
@@ -132,7 +135,7 @@ impl OpenCad {
                     if shift {
                         self.camera.orbit(scroll.x, scroll.y);
                     } else {
-                        self.camera.pan(scroll.x, scroll.y);
+                        self.camera.pan(scroll.x, scroll.y, size.y);
                     }
                 } else if scroll.y != 0.0 {
                     self.camera.zoom_at(scroll.y, aspect, at);
@@ -2905,7 +2908,7 @@ impl OpenCad {
             }
             if d.picking {
                 painter.text(
-                    rect.center_top() + egui::vec2(0.0, 40.0),
+                    over.center_top() + egui::vec2(0.0, 40.0),
                     egui::Align2::CENTER_TOP,
                     "Click a shaft or the inside of a hole to thread it   (Esc when done)",
                     egui::FontId::proportional(15.0),
@@ -2945,7 +2948,7 @@ impl OpenCad {
             }
             if d.picking {
                 painter.text(
-                    rect.center_top() + egui::vec2(0.0, 40.0),
+                    over.center_top() + egui::vec2(0.0, 40.0),
                     egui::Align2::CENTER_TOP,
                     "Click sketch points, circles or faces for the holes (click again to drop one)   (Esc when done)",
                     egui::FontId::proportional(15.0),
@@ -2980,7 +2983,7 @@ impl OpenCad {
             }
             if let Some(field) = d.picking {
                 painter.text(
-                    rect.center_top() + egui::vec2(0.0, 40.0),
+                    over.center_top() + egui::vec2(0.0, 40.0),
                     egui::Align2::CENTER_TOP,
                     match field {
                         shell_dialog::Field::Faces => "Click the faces to take away (the opening); click one again to keep it   (Esc when done)",
@@ -2993,14 +2996,14 @@ impl OpenCad {
         }
 
         if self.move_dialog.as_ref().is_some_and(|d| d.picking) {
-            painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, "Click the bodies to move; click one again to drop it   (Esc when done)", egui::FontId::proportional(15.0), Color32::from_gray(220));
+            painter.text(over.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, "Click the bodies to move; click one again to drop it   (Esc when done)", egui::FontId::proportional(15.0), Color32::from_gray(220));
         }
         if let Some(hint) = self.split_dialog.as_ref().and_then(|d| d.hint()) {
-            painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
+            painter.text(over.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
         }
         if let Some(d) = &self.scale_dialog {
             if let Some(hint) = d.hint() {
-                painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
+                painter.text(over.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
             }
             // The point it scales about (picked), and the one a click would take.
             if let Some(px) = match d.scale.at {
@@ -3030,7 +3033,7 @@ impl OpenCad {
                 combine_dialog::Field::Target => "Click the target body (the one kept)   (Esc when done)",
                 combine_dialog::Field::Tools => "Click the tool bodies; click one again to drop it   (Esc when done)",
             };
-            painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
+            painter.text(over.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
         }
 
         if let Some(d) = &self.appearance_dialog {
@@ -3039,7 +3042,7 @@ impl OpenCad {
                 Some(_) => format!("{}   (Esc when done)", d.hint(0).trim_end_matches('.')),
             };
 
-            painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
+            painter.text(over.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
         }
 
         crate::mark("draw: faces Offset Face moves");
@@ -3090,7 +3093,7 @@ impl OpenCad {
                 } else {
                     "Click the faces to move; click one again to drop it   (Esc when done)"
                 };
-                painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
+                painter.text(over.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
             }
         }
 
@@ -3108,7 +3111,7 @@ impl OpenCad {
         }
         if self.face_pick {
             painter.text(
-                rect.center_top() + egui::vec2(0.0, 40.0),
+                over.center_top() + egui::vec2(0.0, 40.0),
                 egui::Align2::CENTER_TOP,
                 if self.plane_pick { "Click an origin plane or a flat face to measure the offset from   (Esc to cancel)" } else { "Click a plane or a flat face to sketch on   (Esc to cancel)" },
                 egui::FontId::proportional(15.0),
@@ -3164,7 +3167,7 @@ impl OpenCad {
                 view.line(a, b, Stroke::new(4.0, COL_HOVER));
             }
             painter.text(
-                rect.center_top() + egui::vec2(0.0, 40.0),
+                over.center_top() + egui::vec2(0.0, 40.0),
                 egui::Align2::CENTER_TOP,
                 "Click an axis to turn the pattern about   (Esc to cancel)",
                 egui::FontId::proportional(15.0),
@@ -3179,7 +3182,7 @@ impl OpenCad {
                 view.line(p.as_vec3(), q.as_vec3(), Stroke::new(4.0, COL_HOVER));
             }
             painter.text(
-                rect.center_top() + egui::vec2(0.0, 40.0),
+                over.center_top() + egui::vec2(0.0, 40.0),
                 egui::Align2::CENTER_TOP,
                 "Click a sketch line, edge or axis to turn the plane about   (Esc to cancel)",
                 egui::FontId::proportional(15.0),
@@ -3200,7 +3203,7 @@ impl OpenCad {
                 }
             }
             painter.text(
-                rect.center_top() + egui::vec2(0.0, 40.0),
+                over.center_top() + egui::vec2(0.0, 40.0),
                 egui::Align2::CENTER_TOP,
                 "Click a straight edge to put an axis along it   (Esc to cancel)",
                 egui::FontId::proportional(15.0),
@@ -3881,7 +3884,7 @@ impl OpenCad {
         }
         if let Some(d) = self.joint_dialog.as_ref().filter(|d| d.picking.is_some()) {
             let hint = if d.picking == Some(joint_dialog::End::Moves) { "Joint: click a round edge, face or corner on the part that moves" } else { "Joint: click where it goes on another part" };
-            painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, format!("{hint}   (Esc to stop)"), egui::FontId::proportional(15.0), Color32::from_gray(220));
+            painter.text(over.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, format!("{hint}   (Esc to stop)"), egui::FontId::proportional(15.0), Color32::from_gray(220));
         }
 
         // --- draw: the Insert dialog's spot under the mouse, and its move arrows and squares ---
@@ -3920,7 +3923,7 @@ impl OpenCad {
             }
         }
         if self.import_dialog.as_ref().is_some_and(|d| d.picking) {
-            painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, "Click a face, or the ground, to put the inserted part's bottom there   (Esc to stop)", egui::FontId::proportional(15.0), Color32::from_gray(220));
+            painter.text(over.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, "Click a face, or the ground, to put the inserted part's bottom there   (Esc to stop)", egui::FontId::proportional(15.0), Color32::from_gray(220));
         }
 
         // --- draw: construction points, with their names ---
@@ -3936,7 +3939,7 @@ impl OpenCad {
                 if let Some(px) = self.corner_hover.and_then(|(_, p)| view.project(p.as_vec3())) {
                     painter.circle_filled(to_pos(px), 5.0, COL_HOVER);
                 }
-                painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, "Construction Point: hover a face and click its middle, a side's middle or a corner — or a round edge for its centre   (Esc to stop)", egui::FontId::proportional(15.0), Color32::from_gray(220));
+                painter.text(over.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, "Construction Point: hover a face and click its middle, a side's middle or a corner — or a round edge for its centre   (Esc to stop)", egui::FontId::proportional(15.0), Color32::from_gray(220));
             }
         }
 
@@ -3964,7 +3967,7 @@ impl OpenCad {
                     }
                 }
             }
-            painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, pick.hint() + "   (Esc to stop)", egui::FontId::proportional(15.0), Color32::from_gray(220));
+            painter.text(over.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, pick.hint() + "   (Esc to stop)", egui::FontId::proportional(15.0), Color32::from_gray(220));
         }
 
         crate::mark("draw: measure (over the sketches, so a");
@@ -4048,7 +4051,7 @@ impl OpenCad {
                 }
             }
             painter.text(
-                rect.center_top() + egui::vec2(0.0, 40.0),
+                over.center_top() + egui::vec2(0.0, 40.0),
                 egui::Align2::CENTER_TOP,
                 "Click one or two things   (Ctrl: lock to snap points, Shift: hide them, Esc: leave)",
                 egui::FontId::proportional(13.0),
@@ -4495,7 +4498,7 @@ impl OpenCad {
                     job.append(t, 0.0, egui::TextFormat::simple(egui::FontId::proportional(14.0), *c));
                 }
                 let galley = painter.layout_job(job);
-                let at = rect.center_top() + egui::vec2(-galley.size().x / 2.0, 8.0);
+                let at = over.center_top() + egui::vec2(-galley.size().x / 2.0, 8.0);
                 painter.rect_filled(egui::Rect::from_min_size(at, galley.size()).expand(6.0), 6.0, Color32::from_rgba_unmultiplied(28, 28, 28, 210));
                 painter.galley(at, galley, Color32::WHITE);
             }
@@ -4518,19 +4521,19 @@ impl OpenCad {
                 for (k, text) in lines.iter().enumerate() {
                     let y = if busy { 82.0 } else { 58.0 } + 22.0 * k as f32;
                     let galley = painter.layout_no_wrap(text.clone(), egui::FontId::proportional(14.0), COL_FIXED);
-                    let at = rect.center_top() + egui::vec2(-galley.size().x / 2.0, y);
+                    let at = over.center_top() + egui::vec2(-galley.size().x / 2.0, y);
                     painter.rect_filled(egui::Rect::from_min_size(at, galley.size()).expand(5.0), 5.0, Color32::from_rgba_unmultiplied(40, 20, 20, 225));
                     painter.galley(at, galley, COL_FIXED);
                 }
             }
             if let (Some(msg), Some(_)) = (&self.message, self.active) {
-                painter.text(rect.center_top() + egui::vec2(0.0, 58.0), egui::Align2::CENTER_TOP, msg.as_str(), egui::FontId::proportional(13.0), COL_FIXED);
+                painter.text(over.center_top() + egui::vec2(0.0, 58.0), egui::Align2::CENTER_TOP, msg.as_str(), egui::FontId::proportional(13.0), COL_FIXED);
             } else if let (Tool::ArcTangent, None, Some(_)) = (self.editor.tool, self.editor.start, self.active) {
-                painter.text(rect.center_top() + egui::vec2(0.0, 58.0), egui::Align2::CENTER_TOP, "Click the end of a line or arc to start from", egui::FontId::proportional(15.0), Color32::from_gray(220));
+                painter.text(over.center_top() + egui::vec2(0.0, 58.0), egui::Align2::CENTER_TOP, "Click the end of a line or arc to start from", egui::FontId::proportional(15.0), Color32::from_gray(220));
             } else if let (Tool::Constrain("Symmetric"), Some(i)) = (self.editor.tool, self.active) {
                 // What to pick next, in order.
                 let step = self.sketches[i].symmetric_step(&self.editor.selection);
-                painter.text(rect.center_top() + egui::vec2(0.0, 58.0), egui::Align2::CENTER_TOP, step, egui::FontId::proportional(15.0), Color32::from_gray(220));
+                painter.text(over.center_top() + egui::vec2(0.0, 58.0), egui::Align2::CENTER_TOP, step, egui::FontId::proportional(15.0), Color32::from_gray(220));
             }
         }
 
@@ -4561,7 +4564,7 @@ impl OpenCad {
         // The browser floats over the view's left side, from the top down to the
         // status line (drawn here, on top of the model, so clicks between its
         // rows still reach the view).
-        let strip = egui::Rect::from_min_max(rect.left_top() + egui::vec2(8.0, 8.0), egui::pos2(rect.left() + 300.0, rect.bottom() - 30.0));
+        let strip = egui::Rect::from_min_max(over.left_top() + egui::vec2(8.0, 8.0), egui::pos2(rect.left() + 300.0, rect.bottom() - 30.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(strip).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
             if self.browser_open {
                 self.browser(ui);
@@ -4583,8 +4586,8 @@ impl OpenCad {
         }
         // Looking straight at a face: arrows to roll the view 45° at a time (as in Fusion).
         if self.camera.face_on() {
-            // Round a point a little up and left of the cube's centre, clear of it.
-            let (around, radius) = (cube_center + egui::vec2(-8.0, -10.0), CUBE_SCALE * 1.85);
+            // Round the cube's centre, the gap between them on its top-right corner's diagonal.
+            let (around, radius) = (cube_center, CUBE_SCALE * 1.85);
             for (clockwise, from, to, tip) in [(false, -48f32, -88f32, "Rotate view 45° counter-clockwise"), (true, -42f32, -2f32, "Rotate view 45° clockwise")] {
                 let (from, to) = (from.to_radians(), to.to_radians());
                 let mid = (from + to) / 2.0;

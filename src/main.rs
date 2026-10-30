@@ -721,6 +721,7 @@ struct OpenCad {
     overhang_limit: f64,
     theme: theme::Theme,                    // the colour theme (Settings)
     toolbar_folded: bool,                   // the toolbar is folded away (the chevron by SOLID / SKETCH)
+    toolbar_cover: f32,                     // how far down over the view the toolbar reaches (last frame)
     undo: Vec<Sketch>,
     dof: Option<usize>,
     message: Option<String>,
@@ -986,6 +987,7 @@ impl Default for OpenCad {
             overhang_limit: 45.0,
             theme: theme::Theme::default(),
             toolbar_folded: false,
+            toolbar_cover: 0.0,
             undo: Vec::new(),
             dof: None,
             message: None,
@@ -1274,6 +1276,67 @@ impl Drop for SlowFrame {
 }
 
 impl OpenCad {
+    /// The toolbar: a rounded card floating over the top of the view (the
+    /// view shows round it), side-scrollable so a narrow window doesn't cut
+    /// it off. Folds away with the chevron by SOLID / SKETCH. Sets
+    /// `toolbar_cover`, how far down the view it reaches (for what sits at the
+    /// view's top).
+    fn toolbar_overlay(&mut self, ctx: &egui::Context) {
+        if self.toolbar_folded || self.view_rect.width() <= 0.0 {
+            self.toolbar_cover = 0.0;
+            return;
+        }
+        let pal = theme::now();
+        let card = egui::Frame::new()
+            .fill(pal.card)
+            .corner_radius(8.0)
+            .stroke(egui::Stroke::new(1.0, pal.raised))
+            .inner_margin(egui::Margin { left: 6, right: 6, top: 4, bottom: 2 });
+        let (gap, side) = (6.0, 8.0);
+        let width = self.view_rect.width() - 2.0 * side - 14.0; // (less the card's margins and border)
+        let shown = egui::Area::new(egui::Id::new("toolbar"))
+            .order(egui::Order::Middle)
+            .fixed_pos(self.view_rect.left_top() + egui::vec2(side, gap))
+            .show(ctx, |ui| {
+                card.show(ui, |ui| {
+                    ui.set_width(width);
+                    if self.active.is_some() {
+                        // Only as wide as its label.
+                        let label_w = ui.painter().layout_no_wrap("FINISH SKETCH".into(), egui::FontId::proportional(11.0), Color32::WHITE).size().x;
+                        egui::Panel::right("finish_sketch").resizable(false).exact_size(label_w + 20.0).show(ui, |ui| self.finish_sketch_group(ui));
+                    }
+                    // Carry-on scrolling: a flick keeps gliding a little (see `inertia`).
+                    let dt = ui.input(|i| i.stable_dt);
+                    let glide = self.toolbar_inertia.step(self.toolbar_user_delta, dt);
+                    let offset_in = (self.toolbar_x + glide.unwrap_or(0.0)).max(0.0);
+                    // A solid scrollbar in its own strip under the group names (a
+                    // floating one sat over them and caught clicks meant for the ▾s).
+                    ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
+                    let out = egui::ScrollArea::horizontal()
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                        .auto_shrink([false, true])
+                        .horizontal_scroll_offset(offset_in)
+                        .show(ui, |ui| {
+                            // The tools' icons in their workspace's colour.
+                            let pal = theme::now();
+                            let c = if self.drawing_open { pal.tools[2] } else if self.active.is_some() { pal.tools[1] } else { pal.tools[0] };
+                            icons::with_tint(Some(c), || self.toolbar(ui))
+                        });
+                    let offset_out = out.state.offset.x;
+                    self.toolbar_user_delta = offset_out - offset_in;
+                    if glide.is_some() && self.toolbar_user_delta != 0.0 && (offset_out <= 0.0 || offset_out >= out.content_size.x - out.inner_rect.width() - 0.5) {
+                        self.toolbar_inertia.stop(); // hit an end of the bar
+                        self.toolbar_user_delta = 0.0;
+                    }
+                    self.toolbar_x = offset_out;
+                    if self.toolbar_inertia.is_gliding() || self.toolbar_user_delta != 0.0 {
+                        ui.ctx().request_repaint();
+                    }
+                });
+            });
+        self.toolbar_cover = shown.response.rect.height() + 2.0 * gap;
+    }
+
     /// One frame of this design (the tab that's showing).
     fn tab_ui(&mut self, ui: &mut egui::Ui) {
         // OPENCAD_TIMING=1: report frames slow enough to feel (and the kernel prints its steps).
@@ -1356,47 +1419,6 @@ impl OpenCad {
         egui::Panel::top("titlebar").show(ui, |ui| self.title_bar(ui));
         self.settings_window(&ctx);
         self.help_window(&ctx);
-        // Side-scrollable, so a narrow window doesn't cut the ribbon off. A
-        // rounded card floating on the title bar's colour; it folds away.
-        let pal = theme::now();
-        let card = egui::Frame::new()
-            .fill(pal.card)
-            .corner_radius(8.0)
-            .stroke(egui::Stroke::new(1.0, pal.raised))
-            .inner_margin(egui::Margin { left: 6, right: 6, top: 4, bottom: 2 })
-            .outer_margin(egui::Margin { left: 8, right: 8, top: 0, bottom: 6 });
-        if !self.toolbar_folded {
-            egui::Panel::top("toolbar").frame(card).show_separator_line(false).show(ui, |ui| {
-                if self.active.is_some() {
-                    // Only as wide as its label.
-                    let label_w = ui.painter().layout_no_wrap("FINISH SKETCH".into(), egui::FontId::proportional(11.0), Color32::WHITE).size().x;
-                    egui::Panel::right("finish_sketch").resizable(false).exact_size(label_w + 20.0).show(ui, |ui| self.finish_sketch_group(ui));
-                }
-                // Carry-on scrolling: a flick keeps gliding a little (see `inertia`).
-                let dt = ui.input(|i| i.stable_dt);
-                let glide = self.toolbar_inertia.step(self.toolbar_user_delta, dt);
-                let offset_in = (self.toolbar_x + glide.unwrap_or(0.0)).max(0.0);
-                // A solid scrollbar in its own strip under the group names (a
-                // floating one sat over them and caught clicks meant for the ▾s).
-                ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
-                let out = egui::ScrollArea::horizontal()
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-                    .auto_shrink([false, true])
-                    .horizontal_scroll_offset(offset_in)
-                    .show(ui, |ui| self.toolbar(ui));
-                let offset_out = out.state.offset.x;
-                self.toolbar_user_delta = offset_out - offset_in;
-                if glide.is_some() && self.toolbar_user_delta != 0.0 && (offset_out <= 0.0 || offset_out >= out.content_size.x - out.inner_rect.width() - 0.5) {
-                    self.toolbar_inertia.stop(); // hit an end of the bar
-                    self.toolbar_user_delta = 0.0;
-                }
-                self.toolbar_x = offset_out;
-                if self.toolbar_inertia.is_gliding() || self.toolbar_user_delta != 0.0 {
-                    ui.ctx().request_repaint();
-                }
-            });
-        }
-
         self.properties_window(&ctx);
         // Tool dialogs float over the view's right side, like Fusion's.
         // Bottom right, above the timeline, so they cover no controls.
@@ -1548,7 +1570,7 @@ impl OpenCad {
         // (Out of the way while a sketch dialog is open there.)
         let sketch_dialog = self.insert_drawing.is_some() || self.text_dialog.is_some() || self.sketch_pattern.is_some();
         if self.active.is_some() && !sketch_dialog && self.view_rect.width() > 0.0 {
-            let at = self.view_rect.right_top() + egui::vec2(-12.0, CUBE_TOP + CUBE_MARGIN);
+            let at = self.view_rect.right_top() + egui::vec2(-12.0, self.toolbar_cover + CUBE_TOP + CUBE_MARGIN);
             let construction = self.editor.construction;
             let mut action = sketch_palette::Action::None;
             egui::Window::new("SKETCH PALETTE").id(egui::Id::new("sketch_palette")).default_width(60.0).pivot(egui::Align2::RIGHT_TOP).fixed_pos(at).resizable(false).collapsible(true).show(&ctx, |ui| {
@@ -1571,6 +1593,7 @@ impl OpenCad {
         self.timeline_height = egui::Panel::bottom("timeline").show(ui, |ui| self.timeline_bar(ui)).response.rect.height();
         mark("view");
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui));
+        self.toolbar_overlay(&ctx);
         self.marking_menu(&ctx);
         self.shortcut_box(&ctx);
         mark("after the view");

@@ -514,6 +514,38 @@ impl View<'_> {
         }
         // One mesh (no seams between the pieces), then its outline, smooth.
         self.painter.add(egui::Shape::mesh(mesh));
+        // Where the clickable regions meet: lines across each face at ±0.5,
+        // carried on over the rounded edges (as the cube's own grid).
+        let grid = Stroke::new(0.8, Color32::from_rgb(140, 148, 164));
+        let r = crate::camera::CUBE_ROUND;
+        let flat = 1.0 - r;
+        let facing = |n: glam::Vec3| n.dot(toward) > 0.02;
+        for &(n, a, b, _) in &CUBE_FACES {
+            if !facing(n) {
+                continue;
+            }
+            for k in [-0.5f32, 0.5] {
+                self.seg(to_screen(n + a * k - b * flat), to_screen(n + a * k + b * flat), grid);
+                self.seg(to_screen(n + b * k - a * flat), to_screen(n + b * k + a * flat), grid);
+            }
+        }
+        let dirs = [glam::Vec3::X, glam::Vec3::Y, glam::Vec3::Z];
+        for e in 0..3 {
+            let (u, v) = (dirs[(e + 1) % 3], dirs[(e + 2) % 3]);
+            for (su, sv) in [(-1.0f32, -1.0f32), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)] {
+                for l in [-0.5f32, 0.5] {
+                    let steps = 8;
+                    for k in 0..steps {
+                        let ang = |k: usize| k as f32 / steps as f32 * std::f32::consts::FRAC_PI_2;
+                        let nrm = |k: usize| u * su * ang(k).cos() + v * sv * ang(k).sin();
+                        let at = |k: usize| (u * su + v * sv) * flat + nrm(k) * r + dirs[e] * l;
+                        if facing((nrm(k) + nrm(k + 1)).normalize()) {
+                            self.seg(to_screen(at(k)), to_screen(at(k + 1)), grid);
+                        }
+                    }
+                }
+            }
+        }
         let hull = convex_hull(&outline);
         if hull.len() > 2 {
             let mut ring: Vec<egui::Pos2> = hull.iter().map(|p| to_pos(*p)).collect();

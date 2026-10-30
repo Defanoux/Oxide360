@@ -45,6 +45,9 @@ pub enum Icon {
     Appearance,
     Split,
     Scale,
+    /// The sketch tools' Fillet and Chamfer: a flat corner (the solid ones are 3-D blocks).
+    SketchFillet,
+    SketchChamfer,
     PrintCheck,
     Component,
     Interference,
@@ -116,12 +119,37 @@ const BLUE_DARK: Color32 = Color32::from_rgb(45, 100, 170);
 const ORANGE: Color32 = Color32::from_rgb(240, 160, 50);
 const GREEN: Color32 = Color32::from_rgb(90, 200, 110);
 
+thread_local! {
+    /// The colour icons take while the toolbar draws (its workspace's), if any.
+    static TOOL_TINT: std::cell::Cell<Option<Color32>> = const { std::cell::Cell::new(None) };
+}
+
+/// Draw with icons coloured `c` (the toolbar's workspace colour), then as before.
+pub fn with_tint<R>(c: Option<Color32>, f: impl FnOnce() -> R) -> R {
+    let before = TOOL_TINT.with(|t| t.replace(c));
+    let out = f();
+    TOOL_TINT.with(|t| t.set(before));
+    out
+}
+
 /// Draw `icon` inside `rect`. `ink` is the line colour (grey when disabled).
 pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
     let pal = crate::theme::now();
     let ink = if enabled { pal.ink } else { pal.ink_off };
     let tint = |c: Color32| if enabled { c } else { pal.ink_off };
-    let (blue, blue_dark, orange, green) = (tint(BLUE), tint(BLUE_DARK), tint(ORANGE), tint(GREEN));
+    // In the toolbar every coloured part takes the workspace's colour (a lighter
+    // and a darker shade of it for the parts that were blue).
+    let (blue, blue_dark, orange, green) = match TOOL_TINT.with(|t| t.get()) {
+        Some(c) => {
+            let mix = |c: Color32, to: u8, k: f32| Color32::from_rgb(
+                (c.r() as f32 + (to as f32 - c.r() as f32) * k) as u8,
+                (c.g() as f32 + (to as f32 - c.g() as f32) * k) as u8,
+                (c.b() as f32 + (to as f32 - c.b() as f32) * k) as u8,
+            );
+            (tint(mix(c, 255, 0.15)), tint(mix(c, 0, 0.3)), tint(c), tint(c))
+        }
+        None => (tint(BLUE), tint(BLUE_DARK), tint(ORANGE), tint(GREEN)),
+    };
     let w = rect.width().min(rect.height());
     let o = rect.center() - egui::vec2(w, w) * 0.5;
     // Points in a 0..1 box.
@@ -211,6 +239,23 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             arc(0.5, 0.2, 0.3, 0.2, 2.8, s);
             arrow_head((0.2, 0.26), (0.3, 0.38), orange);
         }
+        Icon::SketchFillet => {
+            // A flat shape whose top-right corner is rounded.
+            let mut pts = vec![(0.15, 0.85), (0.15, 0.15), (0.5, 0.15)];
+            for i in 1..=8 {
+                let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::FRAC_PI_2 * i as f32 / 8.0;
+                pts.push((0.5 + 0.35 * a.cos(), 0.5 + 0.35 * a.sin()));
+            }
+            pts.push((0.85, 0.85));
+            poly(&pts, blue);
+            arc(0.5, 0.5, 0.35, -std::f32::consts::FRAC_PI_2, 0.0, Stroke::new(thin.width * 1.4, orange));
+            line((0.15, 0.85), (0.85, 0.85), thin);
+        }
+        Icon::SketchChamfer => {
+            poly(&[(0.15, 0.85), (0.15, 0.15), (0.5, 0.15), (0.85, 0.5), (0.85, 0.85)], blue);
+            line((0.5, 0.15), (0.85, 0.5), Stroke::new(thin.width * 1.4, orange));
+            line((0.15, 0.85), (0.85, 0.85), thin);
+        }
         Icon::Fillet | Icon::Chamfer => {
             // A block seen from above (three faces), its top-right edge rounded
             // (Fillet, the round shaded orange) or bevelled flat (Chamfer).
@@ -234,7 +279,12 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
                     lerp(a, b, t)
                 }
             };
-            let top = tint(Color32::from_rgb(140, 190, 245));
+            // The top face a lighter shade of the block's colour.
+            let top = Color32::from_rgb(
+                (blue.r() as u16 + (255 - blue.r() as u16) * 2 / 5) as u8,
+                (blue.g() as u16 + (255 - blue.g() as u16) * 2 / 5) as u8,
+                (blue.b() as u16 + (255 - blue.b() as u16) * 2 / 5) as u8,
+            );
             poly(&[t0, q, p, t3], top);
             poly(&[r, s2, b1, b2], blue_dark);
             let mut left = vec![t3, p];
@@ -243,9 +293,13 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             poly(&left, blue);
             // The round itself: light orange where it faces up, darker as it turns down.
             let shade = |t: f32| {
-                let (a, b) = ([252.0, 200.0, 110.0], [205.0, 120.0, 35.0]);
+                // From the orange lightened (facing up) to it darkened (facing out).
                 let t = if fillet { t } else { 0.35 };
-                tint(Color32::from_rgb((a[0] + (b[0] - a[0]) * t) as u8, (a[1] + (b[1] - a[1]) * t) as u8, (a[2] + (b[2] - a[2]) * t) as u8))
+                let k = |c: u8| {
+                    let (light, dark) = (c as f32 + (255.0 - c as f32) * 0.35, c as f32 * 0.8);
+                    (light + (dark - light) * t) as u8
+                };
+                Color32::from_rgb(k(orange.r()), k(orange.g()), k(orange.b()))
             };
             // One mesh, colour blended along the round (no seams between strips).
             let steps = if fillet { n } else { 1 };
@@ -1113,7 +1167,7 @@ mod shot_tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [720, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil, Icon::Import, Icon::Interference, Icon::Component, Icon::Joint, Icon::Appearance, Icon::Split, Icon::Scale, Icon::PrintCheck] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil, Icon::Import, Icon::Interference, Icon::Component, Icon::Joint, Icon::Appearance, Icon::Split, Icon::Scale, Icon::PrintCheck, Icon::SketchFillet, Icon::SketchChamfer] {
                     button(ui, icon, "", true, false);
                 }
             });
