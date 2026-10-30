@@ -962,7 +962,12 @@ pub fn option(ui: &mut egui::Ui, icon: Icon, label: &str, tooltip: &str, enabled
 }
 
 pub fn button(ui: &mut egui::Ui, icon: Icon, tooltip: &str, enabled: bool, selected: bool) -> egui::Response {
-    let size = egui::vec2(34.0, 34.0);
+    button_sized(ui, icon, tooltip, enabled, selected, 34.0)
+}
+
+/// `button` at another size (the Sketch Palette's Construction is a row tall).
+pub fn button_sized(ui: &mut egui::Ui, icon: Icon, tooltip: &str, enabled: bool, selected: bool, side: f32) -> egui::Response {
+    let size = egui::vec2(side, side);
     // (Drag too: toolbar groups let tools be dragged into another order.)
     let sense = if enabled { egui::Sense::click_and_drag() } else { egui::Sense::hover() };
     let (rect, response) = ui.allocate_exact_size(size, sense);
@@ -976,7 +981,7 @@ pub fn button(ui: &mut egui::Ui, icon: Icon, tooltip: &str, enabled: bool, selec
     if let Some(c) = bg {
         ui.painter().rect_filled(rect, 4.0, c);
     }
-    paint(ui.painter(), rect.shrink(5.0), icon, enabled);
+    paint(ui.painter(), rect.shrink(side * 5.0 / 34.0), icon, enabled);
     response.on_hover_text(tooltip)
 }
 

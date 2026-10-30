@@ -2569,7 +2569,8 @@ impl OpenCad {
         let cuts = match self.active.filter(|_| self.sketch_options.slice && !previewing) {
             Some(i) => {
                 let p = self.plane_of(i);
-                kernel::section_plane(&model.bodies, p.origin.as_dvec3(), p.normal().as_dvec3()).ok()
+                let n = p.normal().as_dvec3() * if self.sketch_options.slice_flip { -1.0 } else { 1.0 };
+                kernel::section_plane(&model.bodies, p.origin.as_dvec3(), n).ok()
             }
             None => cuts,
         };

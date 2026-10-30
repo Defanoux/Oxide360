@@ -1476,7 +1476,7 @@ impl OpenCad {
             let at = self.view_rect.right_top() + egui::vec2(-12.0, CUBE_TOP + CUBE_MARGIN);
             let construction = self.editor.construction;
             let mut action = sketch_palette::Action::None;
-            egui::Window::new("SKETCH PALETTE").id(egui::Id::new("sketch_palette")).pivot(egui::Align2::RIGHT_TOP).fixed_pos(at).resizable(false).collapsible(true).show(&ctx, |ui| {
+            egui::Window::new("SKETCH PALETTE").id(egui::Id::new("sketch_palette")).default_width(60.0).pivot(egui::Align2::RIGHT_TOP).fixed_pos(at).resizable(false).collapsible(true).show(&ctx, |ui| {
                 action = sketch_palette::panel(ui, &mut self.sketch_options, &mut self.grid_snap, construction);
             });
             match action {
