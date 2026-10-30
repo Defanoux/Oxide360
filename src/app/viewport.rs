@@ -4556,7 +4556,7 @@ impl OpenCad {
             self.toast = None;
         }
 
-        view.view_cube(&self.camera, &cells, to_vec(cube_center), CUBE_SCALE, cube_hover, self.cube_axes);
+        view.view_cube(&self.camera, to_vec(cube_center), CUBE_SCALE, cube_hover, self.cube_axes);
 
         // The browser floats over the view's left side, from the top down to the
         // status line (drawn here, on top of the model, so clicks between its

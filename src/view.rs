@@ -5,7 +5,7 @@
 //! the same list so hidden edges stay hidden. Exact for convex shapes; a GPU
 //! depth buffer (wgpu) replaces this when bodies get complex.
 
-use crate::camera::{CUBE_FACES, CubeCell, OrbitCamera, clip_segment, cube_label_strokes, pixel_from_clip, project};
+use crate::camera::{CUBE_FACES, OrbitCamera, clip_segment, cube_label_strokes, pixel_from_clip, project};
 use crate::model::{Mesh, mesh_edges};
 use crate::profile::Region;
 use crate::sketch::{GridSpec, Plane, grid_lines};
@@ -445,12 +445,11 @@ impl View<'_> {
     }
 
     /// The view cube: `center`/`scale` in pixels (scale = half the cube's size).
-    /// `hover`: the view direction under the mouse. Every cell with that
-    /// direction lights up — all three patches of a corner, both of an edge.
+    /// `hover`: the view direction under the mouse. Every piece with that
+    /// direction lights up — a corner's whole round, an edge's whole strip.
     pub fn view_cube(
         &self,
         cam: &OrbitCamera,
-        cells: &[CubeCell],
         center: Vec2,
         scale: f32,
         hover: Option<glam::Vec3>,
@@ -458,7 +457,6 @@ impl View<'_> {
     ) {
         let to_screen = |p: glam::Vec3| center + cam.cube_point(p).0 * scale;
         let toward = -cam.basis().0;
-        let border = Stroke::new(1.0, Color32::from_rgb(70, 78, 92));
 
         // Axis triad from the cube's origin corner (-1,-1,-1), FRONT-LEFT-BOTTOM:
         // the one corner where +X, +Y and +Z all run along cube edges. From the
@@ -488,26 +486,43 @@ impl View<'_> {
             }
         }
 
-        for c in cells {
-            if !cam.cube_face_visible(c.face) {
+        // A rounded box: each piece shaded by how it faces the light (a little
+        // above the viewer), the pieces of the view under the mouse lit blue.
+        // It's convex, so the pieces facing away are all that's hidden.
+        static PATCHES: std::sync::OnceLock<Vec<crate::camera::CubePatch>> = std::sync::OnceLock::new();
+        let light = (toward + cam.basis().2 * 0.45).normalize();
+        let mut mesh = egui::Mesh::default();
+        let mut outline: Vec<Vec2> = Vec::new();
+        for p in PATCHES.get_or_init(crate::camera::cube_patches) {
+            if p.normal.dot(toward) <= 0.0 {
                 continue;
             }
-            let lit = CUBE_FACES[c.face].0.dot(toward).max(0.0);
-            let fill = if hover.is_some_and(|h| h.dot(c.dir) > 0.9999) {
-                Color32::from_rgb(70, 140, 235)
+            let lit = p.normal.dot(light).max(0.0);
+            let fill = if hover.is_some_and(|h| h.dot(p.dir) > 0.9999) {
+                shade(Color32::from_rgb(80, 150, 240), 0.75 + 0.25 * lit)
             } else {
-                shade(Color32::from_rgb(190, 198, 212), 0.55 + 0.45 * lit)
+                shade(Color32::from_rgb(196, 204, 218), 0.5 + 0.5 * lit)
             };
-            let pts = c.quad.iter().map(|&p| to_pos(to_screen(p))).collect();
-            self.painter.add(egui::Shape::convex_polygon(pts, fill, Stroke::new(0.5, Color32::from_rgb(150, 158, 172))));
+            let base = mesh.vertices.len() as u32;
+            for &q in &p.poly {
+                mesh.colored_vertex(to_pos(to_screen(q)), fill);
+                outline.push(to_screen(q));
+            }
+            for k in 1..p.poly.len() as u32 - 1 {
+                mesh.add_triangle(base, base + k, base + k + 1);
+            }
         }
-        for (face, &(n, a, b, _)) in CUBE_FACES.iter().enumerate() {
+        // One mesh (no seams between the pieces), then its outline, smooth.
+        self.painter.add(egui::Shape::mesh(mesh));
+        let hull = convex_hull(&outline);
+        if hull.len() > 2 {
+            let mut ring: Vec<egui::Pos2> = hull.iter().map(|p| to_pos(*p)).collect();
+            ring.push(ring[0]);
+            self.painter.add(egui::Shape::line(ring, Stroke::new(1.2, Color32::from_rgb(110, 118, 132))));
+        }
+        for (face, _) in CUBE_FACES.iter().enumerate() {
             if !cam.cube_face_visible(face) {
                 continue;
-            }
-            let corners = [n - a - b, n + a - b, n + a + b, n - a + b];
-            for k in 0..4 {
-                self.seg(to_screen(corners[k]), to_screen(corners[(k + 1) % 4]), border);
             }
             // The label lies on the face, so it tilts and foreshortens with it.
             let ink = Stroke::new((scale * 0.045).max(1.0), Color32::from_rgb(45, 52, 64));
@@ -649,6 +664,36 @@ pub fn progress_card(ui: &mut egui::Ui, label: &str, frac: f32) {
     });
 }
 
+
+/// The convex hull of points (screen), in order round it.
+fn convex_hull(pts: &[Vec2]) -> Vec<Vec2> {
+    let mut p: Vec<Vec2> = pts.to_vec();
+    p.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+    p.dedup_by(|a, b| a.distance(*b) < 1e-3);
+    if p.len() < 3 {
+        return p;
+    }
+    let cross = |o: Vec2, a: Vec2, b: Vec2| (a - o).perp_dot(b - o);
+    let mut lower: Vec<Vec2> = Vec::new();
+    for &q in &p {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], q) <= 0.0 {
+            lower.pop();
+        }
+        lower.push(q);
+    }
+    let mut upper: Vec<Vec2> = Vec::new();
+    for &q in p.iter().rev() {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], q) <= 0.0 {
+            upper.pop();
+        }
+        upper.push(q);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
 #[cfg(test)]
 mod progress_tests {
     #[test]
@@ -671,7 +716,7 @@ mod roll_shots {
                 let painter = ui.painter().clone();
                 let view = super::View { painter: &painter, vp: glam::Mat4::IDENTITY, min: glam::Vec2::ZERO, size: glam::Vec2::new(240.0, 220.0), trace: None };
                 let c = egui::pos2(120.0, 130.0);
-                view.view_cube(&cam, &crate::camera::cube_cells(), glam::Vec2::new(c.x, c.y), 34.0, None, true);
+                view.view_cube(&cam, glam::Vec2::new(c.x, c.y), 34.0, None, true);
                 let icon = egui::Color32::from_gray(215);
                 // (As the viewport places them.)
                 for (from, to) in [(-48f32, -88f32), (-42f32, -2f32)] {

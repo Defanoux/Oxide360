@@ -258,6 +258,94 @@ pub fn cube_cells() -> Vec<CubeCell> {
     out
 }
 
+/// One piece of the view cube as drawn: a rounded box (flat faces, quarter-
+/// round edges, rounded corners). `normal` faces out (for shading and for
+/// hiding the back), `dir` is the view it belongs to — the same 26 as the
+/// clickable cells, so hovering an edge lights its whole rounded strip.
+#[derive(Clone, Debug)]
+pub struct CubePatch {
+    pub poly: Vec<Vec3>,
+    pub normal: Vec3,
+    pub dir: Vec3,
+}
+
+/// How round the view cube's edges are (of its half-size, 1).
+pub const CUBE_ROUND: f32 = 0.2;
+
+/// The rounded view cube's pieces.
+pub fn cube_patches() -> Vec<CubePatch> {
+    let r = CUBE_ROUND;
+    let flat = 1.0 - r;
+    let quant = |p: Vec3| {
+        let q = |v: f32| if v > 0.5 { 1.0 } else if v < -0.5 { -1.0 } else { 0.0 };
+        Vec3::new(q(p.x), q(p.y), q(p.z)).normalize()
+    };
+    let mut out = Vec::new();
+    // Flat faces, in the cells' 3 × 3 bands (cut at ±0.5).
+    let bands = [(-flat, -0.5), (-0.5, 0.5), (0.5, flat)];
+    for &(n, a, b, _) in &CUBE_FACES {
+        for &(s0, s1) in &bands {
+            for &(t0, t1) in &bands {
+                let p = |s: f32, t: f32| n + a * s + b * t;
+                let poly = vec![p(s0, t0), p(s1, t0), p(s1, t1), p(s0, t1)];
+                let dir = quant(p((s0 + s1) / 2.0, (t0 + t1) / 2.0) * 1.0);
+                // (The middle of a border band sits past ±0.5: an edge or corner view.)
+                let dir = if (s0 + s1).abs() < 1e-6 && (t0 + t1).abs() < 1e-6 { n } else { dir };
+                out.push(CubePatch { poly, normal: n, dir });
+            }
+        }
+    }
+    // Edges: a quarter round between two faces, in three lengths (corner, middle, corner).
+    let axes = [Vec3::X, Vec3::Y, Vec3::Z];
+    let steps = 6;
+    for e in 0..3 {
+        let (u, v) = (axes[(e + 1) % 3], axes[(e + 2) % 3]);
+        for su in [-1.0f32, 1.0] {
+            for sv in [-1.0f32, 1.0] {
+                for &(l0, l1) in &[(-flat, -0.5), (-0.5, 0.5), (0.5, flat)] {
+                    let dir = (u * su + v * sv + axes[e] * if l0 < -0.6 { -1.0 } else if l1 > 0.6 { 1.0 } else { 0.0 }).normalize();
+                    for k in 0..steps {
+                        let ang = |k: usize| k as f32 / steps as f32 * std::f32::consts::FRAC_PI_2;
+                        let nrm = |k: usize| u * su * ang(k).cos() + v * sv * ang(k).sin();
+                        let at = |k: usize, l: f32| (u * su + v * sv) * flat + nrm(k) * r + axes[e] * l;
+                        let poly = vec![at(k, l0), at(k, l1), at(k + 1, l1), at(k + 1, l0)];
+                        out.push(CubePatch { poly, normal: ((nrm(k) + nrm(k + 1)) * 0.5).normalize(), dir });
+                    }
+                }
+            }
+        }
+    }
+    // Corners: an eighth of a sphere, from its triangle split finely.
+    let n = 5;
+    for sx in [-1.0f32, 1.0] {
+        for sy in [-1.0f32, 1.0] {
+            for sz in [-1.0f32, 1.0] {
+                let c = Vec3::new(sx, sy, sz) * flat;
+                let dir = Vec3::new(sx, sy, sz).normalize();
+                let (x, y, z) = (Vec3::X * sx, Vec3::Y * sy, Vec3::Z * sz);
+                // Barycentric grid point (i of n toward x, j toward y), pushed onto the sphere.
+                let g = |i: usize, j: usize| {
+                    let (a, b) = (i as f32 / n as f32, j as f32 / n as f32);
+                    (x * a + y * b + z * (1.0 - a - b)).normalize()
+                };
+                for i in 0..n {
+                    for j in 0..n - i {
+                        let mut tris = vec![[g(i, j), g(i + 1, j), g(i, j + 1)]];
+                        if i + j + 1 < n {
+                            tris.push([g(i + 1, j), g(i + 1, j + 1), g(i, j + 1)]);
+                        }
+                        for t in tris {
+                            let normal = (t[0] + t[1] + t[2]).normalize();
+                            out.push(CubePatch { poly: t.iter().map(|u| c + *u * r).collect(), normal, dir });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// A tiny single-stroke font for the cube's face labels: each letter is a few
 /// polylines in a 0.6 × 1 box (x right, y up). Being plain geometry, the
 /// letters can lie *on* the cube faces and turn and foreshorten with them.
@@ -608,6 +696,29 @@ mod tests {
         let b = project(&vp, Vec3::new(20.0, 10.0, 80.0), MIN, SIZE).unwrap();
         assert!((a - b).length() < 1e-3, "{a} vs {b}");
         assert!(a.x > SIZE.x * 0.5 && a.y < SIZE.y * 0.5, "+X is right, +Y is up");
+    }
+
+    #[test]
+    fn the_rounded_cube_covers_the_same_26_views() {
+        let key = |d: Vec3| {
+            let d = d * 1000.0;
+            (d.x.round() as i32, d.y.round() as i32, d.z.round() as i32)
+        };
+        let mut cells: Vec<_> = cube_cells().iter().map(|c| key(c.dir)).collect();
+        let mut patches: Vec<_> = cube_patches().iter().map(|p| key(p.dir)).collect();
+        for v in [&mut cells, &mut patches] {
+            v.sort();
+            v.dedup();
+        }
+        assert_eq!(cells, patches);
+        for p in cube_patches() {
+            // Every piece is on the rounded box (within its half-size), facing out.
+            assert!(p.poly.iter().all(|q| q.abs().max_element() <= 1.0 + 1e-5));
+            let mid = p.poly.iter().copied().sum::<Vec3>() / p.poly.len() as f32;
+            assert!(p.normal.dot(mid) > 0.0);
+            // …and on the side its view looks from.
+            assert!(p.normal.dot(p.dir) > 0.0, "{p:?}");
+        }
     }
 
     #[test]
