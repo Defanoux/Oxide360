@@ -1162,6 +1162,72 @@ impl OpenCad {
         self.shift_maker_keys(Feature::Split(k));
     }
 
+    pub(crate) fn open_scale(&mut self, editing: Option<usize>) {
+        let selected: Vec<BodyId> = self.selected_bodies.clone();
+        self.finish_sketch();
+        self.cancel_all_dialogs();
+        self.message = None;
+        self.scale_dialog = Some(match editing.and_then(|k| self.scales.get(k).map(|s| (k, s))) {
+            Some((k, s)) => ScaleDialog::from_feature(k, s),
+            None => ScaleDialog::new(format!("Scale{}", self.scales.len() + 1), &selected),
+        });
+    }
+
+    pub(crate) fn commit_scale(&mut self) {
+        let Some(d) = self.scale_dialog.as_ref() else { return };
+        if !d.ready() {
+            self.message = Some("Pick the bodies to scale (factors more than 0)".into());
+            return;
+        }
+        if let Some(e) = self.dialog_error.clone() {
+            self.message = Some(format!("Can't scale: {e}"));
+            return;
+        }
+        let sc = d.scale.clone();
+        match d.editing {
+            Some(k) => self.scales[k] = sc,
+            None => {
+                self.scales.push(sc);
+                self.timeline_insert(Feature::Scale(self.scales.len() - 1));
+            }
+        }
+        self.cancel_scale();
+    }
+
+    pub(crate) fn cancel_scale(&mut self) {
+        self.scale_dialog = None;
+        self.scale_hover = None;
+    }
+
+    pub(crate) fn delete_scale(&mut self, k: usize) {
+        if k >= self.scales.len() {
+            return;
+        }
+        self.cancel_scale();
+        self.scales.remove(k);
+        self.timeline_remove(Feature::Scale(k));
+        for f in &mut self.timeline {
+            if let Feature::Scale(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn scale_panel(&mut self, ui: &mut egui::Ui) {
+        let error = self.dialog_error.clone();
+        let Some(d) = self.scale_dialog.as_ref() else { return };
+        let ids: Vec<BodyId> = self.body_ids.iter().copied().chain(d.scale.bodies.iter().copied()).collect();
+        let names: Vec<(BodyId, String)> = ids.into_iter().map(|id| (id, self.body_name(id))).collect();
+        let Some(d) = self.scale_dialog.as_mut() else { return };
+        match d.panel(ui, &names, error.as_deref()) {
+            copy_dialog::Action::Ok => self.commit_scale(),
+            copy_dialog::Action::Cancel => self.cancel_scale(),
+            copy_dialog::Action::None => {}
+        }
+    }
+
     /// What to call a picked plane or face in a dialog.
     pub(crate) fn target_name(&self, t: model::ExtrudeTarget) -> String {
         match t {
@@ -1210,6 +1276,9 @@ impl OpenCad {
         if let Some(d) = self.split_dialog.as_ref().filter(|d| d.picking == Some(split_dialog::Field::Bodies)) {
             return Some(d.split.bodies.clone());
         }
+        if let Some(d) = self.scale_dialog.as_ref().filter(|d| d.picking == Some(scale_dialog::Field::Bodies)) {
+            return Some(d.scale.bodies.clone());
+        }
         if let Some(d) = self.shell_dialog.as_ref().filter(|d| d.picking == Some(shell_dialog::Field::Bodies)) {
             return Some(d.shell.bodies.clone());
         }
@@ -1226,6 +1295,8 @@ impl OpenCad {
         } else if let Some(d) = self.combine_dialog.as_mut().filter(|d| d.picking.is_some()) {
             d.click(id);
         } else if let Some(d) = self.split_dialog.as_mut().filter(|d| d.picking == Some(split_dialog::Field::Bodies)) {
+            d.click_body(id);
+        } else if let Some(d) = self.scale_dialog.as_mut().filter(|d| d.picking == Some(scale_dialog::Field::Bodies)) {
             d.click_body(id);
         } else if let Some(d) = self.shell_dialog.as_mut().filter(|d| d.picking == Some(shell_dialog::Field::Bodies)) {
             d.toggle_body(id);
@@ -1504,6 +1575,7 @@ impl OpenCad {
         self.offset_dialog = None;
         self.combine_dialog = None;
         self.cancel_split();
+        self.cancel_scale();
         self.close_appearance();
         self.move_dialog = None;
         self.thread_dialog = None;

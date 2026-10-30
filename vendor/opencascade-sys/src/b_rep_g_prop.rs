@@ -35,6 +35,9 @@ mod inner {
             use_triangulation: bool,
         );
 
+        /// opencad patch: adaptive volume + centre to relative error eps (false on failure).
+        fn opencad_try_volume_eps(shape: &TopoDS_Shape, eps: f64, out: &mut [f64]) -> bool;
+
         type BRepGProp_Face;
         #[cxx_name = "construct_unique"]
         fn BRepGProp_Face_new(face: &TopoDS_Face) -> UniquePtr<BRepGProp_Face>;

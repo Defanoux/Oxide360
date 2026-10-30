@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{Blob, ImportFeature, JointFeature, JointSnap, SweepFeature, SweepKind, AxisKind, ConstructionPoint, PlaneKind, PointKind, PointRef, MoveFeature, MoveKind, CombineFeature, SplitFeature, OffsetFaceFeature, ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{Blob, ImportFeature, JointFeature, JointSnap, SweepFeature, SweepKind, AxisKind, ConstructionPoint, PlaneKind, PointKind, PointRef, MoveFeature, MoveKind, CombineFeature, SplitFeature, ScaleAt, ScaleFeature, OffsetFaceFeature, ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::measure::{self, Geom};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
@@ -166,6 +166,7 @@ impl Model {
             + n(&self.offset_face_errors)
             + n(&self.combine_errors)
             + n(&self.split_errors)
+            + n(&self.scale_errors)
             + n(&self.move_errors)
             + n(&self.point_errors)
             + n(&self.sweep_errors)
@@ -213,6 +214,8 @@ pub struct Model {
     pub combine_errors: Vec<Option<String>>,
     /// One entry per Split Body.
     pub split_errors: Vec<Option<String>>,
+    /// One entry per Scale.
+    pub scale_errors: Vec<Option<String>>,
     /// One entry per Move/Copy.
     pub move_errors: Vec<Option<String>>,
     /// Where each Move/Copy turns its bodies about (the middle of their box
@@ -817,6 +820,125 @@ fn apply_split(current: Tagged, sp: &SplitFeature, k: usize, planes: &[Option<Fa
     }
     out.extend(behind);
     Ok((uniquify(out), Some(BodyId { feature: Feature::Split(k), piece: 0 })))
+}
+
+/// Scale: the picked bodies made bigger or smaller about its point (exact for
+/// one factor; per-axis factors turn curved faces into B-splines).
+fn apply_scale(current: Tagged, sc: &ScaleFeature) -> Result<(Tagged, Option<BodyId>), String> {
+    if !sc.factors_ok() {
+        return Err("each factor must be more than 0".into());
+    }
+    let picked: Vec<&Shape> = current.iter().filter(|(_, id)| sc.bodies.contains(id)).map(|(s, _)| s).collect();
+    if picked.is_empty() {
+        return Err("the bodies it scales are gone — edit it and pick again".into());
+    }
+    let point = match sc.at {
+        ScaleAt::Origin => DVec3::ZERO,
+        ScaleAt::Point(p) => DVec3::from_array(p),
+        ScaleAt::BedCentre => {
+            let (lo, hi) = picked.iter().fold((DVec3::splat(f64::MAX), DVec3::splat(f64::MIN)), |(lo, hi), s| {
+                let bb = opencascade::bounding_box::aabb(s);
+                (lo.min(DVec3::new(bb.min().x, bb.min().y, bb.min().z)), hi.max(DVec3::new(bb.max().x, bb.max().y, bb.max().z)))
+            });
+            DVec3::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0, lo.z)
+        }
+    };
+    let f = DVec3::from_array(sc.factors());
+    let first = sc.bodies.iter().copied().find(|b| current.iter().any(|(_, id)| id == b));
+    let mut out: Tagged = Vec::with_capacity(current.len());
+    for (s, id) in current {
+        if sc.bodies.contains(&id) {
+            let scaled = s.try_scaled_xyz(kv(point), kv(f)).ok_or("the geometry kernel couldn't scale the body")?;
+            out.push((scaled, id));
+        } else {
+            out.push((s, id));
+        }
+    }
+    Ok((out, first))
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+
+    fn block(lo: DVec3, hi: DVec3) -> Shape {
+        Shape::box_from_corners(kv(lo), kv(hi))
+    }
+
+    fn id(k: usize) -> BodyId {
+        BodyId { feature: Feature::Extrude(k), piece: 0 }
+    }
+
+    fn near(a: f64, b: f64) -> bool {
+        (a - b).abs() <= 1e-9 * b.abs().max(1.0)
+    }
+
+    fn bounds(s: &Shape) -> (DVec3, DVec3) {
+        let bb = opencascade::bounding_box::aabb(s);
+        (DVec3::new(bb.min().x, bb.min().y, bb.min().z), DVec3::new(bb.max().x, bb.max().y, bb.max().z))
+    }
+
+    #[test]
+    fn one_factor_scales_volume_by_its_cube_about_the_point() {
+        let b = block(DVec3::new(10.0, 0.0, 0.0), DVec3::new(20.0, 10.0, 10.0));
+        let other = block(DVec3::new(-30.0, 0.0, 0.0), DVec3::new(-20.0, 10.0, 10.0));
+        let sc = ScaleFeature { bodies: vec![id(0)], factor: 2.0, ..Default::default() };
+        let (out, touched) = apply_scale(vec![(b, id(0)), (other, id(1))], &sc).unwrap();
+        assert_eq!(touched, Some(id(0)));
+        assert!(near(out[0].0.volume(), 8000.0), "{}", out[0].0.volume());
+        assert!(near(out[1].0.volume(), 1000.0), "bodies not picked stay as they are");
+        // About the origin: x 10..20 becomes 20..40.
+        let (lo, hi) = bounds(&out[0].0);
+        assert!((lo.x - 20.0).abs() < 1e-6 && (hi.x - 40.0).abs() < 1e-6, "{lo} {hi}");
+    }
+
+    #[test]
+    fn a_cylinder_keeps_its_exact_volume_and_per_axis_factors_multiply() {
+        let cyl = Shape::cylinder_radius_height(5.0, 10.0);
+        let sc = ScaleFeature { bodies: vec![id(0)], factor: 0.5, ..Default::default() };
+        let (out, _) = apply_scale(vec![(cyl.clone(), id(0))], &sc).unwrap();
+        let exact = std::f64::consts::PI * 2.5 * 2.5 * 5.0;
+        assert!((out[0].0.volume() - exact).abs() < 1e-6 * exact, "{} vs {exact}", out[0].0.volume());
+        // X 2, Y 1, Z 3: an elliptic cylinder of 6× the volume.
+        let sc = ScaleFeature { bodies: vec![id(0)], xyz: Some([2.0, 1.0, 3.0]), ..Default::default() };
+        let (out, _) = apply_scale(vec![(cyl, id(0))], &sc).unwrap();
+        // (Its faces are B-splines: the adaptive volume, as Properties uses.)
+        let v = std::f64::consts::PI * 25.0 * 10.0 * 6.0;
+        let (got, _) = out[0].0.volume_and_centre();
+        assert!((got - v).abs() < 1e-6 * v, "{got} vs {v}");
+        // Meshed before scaling (as every body on screen is): the scaled one is
+        // meshed afresh, not drawn with the old triangles.
+        let cyl = Shape::cylinder_radius_height(5.0, 10.0);
+        mesh_tagged(&cyl).unwrap();
+        let (out, _) = apply_scale(vec![(cyl, id(0))], &sc).unwrap();
+        let (mesh, _) = mesh_tagged(&out[0].0).unwrap();
+        let mv: f64 = mesh.tris.iter().map(|t| {
+            let [p, q, r] = t.map(|i| mesh.positions[i as usize].as_dvec3());
+            p.dot(q.cross(r)) / 6.0
+        }).sum();
+        assert!((mv - v).abs() < 0.01 * v, "mesh encloses {mv}, not {v}");
+    }
+
+    #[test]
+    fn bed_centre_keeps_the_bottom_where_it_was_and_bad_factors_are_errors() {
+        let b = block(DVec3::new(0.0, 0.0, 5.0), DVec3::new(10.0, 20.0, 15.0));
+        let sc = ScaleFeature { bodies: vec![id(0)], at: ScaleAt::BedCentre, factor: 3.0, ..Default::default() };
+        let (out, _) = apply_scale(vec![(b.clone(), id(0))], &sc).unwrap();
+        let (lo, hi) = bounds(&out[0].0);
+        assert!((lo.z - 5.0).abs() < 1e-6 && (hi.z - 35.0).abs() < 1e-6, "bottom stays: {lo} {hi}");
+        assert!((lo.x + 10.0).abs() < 1e-6 && (hi.x - 20.0).abs() < 1e-6, "centred in x: {lo} {hi}");
+        // A picked point stays put.
+        let sc = ScaleFeature { bodies: vec![id(0)], at: ScaleAt::Point([10.0, 20.0, 15.0]), factor: 0.5, ..Default::default() };
+        let (out, _) = apply_scale(vec![(b.clone(), id(0))], &sc).unwrap();
+        let (_, hi) = bounds(&out[0].0);
+        assert!((hi - DVec3::new(10.0, 20.0, 15.0)).length() < 1e-6, "{hi}");
+        for xyz in [Some([1.0, 0.0, 1.0]), Some([1.0, f64::NAN, 1.0])] {
+            let sc = ScaleFeature { bodies: vec![id(0)], xyz, ..Default::default() };
+            assert!(apply_scale(vec![(b.clone(), id(0))], &sc).is_err());
+        }
+        let sc = ScaleFeature { bodies: vec![id(5)], factor: 2.0, ..Default::default() };
+        assert!(apply_scale(vec![(b, id(0))], &sc).is_err(), "its bodies gone");
+    }
 }
 
 #[cfg(test)]
@@ -3245,6 +3367,7 @@ pub struct BuildInputs {
     pub offset_faces: Vec<OffsetFaceFeature>,
     pub combines: Vec<CombineFeature>,
     pub splits: Vec<SplitFeature>,
+    pub scales: Vec<ScaleFeature>,
     pub moves: Vec<MoveFeature>,
     pub points: Vec<ConstructionPoint>,
     pub sweeps: Vec<SweepFeature>,
@@ -3307,6 +3430,7 @@ pub struct Build {
     offset_face_errors: Vec<Option<String>>,
     combine_errors: Vec<Option<String>>,
     split_errors: Vec<Option<String>>,
+    scale_errors: Vec<Option<String>>,
     move_errors: Vec<Option<String>>,
     move_pivots: Vec<Option<DVec3>>,
     threads: Vec<CosmeticThread>,
@@ -3337,7 +3461,7 @@ pub struct Build {
 impl Build {
     pub fn start(inp: BuildInputs) -> Build {
         opencascade::catch_crashes();
-        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, splits, moves, points, sweeps, imports, joints, components: _, timeline: _ } = &inp;
+        let BuildInputs { sketches, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, splits, scales, moves, points, sweeps, imports, joints, components: _, timeline: _ } = &inp;
         let sweep_errors: Vec<Option<String>> = vec![None; sweeps.len()];
         let import_errors: Vec<Option<String>> = vec![None; imports.len()];
         let joint_errors: Vec<Option<String>> = vec![None; joints.len()];
@@ -3346,6 +3470,7 @@ impl Build {
         let offset_face_errors: Vec<Option<String>> = vec![None; offset_faces.len()];
         let combine_errors: Vec<Option<String>> = vec![None; combines.len()];
         let split_errors: Vec<Option<String>> = vec![None; splits.len()];
+        let scale_errors: Vec<Option<String>> = vec![None; scales.len()];
         let (move_errors, move_pivots): (Vec<Option<String>>, Vec<Option<DVec3>>) = (vec![None; moves.len()], vec![None; moves.len()]);
         let hole_errors: Vec<Option<String>> = vec![None; holes.len()];
         let thread_errors: Vec<Option<String>> = vec![None; thread_features.len()];
@@ -3371,7 +3496,7 @@ impl Build {
         let timing = std::env::var_os("OPENCAD_TIMING").is_some();
         let started = std::time::Instant::now();
         let step = std::time::Instant::now();
-        Build { next: 0, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step, inp }
+        Build { next: 0, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, scale_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step, inp }
     }
 
     /// How far it's got: (entries built, all of them, the one being built next).
@@ -3389,8 +3514,8 @@ impl Build {
     pub fn step(&mut self, budget: std::time::Duration) -> bool {
         let began = std::time::Instant::now();
         let first = self.next;
-        let Build { inp, next, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step } = self;
-        let BuildInputs { sketches: _, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, splits, moves, points, sweeps, imports, joints, components, timeline } = &*inp;
+        let Build { inp, next, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, scale_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step } = self;
+        let BuildInputs { sketches: _, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, splits, scales, moves, points, sweeps, imports, joints, components, timeline } = &*inp;
         let _ = (&timing, &started);
         loop {
             if *next >= timeline.len() {
@@ -3423,6 +3548,7 @@ impl Build {
                 Feature::OffsetFace(k) => offset_faces.get(k).map(|of| format!("{f:?}|{of:?}")),
                 Feature::Combine(k) => combines.get(k).map(|c| format!("{f:?}|{c:?}")),
                 Feature::Split(k) => splits.get(k).map(|c| format!("{f:?}|{c:?}")),
+                Feature::Scale(k) => scales.get(k).map(|c| format!("{f:?}|{c:?}")),
                 Feature::Move(k) => moves.get(k).map(|m| format!("{f:?}|{m:?}|{axes:?}")),
                 _ => None,
             }
@@ -3741,6 +3867,14 @@ impl Build {
                     let r = catch_unwind(AssertUnwindSafe(|| apply_split(current, sp, k, planes_now)));
                     (r, &mut split_errors[k])
                 }
+                Feature::Scale(k) => {
+                    let Some(sc) = scales.get(k) else {
+                        *shapes = current;
+                        continue;
+                    };
+                    let r = catch_unwind(AssertUnwindSafe(|| apply_scale(current, sc)));
+                    (r, &mut scale_errors[k])
+                }
                 Feature::Remove(k) => {
                     // Take the bodies out; the rest carry on.
                     if let Some(rf) = removes.get(k) {
@@ -3803,7 +3937,7 @@ impl Build {
 
     /// The model built (bodies analysed for picking and Measure).
     pub fn finish(self) -> Model {
-        let Build { inp: _, next: _, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live: _, linked, lost, touched_by, timing, started, mut step } = self;
+        let Build { inp: _, next: _, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, scale_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live: _, linked, lost, touched_by, timing, started, mut step } = self;
     if timing {
         eprintln!("  {:>8.1} ms  last feature; analysing bodies…", step.elapsed().as_secs_f64() * 1e3);
         step = std::time::Instant::now();
@@ -3831,7 +3965,7 @@ impl Build {
         eprintln!("  {:>8.1} ms  bodies; build {:.1} ms in all", step.elapsed().as_secs_f64() * 1e3, started.elapsed().as_secs_f64() * 1e3);
     }
     let caps = caps_of(&extrude_ends, &revolve_ends);
-    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, move_errors, move_pivots, threads, caps, touched: touched_by, linked_sketches: linked, projection_lost: lost, points: point_pos, point_errors, sweep_errors, import_errors, joint_errors }
+    Model { bodies, sketch_frames: frames, sketch_errors, errors, edge_errors, revolve_errors, copy_errors, remove_errors, axes, axis_errors, planes, plane_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, scale_errors, move_errors, move_pivots, threads, caps, touched: touched_by, linked_sketches: linked, projection_lost: lost, points: point_pos, point_errors, sweep_errors, import_errors, joint_errors }
     }
 }
 
@@ -3868,6 +4002,7 @@ pub fn build_all(
         offset_faces: Vec::new(),
         combines: Vec::new(),
         splits: Vec::new(),
+        scales: Vec::new(),
         moves: Vec::new(),
         points: Vec::new(),
         sweeps: Vec::new(),
@@ -4605,7 +4740,7 @@ mod tests {
             kind: Some(PlaneKind::ThreePoints([PointRef::Point(0), PointRef::Point(1), PointRef::Corner(DVec3::new(0.0, 0.0, 5.0))])) };
         let mut b = Build::start(BuildInputs {
             sketches: vec![a], extrudes: vec![ex(0, vec![0, 1], 5.0, Operation::NewBody)], revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![],
-            plane_features: vec![plane], removes: vec![], holes: vec![], thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], splits: vec![], moves: vec![], points, sweeps: vec![], imports: vec![], joints: vec![], components: vec![],
+            plane_features: vec![plane], removes: vec![], holes: vec![], thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], splits: vec![], scales: vec![], moves: vec![], points, sweeps: vec![], imports: vec![], joints: vec![], components: vec![],
             timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Point(0), Feature::Point(1), Feature::Plane(0)],
         });
         while b.step(std::time::Duration::MAX) {}
@@ -4669,7 +4804,7 @@ mod tests {
         let run = |j: JointFeature, components: Vec<Component>| {
             let mut bld = Build::start(BuildInputs {
                 sketches: vec![a.clone(), b.clone(), c.clone()], extrudes: exs.clone(), revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![], plane_features: vec![], removes: vec![], holes: vec![],
-                thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], splits: vec![], moves: vec![], points: vec![], sweeps: vec![], imports: vec![], joints: vec![j], components,
+                thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], splits: vec![], scales: vec![], moves: vec![], points: vec![], sweeps: vec![], imports: vec![], joints: vec![j], components,
                 timeline: vec![Feature::Sketch(0), Feature::Sketch(1), Feature::Sketch(2), Feature::Extrude(0), Feature::Extrude(1), Feature::Extrude(2), Feature::Joint(0)],
             });
             while bld.step(std::time::Duration::MAX) {}
@@ -4762,7 +4897,7 @@ mod tests {
             let j = JointFeature { name: "J".into(), a: JointSnap::Circle(rim(1, 5.0)), b: JointSnap::Circle(rim(0, 10.0)), kind: JointKind::Revolute, angle, offset: 0.0, flip: false, motion: 0.0 };
             let mut bld = Build::start(BuildInputs {
                 sketches: vec![base.clone(), lever.clone()], extrudes: exs.clone(), revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![], plane_features: vec![], removes: vec![], holes: vec![],
-                thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], splits: vec![], moves: vec![], points: vec![], sweeps: vec![], imports: vec![], joints: vec![j], components: vec![],
+                thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], splits: vec![], scales: vec![], moves: vec![], points: vec![], sweeps: vec![], imports: vec![], joints: vec![j], components: vec![],
                 timeline: vec![Feature::Sketch(0), Feature::Sketch(1), Feature::Extrude(0), Feature::Extrude(1), Feature::Joint(0)],
             });
             while bld.step(std::time::Duration::MAX) {}
@@ -4787,7 +4922,7 @@ mod tests {
         let timeline = (0..imports.len()).map(Feature::Import).collect();
         let mut b = Build::start(BuildInputs {
             sketches: vec![], extrudes: vec![], revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![], plane_features: vec![], removes: vec![], holes: vec![],
-            thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], splits: vec![], moves: vec![], points: vec![], sweeps: vec![], imports, joints: vec![], components: vec![], timeline,
+            thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], splits: vec![], scales: vec![], moves: vec![], points: vec![], sweeps: vec![], imports, joints: vec![], components: vec![], timeline,
         });
         while b.step(std::time::Duration::MAX) {}
         b.finish()
@@ -4843,7 +4978,7 @@ mod tests {
     fn run_sweeps(sketches: Vec<Sketch>, planes: Vec<PlaneFeature>, sweeps: Vec<SweepFeature>, timeline: Vec<Feature>) -> Model {
         let mut b = Build::start(BuildInputs {
             sketches, extrudes: vec![], revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![], plane_features: planes, removes: vec![], holes: vec![],
-            thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], splits: vec![], moves: vec![], points: vec![], sweeps, imports: vec![], joints: vec![], components: vec![], timeline,
+            thread_features: vec![], shells: vec![], offset_faces: vec![], combines: vec![], splits: vec![], scales: vec![], moves: vec![], points: vec![], sweeps, imports: vec![], joints: vec![], components: vec![], timeline,
         });
         while b.step(std::time::Duration::MAX) {}
         b.finish()

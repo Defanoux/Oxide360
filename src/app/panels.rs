@@ -738,6 +738,8 @@ impl OpenCad {
             "Combine" => self.open_combine(None),
             "Split Body" if self.split_dialog.is_some() => self.cancel_split(),
             "Split Body" => self.open_split(None),
+            "Scale" if self.scale_dialog.is_some() => self.cancel_scale(),
+            "Scale" => self.open_scale(None),
             "Appearance" if self.appearance_dialog.is_some() => self.close_appearance(),
             "Appearance" => self.open_appearance(),
             _ => {}
@@ -944,6 +946,7 @@ impl OpenCad {
                     ToolItem { name: "Change Parameters", icon: Icon::Parameters, tip: "Change Parameters: named values (width, depth…) that dimensions and boxes can use", enabled: true, on: self.params_window.open },
                     ToolItem { name: "Combine", icon: Icon::Combine, tip: "Combine: join, cut or intersect bodies — a target body and tool bodies", enabled: self.body_count > 1, on: self.combine_dialog.is_some() },
                     ToolItem { name: "Split Body", icon: Icon::Split, tip: "Split Body: cut bodies in two along a plane or flat face — to print in parts or flat on the bed", enabled: has_bodies, on: self.split_dialog.is_some() },
+                    ToolItem { name: "Scale", icon: Icon::Scale, tip: "Scale: make bodies bigger or smaller — one factor, or one each for X, Y and Z — about the origin, the bodies' bottom centre or a picked point", enabled: has_bodies, on: self.scale_dialog.is_some() },
                     ToolItem { name: "Appearance", icon: Icon::Appearance, tip: "Appearance (A): make bodies look like metal, plastic, paint, rubber, glass or wood — pick one, then click bodies", enabled: has_bodies, on: self.appearance_dialog.is_some() },
                 ];
                 let modify = tool_group(ui, "MODIFY", "Solid ", &items, &[], hidden, order);

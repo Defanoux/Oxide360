@@ -55,6 +55,8 @@ pub enum Feature {
     Joint(usize),
     /// Bodies split along a plane (index into `splits`).
     Split(usize),
+    /// Bodies scaled (index into `scales`).
+    Scale(usize),
 }
 
 /// Put `f` into the timeline at the rollback marker (the end when there is
@@ -96,6 +98,7 @@ pub fn renumbered(f: Feature, gone: Feature) -> Option<Feature> {
         (Feature::Combine(i), Feature::Combine(k)) if i > k => Feature::Combine(i - 1),
         (Feature::Move(i), Feature::Move(k)) if i > k => Feature::Move(i - 1),
         (Feature::Split(i), Feature::Split(k)) if i > k => Feature::Split(i - 1),
+        (Feature::Scale(i), Feature::Scale(k)) if i > k => Feature::Scale(i - 1),
         (f, _) => f,
     })
 }
@@ -244,6 +247,9 @@ pub struct Document {
     /// Split Body features. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub splits: Vec<crate::model::SplitFeature>,
+    /// Scale features. Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scales: Vec<crate::model::ScaleFeature>,
     /// User parameters (Change Parameters). Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parameters: Vec<crate::expr::UserParameter>,
@@ -624,6 +630,16 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             return Err(format!("{}: invalid body or plane", sp.name));
         }
     }
+    for sc in &doc.scales {
+        let made = |id: &BodyId| doc.timeline.contains(&id.feature);
+        let at_ok = match sc.at {
+            crate::model::ScaleAt::Point(p) => p.iter().all(|v| v.is_finite()),
+            _ => true,
+        };
+        if !(at_ok && sc.factors_ok() && sc.bodies.iter().all(made)) {
+            return Err(format!("{}: invalid body, point or factor", sc.name));
+        }
+    }
     for of in &doc.offset_faces {
         let ok = of.distance.is_finite() && of.faces.iter().all(|f| f.face.origin.is_finite() && f.face.u.is_finite() && f.face.v.is_finite() && f.anchor.iter().all(|a| a.is_finite()));
         if !ok {
@@ -696,6 +712,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     let mut seen_im = vec![false; doc.imports.len()];
     let mut seen_j = vec![false; doc.joints.len()];
     let mut seen_sp = vec![false; doc.splits.len()];
+    let mut seen_sc = vec![false; doc.scales.len()];
     for f in &doc.timeline {
         let slot = match *f {
             Feature::Sketch(i) => seen_s.get_mut(i),
@@ -717,6 +734,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Feature::Import(i) => seen_im.get_mut(i),
             Feature::Joint(i) => seen_j.get_mut(i),
             Feature::Split(i) => seen_sp.get_mut(i),
+            Feature::Scale(i) => seen_sc.get_mut(i),
         };
         match slot {
             Some(s) if !*s => *s = true,
@@ -726,7 +744,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     if doc.suppressed.iter().any(|f| !doc.timeline.contains(f)) {
         return Err("a suppressed feature isn't in the timeline".into());
     }
-    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).chain(&seen_sh).chain(&seen_of).chain(&seen_cb).chain(&seen_mv).chain(&seen_pt).chain(&seen_sw).chain(&seen_im).chain(&seen_j).chain(&seen_sp).any(|s| !s) {
+    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).chain(&seen_sh).chain(&seen_of).chain(&seen_cb).chain(&seen_mv).chain(&seen_pt).chain(&seen_sw).chain(&seen_im).chain(&seen_j).chain(&seen_sp).chain(&seen_sc).any(|s| !s) {
         return Err("timeline is missing a feature".into());
     }
     Ok(())
@@ -864,6 +882,7 @@ mod tests {
             offset_faces: Vec::new(),
             combines: Vec::new(),
             splits: Vec::new(),
+            scales: Vec::new(),
             moves: Vec::new(),
             sections: Vec::new(),
             points: Vec::new(),
@@ -1041,6 +1060,34 @@ mod tests {
         let id = |k| BodyId { feature: Feature::Split(k), piece: 0 };
         assert_eq!(id(0).after_maker_delete(Feature::Split(0)), None);
         assert_eq!(id(2).after_maker_delete(Feature::Split(0)), Some(id(1)));
+    }
+
+    #[test]
+    fn scales_save_and_bad_ones_are_refused() {
+        use crate::model::{ScaleAt, ScaleFeature};
+        let mut doc = sample();
+        let body = BodyId { feature: Feature::Extrude(0), piece: 0 };
+        doc.scales.push(ScaleFeature { name: "Scale1".into(), bodies: vec![body], at: ScaleAt::Point([1.0, 2.0, 3.0]), factor: 2.0, xyz: None });
+        doc.scales.push(ScaleFeature { name: "Scale2".into(), bodies: vec![body], at: ScaleAt::BedCentre, factor: 1.0, xyz: Some([1.0, 2.0, 0.5]) });
+        doc.timeline.extend([Feature::Scale(0), Feature::Scale(1)]);
+        assert_eq!(from_json(&to_json(&doc)).unwrap().scales, doc.scales);
+        assert!(!to_json(&sample()).contains("scales"), "nothing stored when there are none");
+        let mut bad = doc.clone();
+        bad.scales[0].factor = 0.0;
+        assert!(validate(&bad).is_err(), "a zero factor");
+        let mut bad = doc.clone();
+        bad.scales[1].xyz = Some([1.0, -1.0, 1.0]);
+        assert!(validate(&bad).is_err(), "a negative factor");
+        let mut bad = doc.clone();
+        bad.scales[0].at = ScaleAt::Point([f64::NAN, 0.0, 0.0]);
+        assert!(validate(&bad).is_err(), "a point that isn't a number");
+        let mut bad = doc.clone();
+        bad.scales[0].bodies = vec![BodyId { feature: Feature::Extrude(9), piece: 0 }];
+        assert!(validate(&bad).is_err(), "a body no feature makes");
+        let mut bad = doc;
+        bad.timeline.pop();
+        assert!(validate(&bad).is_err(), "missing from the timeline");
+        assert_eq!(renumbered(Feature::Scale(2), Feature::Scale(0)), Some(Feature::Scale(1)));
     }
 
     #[test]

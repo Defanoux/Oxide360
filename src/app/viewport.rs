@@ -727,6 +727,60 @@ impl OpenCad {
             self.cancel_split();
         }
 
+        crate::mark("Scale: click the bodies, or the point");
+        // --- Scale: click the bodies, or the point it scales about (a face's
+        // snap points; a round edge gives its centre) ---
+        self.scale_hover = None;
+        let scale_picking = self.scale_dialog.as_ref().and_then(|d| d.picking).filter(|_| self.active.is_none());
+        if scale_picking == Some(scale_dialog::Field::Bodies) {
+            self.ensure_model(Slot::Committed);
+            if let Some(px) = hover_px {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                let model = self.model(Slot::Committed);
+                self.scale_hover = model
+                    .bodies
+                    .iter()
+                    .filter(|b| !self.hidden_bodies.contains(&b.id))
+                    .filter_map(|b| model::ray_hit(&b.mesh, ray.origin, ray.dir).map(|t| (b.id, t)))
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(id, _)| id);
+            }
+            if let (true, Some(id), Some(d)) = (response.clicked(), self.scale_hover, self.scale_dialog.as_mut()) {
+                d.click_body(id);
+            }
+        } else if scale_picking == Some(scale_dialog::Field::Point) {
+            self.ensure_model(Slot::Committed);
+            self.corner_hover = None;
+            self.edge_hover = None;
+            self.snap_preview.clear();
+            if let Some(px) = hover_px {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                let centre = self.edge_under(&view, Slot::Committed, px, &ray, false).and_then(|r| {
+                    let c = self.model(Slot::Committed).bodies.iter().flat_map(|b| &b.edges).find(|e| e.at.mid.distance(r.mid) < 1e-6).and_then(|e| match e.geom {
+                        measure::Geom::Circle { center, .. } => Some(center),
+                        _ => None,
+                    })?;
+                    Some((r, c))
+                });
+                if let Some((r, c)) = centre {
+                    self.edge_hover = Some(r);
+                    self.corner_hover = Some((model::PointRef::Corner(c), c));
+                } else if let Some((q, _, all)) = self.face_snap_under(&view, px, &ray, None) {
+                    self.corner_hover = Some((model::PointRef::Corner(q), q));
+                    self.snap_preview = all;
+                }
+            }
+            if let (true, Some((_, q)), Some(d)) = (response.clicked(), self.corner_hover, self.scale_dialog.as_mut()) {
+                d.set_point(q.to_array());
+            }
+        }
+        if self.scale_dialog.is_some() && esc && !typing {
+            match self.scale_dialog.as_mut() {
+                Some(d) if d.picking.is_some() => d.picking = None,
+                _ => self.cancel_scale(),
+            }
+        }
+
         crate::mark("Offset Face / Press Pull: click faces");
         // --- Offset Face / Press Pull: click flat faces to move; Press Pull also
         // takes a fillet (edit it) or a sketch profile (extrude it) ---
@@ -2518,7 +2572,7 @@ impl OpenCad {
 
         crate::mark("draw: bodies (from the kernel; with an");
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
-        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some() || self.move_dialog.is_some() || self.sweep_dialog.is_some() || self.import_dialog.is_some() || self.joint_dialog.is_some() || self.split_dialog.is_some();
+        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some() || self.move_dialog.is_some() || self.sweep_dialog.is_some() || self.import_dialog.is_some() || self.joint_dialog.is_some() || self.split_dialog.is_some() || self.scale_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
         self.ensure_model(Slot::Committed);
         self.adopt_linked_sketches();
@@ -2536,6 +2590,7 @@ impl OpenCad {
         self.offset_face_errors = self.model(Slot::Committed).offset_face_errors.clone();
         self.combine_errors = self.model(Slot::Committed).combine_errors.clone();
         self.split_errors = self.model(Slot::Committed).split_errors.clone();
+        self.scale_errors = self.model(Slot::Committed).scale_errors.clone();
         self.move_errors = self.model(Slot::Committed).move_errors.clone();
         self.point_errors = self.model(Slot::Committed).point_errors.clone();
         self.sweep_errors = self.model(Slot::Committed).sweep_errors.clone();
@@ -2587,6 +2642,9 @@ impl OpenCad {
         } else if let Some(d) = &self.split_dialog {
             let k = d.editing.unwrap_or(self.splits.len());
             if d.ready() { model.split_errors.get(k).cloned().flatten() } else { None }
+        } else if let Some(d) = &self.scale_dialog {
+            let k = d.editing.unwrap_or(self.scales.len());
+            if d.ready() { model.scale_errors.get(k).cloned().flatten() } else { None }
         } else if let Some(d) = &self.offset_dialog {
             let k = d.editing.unwrap_or(self.offset_faces.len());
             if d.offset.faces.is_empty() { None } else { model.offset_face_errors.get(k).cloned().flatten() }
@@ -2637,7 +2695,7 @@ impl OpenCad {
                     || self.combine_dialog.as_ref().is_some_and(|d| d.combine.target == Some(b.id) || d.combine.tools.contains(&b.id))
                     || self.move_dialog.as_ref().is_some_and(|d| d.feature.bodies.contains(&b.id))
                     || self.split_dialog.as_ref().is_some_and(|d| d.picking == Some(split_dialog::Field::Bodies) && d.split.bodies.contains(&b.id));
-                let hovered = self.copy_body_hover == Some(b.id) || self.shell_hover.and_then(|h| h.1) == Some(b.id) || self.combine_hover == Some(b.id) || self.move_hover == Some(b.id) || self.appearance_hover == Some(b.id) || self.split_hover == Some(b.id);
+                let hovered = self.copy_body_hover == Some(b.id) || self.shell_hover.and_then(|h| h.1) == Some(b.id) || self.combine_hover == Some(b.id) || self.move_hover == Some(b.id) || self.appearance_hover == Some(b.id) || self.split_hover == Some(b.id) || self.scale_hover == Some(b.id);
                 // Under the Appearance tool the body a click would change lights up
                 // whole (strongly, so it reads on any look) until it has that look.
                 let has_it = matches!(self.appearance_dialog.as_ref().and_then(|d| d.current), Some(appearance_dialog::Choice::Give(a)) if self.body_appearance(b.id).is_some_and(|x| x.name == a.name))
@@ -2881,6 +2939,33 @@ impl OpenCad {
         }
         if let Some(hint) = self.split_dialog.as_ref().and_then(|d| d.hint()) {
             painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
+        }
+        if let Some(d) = &self.scale_dialog {
+            if let Some(hint) = d.hint() {
+                painter.text(rect.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
+            }
+            // The point it scales about (picked), and the one a click would take.
+            if let Some(px) = match d.scale.at {
+                model::ScaleAt::Point(p) => view.project(DVec3::from_array(p).as_vec3()),
+                _ => None,
+            } {
+                painter.circle_filled(to_pos(px), 5.0, COL_SELECT);
+            }
+            if d.picking == Some(scale_dialog::Field::Point) {
+                // A round edge lights up whole (its centre is the point).
+                if let Some(h) = self.edge_hover {
+                    for body in &self.model(Slot::Committed).bodies {
+                        for e in body.edges.iter().filter(|e| e.at.mid.distance(h.mid) < 1e-6) {
+                            for w in e.points.windows(2) {
+                                view.line(w[0], w[1], Stroke::new(3.0, COL_HOVER));
+                            }
+                        }
+                    }
+                }
+                if let Some(px) = self.corner_hover.and_then(|(_, p)| view.project(p.as_vec3())) {
+                    painter.circle_filled(to_pos(px), 5.0, COL_HOVER);
+                }
+            }
         }
         if let Some(field) = self.combine_dialog.as_ref().and_then(|d| d.picking) {
             let hint = match field {

@@ -319,6 +319,13 @@ impl Shape {
         (!made.is_null()).then(|| Self::from_shape(&made))
     }
 
+    /// opencad patch: scaled about `point` by `factors` (X, Y, Z); equal
+    /// factors keep the exact geometry.
+    pub fn try_scaled_xyz(&self, point: DVec3, factors: DVec3) -> Option<Self> {
+        let made = ffi::b_rep_builder_api::opencad_try_scale(&self.inner, point.x, point.y, point.z, factors.x, factors.y, factors.z);
+        (!made.is_null()).then(|| Self::from_shape(&made))
+    }
+
     /// opencad patch: the faces at `faces` (explorer order) moved out along
     /// their normals by `offsets` (negative: in), the faces round them
     /// stretching to meet. `intersection`: OCCT's slower, sturdier mode.
@@ -881,8 +888,13 @@ impl Shape {
         props.Mass()
     }
 
-    /// opencad patch: exact volume and centre of mass (from the B-rep).
+    /// opencad patch: exact volume and centre of mass (from the B-rep), by
+    /// adaptive integration (accurate on B-spline faces too).
     pub fn volume_and_centre(&self) -> (f64, DVec3) {
+        let mut out = [0.0; 4];
+        if ffi::b_rep_g_prop::opencad_try_volume_eps(&self.inner, 1e-8, &mut out) && out.iter().all(|v| v.is_finite()) {
+            return (out[0], dvec3(out[1], out[2], out[3]));
+        }
         let mut props = ffi::g_prop::GProps_new();
         ffi::b_rep_g_prop::BRepGProp::VolumeProperties(&self.inner, props.pin_mut(), false, false, false);
         let c = ffi::g_prop::GProp_GProps_CentreOfMass(&props);

@@ -54,6 +54,7 @@ mod shell_dialog;
 mod shortcuts;
 mod offset_dialog;
 mod combine_dialog;
+mod scale_dialog;
 mod sketch_palette;
 mod split_dialog;
 mod move_dialog;
@@ -98,6 +99,7 @@ use offset_dialog::OffsetDialog;
 use appearance_dialog::AppearanceDialog;
 use combine_dialog::CombineDialog;
 use split_dialog::SplitDialog;
+use scale_dialog::ScaleDialog;
 use move_dialog::MoveDialog;
 use thread_dialog::ThreadDialog;
 use sketch_pattern::{Mode as SpMode, SketchPattern};
@@ -195,6 +197,8 @@ impl OpenCad {
                 "Combine"
             } else if self.split_dialog.is_some() {
                 "Split Body"
+            } else if self.scale_dialog.is_some() {
+                "Scale"
             } else if self.appearance_dialog.is_some() {
                 "Appearance"
             } else if self.move_dialog.is_some() {
@@ -650,6 +654,7 @@ impl KernelCache {
             offset_faces: Vec::new(),
             combines: Vec::new(),
             splits: Vec::new(),
+            scales: Vec::new(),
             moves: Vec::new(),
             points: Vec::new(),
             sweeps: Vec::new(),
@@ -678,6 +683,7 @@ struct KernelCache {
     offset_faces: Vec<model::OffsetFaceFeature>,
     combines: Vec<model::CombineFeature>,
     splits: Vec<model::SplitFeature>,
+    scales: Vec<model::ScaleFeature>,
     moves: Vec<model::MoveFeature>,
     points: Vec<model::ConstructionPoint>,
     sweeps: Vec<model::SweepFeature>,
@@ -758,6 +764,10 @@ struct OpenCad {
     split_dialog: Option<SplitDialog>,
     split_errors: Vec<Option<String>>,
     split_hover: Option<BodyId>,               // the body a click would pick (Split Body)
+    scales: Vec<model::ScaleFeature>,          // Scale features
+    scale_dialog: Option<ScaleDialog>,
+    scale_errors: Vec<Option<String>>,
+    scale_hover: Option<BodyId>,               // the body a click would pick (Scale)
     moves: Vec<model::MoveFeature>,            // Move/Copy features
     parameters: Vec<expr::UserParameter>,      // the design's user parameters
     params_window: params_window::ParamsWindow,
@@ -1010,6 +1020,10 @@ impl Default for OpenCad {
             split_dialog: None,
             split_errors: Vec::new(),
             split_hover: None,
+            scales: Vec::new(),
+            scale_dialog: None,
+            scale_errors: Vec::new(),
+            scale_hover: None,
             moves: Vec::new(),
             parameters: Vec::new(),
             params_window: Default::default(),
@@ -1262,6 +1276,8 @@ impl OpenCad {
                 self.commit_combine();
             } else if self.split_dialog.is_some() {
                 self.commit_split();
+            } else if self.scale_dialog.is_some() {
+                self.commit_scale();
             } else if self.move_dialog.is_some() {
                 self.commit_move();
             } else if self.thread_dialog.is_some() {
@@ -1408,6 +1424,8 @@ impl OpenCad {
             float("combine").show(&ctx, |ui| self.combine_panel(ui));
         } else if self.split_dialog.is_some() && self.active.is_none() {
             float("split").show(&ctx, |ui| self.split_panel(ui));
+        } else if self.scale_dialog.is_some() && self.active.is_none() {
+            float("scale").show(&ctx, |ui| self.scale_panel(ui));
         } else if self.appearance_dialog.is_some() && self.active.is_none() {
             float("appearance").show(&ctx, |ui| self.appearance_panel(ui));
         } else if self.offset_dialog.is_some() && self.active.is_none() {

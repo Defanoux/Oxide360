@@ -21,6 +21,9 @@ mod inner {
         type Handle_Geom2d_Curve = crate::geom2d::Handle_Geom2d_Curve;
         type Handle_Poly_Triangulation = crate::poly::Handle_Poly_Triangulation;
 
+        /// opencad patch: a shape scaled about a point, per axis (null on failure).
+        pub fn opencad_try_scale(shape: &TopoDS_Shape, px: f64, py: f64, pz: f64, sx: f64, sy: f64, sz: f64) -> UniquePtr<TopoDS_Shape>;
+
         /// opencad patch: an ellipse edge, whole or from u1 to u2 (null on failure).
         pub fn opencad_try_ellipse_edge(
             cx: f64, cy: f64, cz: f64, nx: f64, ny: f64, nz: f64, xx: f64, xy: f64, xz: f64,

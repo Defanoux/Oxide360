@@ -58,6 +58,8 @@ impl OpenCad {
             ("Press Pull", self.offset_dialog.is_some()),
             ("Combine", self.combine_dialog.is_some()),
             ("Move/Copy", self.move_dialog.is_some()),
+            ("Split Body", self.split_dialog.is_some()),
+            ("Scale", self.scale_dialog.is_some()),
             ("Sketch Pattern", self.sketch_pattern.is_some()),
             ("Text", self.text_dialog.is_some()),
             ("Measure", self.measure.is_some()),

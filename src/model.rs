@@ -639,6 +639,51 @@ impl Default for SplitFeature {
     }
 }
 
+/// Where Scale scales about.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ScaleAt {
+    /// The design's origin.
+    Origin,
+    /// The middle of the picked bodies' box, at its bottom (so a part on the
+    /// bed stays on it).
+    BedCentre,
+    /// A point picked on a body or sketch, as picked (mm).
+    Point([f64; 3]),
+}
+
+/// Fusion's Scale: bodies made bigger or smaller about a point, by one factor
+/// or by one for each of X, Y and Z. They keep their identity.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ScaleFeature {
+    pub name: String,
+    pub bodies: Vec<crate::doc::BodyId>,
+    pub at: ScaleAt,
+    /// The factor (uniform).
+    pub factor: f64,
+    /// Non-uniform: X, Y and Z factors (`factor` unused).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xyz: Option<[f64; 3]>,
+}
+
+impl Default for ScaleFeature {
+    fn default() -> Self {
+        ScaleFeature { name: "Scale1".into(), bodies: Vec::new(), at: ScaleAt::Origin, factor: 1.0, xyz: None }
+    }
+}
+
+impl ScaleFeature {
+    /// The X, Y and Z factors it scales by.
+    pub fn factors(&self) -> [f64; 3] {
+        self.xyz.unwrap_or([self.factor; 3])
+    }
+
+    /// Every factor a positive number (zero or negative would flatten or turn
+    /// the body inside out).
+    pub fn factors_ok(&self) -> bool {
+        self.factors().iter().all(|f| f.is_finite() && *f > 0.0)
+    }
+}
+
 /// A construction axis: along a straight edge of a body.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AxisFeature {
