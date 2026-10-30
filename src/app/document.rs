@@ -397,6 +397,12 @@ impl OpenCad {
         Ok(())
     }
 
+    /// The file name without its extension (.ox360, or an old .ocad).
+    pub(crate) fn design_name(&self) -> String {
+        let name = self.file_name();
+        name.strip_suffix(".ox360").or_else(|| name.strip_suffix(".ocad")).unwrap_or(&name).to_string()
+    }
+
     pub(crate) fn file_name(&self) -> String {
         self.path
             .as_ref()

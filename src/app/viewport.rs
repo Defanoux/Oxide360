@@ -1377,6 +1377,28 @@ impl OpenCad {
             self.measure = if self.measure.is_some() { None } else { Some(measure::Measure::default()) };
         }
 
+        crate::mark("Insert SVG / DXF: drag its arrows and box");
+        // --- Insert SVG / DXF: the arrows move it along X or Y, the box both ways
+        // (the sketch tools rest meanwhile) ---
+        if let (Some(i), true) = (self.active, self.insert_drawing.is_some()) {
+            let plane = self.plane_of(i);
+            let on_plane = |px: Vec2| plane.intersect(&self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size)));
+            let start = if response.drag_started_by(egui::PointerButton::Primary) { press_px.and_then(|p| on_plane(p).map(|at| (p, at))) } else { None };
+            let now = hover_px.and_then(on_plane);
+            if let Some(d) = self.insert_drawing.as_mut() {
+                if let Some((p, at)) = start {
+                    d.start_drag(p, at);
+                }
+                if let (Some(at), true) = (now, d.drag.is_some()) {
+                    d.drag_to(at);
+                }
+                if response.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
+                    d.drag = None;
+                }
+                d.hover = d.drag.map(|g| g.0).or_else(|| hover_px.and_then(|p| d.pick(p)));
+            }
+        }
+
         crate::mark("sketch input");
         // --- sketch input ---
         self.refresh_sketch_pattern();
@@ -1387,7 +1409,7 @@ impl OpenCad {
             self.ensure_model(Slot::Committed);
             self.measure_input(&view, hover_px, &response, aspect, min, size);
         }
-        if let Some(i) = self.active.filter(|_| self.measure.is_none()) {
+        if let Some(i) = self.active.filter(|_| self.measure.is_none() && self.insert_drawing.is_none()) {
             let plane = self.plane_of(i);
             let raw = |px: Vec2| plane.intersect(&self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size)));
             let raw_hover = hover_px.and_then(raw);
@@ -3389,12 +3411,33 @@ impl OpenCad {
                     }
                 }
             }
-            if let (true, Some(d)) = (active, &self.insert_drawing) {
-                // Insert SVG / DXF: the curves where OK would put them.
+            if let (true, Some(d)) = (active, self.insert_drawing.as_mut()) {
+                // Insert SVG / DXF: the curves where OK would put them, and the
+                // handles at their middle (red: X, green: Y, the box: both).
                 for c in d.placed() {
                     for w in c.sample().windows(2) {
                         view.line(plane.to_world(w[0]), plane.to_world(w[1]), Stroke::new(1.5, COL_PREVIEW));
                     }
+                }
+                let m = d.middle();
+                let len = self.camera.distance as f64 * 0.12;
+                let ends = [m, m + DVec2::new(len, 0.0), m + DVec2::new(0.0, len)];
+                d.screen = match ends.map(|p| view.project(plane.to_world(p))) {
+                    [Some(a), Some(b), Some(c)] => Some([a, b, c]),
+                    _ => None,
+                };
+                if let Some([pm, px, py]) = d.screen {
+                    let hot = Color32::from_rgb(255, 220, 90);
+                    for (g, tip, c) in [(insert_drawing_dialog::Grab::X, px, Color32::from_rgb(230, 70, 70)), (insert_drawing_dialog::Grab::Y, py, Color32::from_rgb(90, 200, 90))] {
+                        let c = if d.hover == Some(g) { hot } else { c };
+                        painter.line_segment([to_pos(pm), to_pos(tip)], Stroke::new(if d.hover == Some(g) { 4.0 } else { 3.0 }, c));
+                        let dir = (tip - pm).normalize_or_zero();
+                        let side = Vec2::new(-dir.y, dir.x);
+                        painter.add(egui::Shape::convex_polygon(vec![to_pos(tip + dir * 14.0), to_pos(tip + side * 7.0), to_pos(tip - side * 7.0)], c, Stroke::NONE));
+                    }
+                    let c = if d.hover == Some(insert_drawing_dialog::Grab::Both) { hot } else { Color32::from_rgb(80, 140, 240) };
+                    let b = egui::Rect::from_center_size(to_pos(pm), egui::vec2(2.0 * insert_drawing_dialog::BOX_PX, 2.0 * insert_drawing_dialog::BOX_PX));
+                    painter.rect(b, 2.0, c.gamma_multiply(0.45), Stroke::new(1.5, c), egui::StrokeKind::Middle);
                 }
             }
             if active {

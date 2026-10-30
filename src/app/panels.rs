@@ -318,9 +318,10 @@ impl OpenCad {
             // The open designs: name, version, a dot when unsaved; × closes.
             let titles = if self.tab_titles.is_empty() { vec![(self.tab_title(), self.is_dirty())] } else { self.tab_titles.clone() };
             let mut rename_done: Option<Option<String>> = None;
-            for (k, (title, _)) in titles.iter().enumerate() {
+            for (k, (title, dirty)) in titles.iter().enumerate() {
                 let current = k == self.tab_index;
-                let text = title.clone();
+                // An asterisk while there are changes since the last save.
+                let text = if *dirty { format!("{title}*") } else { title.clone() };
                 egui::Frame::new()
                     .fill(if current { Color32::from_gray(58) } else { Color32::from_gray(36) })
                     .corner_radius(5.0)
@@ -352,7 +353,7 @@ impl OpenCad {
                                 if current {
                                     r.context_menu(|ui| {
                                         if ui.button("Rename…").clicked() {
-                                            self.renaming_design = Some(self.file_name().trim_end_matches(".ocad").to_string());
+                                            self.renaming_design = Some(self.design_name());
                                             self.rename_select_all = true;
                                             ui.close();
                                         }
@@ -429,7 +430,7 @@ impl OpenCad {
 
     /// This design's tab title: its name and version ("Bracket v3").
     pub(crate) fn tab_title(&self) -> String {
-        let name = self.file_name().trim_end_matches(".ocad").to_string();
+        let name = self.design_name();
         if self.version > 0 { format!("{name} v{}", self.version) } else { name }
     }
 

@@ -5,7 +5,19 @@ use crate::copy_dialog::Action;
 use crate::sketch_import::{Curve, Drawing, Placement, bounds};
 use crate::units::Unit;
 use eframe::egui;
-use glam::DVec2;
+use glam::{DVec2, Vec2};
+
+/// A move handle in the view: an arrow along the sketch's X or Y, or the
+/// box in the middle (both at once).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grab {
+    X,
+    Y,
+    Both,
+}
+
+/// Half the middle box's size (screen px).
+pub const BOX_PX: f32 = 8.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct InsertDrawingDialog {
@@ -13,11 +25,55 @@ pub struct InsertDrawingDialog {
     pub name: String,
     pub drawing: Drawing,
     pub place: Placement,
+    /// The handles as last drawn (screen): the middle, the X and Y arrow tips.
+    pub screen: Option<[Vec2; 3]>,
+    pub hover: Option<Grab>,
+    /// A drag under way: the handle, the offset and the mouse (sketch mm) when it started.
+    pub drag: Option<(Grab, DVec2, DVec2)>,
 }
 
 impl InsertDrawingDialog {
     pub fn new(name: String, drawing: Drawing) -> Self {
-        InsertDrawingDialog { name, drawing, place: Placement::default() }
+        InsertDrawingDialog { name, drawing, place: Placement::default(), screen: None, hover: None, drag: None }
+    }
+
+    /// Where the handles sit: the middle of the curves as placed (sketch mm).
+    pub fn middle(&self) -> DVec2 {
+        bounds(&self.placed()).map_or(self.place.offset, |(lo, hi)| (lo + hi) * 0.5)
+    }
+
+    /// The handle under `p` (screen), from where they were drawn. The box
+    /// wins over the arrows' starts; arrows are picked along their length.
+    pub fn pick(&self, p: Vec2) -> Option<Grab> {
+        let [m, x, y] = self.screen?;
+        if (p - m).abs().max_element() <= BOX_PX {
+            return Some(Grab::Both);
+        }
+        let near = |a: Vec2, b: Vec2| {
+            let ab = b - a;
+            let t = ((p - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+            (a + ab * t).distance(p)
+        };
+        [(Grab::X, near(m, x)), (Grab::Y, near(m, y))].into_iter().filter(|(_, d)| *d < 9.0).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(g, _)| g)
+    }
+
+    /// Start dragging what's under `p` (screen) with the mouse at `at` (sketch mm).
+    pub fn start_drag(&mut self, p: Vec2, at: DVec2) -> bool {
+        self.drag = self.pick(p).map(|g| (g, self.place.offset, at));
+        self.drag.is_some()
+    }
+
+    /// The mouse now at `at` (sketch mm): the drawing follows, along the arrow's axis only.
+    pub fn drag_to(&mut self, at: DVec2) {
+        if let Some((g, offset, from)) = self.drag {
+            let d = at - from;
+            self.place.offset = offset
+                + match g {
+                    Grab::X => DVec2::new(d.x, 0.0),
+                    Grab::Y => DVec2::new(0.0, d.y),
+                    Grab::Both => d,
+                };
+        }
     }
 
     /// The curves where they'd go.
@@ -106,6 +162,28 @@ mod tests {
         assert!(d.ready());
         d.place.scale = 0.0;
         assert!(!d.ready());
+    }
+
+    #[test]
+    fn arrows_move_one_way_and_the_box_both() {
+        let drawing = Drawing { curves: vec![Curve::Line(DVec2::new(0.0, 0.0), DVec2::new(20.0, 10.0))], skipped: Vec::new() };
+        let mut d = InsertDrawingDialog::new("a.dxf".into(), drawing);
+        assert_eq!(d.middle(), DVec2::new(10.0, 5.0));
+        // Drawn: middle at (100, 100) px, X tip to the right, Y tip up.
+        d.screen = Some([Vec2::new(100.0, 100.0), Vec2::new(160.0, 100.0), Vec2::new(100.0, 40.0)]);
+        assert_eq!(d.pick(Vec2::new(103.0, 98.0)), Some(Grab::Both));
+        assert_eq!(d.pick(Vec2::new(140.0, 104.0)), Some(Grab::X));
+        assert_eq!(d.pick(Vec2::new(97.0, 60.0)), Some(Grab::Y));
+        assert_eq!(d.pick(Vec2::new(150.0, 50.0)), None);
+        // The X arrow: only X follows.
+        assert!(d.start_drag(Vec2::new(140.0, 100.0), DVec2::new(15.0, 5.0)));
+        d.drag_to(DVec2::new(22.0, 9.0));
+        assert_eq!(d.place.offset, DVec2::new(7.0, 0.0));
+        // The box: both.
+        assert!(d.start_drag(Vec2::new(100.0, 100.0), DVec2::new(0.0, 0.0)));
+        d.drag_to(DVec2::new(-1.0, 3.0));
+        assert_eq!(d.place.offset, DVec2::new(6.0, 3.0));
+        assert!(!d.start_drag(Vec2::new(300.0, 300.0), DVec2::ZERO));
     }
 
     #[test]

@@ -1726,7 +1726,7 @@ impl eframe::App for Tabs {
             }
         }
         let t = &self.tabs[self.current];
-        let title = format!("{} — Oxide360", t.tab_title());
+        let title = format!("{}{} — Oxide360", t.tab_title(), if t.is_dirty() { "*" } else { "" });
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
