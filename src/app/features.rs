@@ -1689,7 +1689,7 @@ impl OpenCad {
                     let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                     ui.painter().rect_filled(dot, 2.0, COL_INTERFERENCE);
                     ui.label(format!("{} × {}", self.body_name(*a), self.body_name(*b)));
-                    ui.weak(format!("{:.2} mm³", volume));
+                    ui.weak(format!("{} mm³", crate::units::big_number(*volume)));
                 });
             }
         }
@@ -1722,8 +1722,8 @@ impl OpenCad {
                 row("Material", material.name.to_string());
                 row("Density", format!("{:.2} g/cm³", material.density));
                 row("Mass", materials::format_mass(mass));
-                row("Volume", format!("{volume:.2} mm³"));
-                row("Area", format!("{area:.2} mm²"));
+                row("Volume", format!("{} mm³", crate::units::big_number(volume)));
+                row("Area", format!("{} mm²", crate::units::big_number(area)));
                 row("Centre of mass", format!("{:.2}, {:.2}, {:.2} mm", centre.x, centre.y, centre.z));
                 if let Some((lo, hi)) = bounds {
                     let size = hi - lo;

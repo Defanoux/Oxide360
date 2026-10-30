@@ -144,8 +144,21 @@ pub fn parse_angle(text: &str) -> Option<f64> {
     crate::expr::eval(text, crate::expr::Kind::Angle, Unit::Mm).ok()
 }
 
+/// A big quantity (volume, area) as text: two decimals up to a million,
+/// then e-notation so it stays short: "1.000e6".
+pub fn big_number(v: f64) -> String {
+    if v.abs() >= 1e6 { format!("{v:.3e}") } else { format!("{v:.2}") }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn big_numbers_switch_to_e_notation_at_a_million() {
+        assert_eq!(super::big_number(999_999.5), "999999.50");
+        assert_eq!(super::big_number(1_000_000.0), "1.000e6");
+        assert_eq!(super::big_number(123_456_789.0), "1.235e8");
+    }
+
     use super::*;
 
     #[test]
