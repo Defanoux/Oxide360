@@ -101,6 +101,11 @@ impl OpenCad {
         for k in spun {
             self.delete_revolve(k);
         }
+        let mut raised: Vec<usize> = (0..self.embosses.len()).filter(|&k| self.embosses[k].sketch == i).collect();
+        raised.sort_unstable_by(|a, b| b.cmp(a));
+        for k in raised {
+            self.delete_emboss(k);
+        }
         self.sketches.remove(i);
         self.timeline_remove(Feature::Sketch(i));
         for f in &mut self.timeline {
@@ -118,6 +123,11 @@ impl OpenCad {
         for r in &mut self.revolves {
             if r.sketch > i {
                 r.sketch -= 1;
+            }
+        }
+        for e in &mut self.embosses {
+            if e.sketch > i {
+                e.sketch -= 1;
             }
         }
         self.sketch_shown =
@@ -271,6 +281,11 @@ impl OpenCad {
         for r in &mut self.revolves {
             if r.sketch > i {
                 r.sketch -= 1;
+            }
+        }
+        for e in &mut self.embosses {
+            if e.sketch > i {
+                e.sketch -= 1;
             }
         }
         Some(i)

@@ -55,6 +55,7 @@ impl OpenCad {
             Feature::Combine(k) => self.combine_errors.get(k).cloned().flatten(),
             Feature::Split(k) => self.split_errors.get(k).cloned().flatten(),
             Feature::Scale(k) => self.scale_errors.get(k).cloned().flatten(),
+            Feature::Emboss(k) => self.emboss_errors.get(k).cloned().flatten(),
             Feature::Move(k) => self.move_errors.get(k).cloned().flatten(),
             Feature::Point(k) => self.point_errors.get(k).cloned().flatten(),
             Feature::Sweep(k) => self.sweep_errors.get(k).cloned().flatten(),
@@ -291,6 +292,7 @@ impl OpenCad {
             && self.appearance_dialog.is_none()
             && self.split_dialog.is_none()
             && self.scale_dialog.is_none()
+            && self.emboss_dialog.is_none()
             && self.move_dialog.is_none()
             && self.import_dialog.is_none()
             && self.joint_dialog.is_none()
@@ -571,6 +573,7 @@ impl OpenCad {
             Feature::Combine(k) => &mut self.combines.get_mut(k)?.name,
             Feature::Split(k) => &mut self.splits.get_mut(k)?.name,
             Feature::Scale(k) => &mut self.scales.get_mut(k)?.name,
+            Feature::Emboss(k) => &mut self.embosses.get_mut(k)?.name,
             Feature::Move(k) => &mut self.moves.get_mut(k)?.name,
             Feature::Point(k) => &mut self.points.get_mut(k)?.name,
             Feature::Sweep(k) => &mut self.sweeps.get_mut(k)?.name,
@@ -691,6 +694,7 @@ impl OpenCad {
                     Feature::Combine(k) => (self.combines[k].name.clone(), self.combine_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
                     Feature::Split(k) => (self.splits[k].name.clone(), self.split_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
                     Feature::Scale(k) => (self.scales[k].name.clone(), self.scale_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
+                    Feature::Emboss(k) => (self.embosses[k].name.clone(), self.emboss_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
                     Feature::Move(k) => (self.moves[k].name.clone(), self.move_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
                     Feature::Point(k) => (self.points[k].name.clone(), false),
                     Feature::Sweep(k) => (self.sweeps[k].name.clone(), self.sweep_dialog.as_ref().is_some_and(|d| d.editing == Some(k))),
@@ -712,6 +716,7 @@ impl OpenCad {
                     Feature::Combine(_) => Icon::Combine,
                     Feature::Split(_) => Icon::Split,
                     Feature::Scale(_) => Icon::Scale,
+                    Feature::Emboss(_) => Icon::Emboss,
                     Feature::Move(_) => Icon::Move,
                     Feature::Point(_) => Icon::ConstructPoint,
                     Feature::Import(_) => Icon::Import,
@@ -856,6 +861,7 @@ impl OpenCad {
             Some(Feature::Combine(k)) => self.delete_combine(k),
             Some(Feature::Split(k)) => self.delete_split(k),
             Some(Feature::Scale(k)) => self.delete_scale(k),
+            Some(Feature::Emboss(k)) => self.delete_emboss(k),
             Some(Feature::Move(k)) => self.delete_move(k),
             Some(Feature::Point(k)) => self.delete_point(k),
             Some(Feature::Sweep(k)) => self.delete_sweep(k),
@@ -877,6 +883,7 @@ impl OpenCad {
             Some(Feature::Combine(k)) => self.open_combine(Some(k)),
             Some(Feature::Split(k)) => self.open_split(Some(k)),
             Some(Feature::Scale(k)) => self.open_scale(Some(k)),
+            Some(Feature::Emboss(k)) => self.open_emboss(Some(k)),
             Some(Feature::Move(k)) => self.open_move(Some(k)),
             Some(Feature::Axis(_) | Feature::Remove(_) | Feature::Point(_)) => {}
             Some(Feature::Joint(k)) => {

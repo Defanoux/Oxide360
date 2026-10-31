@@ -55,6 +55,7 @@ mod shortcuts;
 mod offset_dialog;
 mod combine_dialog;
 mod scale_dialog;
+mod emboss_dialog;
 mod insert_drawing_dialog;
 mod print3d;
 mod print_check_dialog;
@@ -105,6 +106,7 @@ use appearance_dialog::AppearanceDialog;
 use combine_dialog::CombineDialog;
 use split_dialog::SplitDialog;
 use scale_dialog::ScaleDialog;
+use emboss_dialog::EmbossDialog;
 use move_dialog::MoveDialog;
 use thread_dialog::ThreadDialog;
 use sketch_pattern::{Mode as SpMode, SketchPattern};
@@ -204,6 +206,8 @@ impl OpenCad {
                 "Split Body"
             } else if self.scale_dialog.is_some() {
                 "Scale"
+            } else if self.emboss_dialog.is_some() {
+                "Emboss"
             } else if self.appearance_dialog.is_some() {
                 "Appearance"
             } else if self.move_dialog.is_some() {
@@ -662,6 +666,7 @@ impl KernelCache {
             combines: Vec::new(),
             splits: Vec::new(),
             scales: Vec::new(),
+            embosses: Vec::new(),
             moves: Vec::new(),
             points: Vec::new(),
             sweeps: Vec::new(),
@@ -691,6 +696,7 @@ struct KernelCache {
     combines: Vec<model::CombineFeature>,
     splits: Vec<model::SplitFeature>,
     scales: Vec<model::ScaleFeature>,
+    embosses: Vec<model::EmbossFeature>,
     moves: Vec<model::MoveFeature>,
     points: Vec<model::ConstructionPoint>,
     sweeps: Vec<model::SweepFeature>,
@@ -785,6 +791,10 @@ struct OpenCad {
     scales: Vec<model::ScaleFeature>,          // Scale features
     scale_dialog: Option<ScaleDialog>,
     scale_errors: Vec<Option<String>>,
+    embosses: Vec<model::EmbossFeature>,        // Emboss features
+    emboss_dialog: Option<EmbossDialog>,
+    emboss_errors: Vec<Option<String>>,
+    emboss_hover: Option<(kernel::Cylinder, DVec3)>, // the shaft or hole a click would pick (Emboss)
     scale_hover: Option<BodyId>,               // the body a click would pick (Scale)
     moves: Vec<model::MoveFeature>,            // Move/Copy features
     parameters: Vec<expr::UserParameter>,      // the design's user parameters
@@ -1052,6 +1062,10 @@ impl Default for OpenCad {
             scales: Vec::new(),
             scale_dialog: None,
             scale_errors: Vec::new(),
+            embosses: Vec::new(),
+            emboss_dialog: None,
+            emboss_errors: Vec::new(),
+            emboss_hover: None,
             scale_hover: None,
             moves: Vec::new(),
             parameters: Vec::new(),
@@ -1368,6 +1382,8 @@ impl OpenCad {
                 self.commit_split();
             } else if self.scale_dialog.is_some() {
                 self.commit_scale();
+            } else if self.emboss_dialog.is_some() {
+                self.commit_emboss();
             } else if self.move_dialog.is_some() {
                 self.commit_move();
             } else if self.thread_dialog.is_some() {
@@ -1496,6 +1512,8 @@ impl OpenCad {
             float("split").show(&ctx, |ui| self.split_panel(ui));
         } else if self.scale_dialog.is_some() && self.active.is_none() {
             float("scale").show(&ctx, |ui| self.scale_panel(ui));
+        } else if self.emboss_dialog.is_some() && self.active.is_none() {
+            float("emboss").show(&ctx, |ui| self.emboss_panel(ui));
         } else if self.appearance_dialog.is_some() && self.active.is_none() {
             float("appearance").show(&ctx, |ui| self.appearance_panel(ui));
         } else if self.offset_dialog.is_some() && self.active.is_none() {

@@ -7,7 +7,6 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 Focus: solid and sketch modelling for 3D printing (Gavin, 2026-10-29).
 Fusion's behaviour is the spec for each; FEATURES.md has the full Fusion list.
 
-- **Emboss** (CREATE): sketch text or profiles raised or cut into a curved face.
 - **Pattern along path**, **Draft**.
 - **Joint limits** and motion settings (min/max, animation speed).
 - **Own Flatpak repository** (Flathub's AI policy rules it out — see docs/PROJECT.md): CI builds the Flatpak on each release tag, signs it, publishes the repo on GitHub Pages, plus an `Oxide360.flatpakref` so Discover installs it and shows updates.
@@ -23,6 +22,7 @@ Later (drawings, on hold — few users): views placed by hand (Base / Projected 
 
 ## Done
 
+- Emboss (CREATE; also in the S box): sketch profiles or text raised from a face or cut into it (Emboss / Deboss, depth); on a flat face the sketch (parallel to it) is carried onto it; on a shaft or inside a hole the profiles wrap round it from where the sketch's normal through their middle meets it, lengths along the surface as sketched (exact OCCT: the face built on the cylinder from the flat curves, thickened radially). Timeline feature with edit / delete; deleting the sketch deletes it. SOLID groups now in Fusion's order: Create, Modify, Pattern, Construct. Not yet: other curved faces (spheres, cones, freeform), Horizontal Distance / Rotation Angle, a sketch not along the cylinder's axis.
 - Look: themes (Settings: Dark, Slate, Light — icons inked per theme, tested for contrast); the toolbar a floating rounded card that folds away (chevron at the right of SOLID / SKETCH / DRAWING); the version (v0.1.1, as the GitHub releases) at the title bar's right; the view cube a rounded, smoothly shaded box (hovering an edge or corner lights its whole round); Fillet and Chamfer icons drawn as 3-D blocks. Not yet: a fully light 3D view for the Light theme.
 - Print Check (INSPECT; S box): printer (Bambu P1S / P1P / X1C / A1 / A1 mini, Prusa MK4 / MINI+, Ender-3 V2, or a custom size; kept in Settings) with its bed and build volume drawn; fits or too big by how much (turned 90° if that fits); overhangs past a set limit (45°) shaded yellow to red and their area; the best faces to lay it on (only faces the whole part sits on — nothing through the bed), least support, then most bed contact, then shortest; Lay Flat turns it onto one, on the bed and centred, as a Move in the timeline. Not yet: thin-wall / small-hole checks, bridges counted as fine.
 - Insert SVG / DXF (sketch toolbar INSERT; ctl/MCP `import` with an .svg/.dxf while sketching): lines, exact arcs and circles, ellipses, Béziers as exact control-point splines, DXF splines and polyline bulges; ends that meet share a point so closed shapes make profiles; SVG sizes from width/height + viewBox (else 96 px/in), Y up, groups and transforms; DXF units from $INSUNITS; placed with X / Y / angle / scale (Centre / Corner on Origin) with a preview, one undo step. Left out and listed: SVG text (convert to paths), DXF blocks and text. Not yet: insert into a new sketch from solid mode, drag to place.

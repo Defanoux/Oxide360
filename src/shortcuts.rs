@@ -4,7 +4,7 @@
 
 /// Solid-mode tools (the names `run_solid_tool` takes).
 pub const SOLID: &[&str] = &[
-    "Create Sketch", "Extrude", "Revolve", "Sweep", "Loft", "Pipe", "Coil", "Hole", "Thread",
+    "Create Sketch", "Extrude", "Revolve", "Sweep", "Loft", "Pipe", "Coil", "Emboss", "Hole", "Thread",
     "Offset Plane", "Plane at Angle", "Midplane", "Plane Through Three Points", "Tangent Plane", "Axis Along Edge", "Axis Through Cylinder", "Axis Through Two Points", "Point",
     "Mirror", "Rectangular Pattern", "Circular Pattern",
     "Press Pull", "Fillet", "Chamfer", "Shell", "Move/Copy", "Combine", "Split Body", "Scale", "Appearance", "Print Check", "Change Parameters",

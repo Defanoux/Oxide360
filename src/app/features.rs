@@ -1228,6 +1228,71 @@ impl OpenCad {
         }
     }
 
+    // ---------- emboss ----------
+
+    pub(crate) fn open_emboss(&mut self, editing: Option<usize>) {
+        self.finish_sketch();
+        self.cancel_all_dialogs();
+        self.message = None;
+        self.emboss_dialog = Some(match editing.and_then(|k| self.embosses.get(k).map(|e| (k, e))) {
+            Some((k, e)) => EmbossDialog::from_feature(k, e),
+            None => EmbossDialog::new(format!("Emboss{}", self.embosses.len() + 1)),
+        });
+    }
+
+    pub(crate) fn commit_emboss(&mut self) {
+        let Some(e) = self.emboss_dialog.as_ref().and_then(|d| d.feature()) else {
+            self.message = Some("Pick the profiles and the face to emboss on".into());
+            return;
+        };
+        if let Some(err) = self.dialog_error.clone() {
+            self.message = Some(format!("Can't emboss: {err}"));
+            return;
+        }
+        match self.emboss_dialog.as_ref().and_then(|d| d.editing) {
+            Some(k) => self.embosses[k] = e,
+            None => {
+                self.embosses.push(e);
+                self.timeline_insert(Feature::Emboss(self.embosses.len() - 1));
+            }
+        }
+        self.cancel_emboss();
+    }
+
+    pub(crate) fn cancel_emboss(&mut self) {
+        self.emboss_dialog = None;
+        self.emboss_hover = None;
+    }
+
+    pub(crate) fn delete_emboss(&mut self, k: usize) {
+        if k >= self.embosses.len() {
+            return;
+        }
+        self.cancel_emboss();
+        self.embosses.remove(k);
+        self.timeline_remove(Feature::Emboss(k));
+        for f in &mut self.timeline {
+            if let Feature::Emboss(j) = f {
+                if *j > k {
+                    *j -= 1;
+                }
+            }
+        }
+        // A body it made on its own is gone; later embosses' bodies renumber.
+        self.shift_maker_keys(Feature::Emboss(k));
+    }
+
+    pub(crate) fn emboss_panel(&mut self, ui: &mut egui::Ui) {
+        let error = self.dialog_error.clone();
+        let unit = self.units;
+        let Some(d) = self.emboss_dialog.as_mut() else { return };
+        match d.panel(ui, unit, error.as_deref()) {
+            copy_dialog::Action::Ok => self.commit_emboss(),
+            copy_dialog::Action::Cancel => self.cancel_emboss(),
+            copy_dialog::Action::None => {}
+        }
+    }
+
     /// What to call a picked plane or face in a dialog.
     pub(crate) fn target_name(&self, t: model::ExtrudeTarget) -> String {
         match t {
@@ -1621,6 +1686,7 @@ impl OpenCad {
         self.combine_dialog = None;
         self.cancel_split();
         self.cancel_scale();
+        self.cancel_emboss();
         self.close_appearance();
         self.move_dialog = None;
         self.thread_dialog = None;
@@ -2256,6 +2322,9 @@ impl OpenCad {
 
     /// The profile selection of whichever dialog is open (extrude or revolve).
     pub(crate) fn profile_pick(&self) -> Option<(Option<usize>, &[usize])> {
+        if let Some(d) = self.emboss_dialog.as_ref() {
+            return (d.picking == Some(emboss_dialog::Field::Profiles)).then(|| (d.sketch, d.emboss.profiles.as_slice()));
+        }
         if let Some(d) = &self.dialog {
             Some((d.sketch, d.profiles.as_slice()))
         } else if let Some(d) = &self.revolve_dialog {
@@ -2446,7 +2515,9 @@ impl OpenCad {
     }
 
     pub(crate) fn profile_pick_mut(&mut self) -> Option<(&mut Option<usize>, &mut Vec<usize>)> {
-        if self.dialog.is_some() {
+        if self.emboss_dialog.is_some() {
+            self.emboss_dialog.as_mut().map(|d| (&mut d.sketch, &mut d.emboss.profiles))
+        } else if self.dialog.is_some() {
             self.dialog.as_mut().map(|d| (&mut d.sketch, &mut d.profiles))
         } else {
             self.revolve_dialog.as_mut().map(|d| (&mut d.sketch, &mut d.profiles))

@@ -20,6 +20,7 @@ impl OpenCad {
             combines: self.combines.clone(),
             splits: self.splits.clone(),
             scales: self.scales.clone(),
+            embosses: self.embosses.clone(),
             moves: self.moves.clone(),
             points: self.points.clone(),
             sweeps: self.sweeps.clone(),
@@ -354,6 +355,7 @@ impl OpenCad {
             || self.combines != self.saved.combines
             || self.splits != self.saved.splits
             || self.scales != self.saved.scales
+            || self.embosses != self.saved.embosses
             || self.moves != self.saved.moves
             || self.parameters != self.saved.parameters
             || self.feature_exprs != self.saved.feature_exprs
@@ -475,6 +477,8 @@ impl OpenCad {
         self.split_dialog = None;
         self.scales = doc.scales.clone();
         self.scale_dialog = None;
+        self.embosses = doc.embosses.clone();
+        self.emboss_dialog = None;
         self.moves = doc.moves.clone();
         self.move_dialog = None;
         self.sections = doc.sections.clone();
@@ -583,6 +587,8 @@ impl OpenCad {
         self.split_dialog = None;
         self.scales = doc.scales;
         self.scale_dialog = None;
+        self.embosses = doc.embosses;
+        self.emboss_dialog = None;
         self.moves = doc.moves;
         self.move_dialog = None;
         self.sections = doc.sections;
@@ -783,6 +789,7 @@ impl OpenCad {
         let mut combines = self.combines.clone();
         let mut splits = self.splits.clone();
         let mut scales = self.scales.clone();
+        let mut embosses = self.embosses.clone();
         let mut moves = self.moves.clone();
         let mut sweeps = self.sweeps.clone();
         let mut imports = self.imports.clone();
@@ -900,6 +907,15 @@ impl OpenCad {
                         }
                     }
                 }
+                if let Some((d, e)) = self.emboss_dialog.as_ref().and_then(|d| Some((d, d.feature()?))) {
+                    match d.editing {
+                        Some(k) => embosses[k] = e,
+                        None => {
+                            embosses.push(e);
+                            timeline.push(Feature::Emboss(embosses.len() - 1));
+                        }
+                    }
+                }
                 if let Some(d) = self.scale_dialog.as_ref().filter(|d| d.ready()) {
                     match d.editing {
                         Some(k) => scales[k] = d.scale.clone(),
@@ -971,6 +987,7 @@ impl OpenCad {
             combines,
             splits,
             scales,
+            embosses,
             moves,
             points: self.points.clone(),
             sweeps,
@@ -1002,6 +1019,7 @@ impl OpenCad {
                 && c.combines == inp.combines
                 && c.splits == inp.splits
                 && c.scales == inp.scales
+                && c.embosses == inp.embosses
                 && c.moves == inp.moves
                 && c.points == inp.points
                 && c.sweeps == inp.sweeps
@@ -1057,6 +1075,7 @@ impl OpenCad {
             combines: inp.combines,
             splits: inp.splits,
             scales: inp.scales,
+            embosses: inp.embosses,
             moves: inp.moves,
             points: inp.points,
             sweeps: inp.sweeps,
@@ -1139,6 +1158,7 @@ impl OpenCad {
             Feature::Combine(k) => self.combines.get(k).map(|c| c.name.clone()),
             Feature::Split(k) => self.splits.get(k).map(|c| c.name.clone()),
             Feature::Scale(k) => self.scales.get(k).map(|c| c.name.clone()),
+            Feature::Emboss(k) => self.embosses.get(k).map(|c| c.name.clone()),
             Feature::Move(k) => self.moves.get(k).map(|m| m.name.clone()),
             Feature::Point(k) => self.points.get(k).map(|p| p.name.clone()),
             Feature::Sweep(k) => self.sweeps.get(k).map(|s| s.name.clone()),

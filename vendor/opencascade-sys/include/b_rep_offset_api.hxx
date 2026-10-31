@@ -364,3 +364,110 @@ inline std::unique_ptr<TopoDS_Shape> opencad_try_coil(double ox, double oy, doub
     return nullptr;
   }
 }
+
+// opencad patch: Emboss on a cylinder. `flat` is a planar face in the XY
+// plane whose X is arc length round the cylinder and Y height along its axis
+// (0, 0 where the profile touches it). It is wrapped onto the cylinder of
+// `radius` round the axis through `origin` along `dir` (`anchor`: the way out
+// from the axis to where X = 0), keeping lengths along the surface, then
+// thickened radially by `thickness` (out is +). nullptr on any failure.
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepTools_WireExplorer.hxx>
+#include <BRep_Tool.hxx>
+#include <GeomAPI.hxx>
+#include <Geom2dConvert.hxx>
+#include <Geom2d_BSplineCurve.hxx>
+#include <Geom2d_TrimmedCurve.hxx>
+#include <ShapeFix_Face.hxx>
+#include <gp_Pln.hxx>
+
+inline std::unique_ptr<TopoDS_Shape> opencad_try_wrap_cylinder(const TopoDS_Shape &flat, double ox, double oy, double oz, double dx, double dy, double dz, double ax, double ay, double az,
+                                                               double radius, double thickness) {
+  try {
+    OCC_CATCH_SIGNALS
+    if (!(radius > 0.0) || std::fabs(thickness) < 1e-9) {
+      return nullptr;
+    }
+    // The seam (u = 0) opposite the profile: it sits round u = pi.
+    gp_Ax3 frame(gp_Pnt(ox, oy, oz), gp_Dir(dx, dy, dz), gp_Dir(-ax, -ay, -az));
+    Handle(Geom_CylindricalSurface) surface = new Geom_CylindricalSurface(frame, radius);
+    gp_Pln xy(gp::XOY());
+    TopExp_Explorer fx(flat, TopAbs_FACE);
+    if (!fx.More()) {
+      return nullptr;
+    }
+    TopoDS_Face src = TopoDS::Face(fx.Current());
+    TopoDS_Face face;
+    bool first = true;
+    for (TopExp_Explorer wx(src, TopAbs_WIRE); wx.More(); wx.Next()) {
+      TopoDS_Wire w = TopoDS::Wire(wx.Current());
+      BRepBuilderAPI_MakeWire wm;
+      for (BRepTools_WireExplorer ex(w, src); ex.More(); ex.Next()) {
+        TopoDS_Edge e = ex.Current();
+        double f, l;
+        Handle(Geom_Curve) c3 = BRep_Tool::Curve(e, f, l);
+        if (c3.IsNull()) {
+          return nullptr;
+        }
+        Handle(Geom2d_Curve) c2 = GeomAPI::To2d(c3, xy);
+        Handle(Geom2d_BSplineCurve) bs = Geom2dConvert::CurveToBSplineCurve(new Geom2d_TrimmedCurve(c2, f, l));
+        for (int i = 1; i <= bs->NbPoles(); i++) {
+          gp_Pnt2d p = bs->Pole(i);
+          double u = M_PI + p.X() / radius;
+          if (u <= 0.0 || u >= 2.0 * M_PI) {
+            return nullptr; // more than once round
+          }
+          bs->SetPole(i, gp_Pnt2d(u, p.Y()));
+        }
+        if (e.Orientation() == TopAbs_REVERSED) {
+          bs->Reverse();
+        }
+        TopoDS_Edge on = BRepBuilderAPI_MakeEdge(bs, surface).Edge();
+        BRepLib::BuildCurves3d(on, 1.0e-7, GeomAbs_C1, 14, 200);
+        wm.Add(on);
+        if (!wm.IsDone()) {
+          return nullptr;
+        }
+      }
+      if (first) {
+        face = BRepBuilderAPI_MakeFace(surface, wm.Wire(), true).Face();
+        first = false;
+      } else {
+        BRepBuilderAPI_MakeFace add(face);
+        add.Add(wm.Wire());
+        face = add.Face();
+      }
+    }
+    if (first) {
+      return nullptr;
+    }
+    ShapeFix_Face fix(face);
+    fix.Perform();
+    face = fix.Face();
+    BRepOffset_MakeOffset maker;
+    maker.Initialize(face, thickness, 1.0e-7, BRepOffset_Skin, false, false, GeomAbs_Arc, true);
+    maker.MakeOffsetShape();
+    if (!maker.IsDone()) {
+      return nullptr;
+    }
+    TopoDS_Shape out = maker.Shape();
+    if (out.ShapeType() == TopAbs_SHELL) {
+      BRep_Builder b;
+      TopoDS_Solid solid;
+      b.MakeSolid(solid);
+      b.Add(solid, out);
+      out = solid;
+    }
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(out, props);
+    if (props.Mass() < 0.0) {
+      out.Reverse();
+    }
+    if (!opencad_good_solid(out)) {
+      return nullptr;
+    }
+    return std::unique_ptr<TopoDS_Shape>(new TopoDS_Shape(out));
+  } catch (...) {
+    return nullptr;
+  }
+}

@@ -57,6 +57,8 @@ pub enum Feature {
     Split(usize),
     /// Bodies scaled (index into `scales`).
     Scale(usize),
+    /// Profiles raised from or cut into a face (index into `embosses`).
+    Emboss(usize),
 }
 
 /// Put `f` into the timeline at the rollback marker (the end when there is
@@ -99,6 +101,7 @@ pub fn renumbered(f: Feature, gone: Feature) -> Option<Feature> {
         (Feature::Move(i), Feature::Move(k)) if i > k => Feature::Move(i - 1),
         (Feature::Split(i), Feature::Split(k)) if i > k => Feature::Split(i - 1),
         (Feature::Scale(i), Feature::Scale(k)) if i > k => Feature::Scale(i - 1),
+        (Feature::Emboss(i), Feature::Emboss(k)) if i > k => Feature::Emboss(i - 1),
         (f, _) => f,
     })
 }
@@ -184,6 +187,7 @@ impl BodyId {
             (Feature::Sweep(j), Feature::Sweep(k)) if j > k => Feature::Sweep(j - 1),
             (Feature::Import(j), Feature::Import(k)) if j > k => Feature::Import(j - 1),
             (Feature::Split(j), Feature::Split(k)) if j > k => Feature::Split(j - 1),
+            (Feature::Emboss(j), Feature::Emboss(k)) if j > k => Feature::Emboss(j - 1),
             (f, _) => f,
         };
         Some(BodyId { feature, piece: self.piece })
@@ -250,6 +254,9 @@ pub struct Document {
     /// Scale features. Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scales: Vec<crate::model::ScaleFeature>,
+    /// Emboss features. Older files have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub embosses: Vec<crate::model::EmbossFeature>,
     /// User parameters (Change Parameters). Older files have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parameters: Vec<crate::expr::UserParameter>,
@@ -640,6 +647,16 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             return Err(format!("{}: invalid body, point or factor", sc.name));
         }
     }
+    for e in &doc.embosses {
+        let face_ok = match e.face {
+            Some(crate::model::EmbossFace::Flat { face, anchor }) => face.origin.is_finite() && face.u.is_finite() && face.v.is_finite() && anchor.iter().all(|a| a.is_finite()),
+            Some(crate::model::EmbossFace::Round(c)) => c.axis_point.is_finite() && c.axis.is_finite() && c.at.is_finite() && c.radius.is_finite() && c.radius > 0.0,
+            None => true,
+        };
+        if !(face_ok && e.sketch < doc.sketches.len() && e.depth.is_finite() && e.depth > 0.0) {
+            return Err(format!("{}: invalid sketch, face or depth", e.name));
+        }
+    }
     for of in &doc.offset_faces {
         let ok = of.distance.is_finite() && of.faces.iter().all(|f| f.face.origin.is_finite() && f.face.u.is_finite() && f.face.v.is_finite() && f.anchor.iter().all(|a| a.is_finite()));
         if !ok {
@@ -713,6 +730,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     let mut seen_j = vec![false; doc.joints.len()];
     let mut seen_sp = vec![false; doc.splits.len()];
     let mut seen_sc = vec![false; doc.scales.len()];
+    let mut seen_em = vec![false; doc.embosses.len()];
     for f in &doc.timeline {
         let slot = match *f {
             Feature::Sketch(i) => seen_s.get_mut(i),
@@ -735,6 +753,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Feature::Joint(i) => seen_j.get_mut(i),
             Feature::Split(i) => seen_sp.get_mut(i),
             Feature::Scale(i) => seen_sc.get_mut(i),
+            Feature::Emboss(i) => seen_em.get_mut(i),
         };
         match slot {
             Some(s) if !*s => *s = true,
@@ -744,7 +763,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
     if doc.suppressed.iter().any(|f| !doc.timeline.contains(f)) {
         return Err("a suppressed feature isn't in the timeline".into());
     }
-    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).chain(&seen_sh).chain(&seen_of).chain(&seen_cb).chain(&seen_mv).chain(&seen_pt).chain(&seen_sw).chain(&seen_im).chain(&seen_j).chain(&seen_sp).chain(&seen_sc).any(|s| !s) {
+    if seen_s.iter().chain(&seen_e).chain(&seen_f).chain(&seen_r).chain(&seen_c).chain(&seen_a).chain(&seen_p).chain(&seen_x).chain(&seen_h).chain(&seen_t).chain(&seen_sh).chain(&seen_of).chain(&seen_cb).chain(&seen_mv).chain(&seen_pt).chain(&seen_sw).chain(&seen_im).chain(&seen_j).chain(&seen_sp).chain(&seen_sc).chain(&seen_em).any(|s| !s) {
         return Err("timeline is missing a feature".into());
     }
     Ok(())
@@ -883,6 +902,7 @@ mod tests {
             combines: Vec::new(),
             splits: Vec::new(),
             scales: Vec::new(),
+            embosses: Vec::new(),
             moves: Vec::new(),
             sections: Vec::new(),
             points: Vec::new(),
@@ -1088,6 +1108,27 @@ mod tests {
         bad.timeline.pop();
         assert!(validate(&bad).is_err(), "missing from the timeline");
         assert_eq!(renumbered(Feature::Scale(2), Feature::Scale(0)), Some(Feature::Scale(1)));
+    }
+
+    #[test]
+    fn embosses_save_and_bad_ones_are_refused() {
+        use crate::model::{CylinderRef, EmbossFace, EmbossFeature};
+        let mut doc = sample();
+        let c = CylinderRef { axis_point: glam::DVec3::ZERO, axis: glam::DVec3::Z, radius: 5.0, at: glam::DVec3::new(0.0, -5.0, 1.0), internal: false, length: 10.0 };
+        doc.embosses.push(EmbossFeature { name: "Emboss1".into(), sketch: 0, profiles: vec![0], face: Some(EmbossFace::Round(c)), depth: 0.6, deboss: true });
+        doc.timeline.push(Feature::Emboss(0));
+        assert_eq!(from_json(&to_json(&doc)).unwrap().embosses, doc.embosses);
+        assert!(!to_json(&sample()).contains("embosses"), "nothing stored when there are none");
+        let mut bad = doc.clone();
+        bad.embosses[0].sketch = 7;
+        assert!(from_json(&to_json(&bad)).is_err());
+        let mut bad = doc.clone();
+        bad.embosses[0].depth = -1.0;
+        assert!(from_json(&to_json(&bad)).is_err());
+        let mut bad = doc;
+        bad.timeline.pop();
+        assert!(from_json(&to_json(&bad)).is_err(), "not in the timeline");
+        assert_eq!(renumbered(Feature::Emboss(2), Feature::Emboss(0)), Some(Feature::Emboss(1)));
     }
 
     #[test]

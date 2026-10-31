@@ -76,6 +76,7 @@ pub(crate) fn tool_icon(name: &str, sketching: bool) -> Option<Icon> {
         ("Insert SVG / DXF", _) => Icon::Import,
         ("Print Check", _) => Icon::PrintCheck,
         ("Scale", _) => Icon::Scale,
+        ("Emboss", _) => Icon::Emboss,
         ("Appearance", _) => Icon::Appearance,
         ("Change Parameters", _) => Icon::Parameters,
         ("Measure", _) => Icon::Measure,

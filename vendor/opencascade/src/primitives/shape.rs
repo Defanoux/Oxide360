@@ -319,6 +319,16 @@ impl Shape {
         (!made.is_null()).then(|| Self::from_shape(&made))
     }
 
+    /// opencad patch: Emboss — this flat face (in the XY plane: X is length
+    /// round the cylinder, Y along its axis) wrapped onto the cylinder of
+    /// `radius` round the axis through `origin` along `dir` (X = 0 where
+    /// `anchor` points out from the axis), thickened radially by `thickness`
+    /// (out is +).
+    pub fn try_wrap_cylinder(&self, origin: DVec3, dir: DVec3, anchor: DVec3, radius: f64, thickness: f64) -> Option<Self> {
+        let made = ffi::b_rep_offset_api::opencad_try_wrap_cylinder(&self.inner, origin.x, origin.y, origin.z, dir.x, dir.y, dir.z, anchor.x, anchor.y, anchor.z, radius, thickness);
+        (!made.is_null()).then(|| Self::from_shape(&made))
+    }
+
     /// opencad patch: scaled about `point` by `factors` (X, Y, Z); equal
     /// factors keep the exact geometry.
     pub fn try_scaled_xyz(&self, point: DVec3, factors: DVec3) -> Option<Self> {

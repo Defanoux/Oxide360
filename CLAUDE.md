@@ -153,6 +153,7 @@ lists there).
 | `units.rs`, `expr.rs`, `params_window.rs`, `threads.rs`, `keys.rs`, `settings.rs`, `shortcuts.rs`, `help.rs` | units + parsing, parameters/expressions, thread tables, key bindings, preferences file, tool names for menus/search, Help text + app icon |
 | `export.rs`, `sketch_export.rs`, `recovery.rs` | STL/3MF/OBJ export, sketch DXF/SVG, autosave + crash recovery |
 | `sketch_palette.rs` | the Sketch Palette (show switches, Slice) |
+| `emboss_dialog.rs` | Emboss: profiles, face (flat or cylinder), depth, Emboss / Deboss (`kernel::emboss_tool` wraps round cylinders) |
 | `sketch_import.rs` | Insert SVG / DXF: reading drawings into sketch curves |
 | `theme.rs` | colour themes (Dark, Slate, Light): egui visuals, view background, grid and icon ink — use `theme::now()` instead of fixed greys on panels |
 | `print3d.rs` | Print Check: printers, overhangs, fit, best orientations (`kernel::lay_flat` turns it) |

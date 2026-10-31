@@ -45,6 +45,7 @@ pub enum Icon {
     Appearance,
     Split,
     Scale,
+    Emboss,
     /// The sketch tools' Fillet and Chamfer: a flat corner (the solid ones are 3-D blocks).
     SketchFillet,
     SketchChamfer,
@@ -149,7 +150,7 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             // A highlight on a body (a fillet's round, a cut's line) takes the opposite colour.
             let highlight = matches!(
                 icon,
-                Icon::Revolve | Icon::SketchFillet | Icon::SketchChamfer | Icon::Fillet | Icon::Chamfer | Icon::PressPull | Icon::Split | Icon::Scale | Icon::PrintCheck | Icon::Combine | Icon::Sweep | Icon::Pipe | Icon::Joint | Icon::Import | Icon::Section
+                Icon::Revolve | Icon::SketchFillet | Icon::SketchChamfer | Icon::Fillet | Icon::Chamfer | Icon::PressPull | Icon::Split | Icon::Scale | Icon::Emboss | Icon::PrintCheck | Icon::Combine | Icon::Sweep | Icon::Pipe | Icon::Joint | Icon::Import | Icon::Section
             );
             let accent = if highlight { crate::theme::complement(c) } else { c };
             (tint(mix(c, 255, 0.15)), tint(mix(c, 0, 0.3)), tint(accent), tint(c))
@@ -557,6 +558,25 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             poly(&[(0.08, 0.56), (0.44, 0.56), (0.44, 0.92), (0.08, 0.92)], blue);
             line((0.46, 0.54), (0.8, 0.2), Stroke::new(thin.width * 1.3, ink));
             arrow_head((0.84, 0.16), (0.66, 0.34), ink);
+        }
+        Icon::Emboss => {
+            // A round shaft (its top an ellipse) with a raised letter on its front.
+            let ell = |cy: f32, from: f32, to: f32| -> Vec<(f32, f32)> {
+                (0..=16).map(|k| {
+                    let a = from + (to - from) * k as f32 / 16.0;
+                    (0.5 + 0.36 * a.cos(), cy + 0.1 * a.sin())
+                }).collect()
+            };
+            let pi = std::f32::consts::PI;
+            // The side: down one edge, round the bottom's front half, up the other.
+            let mut side = vec![(0.14, 0.2)];
+            side.extend(ell(0.84, pi, 0.0).into_iter().rev());
+            side.push((0.86, 0.2));
+            let mut v: Vec<Pos2> = side.iter().map(|&(x, y)| p(x, y)).collect();
+            v.extend(ell(0.2, 0.0, pi).iter().map(|&(x, y)| p(x, y)));
+            painter.add(egui::Shape::Path(egui::epaint::PathShape { points: v, closed: true, fill: blue_dark, stroke: egui::epaint::PathStroke::NONE }));
+            painter.add(egui::Shape::convex_polygon(ell(0.2, 0.0, 2.0 * pi).iter().map(|&(x, y)| p(x, y)).collect(), blue, Stroke::NONE));
+            painter.text(p(0.5, 0.56), egui::Align2::CENTER_CENTER, "A", egui::FontId::proportional(w * 0.56), orange);
         }
         Icon::PrintCheck => {
             // A printer's nozzle laying down a part on the bed, its overhang shaded.
@@ -1173,7 +1193,7 @@ mod shot_tests {
         let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
         crate::ui_shot::shot(&format!("{dir}/icons_modify.png"), [720, 80], |ui| {
             ui.horizontal(|ui| {
-                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil, Icon::Import, Icon::Interference, Icon::Component, Icon::Joint, Icon::Appearance, Icon::Split, Icon::Scale, Icon::PrintCheck, Icon::SketchFillet, Icon::SketchChamfer] {
+                for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil, Icon::Import, Icon::Interference, Icon::Component, Icon::Joint, Icon::Appearance, Icon::Split, Icon::Scale, Icon::Emboss, Icon::PrintCheck, Icon::SketchFillet, Icon::SketchChamfer] {
                     button(ui, icon, "", true, false);
                 }
             });
@@ -1183,7 +1203,7 @@ mod shot_tests {
             crate::ui_shot::shot(&format!("{dir}/icons_{name}.png"), [420, 50], |ui| {
                 ui.horizontal(|ui| {
                     with_tint(Some(c), || {
-                        for icon in [Icon::Fillet, Icon::Chamfer, Icon::SketchFillet, Icon::SketchChamfer, Icon::PressPull, Icon::Split, Icon::Scale, Icon::Combine, Icon::Revolve, Icon::Sweep, Icon::Extrude] {
+                        for icon in [Icon::Fillet, Icon::Chamfer, Icon::SketchFillet, Icon::SketchChamfer, Icon::PressPull, Icon::Split, Icon::Scale, Icon::Emboss, Icon::Combine, Icon::Revolve, Icon::Sweep, Icon::Extrude] {
                             button(ui, icon, "", true, false);
                         }
                     });

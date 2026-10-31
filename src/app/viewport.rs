@@ -871,6 +871,41 @@ impl OpenCad {
             self.cancel_thread(); // Esc ends the command, as in Fusion
         }
 
+        // --- Emboss: the face it goes on (a flat face, a shaft or the inside of a hole) ---
+        self.emboss_hover = None;
+        if self.emboss_dialog.as_ref().is_some_and(|d| d.picking == Some(emboss_dialog::Field::Face)) && self.active.is_none() {
+            if let Some(px) = hover_px {
+                let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
+                self.emboss_hover = self.cylinder_under(&ray);
+                if self.emboss_hover.is_none() {
+                    let found = self.pick_face(&ray);
+                    self.face_pick_point = found.map(|(t, ..)| (ray.origin + ray.dir * t).as_dvec3());
+                    self.face_hover = found.map(|(_, b, face)| (b, face));
+                }
+            }
+            if response.clicked() {
+                let picked = match (self.emboss_hover, self.face_hover) {
+                    (Some((c, at)), _) => Some(model::EmbossFace::Round(c.as_ref(at))),
+                    (None, Some((_, face))) => {
+                        // Kept as picked; the kernel finds the face again every build.
+                        let q = self.face_pick_point.unwrap_or(face.origin);
+                        Some(model::EmbossFace::Flat { face: sketch::FacePlane { follow: None, ..face }, anchor: [q.dot(face.u), q.dot(face.v)] })
+                    }
+                    _ => None,
+                };
+                if let (Some(f), Some(d)) = (picked, self.emboss_dialog.as_mut()) {
+                    d.set_face(f);
+                }
+            }
+            if esc && !typing {
+                if let Some(d) = self.emboss_dialog.as_mut() {
+                    d.picking = None;
+                }
+            }
+        } else if self.emboss_dialog.as_ref().is_some_and(|d| d.picking.is_none()) && esc && !typing {
+            self.cancel_emboss(); // Esc ends the command, as in Fusion
+        }
+
         // --- Joint: the snap under the mouse (a round edge's centre, or the snap point of a flat face nearest the mouse: its middle, a side's middle, a corner); a click takes it ---
         self.joint_hover = None;
         self.snap_preview.clear();
@@ -1130,9 +1165,13 @@ impl OpenCad {
                 }
             }
             if esc && !typing {
-                self.cancel_extrude();
-                self.cancel_revolve();
-                self.sweep_dialog = None;
+                if let Some(d) = self.emboss_dialog.as_mut() {
+                    d.picking = None;
+                } else {
+                    self.cancel_extrude();
+                    self.cancel_revolve();
+                    self.sweep_dialog = None;
+                }
             }
         } else if matches!(self.construct_pick, Some(ConstructPick::ThreePoints(_) | ConstructPick::AxisTwoPoints(_) | ConstructPick::Tangent | ConstructPick::AxisCylinder)) {
             // --- Plane Through Three Points / Axis Through Two Points: click corners;
@@ -2619,7 +2658,7 @@ impl OpenCad {
         self.print_check_update();
         crate::mark("draw: bodies (from the kernel; with an");
         // --- draw: bodies (from the kernel; with an open dialog previewed) ---
-        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some() || self.move_dialog.is_some() || self.sweep_dialog.is_some() || self.import_dialog.is_some() || self.joint_dialog.is_some() || self.split_dialog.is_some() || self.scale_dialog.is_some();
+        let previewing = self.dialog.is_some() || self.edge_dialog.is_some() || self.revolve_dialog.is_some() || self.copy_dialog.is_some() || self.plane_dialog.is_some() || self.hole_dialog.is_some() || self.thread_dialog.is_some() || self.shell_dialog.is_some() || self.offset_dialog.is_some() || self.combine_dialog.is_some() || self.move_dialog.is_some() || self.sweep_dialog.is_some() || self.import_dialog.is_some() || self.joint_dialog.is_some() || self.split_dialog.is_some() || self.scale_dialog.is_some() || self.emboss_dialog.is_some();
         // The committed design always drives the timeline errors and body list.
         self.ensure_model(Slot::Committed);
         self.adopt_linked_sketches();
@@ -2638,6 +2677,7 @@ impl OpenCad {
         self.combine_errors = self.model(Slot::Committed).combine_errors.clone();
         self.split_errors = self.model(Slot::Committed).split_errors.clone();
         self.scale_errors = self.model(Slot::Committed).scale_errors.clone();
+        self.emboss_errors = self.model(Slot::Committed).emboss_errors.clone();
         self.move_errors = self.model(Slot::Committed).move_errors.clone();
         self.point_errors = self.model(Slot::Committed).point_errors.clone();
         self.sweep_errors = self.model(Slot::Committed).sweep_errors.clone();
@@ -2692,6 +2732,9 @@ impl OpenCad {
         } else if let Some(d) = &self.scale_dialog {
             let k = d.editing.unwrap_or(self.scales.len());
             if d.ready() { model.scale_errors.get(k).cloned().flatten() } else { None }
+        } else if let Some(d) = &self.emboss_dialog {
+            let k = d.editing.unwrap_or(self.embosses.len());
+            if d.ready() { model.emboss_errors.get(k).cloned().flatten() } else { None }
         } else if let Some(d) = &self.offset_dialog {
             let k = d.editing.unwrap_or(self.offset_faces.len());
             if d.offset.faces.is_empty() { None } else { model.offset_face_errors.get(k).cloned().flatten() }
@@ -2997,6 +3040,26 @@ impl OpenCad {
 
         if self.move_dialog.as_ref().is_some_and(|d| d.picking) {
             painter.text(over.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, "Click the bodies to move; click one again to drop it   (Esc when done)", egui::FontId::proportional(15.0), Color32::from_gray(220));
+        }
+        if let Some(hint) = self.emboss_dialog.as_ref().and_then(|d| d.hint()) {
+            painter.text(over.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));
+        }
+        // The shaft or hole a click would put the emboss on: its two end rings.
+        if let Some((c, at)) = self.emboss_hover {
+            let r = c.as_ref(at);
+            let u = model::zero_normal(r.axis, DVec3::Z);
+            let v = r.axis.cross(u);
+            for z in [0.0, c.length] {
+                let pts: Vec<Vec3> = (0..=48)
+                    .map(|k| {
+                        let a = k as f64 / 48.0 * std::f64::consts::TAU;
+                        (r.axis_point + r.axis * z + (u * a.cos() + v * a.sin()) * r.radius).as_vec3()
+                    })
+                    .collect();
+                for w in pts.windows(2) {
+                    view.line(w[0], w[1], Stroke::new(3.0, COL_HOVER));
+                }
+            }
         }
         if let Some(hint) = self.split_dialog.as_ref().and_then(|d| d.hint()) {
             painter.text(over.center_top() + egui::vec2(0.0, 40.0), egui::Align2::CENTER_TOP, hint, egui::FontId::proportional(15.0), Color32::from_gray(220));

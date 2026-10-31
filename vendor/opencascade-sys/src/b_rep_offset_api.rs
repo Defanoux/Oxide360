@@ -30,6 +30,10 @@ mod inner {
             r_in: f64, r_out: f64, w_in: f64, w_out: f64, pitch: f64, length: f64, right_hand: bool, taper: f64,
         ) -> UniquePtr<TopoDS_Shape>;
 
+        /// opencad patch: Emboss — a flat face (X arc length, Y height) wrapped
+        /// onto a cylinder and thickened radially (null on failure).
+        #[allow(clippy::too_many_arguments)]
+        pub fn opencad_try_wrap_cylinder(flat: &TopoDS_Shape, ox: f64, oy: f64, oz: f64, dx: f64, dy: f64, dz: f64, ax: f64, ay: f64, az: f64, radius: f64, thickness: f64) -> UniquePtr<TopoDS_Shape>;
         /// opencad patch: Sweep — the face along the path (null on failure).
         pub fn opencad_try_sweep(profile: &TopoDS_Face, path: &TopoDS_Wire) -> UniquePtr<TopoDS_Shape>;
         /// opencad patch: Coil — a section swept round a helix (null on failure).

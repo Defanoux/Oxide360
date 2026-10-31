@@ -782,6 +782,8 @@ impl OpenCad {
             "Combine" => self.open_combine(None),
             "Split Body" if self.split_dialog.is_some() => self.cancel_split(),
             "Split Body" => self.open_split(None),
+            "Emboss" if self.emboss_dialog.is_some() => self.cancel_emboss(),
+            "Emboss" => self.open_emboss(None),
             "Scale" if self.scale_dialog.is_some() => self.cancel_scale(),
             "Scale" => self.open_scale(None),
             "Print Check" => {
@@ -965,6 +967,7 @@ impl OpenCad {
                     ToolItem { name: "Loft", icon: Icon::Loft, tip: "Loft: a shape through profiles on two or more sketches, in order", enabled: can_profile, on: self.sweep_dialog.as_ref().is_some_and(|d| d.mode == sweep_dialog::Mode::Loft) },
                     ToolItem { name: "Pipe", icon: Icon::Pipe, tip: "Pipe: a round section along a path of sketch curves (solid or hollow)", enabled: !self.sketches.is_empty(), on: self.sweep_dialog.as_ref().is_some_and(|d| d.mode == sweep_dialog::Mode::Pipe) },
                     ToolItem { name: "Coil", icon: Icon::Coil, tip: "Coil: a spring — click a plane or face, then set its size and turns", enabled: true, on: self.sweep_dialog.as_ref().is_some_and(|d| d.mode == sweep_dialog::Mode::Coil) },
+                    ToolItem { name: "Emboss", icon: Icon::Emboss, tip: "Emboss: raise sketch profiles or text from a face, or cut them in — on a flat face, or wrapped round a shaft or hole", enabled: can_profile && has_bodies, on: self.emboss_dialog.is_some() },
                     ToolItem { name: "Hole", icon: Icon::Hole, tip: "Hole (H): click sketch points, circles or a face; counterbore, countersink, clearance and tapped holes", enabled: has_bodies, on: self.hole_dialog.is_some() },
                     ToolItem { name: "Thread", icon: Icon::Thread, tip: "Thread: click a shaft or the inside of a hole; shown or modeled, ISO and Unified sizes", enabled: has_bodies, on: self.thread_dialog.is_some() },
                 ];

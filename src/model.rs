@@ -639,6 +639,34 @@ impl Default for SplitFeature {
     }
 }
 
+/// The face Emboss goes on, as picked: a flat face (and where on it, in its
+/// plane's coordinates) or a cylinder (shaft or hole). Found again each build.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum EmbossFace {
+    Flat { face: FacePlane, anchor: [f64; 2] },
+    Round(CylinderRef),
+}
+
+/// Fusion's Emboss: sketch profiles (text too) raised from a face or cut into
+/// it, wrapped round a cylinder so lengths along it match the sketch.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EmbossFeature {
+    pub name: String,
+    pub sketch: usize,
+    /// Regions of the sketch (as `Extrude::profiles`).
+    pub profiles: Vec<usize>,
+    pub face: Option<EmbossFace>,
+    pub depth: f64,
+    /// Cut into the face (else raised from it).
+    pub deboss: bool,
+}
+
+impl Default for EmbossFeature {
+    fn default() -> Self {
+        EmbossFeature { name: "Emboss1".into(), sketch: 0, profiles: Vec::new(), face: None, depth: 1.0, deboss: false }
+    }
+}
+
 /// Where Scale scales about.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ScaleAt {
