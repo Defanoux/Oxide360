@@ -28,5 +28,7 @@ mod inner {
         pub fn opencad_try_brep_from_string(text: &str) -> UniquePtr<TopoDS_Shape>;
         /// opencad patch: the exact bounding box into `out` (6 numbers; false on failure).
         pub fn opencad_try_exact_bounds(shape: &TopoDS_Shape, out: &mut [f64]) -> bool;
+        /// opencad patch: a cylindrical face's axis point, axis, radius, length and middle point into `out` (11 numbers; false if not a cylinder).
+        pub fn opencad_try_face_cylinder(face: &TopoDS_Face, out: &mut [f64]) -> bool;
     }
 }

@@ -48,7 +48,7 @@ impl OpenCad {
     /// Is a sketch drawn? By default a sketch used by a feature hides itself
     /// (like Fusion); the browser's checkbox overrides that either way.
     pub(crate) fn sketch_visible(&self, i: usize) -> bool {
-        let used = self.extrudes.iter().any(|e| e.sketch == i) || self.revolves.iter().any(|r| r.sketch == i);
+        let used = self.extrudes.iter().any(|e| e.sketch == i) || self.revolves.iter().any(|r| r.sketch == i) || self.embosses.iter().any(|e| e.sketch == i);
         // A sketch the marker is still before doesn't exist yet.
         let built = self.timeline.iter().position(|f| *f == Feature::Sketch(i)).is_none_or(|p| p < self.applied());
         built && self.sketch_shown.get(&i).copied().unwrap_or(!used)

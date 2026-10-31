@@ -108,7 +108,8 @@ impl EmbossDialog {
                 ui.selectable_value(&mut self.emboss.deboss, true, "Deboss").on_hover_text("Cut into the face");
             });
             ui.end_row();
-            ui.label("Depth");
+            // Raised: how high; cut in: how deep.
+            ui.label(if self.emboss.deboss { "Depth" } else { "Height" });
             ui.add(crate::units::length_drag(&mut self.emboss.depth, unit, 0.05).range(0.001..=f64::MAX).update_while_editing(false));
             ui.end_row();
         });
@@ -203,5 +204,17 @@ mod demo {
         doc.extrudes = vec![Extrude { op: Operation::NewBody, name: "Extrude1".into(), sketch: 0, profiles: vec![0], distance: 40.0, extent: Default::default(), distance2: 0.0, taper: 0.0, target: None }];
         doc.timeline = vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Sketch(1)];
         crate::doc::save(std::path::Path::new(&format!("{dir}/emboss_demo.ox360")), &doc).unwrap();
+        // The same shaft with a hole across it, and text on the XY plane along the hole.
+        let mut cross = Sketch::new("Sketch3".into(), OriginPlane::XZ);
+        ed.set_tool(Tool::Circle);
+        ed.click(&mut cross, Anchor::Free(DVec2::new(0.0, 20.0)));
+        ed.click(&mut cross, Anchor::Free(DVec2::new(6.0, 20.0)));
+        let mut inside = Sketch::new("Sketch4".into(), OriginPlane::XY);
+        let st = SketchText { text: "AB".into(), height: 3.0, font: crate::text::HACK.into(), bold: false, italic: false, angle: 0.0 };
+        inside.add_text(Anchor::Free(DVec2::new(-2.5, -11.0)), st);
+        doc.sketches = vec![doc.sketches[0].clone(), cross, inside];
+        doc.extrudes.push(Extrude { op: Operation::Cut, name: "Extrude2".into(), sketch: 1, profiles: vec![0], distance: 40.0, extent: crate::model::Extent::Symmetric, distance2: 0.0, taper: 0.0, target: None });
+        doc.timeline = vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Sketch(1), Feature::Extrude(1), Feature::Sketch(2)];
+        crate::doc::save(std::path::Path::new(&format!("{dir}/emboss_hole.ox360")), &doc).unwrap();
     }
 }

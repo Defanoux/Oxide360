@@ -212,3 +212,37 @@ inline bool opencad_try_exact_bounds(const TopoDS_Shape &shape, rust::Slice<doub
     return false;
   }
 }
+
+// opencad patch: a face lying on a cylinder (whatever its edges): into `out`
+// a point on the axis (where the face's lowest v is), the axis, the radius,
+// how far the face runs along the axis, and a point on the face (its middle).
+// False when the face isn't cylindrical.
+#include <BRepAdaptor_Surface.hxx>
+#include <BRepTools.hxx>
+#include <gp_Cylinder.hxx>
+
+inline bool opencad_try_face_cylinder(const TopoDS_Face &face, rust::Slice<double> out) {
+  try {
+    OCC_CATCH_SIGNALS
+    if (out.size() < 11) {
+      return false;
+    }
+    BRepAdaptor_Surface s(face, true);
+    if (s.GetType() != GeomAbs_Cylinder) {
+      return false;
+    }
+    gp_Cylinder c = s.Cylinder();
+    double u0, u1, v0, v1;
+    BRepTools::UVBounds(face, u0, u1, v0, v1);
+    gp_Ax3 ax = c.Position();
+    gp_Pnt o = ax.Location().Translated(gp_Vec(ax.Direction()) * v0);
+    gp_Pnt mid = s.Value(0.5 * (u0 + u1), 0.5 * (v0 + v1));
+    double vals[11] = {o.X(), o.Y(), o.Z(), ax.Direction().X(), ax.Direction().Y(), ax.Direction().Z(), c.Radius(), v1 - v0, mid.X(), mid.Y(), mid.Z()};
+    for (int i = 0; i < 11; i++) {
+      out[i] = vals[i];
+    }
+    return true;
+  } catch (...) {
+    return false;
+  }
+}

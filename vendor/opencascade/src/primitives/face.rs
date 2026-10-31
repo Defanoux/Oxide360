@@ -429,6 +429,15 @@ impl Face {
         CompoundFace::from_compound(compound)
     }
 
+    /// opencad patch: the cylinder this face lies on, whatever its edges:
+    /// (a point on the axis level with the face's start, the axis, the
+    /// radius, how far the face runs along the axis, a point in its middle).
+    pub fn try_cylinder(&self) -> Option<(DVec3, DVec3, f64, f64, DVec3)> {
+        let mut o = [0.0; 11];
+        ffi::b_rep_tools::opencad_try_face_cylinder(&self.inner, &mut o)
+            .then(|| (DVec3::new(o[0], o[1], o[2]), DVec3::new(o[3], o[4], o[5]), o[6], o[7], DVec3::new(o[8], o[9], o[10])))
+    }
+
     pub fn surface_area(&self) -> f64 {
         let mut props = ffi::g_prop::GProps_new();
 

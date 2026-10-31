@@ -832,7 +832,7 @@ fn apply_split(current: Tagged, sp: &SplitFeature, k: usize, planes: &[Option<Fa
 fn emboss_tool(sketches: &[Sketch], frames: &[Option<FacePlane>], e: &EmbossFeature, bodies: &[&Shape]) -> Result<Shape, String> {
     let sk = sketches.get(e.sketch).ok_or("its sketch was deleted")?;
     if !e.depth.is_finite() || e.depth <= 1e-6 {
-        return Err("depth is zero".into());
+        return Err(if e.deboss { "depth is zero" } else { "height is zero" }.into());
     }
     if e.profiles.is_empty() {
         return Err("no profiles selected".into());
@@ -1186,6 +1186,56 @@ mod emboss_tests {
         assert_eq!(joined.solids().len(), 1);
         let cut = body.try_subtract(&emboss_tool(&[sk], &[None], &EmbossFeature { deboss: true, ..e }, &[&body]).unwrap()).unwrap();
         assert!(cut.volume() < body.volume());
+    }
+
+    /// A hole drilled across a shaft: its wall's ends aren't circles, but it's
+    /// still a cylinder to pick (inside) and emboss on.
+    #[test]
+    fn a_cross_hole_is_picked_and_embossed() {
+        let (shaft, _) = shaft();
+        let drill = Shape::cylinder(kv(DVec3::new(0.0, -20.0, 15.0)), 4.0, kv(DVec3::Y), 40.0);
+        let body = shaft.try_subtract(&drill).unwrap();
+        let bore = (0..body.faces().count()).find_map(|i| cylinder_face(&body, i).filter(|c| (c.radius - 4.0).abs() < 1e-9)).expect("the cross hole");
+        assert!(bore.internal && bore.axis.dot(DVec3::Y).abs() > 1.0 - 1e-9, "{bore:?}");
+        assert!((0..body.faces().count()).all(|i| whole_cylinder_face(&body, i).is_none_or(|c| c.radius > 5.0)), "not a whole cylinder");
+        // On the XY plane (along the hole's axis): raised from the hole's bottom, inwards.
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk, -1.0, -8.0, 1.0, -6.0);
+        let at = DVec3::new(0.0, -7.0, 11.0);
+        let face = EmbossFace::Round(bore.as_ref(at));
+        let e = EmbossFeature { sketch: 0, profiles: vec![0], face: Some(face), depth: 0.5, ..Default::default() };
+        let tool = emboss_tool(&[sk], &[None], &e, &[&body]).unwrap();
+        let v = 4.0 * (8.0 * 0.5 - 0.25) / 8.0;
+        assert!(near(tool.volume(), v), "{} vs {v}", tool.volume());
+        // On the hole's low side: from its wall (z 11 at the middle) in to radius 3.5
+        // (z up to 15 − 3.5 cos 0.25 at the sides).
+        let (lo, hi) = tool.try_exact_bounds().map(|(a, b)| (a.z, b.z)).unwrap();
+        assert!((lo - 11.0).abs() < 1e-6 && (hi - (15.0 - 3.5 * 0.25f64.cos())).abs() < 1e-6, "{lo} {hi}");
+    }
+
+    #[test]
+    fn text_in_a_cross_hole() {
+        let base = Shape::cylinder_radius_height(15.0, 40.0);
+        let drill = Shape::cylinder(kv(DVec3::new(0.0, -20.0, 20.0)), 6.0, kv(DVec3::Y), 40.0);
+        let body = base.try_subtract(&drill).unwrap();
+        let bore = (0..body.faces().count()).find_map(|i| cylinder_face(&body, i).filter(|c| (c.radius - 6.0).abs() < 1e-9)).expect("the cross hole");
+        let mut sk = Sketch::new("T".into(), OriginPlane::XY);
+        let st = crate::sketch::SketchText { text: "AB".into(), height: 3.0, font: crate::text::HACK.into(), bold: false, italic: false, angle: 0.0 };
+        sk.add_text(Anchor::Free(DVec2::new(-2.5, -11.0)), st);
+        let regions = find_regions(&sk);
+        let ink: Vec<usize> = (0..regions.len()).filter(|&r| regions[r].is_text_ink(&sk, 0)).collect();
+        for deboss in [false, true] {
+            for r in &ink {
+                let e = EmbossFeature { sketch: 0, profiles: vec![*r], face: Some(EmbossFace::Round(bore.as_ref(DVec3::new(-4.0, -12.0, 16.0)))), depth: 1.0, deboss, ..Default::default() };
+                let got = emboss_tool(&[sk.clone()], &[None], &e, &[&body]);
+                assert!(got.is_ok(), "deboss {deboss} letter {r}: {:?} {bore:?}", got.err());
+                // Raised: in towards the axis (6 to 5); cut: out (6 to 7).
+                let area = region_face(&Frame::of(&sk), &regions[*r]).map(|f| Shape::from(f).surface_area()).unwrap();
+                let v = area * if deboss { 12.0 + 1.0 } else { 12.0 - 1.0 } / 12.0;
+                let (vol, _) = got.unwrap().volume_and_centre();
+                assert!((vol - v).abs() < 1e-4 * v, "deboss {deboss} letter {r}: {vol} vs {v}");
+            }
+        }
     }
 
     #[test]
@@ -2736,9 +2786,24 @@ impl Cylinder {
     }
 }
 
+/// The cylinder a face lies on, if it does: from its ends when it's a whole
+/// one (each end a full circle), else from its surface (a hole coming out
+/// through a curved face, a part of a cylinder).
+fn face_cylinder(face: &Face) -> Option<Cylinder> {
+    face_cylinder_whole(face).or_else(|| {
+        let (p, a, radius, length, m) = face.try_cylinder()?;
+        let ours = |v: KVec| DVec3::new(v.x, v.y, v.z);
+        let (axis_point, axis, mid) = (ours(p), ours(a).normalize(), ours(m));
+        let n = face.normal_at(m);
+        let radial = mid - axis_point - axis * (mid - axis_point).dot(axis);
+        let internal = DVec3::new(n.x, n.y, n.z).dot(radial) < 0.0;
+        (radius > 0.0 && length > 0.0).then_some(Cylinder { axis_point, axis, radius, length, internal })
+    })
+}
+
 /// The face as a whole cylinder (each end a full circle, though a join may
 /// have split it into arcs), if it is one.
-fn face_cylinder(face: &Face) -> Option<Cylinder> {
+fn face_cylinder_whole(face: &Face) -> Option<Cylinder> {
     // The ends: arcs grouped by centre, (centre, normal, radius, swept so far, a point on it).
     let mut ends: Vec<(DVec3, DVec3, f64, f64, DVec3)> = Vec::new();
     for e in face.edges() {
@@ -2771,6 +2836,11 @@ fn face_cylinder(face: &Face) -> Option<Cylinder> {
 /// Face `index` of a body (in the kernel's order, as `Body::faces`) as a cylinder.
 pub fn cylinder_face(shape: &Shape, index: usize) -> Option<Cylinder> {
     shape.faces().nth(index).and_then(|f| face_cylinder(&f))
+}
+
+/// Face `index` as a whole cylinder (both ends full circles): what Thread takes.
+pub fn whole_cylinder_face(shape: &Shape, index: usize) -> Option<Cylinder> {
+    shape.faces().nth(index).and_then(|f| face_cylinder_whole(&f))
 }
 
 /// The cylinder a thread was put on, found again among the bodies: same

@@ -857,7 +857,7 @@ impl OpenCad {
         if self.thread_dialog.as_ref().is_some_and(|d| d.picking) && self.active.is_none() {
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
-                self.thread_hover = self.cylinder_under(&ray);
+                self.thread_hover = self.cylinder_under(&ray, true);
             }
             if let (true, Some((c, at)), Some(d)) = (response.clicked(), self.thread_hover, self.thread_dialog.as_mut()) {
                 d.toggle(c.as_ref(at), c.internal);
@@ -876,7 +876,7 @@ impl OpenCad {
         if self.emboss_dialog.as_ref().is_some_and(|d| d.picking == Some(emboss_dialog::Field::Face)) && self.active.is_none() {
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
-                self.emboss_hover = self.cylinder_under(&ray);
+                self.emboss_hover = self.cylinder_under(&ray, false);
                 if self.emboss_hover.is_none() {
                     let found = self.pick_face(&ray);
                     self.face_pick_point = found.map(|(t, ..)| (ray.origin + ray.dir * t).as_dvec3());
@@ -1191,7 +1191,7 @@ impl OpenCad {
                         None => self.corner_under(&view, px, &ray).map(|q| (model::PointRef::Corner(q), q)),
                     };
                 } else {
-                    self.cylinder_hover = self.cylinder_under(&ray);
+                    self.cylinder_hover = self.cylinder_under(&ray, false);
                 }
             }
             if response.clicked() {

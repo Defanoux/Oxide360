@@ -379,6 +379,7 @@ inline std::unique_ptr<TopoDS_Shape> opencad_try_coil(double ox, double oy, doub
 #include <Geom2d_BSplineCurve.hxx>
 #include <Geom2d_TrimmedCurve.hxx>
 #include <ShapeFix_Face.hxx>
+#include <ShapeFix_Shape.hxx>
 #include <gp_Pln.hxx>
 
 inline std::unique_ptr<TopoDS_Shape> opencad_try_wrap_cylinder(const TopoDS_Shape &flat, double ox, double oy, double oz, double dx, double dy, double dz, double ax, double ay, double az,
@@ -462,6 +463,13 @@ inline std::unique_ptr<TopoDS_Shape> opencad_try_wrap_cylinder(const TopoDS_Shap
     BRepGProp::VolumeProperties(out, props);
     if (props.Mass() < 0.0) {
       out.Reverse();
+    }
+    // Thickening towards the axis (raised inside a hole) can leave a solid
+    // that doesn't check out; shape healing puts it right.
+    if (!opencad_good_solid(out)) {
+      ShapeFix_Shape fixer(out);
+      fixer.Perform();
+      out = fixer.Shape();
     }
     if (!opencad_good_solid(out)) {
       return nullptr;

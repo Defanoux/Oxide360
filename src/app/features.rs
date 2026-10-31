@@ -1566,8 +1566,9 @@ impl OpenCad {
         self.cancel_thread();
     }
 
-    /// The whole cylindrical face under the cursor (a shaft or a hole) and the point hit.
-    pub(crate) fn cylinder_under(&mut self, ray: &Ray) -> Option<(kernel::Cylinder, DVec3)> {
+    /// The cylindrical face under the cursor (a shaft or a hole; `whole`: only
+    /// a complete one, both ends full circles) and the point hit.
+    pub(crate) fn cylinder_under(&mut self, ray: &Ray, whole: bool) -> Option<(kernel::Cylinder, DVec3)> {
         self.ensure_model(Slot::Committed);
         let m = self.model(Slot::Committed);
         let (t, tri, b) = m
@@ -1578,7 +1579,8 @@ impl OpenCad {
             .filter_map(|(b, body)| model::ray_hit_tri(&body.mesh, ray.origin, ray.dir).map(|(t, tri)| (t, tri, b)))
             .min_by(|x, y| x.0.total_cmp(&y.0))?;
         let body = &m.bodies[b];
-        let c = kernel::cylinder_face(&body.shape, *body.tri_face.get(tri)? as usize)?;
+        let face = *body.tri_face.get(tri)? as usize;
+        let c = if whole { kernel::whole_cylinder_face(&body.shape, face) } else { kernel::cylinder_face(&body.shape, face) }?;
         Some((c, ray.at(t).as_dvec3()))
     }
 
