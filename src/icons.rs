@@ -146,7 +146,13 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
                 (c.g() as f32 + (to as f32 - c.g() as f32) * k) as u8,
                 (c.b() as f32 + (to as f32 - c.b() as f32) * k) as u8,
             );
-            (tint(mix(c, 255, 0.15)), tint(mix(c, 0, 0.3)), tint(c), tint(c))
+            // A highlight on a body (a fillet's round, a cut's line) takes the opposite colour.
+            let highlight = matches!(
+                icon,
+                Icon::Revolve | Icon::SketchFillet | Icon::SketchChamfer | Icon::Fillet | Icon::Chamfer | Icon::PressPull | Icon::Split | Icon::Scale | Icon::PrintCheck | Icon::Combine | Icon::Sweep | Icon::Pipe | Icon::Joint | Icon::Import | Icon::Section
+            );
+            let accent = if highlight { crate::theme::complement(c) } else { c };
+            (tint(mix(c, 255, 0.15)), tint(mix(c, 0, 0.3)), tint(accent), tint(c))
         }
         None => (tint(BLUE), tint(BLUE_DARK), tint(ORANGE), tint(GREEN)),
     };
@@ -227,7 +233,7 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             // An isometric block with an up arrow.
             poly(&[(0.15, 0.55), (0.5, 0.4), (0.85, 0.55), (0.5, 0.7)], blue);
             poly(&[(0.15, 0.55), (0.5, 0.7), (0.5, 0.92), (0.15, 0.77)], blue_dark);
-            poly(&[(0.5, 0.7), (0.85, 0.55), (0.85, 0.77), (0.5, 0.92)], tint(Color32::from_rgb(60, 125, 205)));
+            poly(&[(0.5, 0.7), (0.85, 0.55), (0.85, 0.77), (0.5, 0.92)], blue);
             line((0.5, 0.52), (0.5, 0.14), Stroke::new(thin.width * 1.2, ink));
             arrow_head((0.5, 0.06), (0.5, 0.3), ink);
         }
@@ -515,9 +521,9 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
         }
         Icon::PressPull => {
             // A block whose top face (orange) is pulled: arrows up and down off it.
-            poly(&[(0.04, 0.5), (0.38, 0.34), (0.72, 0.5), (0.38, 0.66)], tint(Color32::from_rgb(235, 150, 60)));
+            poly(&[(0.04, 0.5), (0.38, 0.34), (0.72, 0.5), (0.38, 0.66)], orange);
             poly(&[(0.04, 0.5), (0.38, 0.66), (0.38, 0.96), (0.04, 0.8)], blue_dark);
-            poly(&[(0.38, 0.66), (0.72, 0.5), (0.72, 0.8), (0.38, 0.96)], tint(Color32::from_rgb(60, 125, 205)));
+            poly(&[(0.38, 0.66), (0.72, 0.5), (0.72, 0.8), (0.38, 0.96)], blue);
             let s = Stroke::new(thin.width * 1.3, ink);
             line((0.87, 0.14), (0.87, 0.6), s);
             arrow_head((0.87, 0.04), (0.87, 0.28), ink);
@@ -525,7 +531,7 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
         }
         Icon::Move => {
             // A block with a four-way arrow over it.
-            poly(&[(0.28, 0.42), (0.72, 0.42), (0.72, 0.86), (0.28, 0.86)], tint(Color32::from_rgb(60, 125, 205)));
+            poly(&[(0.28, 0.42), (0.72, 0.42), (0.72, 0.86), (0.28, 0.86)], blue);
             let s = Stroke::new(thin.width * 1.3, ink);
             line((0.5, 0.12), (0.5, 0.88), s);
             line((0.12, 0.5), (0.88, 0.5), s);
@@ -561,9 +567,9 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
         }
         Icon::Combine => {
             // Two overlapping blocks: the target (blue) and a tool (orange outline) merging into it.
-            poly(&[(0.06, 0.38), (0.6, 0.38), (0.6, 0.94), (0.06, 0.94)], tint(Color32::from_rgb(60, 125, 205)));
-            poly(&[(0.4, 0.06), (0.94, 0.06), (0.94, 0.6), (0.4, 0.6)], tint(Color32::from_rgba_unmultiplied(235, 150, 60, 150)));
-            outline(&[(0.4, 0.06), (0.94, 0.06), (0.94, 0.6), (0.4, 0.6)], Stroke::new(thin.width * 1.2, tint(Color32::from_rgb(235, 150, 60))));
+            poly(&[(0.06, 0.38), (0.6, 0.38), (0.6, 0.94), (0.06, 0.94)], blue);
+            poly(&[(0.4, 0.06), (0.94, 0.06), (0.94, 0.6), (0.4, 0.6)], orange.gamma_multiply(0.6));
+            outline(&[(0.4, 0.06), (0.94, 0.06), (0.94, 0.6), (0.4, 0.6)], Stroke::new(thin.width * 1.2, orange));
         }
         Icon::Thread => {
             // A bolt shank with slanted thread lines.
@@ -1172,5 +1178,17 @@ mod shot_tests {
                 }
             });
         });
+        // As the toolbar draws them: in SOLID's orange and SKETCH's green.
+        for (name, c) in [("solid", Color32::from_rgb(240, 160, 50)), ("sketch", Color32::from_rgb(90, 200, 110))] {
+            crate::ui_shot::shot(&format!("{dir}/icons_{name}.png"), [420, 50], |ui| {
+                ui.horizontal(|ui| {
+                    with_tint(Some(c), || {
+                        for icon in [Icon::Fillet, Icon::Chamfer, Icon::SketchFillet, Icon::SketchChamfer, Icon::PressPull, Icon::Split, Icon::Scale, Icon::Combine, Icon::Revolve, Icon::Sweep, Icon::Extrude] {
+                            button(ui, icon, "", true, false);
+                        }
+                    });
+                });
+            });
+        }
     }
 }

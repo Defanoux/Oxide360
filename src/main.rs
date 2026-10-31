@@ -720,6 +720,7 @@ struct OpenCad {
     printer_custom: [f64; 3],
     overhang_limit: f64,
     theme: theme::Theme,                    // the colour theme (Settings)
+    tool_colors: [Option<[u8; 3]>; 3],      // toolbar icon colours set in Settings (solid, sketch, drawing)
     toolbar_folded: bool,                   // the toolbar is folded away (the chevron by SOLID / SKETCH)
     toolbar_cover: f32,                     // how far down over the view the toolbar reaches (last frame)
     undo: Vec<Sketch>,
@@ -987,6 +988,7 @@ impl Default for OpenCad {
             overhang_limit: 45.0,
             theme: theme::Theme::default(),
             toolbar_folded: false,
+            tool_colors: [None; 3],
             toolbar_cover: 0.0,
             undo: Vec::new(),
             dof: None,
@@ -1318,8 +1320,8 @@ impl OpenCad {
                         .horizontal_scroll_offset(offset_in)
                         .show(ui, |ui| {
                             // The tools' icons in their workspace's colour.
-                            let pal = theme::now();
-                            let c = if self.drawing_open { pal.tools[2] } else if self.active.is_some() { pal.tools[1] } else { pal.tools[0] };
+                            let k = if self.drawing_open { 2 } else if self.active.is_some() { 1 } else { 0 };
+                            let c = self.tool_colors[k].map_or(theme::now().tools[k], |[r, g, b]| Color32::from_rgb(r, g, b));
                             icons::with_tint(Some(c), || self.toolbar(ui))
                         });
                     let offset_out = out.state.offset.x;
@@ -1636,6 +1638,7 @@ impl OpenCad {
         self.printer_custom = s.printer_custom;
         self.overhang_limit = if s.overhang_limit.is_finite() { s.overhang_limit.clamp(10.0, 85.0) } else { 45.0 };
         self.theme = s.theme;
+        self.tool_colors = s.tool_colors;
         self.settings_saved = s.clone();
     }
 

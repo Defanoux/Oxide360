@@ -458,6 +458,29 @@ impl OpenCad {
                     }
                 });
                 ui.end_row();
+                ui.label("Tool icon colours").on_hover_text("The toolbar's icons in each workspace; their highlights take the opposite colour");
+                ui.horizontal(|ui| {
+                    let pal = theme::now();
+                    let mut any = false;
+                    for (k, name) in ["Solid", "Sketch", "Drawing"].into_iter().enumerate() {
+                        let mut c = self.tool_colors[k].unwrap_or_else(|| {
+                            let t = pal.tools[k];
+                            [t.r(), t.g(), t.b()]
+                        });
+                        ui.label(name);
+                        if ui.color_edit_button_srgb(&mut c).changed() {
+                            self.tool_colors[k] = Some(c);
+                        }
+                        // Its highlight colour, shown small beside it.
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(8.0, 14.0), egui::Sense::hover());
+                        ui.painter().rect_filled(r, 2.0, theme::complement(Color32::from_rgb(c[0], c[1], c[2])));
+                        any |= self.tool_colors[k].is_some();
+                    }
+                    if any && ui.small_button("Reset").on_hover_text("Back to the theme's colours").clicked() {
+                        self.tool_colors = [None; 3];
+                    }
+                });
+                ui.end_row();
                 ui.label("Input device");
                 ui.horizontal(|ui| {
                     ui.radio_value(&mut self.touchpad, false, "Mouse").on_hover_text("Scroll zooms · right/middle-drag pans");

@@ -115,6 +115,43 @@ pub fn now() -> Palette {
     palette(current())
 }
 
+/// The colour opposite `c` on the colour wheel (its hue turned half way
+/// round, as light and as strong): a tool icon's highlight on its body.
+pub fn complement(c: Color32) -> Color32 {
+    let (r, g, b) = (c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0);
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d < 1e-6 {
+        // Grey has no opposite hue: go the other way in lightness.
+        let v = ((1.0 - l) * 255.0).round() as u8;
+        return Color32::from_rgb(v, v, v);
+    }
+    let s = d / (1.0 - (2.0 * l - 1.0).abs());
+    let h = if max == r {
+        60.0 * ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    let h = (h + 180.0) % 360.0;
+    // Back from hue, saturation, lightness.
+    let c2 = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c2 * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c2 / 2.0;
+    let (r1, g1, b1) = match h as u32 / 60 {
+        0 => (c2, x, 0.0),
+        1 => (x, c2, 0.0),
+        2 => (0.0, c2, x),
+        3 => (0.0, x, c2),
+        4 => (x, 0.0, c2),
+        _ => (c2, 0.0, x),
+    };
+    let to = |v: f32| ((v + m).clamp(0.0, 1.0) * 255.0).round() as u8;
+    Color32::from_rgb(to(r1), to(g1), to(b1))
+}
+
 /// The sketch grid's (minor, major) line colours: a little lighter than the view.
 pub fn grid() -> ([f32; 3], [f32; 3]) {
     let v = now().view;
@@ -166,6 +203,17 @@ mod tests {
             let (live, off) = ((bright(p.ink) - bright(p.card)).abs(), (bright(p.ink_off) - bright(p.card)).abs());
             assert!(off > 25.0 && off < live, "{t:?}: {off} vs {live}");
         }
+    }
+
+    #[test]
+    fn opposite_colours() {
+        assert_eq!(complement(Color32::from_rgb(255, 0, 0)), Color32::from_rgb(0, 255, 255));
+        assert_eq!(complement(Color32::from_rgb(0, 255, 0)), Color32::from_rgb(255, 0, 255));
+        // Green's opposite is a magenta just as light: it shows on the green.
+        let g = Color32::from_rgb(90, 200, 110);
+        let m = complement(g);
+        assert!(m.r() > m.g() && m.b() > m.g(), "{m:?}");
+        assert_eq!(complement(m), g, "twice round is back");
     }
 
     #[test]

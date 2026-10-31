@@ -46,6 +46,9 @@ pub struct Settings {
     pub overhang_limit: f64,
     /// The colour theme.
     pub theme: crate::theme::Theme,
+    /// The toolbar icons' colour in SOLID, SKETCH and DRAWING, when set
+    /// (else the theme's).
+    pub tool_colors: [Option<[u8; 3]>; 3],
 }
 
 /// How many designs File → Recent lists.
@@ -71,6 +74,7 @@ impl Default for Settings {
             printer_custom: [200.0, 200.0, 200.0],
             overhang_limit: 45.0,
             theme: crate::theme::Theme::default(),
+            tool_colors: [None; 3],
         }
     }
 }
@@ -128,7 +132,7 @@ mod tests {
         let d = dir("roundtrip");
         let path = d.join("nested").join("settings.json");
         assert_eq!(load(&path), Settings::default(), "nothing saved yet");
-        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic, measure_unit_own: Some(Unit::In), measure_unit2: Some(Unit::Mm), measure_precision: 5, measure_snap: false, measure_xyz: false, default_units: Unit::In, touchpad_zoom_flip: false, toolbar_hidden: vec!["Trim".into()], keybinds: vec![("Trim".into(), "T".into())], toolbar_order: vec!["Trim".into(), "Fillet".into()], style: crate::gpu::Style::Wireframe, recent: vec![PathBuf::from("/d/a.opencad")], printer: "Custom".into(), printer_custom: [100.0, 120.0, 130.0], overhang_limit: 50.0, theme: crate::theme::Theme::Slate };
+        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic, measure_unit_own: Some(Unit::In), measure_unit2: Some(Unit::Mm), measure_precision: 5, measure_snap: false, measure_xyz: false, default_units: Unit::In, touchpad_zoom_flip: false, toolbar_hidden: vec!["Trim".into()], keybinds: vec![("Trim".into(), "T".into())], toolbar_order: vec!["Trim".into(), "Fillet".into()], style: crate::gpu::Style::Wireframe, recent: vec![PathBuf::from("/d/a.opencad")], printer: "Custom".into(), printer_custom: [100.0, 120.0, 130.0], overhang_limit: 50.0, theme: crate::theme::Theme::Slate, tool_colors: [Some([1, 2, 3]), None, Some([200, 0, 90])] };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);
         let _ = std::fs::remove_dir_all(&d);
