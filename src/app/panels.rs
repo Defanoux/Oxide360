@@ -969,26 +969,6 @@ impl OpenCad {
                     ToolItem { name: "Thread", icon: Icon::Thread, tip: "Thread: click a shaft or the inside of a hole; shown or modeled, ISO and Unified sizes", enabled: has_bodies, on: self.thread_dialog.is_some() },
                 ];
                 let create = tool_group(ui, "CREATE", "Solid ", &items, &[], hidden, order);
-                let angled = self.plane_dialog.as_ref().is_some_and(|d| d.angle.is_some());
-                let items = [
-                    ToolItem { name: "Offset Plane", icon: Icon::Plane, tip: "Offset Plane: click an origin plane or a face, then set the distance", enabled: true, on: self.plane_pick || self.plane_dialog.as_ref().is_some_and(|d| d.angle.is_none()) },
-                    ToolItem { name: "Plane at Angle", icon: Icon::PlaneAngle, tip: "Plane at Angle: click a sketch line, body edge or axis, then set the angle", enabled: true, on: self.angle_pick || angled },
-                    ToolItem { name: "Axis Along Edge", icon: Icon::Axis, tip: "Axis Along Edge: click a straight edge of a body", enabled: has_bodies, on: self.axis_pick },
-                    ToolItem { name: "Midplane", icon: Icon::Midplane, tip: "Midplane: click two planes or flat faces — halfway between them (halving the angle if they meet)", enabled: true, on: matches!(self.construct_pick, Some(ConstructPick::Midplane(_))) },
-                    ToolItem { name: "Plane Through Three Points", icon: Icon::Plane3Points, tip: "Plane Through Three Points: click three body corners", enabled: has_bodies, on: matches!(self.construct_pick, Some(ConstructPick::ThreePoints(_))) },
-                    ToolItem { name: "Tangent Plane", icon: Icon::TangentPlane, tip: "Tangent Plane: click a cylinder where the plane should touch it", enabled: has_bodies, on: self.construct_pick == Some(ConstructPick::Tangent) },
-                    ToolItem { name: "Axis Through Cylinder", icon: Icon::AxisCylinder, tip: "Axis Through Cylinder: click a hole or shaft", enabled: has_bodies, on: self.construct_pick == Some(ConstructPick::AxisCylinder) },
-                    ToolItem { name: "Point", icon: Icon::ConstructPoint, tip: "Construction Point: a face's middle, a side's middle or a corner, or a round edge's centre", enabled: has_bodies, on: self.point_pick },
-                    ToolItem { name: "Axis Through Two Points", icon: Icon::Axis2Points, tip: "Axis Through Two Points: click two body corners", enabled: has_bodies, on: matches!(self.construct_pick, Some(ConstructPick::AxisTwoPoints(_))) },
-                ];
-                let construct = tool_group(ui, "CONSTRUCT", "Solid ", &items, &[], hidden, order);
-                let copy_mode = self.copy_dialog.as_ref().map(|d| d.mode);
-                let items = [
-                    ToolItem { name: "Mirror", icon: Icon::Mirror, tip: "Mirror: copy bodies across an origin plane", enabled: has_bodies, on: copy_mode == Some(CopyMode::Mirror) },
-                    ToolItem { name: "Rectangular Pattern", icon: Icon::RectPattern, tip: "Rectangular Pattern: copies in a grid", enabled: has_bodies, on: copy_mode == Some(CopyMode::Rectangular) },
-                    ToolItem { name: "Circular Pattern", icon: Icon::CircPattern, tip: "Circular Pattern: copies round an axis", enabled: has_bodies, on: copy_mode == Some(CopyMode::Circular) },
-                ];
-                let pattern = tool_group(ui, "PATTERN", "Solid ", &items, &[], hidden, order);
                 let edge_kind = self.edge_dialog.as_ref().map(|d| d.kind);
                 let items = [
                     ToolItem { name: "Press Pull", icon: Icon::PressPull, tip: "Press Pull (Q): drag a face to move it (Offset Face), a fillet to change its radius, or a sketch profile to extrude it", enabled: has_bodies || !self.sketches.is_empty(), on: self.offset_dialog.is_some() },
@@ -1003,7 +983,27 @@ impl OpenCad {
                     ToolItem { name: "Appearance", icon: Icon::Appearance, tip: "Appearance (A): make bodies look like metal, plastic, paint, rubber, glass or wood — pick one, then click bodies", enabled: has_bodies, on: self.appearance_dialog.is_some() },
                 ];
                 let modify = tool_group(ui, "MODIFY", "Solid ", &items, &[], hidden, order);
-                if let Some(name) = create.or(construct).or(pattern).or(modify) {
+                let copy_mode = self.copy_dialog.as_ref().map(|d| d.mode);
+                let items = [
+                    ToolItem { name: "Mirror", icon: Icon::Mirror, tip: "Mirror: copy bodies across an origin plane", enabled: has_bodies, on: copy_mode == Some(CopyMode::Mirror) },
+                    ToolItem { name: "Rectangular Pattern", icon: Icon::RectPattern, tip: "Rectangular Pattern: copies in a grid", enabled: has_bodies, on: copy_mode == Some(CopyMode::Rectangular) },
+                    ToolItem { name: "Circular Pattern", icon: Icon::CircPattern, tip: "Circular Pattern: copies round an axis", enabled: has_bodies, on: copy_mode == Some(CopyMode::Circular) },
+                ];
+                let pattern = tool_group(ui, "PATTERN", "Solid ", &items, &[], hidden, order);
+                let angled = self.plane_dialog.as_ref().is_some_and(|d| d.angle.is_some());
+                let items = [
+                    ToolItem { name: "Offset Plane", icon: Icon::Plane, tip: "Offset Plane: click an origin plane or a face, then set the distance", enabled: true, on: self.plane_pick || self.plane_dialog.as_ref().is_some_and(|d| d.angle.is_none()) },
+                    ToolItem { name: "Plane at Angle", icon: Icon::PlaneAngle, tip: "Plane at Angle: click a sketch line, body edge or axis, then set the angle", enabled: true, on: self.angle_pick || angled },
+                    ToolItem { name: "Axis Along Edge", icon: Icon::Axis, tip: "Axis Along Edge: click a straight edge of a body", enabled: has_bodies, on: self.axis_pick },
+                    ToolItem { name: "Midplane", icon: Icon::Midplane, tip: "Midplane: click two planes or flat faces — halfway between them (halving the angle if they meet)", enabled: true, on: matches!(self.construct_pick, Some(ConstructPick::Midplane(_))) },
+                    ToolItem { name: "Plane Through Three Points", icon: Icon::Plane3Points, tip: "Plane Through Three Points: click three body corners", enabled: has_bodies, on: matches!(self.construct_pick, Some(ConstructPick::ThreePoints(_))) },
+                    ToolItem { name: "Tangent Plane", icon: Icon::TangentPlane, tip: "Tangent Plane: click a cylinder where the plane should touch it", enabled: has_bodies, on: self.construct_pick == Some(ConstructPick::Tangent) },
+                    ToolItem { name: "Axis Through Cylinder", icon: Icon::AxisCylinder, tip: "Axis Through Cylinder: click a hole or shaft", enabled: has_bodies, on: self.construct_pick == Some(ConstructPick::AxisCylinder) },
+                    ToolItem { name: "Point", icon: Icon::ConstructPoint, tip: "Construction Point: a face's middle, a side's middle or a corner, or a round edge's centre", enabled: has_bodies, on: self.point_pick },
+                    ToolItem { name: "Axis Through Two Points", icon: Icon::Axis2Points, tip: "Axis Through Two Points: click two body corners", enabled: has_bodies, on: matches!(self.construct_pick, Some(ConstructPick::AxisTwoPoints(_))) },
+                ];
+                let construct = tool_group(ui, "CONSTRUCT", "Solid ", &items, &[], hidden, order);
+                if let Some(name) = create.or(modify).or(pattern).or(construct) {
                     self.run_solid_tool(name);
                 }
                 group(ui, "ASSEMBLE", |ui| {
