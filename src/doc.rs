@@ -512,15 +512,20 @@ pub fn validate(doc: &Document) -> Result<(), String> {
         if ex.sketch >= doc.sketches.len() || !finite(ex.distance) {
             return Err(format!("{}: invalid sketch reference or distance", ex.name.clone() + &format!(" (#{k})")));
         }
-        use crate::model::ExtrudeTarget;
-        let target_ok = match ex.target {
+        use crate::model::{ExtrudeStart, ExtrudeTarget};
+        let ok = |t: Option<ExtrudeTarget>| match t {
             None | Some(ExtrudeTarget::Origin(_)) => true,
             Some(ExtrudeTarget::Plane(j)) => j < doc.planes.len(),
             Some(ExtrudeTarget::Face { face, anchor }) => {
                 [face.origin, face.u, face.v].iter().all(|v| v.is_finite()) && anchor.iter().all(|a| a.is_finite())
             }
         };
-        if !target_ok {
+        let start_ok = match ex.start {
+            ExtrudeStart::ProfilePlane => true,
+            ExtrudeStart::Offset(d) => finite(d),
+            ExtrudeStart::Object(t) => ok(Some(t)),
+        };
+        if !(ok(ex.target) && start_ok) {
             return Err(format!("{} (#{k}): invalid object to extrude up to", ex.name));
         }
     }
@@ -879,7 +884,7 @@ mod tests {
         solver::add_constraints(&mut sk, &[Length(0, 50.0), Length(1, 30.0), Diameter(4, 8.0)]).unwrap();
         Document {
             sketches: vec![sk],
-            extrudes: vec![Extrude { op: Default::default(), name: "Extrude1".into(), sketch: 0, profiles: vec![0], distance: 12.5, extent: Default::default(), distance2: 0.0, taper: 0.0, target: None }],
+            extrudes: vec![Extrude { start: Default::default(), op: Default::default(), name: "Extrude1".into(), sketch: 0, profiles: vec![0], distance: 12.5, extent: Default::default(), distance2: 0.0, taper: 0.0, target: None }],
             edge_features: vec![crate::model::EdgeFeature {
                 name: "Fillet1".into(),
                 kind: crate::model::EdgeKind::Fillet,

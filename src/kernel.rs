@@ -592,7 +592,9 @@ fn target_plane(t: &ExtrudeTarget, planes: &[Option<FacePlane>], bodies: &[&Shap
     }
 }
 
-fn tool(sketches: &[Sketch], frames: &[Option<FacePlane>], ex: &Extrude, target: Option<(DVec3, DVec3)>) -> Result<(Shape, End), String> {
+/// `start`: where a Start From Object plane is now (point, normal); `bodies`:
+/// what's built so far (All runs right through them).
+fn tool(sketches: &[Sketch], frames: &[Option<FacePlane>], ex: &Extrude, target: Option<(DVec3, DVec3)>, start: Option<(DVec3, DVec3)>, bodies: &[&Shape]) -> Result<(Shape, End), String> {
     let sk = sketches.get(ex.sketch).ok_or("its sketch was deleted")?;
     if !ex.distance.is_finite() || ex.distance.abs() < 1e-6 {
         return Err("distance is zero".into());
@@ -606,9 +608,59 @@ fn tool(sketches: &[Sketch], frames: &[Option<FacePlane>], ex: &Extrude, target:
         .iter()
         .map(|&p| regions.get(p).ok_or("a selected profile no longer exists — the sketch changed"))
         .collect::<Result<Vec<&Region>, _>>()?;
-    let plane = frame_for(sk, frames.get(ex.sketch).copied().flatten())?;
+    let mut plane = frame_for(sk, frames.get(ex.sketch).copied().flatten())?;
+    let n = plane.normal().normalize();
+    // Start: the profiles moved off the sketch plane, or onto a plane or face
+    // (a slanted one is met along the normal: the start is slanted too).
+    let mut slanted: Option<(DVec3, DVec3)> = None;
+    match ex.start {
+        crate::model::ExtrudeStart::ProfilePlane => {}
+        crate::model::ExtrudeStart::Offset(d) => {
+            if !d.is_finite() {
+                return Err("the start offset isn't a number".into());
+            }
+            plane.origin += n * d;
+        }
+        crate::model::ExtrudeStart::Object(_) => {
+            let (q, m) = start.ok_or("pick the plane or face it starts from")?;
+            let m = m.normalize();
+            let slant = n.dot(m);
+            if slant.abs() < 1e-6 {
+                return Err("the start plane runs alongside the extrude — the profile never meets it".into());
+            }
+            if slant.abs() > 1.0 - 1e-9 {
+                plane.origin += n * ((q - plane.origin).dot(m) / slant);
+            } else {
+                slanted = Some((q, m));
+            }
+        }
+    }
     if ex.extent == crate::model::Extent::ToObject {
+        if slanted.is_some() {
+            return Err("To Object can't start on a slanted face — start on a parallel one, or use a distance".into());
+        }
         return to_object(&plane, &picked, ex, target);
+    }
+    // All: far enough to pass every body, the way the distance points.
+    let all;
+    let ex = if ex.extent == crate::model::Extent::All {
+        let reach = bodies
+            .iter()
+            .filter_map(|b| exact_bounds(b))
+            .flat_map(|(lo, hi)| (0..8).map(move |k| DVec3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z })))
+            .map(|c| (c - plane.origin).dot(n).abs())
+            .fold(0.0, f64::max);
+        if reach < 1e-6 {
+            return Err("there's no body for All to go through".into());
+        }
+        let sign = if ex.distance < 0.0 { -1.0 } else { 1.0 };
+        all = Extrude { extent: crate::model::Extent::OneSide, distance: sign * (reach + 1.0), ..ex.clone() };
+        &all
+    } else {
+        ex
+    };
+    if let Some((q, m)) = slanted {
+        return from_slanted(&plane, &picked, ex, q, m);
     }
     let (from, to) = ex.span();
     if (to - from).abs() < 1e-6 {
@@ -636,6 +688,52 @@ fn tool(sketches: &[Sketch], frames: &[Option<FacePlane>], ex: &Extrude, target:
     }
     let end = End::Extrude { origin: plane.origin, normal: plane.normal(), distance: to };
     out.map(|s| (s, end)).ok_or_else(|| "nothing to extrude".into())
+}
+
+/// Start From Object on a slanted plane: the profiles carried along the
+/// normal onto it, then the span measured from there (so both ends lie
+/// parallel to it). Made by extruding the profiles well past both ends and
+/// keeping the slab between them.
+fn from_slanted(plane: &Frame, picked: &[&Region], ex: &Extrude, q: DVec3, m: DVec3) -> Result<(Shape, End), String> {
+    if ex.taper != 0.0 {
+        return Err("a taper can't start on a slanted face".into());
+    }
+    let (from, to) = ex.span();
+    if (to - from).abs() < 1e-6 {
+        return Err("distance is zero".into());
+    }
+    let n = plane.normal().normalize();
+    let slant = n.dot(m);
+    let centre2 = picked.iter().map(|r| r.centroid()).sum::<DVec2>() / picked.len().max(1) as f64;
+    let centre = world(plane, centre2);
+    let spread = picked.iter().flat_map(|r| r.loops()).flatten().map(|p| p.distance(centre2)).fold(0.0, f64::max);
+    // Along the normal from the sketch to where it meets the plane at the middle.
+    let meet = (q - centre).dot(m) / slant;
+    let lean = (1.0 - slant * slant).max(0.0).sqrt() / slant.abs();
+    let reach = meet.abs() + from.abs().max(to.abs()) + spread * lean + 1.0;
+    let back = Frame { origin: plane.origin - n * reach * 1.5, u: plane.u, v: plane.v };
+    let mut prism: Option<Shape> = None;
+    for r in union(picked) {
+        let solid: Shape = region_face(&back, &r)?.extrude(kv(n * reach * 3.0)).into();
+        prism = Some(match prism {
+            None => solid,
+            Some(acc) => acc.try_union(&solid).ok_or("the kernel couldn't merge the profiles")?,
+        });
+    }
+    let prism = prism.ok_or("nothing to extrude")?;
+    // The slab between the start plane moved `from` and `to` along the normal.
+    let size = (reach + spread) * 4.0 + 100.0;
+    let a = m.any_orthonormal_vector();
+    let b = m.cross(a);
+    let base = q + n * from;
+    let corners = [base + (a + b) * size, base + (b - a) * size, base - (a + b) * size, base + (a - b) * size];
+    let edges: Vec<Edge> = (0..4).map(|k| Edge::segment(kv(corners[k]), kv(corners[(k + 1) % 4]))).collect();
+    let slab: Shape = Face::from_wire(&Wire::from_edges(&edges)).extrude(kv(m * (to - from) * slant)).into();
+    let solid = prism.try_intersect(&slab).ok_or("the kernel couldn't start the extrude on that face")?;
+    if solid.volume().abs() < MIN_VOLUME {
+        return Err("the profiles don't reach the start face".into());
+    }
+    Ok((solid, End::Extrude { origin: plane.origin + n * meet, normal: n, distance: to }))
 }
 
 /// To Object: the profiles extruded until they meet the target plane (cut
@@ -4078,7 +4176,12 @@ impl Build {
                             }
                             _ => None,
                         };
-                        let (shape, end) = tool(sketches, &frames, ex, target)?;
+                        let bodies: Vec<&Shape> = current.iter().map(|(s, _)| s).collect();
+                        let start = match &ex.start {
+                            crate::model::ExtrudeStart::Object(t) => Some(target_plane(t, planes_now, &bodies)?),
+                            _ => None,
+                        };
+                        let (shape, end) = tool(sketches, &frames, ex, target, start, &bodies)?;
                         ends[k] = Some(end);
                         apply(current, shape, ex.op, Feature::Extrude(k))
                     }));
@@ -4433,7 +4536,7 @@ mod tests {
     }
 
     fn ex(sketch: usize, profiles: Vec<usize>, distance: f64, op: Operation) -> Extrude {
-        Extrude { op, name: "E".into(), sketch, profiles, distance, extent: Default::default(), distance2: 0.0, taper: 0.0, target: None }
+        Extrude { start: Default::default(), op, name: "E".into(), sketch, profiles, distance, extent: Default::default(), distance2: 0.0, taper: 0.0, target: None }
     }
 
     fn timeline(sketches: usize, extrudes: usize) -> Vec<Feature> {
@@ -6119,8 +6222,47 @@ mod tests {
         let mut e = ex(0, vec![0], 1.0, Operation::NewBody);
         e.extent = crate::model::Extent::ToObject;
         let n = DVec3::new(0.0, -0.5, 1.0).normalize();
-        let (shape, _) = tool(&[sk], &[None], &e, Some((DVec3::new(0.0, 0.0, 10.0), n))).unwrap();
+        let (shape, _) = tool(&[sk], &[None], &e, Some((DVec3::new(0.0, 0.0, 10.0), n)), None, &[]).unwrap();
         assert!(close(shape.volume(), 1250.0), "{}", shape.volume());
+    }
+
+    /// Start: offset from the sketch, on a parallel plane, on a slanted one
+    /// (both ends then slant the same way); All: right through the bodies.
+    #[test]
+    fn extrudes_start_offset_or_on_an_object_and_go_through_all() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk, 0.0, 0.0, 4.0, 3.0);
+        let sk = [sk];
+        let base = ex(0, vec![0], 2.0, Operation::NewBody);
+        let z = |s: &Shape| exact_bounds(s).map(|(lo, hi)| (lo.z, hi.z)).unwrap();
+        let near = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6;
+        // Offset 5 up: z 5 to 7.
+        let e = Extrude { start: crate::model::ExtrudeStart::Offset(5.0), ..base.clone() };
+        let (s, _) = tool(&sk, &[None], &e, None, None, &[]).unwrap();
+        assert!(close(s.volume(), 24.0) && near(z(&s), (5.0, 7.0)), "{} {:?}", s.volume(), z(&s));
+        // On the plane z = 10.
+        let e = Extrude { start: crate::model::ExtrudeStart::Object(ExtrudeTarget::Origin(OriginPlane::XY)), ..base.clone() };
+        let (s, _) = tool(&sk, &[None], &e, None, Some((DVec3::new(0.0, 0.0, 10.0), DVec3::Z)), &[]).unwrap();
+        assert!(close(s.volume(), 24.0) && near(z(&s), (10.0, 12.0)), "{} {:?}", s.volume(), z(&s));
+        // On z = 10 + y/2 (y 0..3): starts 10 to 11.5, ends 2 higher; the
+        // same volume, a sheared prism.
+        let n = DVec3::new(0.0, -0.5, 1.0).normalize();
+        let (s, _) = tool(&sk, &[None], &e, None, Some((DVec3::new(0.0, 0.0, 10.0), n)), &[]).unwrap();
+        assert!(close(s.volume(), 24.0) && near(z(&s), (10.0, 13.5)), "{} {:?}", s.volume(), z(&s));
+        // Two sides from there: 2 up and 1 down.
+        let e2 = Extrude { extent: crate::model::Extent::TwoSides, distance2: 1.0, ..e.clone() };
+        let (s, _) = tool(&sk, &[None], &e2, None, Some((DVec3::new(0.0, 0.0, 10.0), n)), &[]).unwrap();
+        assert!(close(s.volume(), 36.0) && near(z(&s), (9.0, 13.5)), "{} {:?}", s.volume(), z(&s));
+        // All: through a body standing up to z 20 (and 1 past it).
+        let body = Shape::box_from_corners(kv(DVec3::new(-5.0, -5.0, 0.0)), kv(DVec3::new(10.0, 10.0, 20.0)));
+        let e = Extrude { extent: crate::model::Extent::All, ..base.clone() };
+        let (s, _) = tool(&sk, &[None], &e, None, None, &[&body]).unwrap();
+        assert!(close(s.volume(), 12.0 * 21.0) && near(z(&s), (0.0, 21.0)), "{} {:?}", s.volume(), z(&s));
+        assert!(tool(&sk, &[None], &e, None, None, &[]).is_err(), "nothing to go through");
+        // Flipped, it goes down: nothing below the sketch but the reach is the same.
+        let e = Extrude { distance: -2.0, ..e };
+        let (s, _) = tool(&sk, &[None], &e, None, None, &[&body]).unwrap();
+        assert!(near(z(&s), (-21.0, 0.0)), "{:?}", z(&s));
     }
 
     /// A 50 × 30 × `h` plate (sketch 0, extrude 0), then sketch 1 (if given)

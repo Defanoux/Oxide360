@@ -201,7 +201,7 @@ mod demo {
         words.add_text(Anchor::Free(DVec2::new(-16.0, 16.0)), st);
         let mut doc = Document::default();
         doc.sketches = vec![base, words];
-        doc.extrudes = vec![Extrude { op: Operation::NewBody, name: "Extrude1".into(), sketch: 0, profiles: vec![0], distance: 40.0, extent: Default::default(), distance2: 0.0, taper: 0.0, target: None }];
+        doc.extrudes = vec![Extrude { start: Default::default(), op: Operation::NewBody, name: "Extrude1".into(), sketch: 0, profiles: vec![0], distance: 40.0, extent: Default::default(), distance2: 0.0, taper: 0.0, target: None }];
         doc.timeline = vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Sketch(1)];
         crate::doc::save(std::path::Path::new(&format!("{dir}/emboss_demo.ox360")), &doc).unwrap();
         // The same shaft with a hole across it, and text on the XY plane along the hole.
@@ -213,7 +213,7 @@ mod demo {
         let st = SketchText { text: "AB".into(), height: 3.0, font: crate::text::HACK.into(), bold: false, italic: false, angle: 0.0 };
         inside.add_text(Anchor::Free(DVec2::new(-2.5, -11.0)), st);
         doc.sketches = vec![doc.sketches[0].clone(), cross, inside];
-        doc.extrudes.push(Extrude { op: Operation::Cut, name: "Extrude2".into(), sketch: 1, profiles: vec![0], distance: 40.0, extent: crate::model::Extent::Symmetric, distance2: 0.0, taper: 0.0, target: None });
+        doc.extrudes.push(Extrude { start: Default::default(), op: Operation::Cut, name: "Extrude2".into(), sketch: 1, profiles: vec![0], distance: 40.0, extent: crate::model::Extent::Symmetric, distance2: 0.0, taper: 0.0, target: None });
         doc.timeline = vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Sketch(1), Feature::Extrude(1), Feature::Sketch(2)];
         crate::doc::save(std::path::Path::new(&format!("{dir}/emboss_hole.ox360")), &doc).unwrap();
     }

@@ -539,6 +539,9 @@ struct ExtrudeDialog {
     /// To Object: what it runs up to, and whether clicks in the view pick it.
     target: Option<model::ExtrudeTarget>,
     picking_target: bool,
+    /// Where it starts; Object: whether clicks in the view pick the plane or face.
+    start: model::ExtrudeStart,
+    picking_start: bool,
 }
 
 /// A smooth camera move (view cube clicks, Home).

@@ -975,7 +975,7 @@ impl OpenCad {
 
         crate::mark("Extrude To Object / Hole To: click the");
         // --- Extrude To Object / Hole To: click the plane or flat face it runs up to ---
-        let picking_target = self.dialog.as_ref().is_some_and(|d| d.picking_target) || self.hole_dialog.as_ref().is_some_and(|d| d.picking_target) || self.section_dialog.as_ref().is_some_and(|d| d.picking) || matches!(self.construct_pick, Some(ConstructPick::Midplane(_))) || self.sweep_dialog.as_ref().is_some_and(|d| d.picking_plane) || self.split_dialog.as_ref().is_some_and(|d| d.picking == Some(split_dialog::Field::Tool));
+        let picking_target = self.dialog.as_ref().is_some_and(|d| d.picking_target || d.picking_start) || self.hole_dialog.as_ref().is_some_and(|d| d.picking_target) || self.section_dialog.as_ref().is_some_and(|d| d.picking) || matches!(self.construct_pick, Some(ConstructPick::Midplane(_))) || self.sweep_dialog.as_ref().is_some_and(|d| d.picking_plane) || self.split_dialog.as_ref().is_some_and(|d| d.picking == Some(split_dialog::Field::Tool));
         if picking_target {
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
@@ -1006,7 +1006,11 @@ impl OpenCad {
                     _ => None,
                 };
                 if let (Some(t), Some(d)) = (target, self.dialog.as_mut()) {
-                    (d.target, d.picking_target) = (Some(t), false);
+                    if d.picking_start {
+                        (d.start, d.picking_start) = (model::ExtrudeStart::Object(t), false);
+                    } else {
+                        (d.target, d.picking_target) = (Some(t), false);
+                    }
                 }
                 if let (Some(t), Some(d)) = (target, self.hole_dialog.as_mut()) {
                     (d.hole.target, d.picking_target) = (Some(t), false);
@@ -1052,6 +1056,7 @@ impl OpenCad {
                 }
                 if let Some(d) = self.dialog.as_mut() {
                     d.picking_target = false;
+                    d.picking_start = false;
                 }
                 if let Some(d) = self.hole_dialog.as_mut() {
                     d.picking_target = false;
@@ -2460,7 +2465,7 @@ impl OpenCad {
         // Create Sketch shows the whole origin, whatever the browser says.
         // Picking an axis, a mirror plane or any plane a command needs shows the whole origin too.
         let picking_axis = self.copy_dialog.as_ref().is_some_and(|d| d.picking_axis || d.mode == CopyMode::Mirror)
-            || self.dialog.as_ref().is_some_and(|d| d.picking_target || d.extent == model::Extent::ToObject)
+            || self.dialog.as_ref().is_some_and(|d| d.picking_target || d.picking_start || d.extent == model::Extent::ToObject || matches!(d.start, model::ExtrudeStart::Object(_)))
             || self.angle_pick
             || self.plane_dialog.as_ref().is_some_and(|d| d.picking_line())
             || self.split_dialog.as_ref().is_some_and(|d| d.picking == Some(split_dialog::Field::Tool))
@@ -2477,6 +2482,7 @@ impl OpenCad {
             .filter(|d| d.extent == model::Extent::ToObject)
             .and_then(|d| d.target)
             .into_iter()
+            .chain(self.dialog.as_ref().and_then(|d| if let model::ExtrudeStart::Object(t) = d.start { Some(t) } else { None }))
             .chain(self.hole_dialog.as_ref().and_then(|d| d.hole.target))
             .chain(self.section_dialog.as_ref().and_then(|d| d.at))
             .chain(self.split_dialog.as_ref().and_then(|d| d.split.at))
@@ -4202,7 +4208,7 @@ impl OpenCad {
                 let tip = d.base.origin + d.base.u * c.x + d.base.v * c.y + d.base.normal() * d.distance;
                 view.project(tip.as_vec3()).map(|p| self.off_arrow(to_pos(p) + egui::vec2(16.0, -16.0)))
             }),
-            Some(EditTarget::ExtrudeDistance) => self.dialog.as_ref().filter(|d| d.extent != model::Extent::ToObject).and_then(|d| {
+            Some(EditTarget::ExtrudeDistance) => self.dialog.as_ref().filter(|d| !matches!(d.extent, model::Extent::ToObject | model::Extent::All)).and_then(|d| {
                 let s = d.sketch?;
                 let r = regions.get(s)?.get(*d.profiles.first()?)?;
                 let plane = self.plane_of(s);

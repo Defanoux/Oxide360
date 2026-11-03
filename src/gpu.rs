@@ -846,7 +846,7 @@ mod tests {
             ed.click(&mut sk, Anchor::Free(DVec2::new(p.0, p.1)));
         }
         ed.click(&mut sk, Anchor::Point(1));
-        build_extrude(&[sk], &Extrude { op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: height, extent: Default::default(), distance2: 0.0, taper: 0.0, target: None }).unwrap()
+        build_extrude(&[sk], &Extrude { start: Default::default(), op: Default::default(), name: "E".into(), sketch: 0, profiles: vec![0], distance: height, extent: Default::default(), distance2: 0.0, taper: 0.0, target: None }).unwrap()
     }
 
     /// Render and read the image back as RGBA bytes.

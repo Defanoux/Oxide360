@@ -33,6 +33,8 @@ impl OpenCad {
                 op: e.op,
                 target: e.target,
                 picking_target: false,
+                start: e.start,
+                picking_start: false,
             },
             None => ExtrudeDialog {
                 op_chosen: false,
@@ -47,6 +49,8 @@ impl OpenCad {
                 op: Operation::NewBody, // follows what the profile touches until chosen
                 target: None,
                 picking_target: false,
+                start: model::ExtrudeStart::ProfilePlane,
+                picking_start: false,
             },
         };
         self.float = Some(FloatEdit {
@@ -77,7 +81,7 @@ impl OpenCad {
             Some(k) => self.extrudes[k].name.clone(),
             None => format!("Extrude{}", self.extrudes.len() + 1),
         };
-        Some(Extrude { op: d.op, name, sketch: d.sketch?, profiles: d.profiles.clone(), distance: d.distance, extent: d.extent, distance2: d.distance2, taper: d.taper, target: d.target })
+        Some(Extrude { start: d.start, op: d.op, name, sketch: d.sketch?, profiles: d.profiles.clone(), distance: d.distance, extent: d.extent, distance2: d.distance2, taper: d.taper, target: d.target })
     }
 
     pub(crate) fn commit_extrude(&mut self) {
@@ -305,10 +309,13 @@ impl OpenCad {
             return Some(Handle::Line { line, value, target: HandleTarget::Corner });
         }
         if let Some(d) = &self.dialog {
-            if d.extent == model::Extent::ToObject {
+            if matches!(d.extent, model::Extent::ToObject | model::Extent::All) {
                 return None; // its length comes from what it runs up to
             }
-            let (origin, normal) = self.extrude_axis(regions)?;
+            let (mut origin, normal) = self.extrude_axis(regions)?;
+            if let model::ExtrudeStart::Offset(off) = d.start {
+                origin += normal * off as f32;
+            }
             let line = LineHandle { origin: origin.as_dvec3(), dir: normal.as_dvec3() };
             let value = if d.extent == model::Extent::Symmetric { d.distance / 2.0 } else { d.distance };
             return Some(Handle::Line { line, value, target: HandleTarget::Extrude });

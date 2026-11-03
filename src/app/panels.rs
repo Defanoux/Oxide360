@@ -1741,7 +1741,7 @@ impl OpenCad {
         }
         let cache = self.caches[Slot::Committed as usize].as_ref()?;
         let bounds: Vec<(Vec3, Vec3)> = cache.model.bodies.iter().filter_map(|b| model::mesh_bounds(&b.mesh)).collect();
-        let ex = Extrude { op: d.op, name: String::new(), sketch: s, profiles: Vec::new(), distance: d.distance, extent: d.extent, distance2: d.distance2, taper: d.taper, target: d.target };
+        let ex = Extrude { start: Default::default(), op: d.op, name: String::new(), sketch: s, profiles: Vec::new(), distance: d.distance, extent: d.extent, distance2: d.distance2, taper: d.taper, target: d.target };
         let (from, to) = ex.span();
         let touches = |len: f64| model::prism_touches(&points, plane.normal(), len as f32, &bounds, 1e-3);
         Some(touches(to) || (from != 0.0 && touches(from)))
@@ -1783,76 +1783,184 @@ impl OpenCad {
         ui.weak("Click shaded regions to add or remove them.");
         ui.separator();
         let mut changed = false;
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Extent");
-            for ex in model::Extent::ALL {
-                if ui.selectable_label(d.extent == ex, ex.name()).clicked() && d.extent != ex {
-                    d.extent = ex;
-                    // To Object: pick what it runs up to straight away (if nothing yet).
-                    d.picking_target = ex == model::Extent::ToObject && d.target.is_none();
-                    changed = true;
-                }
-            }
-        });
-        if d.extent == model::Extent::ToObject {
-            // What it runs up to: click the field, then a plane or flat face in the view.
+        let object_name = |t: Option<model::ExtrudeTarget>| match t {
+            Some(model::ExtrudeTarget::Origin(op)) => format!("{} plane", op.name()),
+            Some(model::ExtrudeTarget::Plane(k)) => plane_names.get(k).cloned().unwrap_or_else(|| "a plane".into()),
+            Some(model::ExtrudeTarget::Face { .. }) => "a body face".into(),
+            None => "Click to select".into(),
+        };
+        // Fusion's rows: Start, Direction, Extent Type — each a row of icons
+        // (hover one for its name and what it does).
+        use model::{Extent, ExtrudeStart};
+        let distance_kind = !matches!(d.extent, Extent::ToObject | Extent::All);
+        egui::Grid::new("extrude_grid").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+            ui.label("Start");
             ui.horizontal(|ui| {
-                ui.label("Object");
-                let name = match d.target {
-                    _ if d.picking_target => "Click a plane or flat face…".to_string(),
-                    Some(model::ExtrudeTarget::Origin(op)) => format!("{} plane", op.name()),
-                    Some(model::ExtrudeTarget::Plane(k)) => plane_names.get(k).cloned().unwrap_or_else(|| "a plane".into()),
-                    Some(model::ExtrudeTarget::Face { .. }) => "a body face".into(),
-                    None => "Click to select".into(),
+                let now: u8 = match d.start {
+                    ExtrudeStart::ProfilePlane if d.picking_start => 2,
+                    ExtrudeStart::ProfilePlane => 0,
+                    ExtrudeStart::Offset(_) => 1,
+                    ExtrudeStart::Object(_) => 2,
                 };
-                let text = if d.picking_target { egui::RichText::new(name).strong() } else { egui::RichText::new(name) };
-                if ui.add(egui::Button::selectable(d.picking_target, text).min_size(egui::vec2(150.0, 0.0))).on_hover_text("Click, then click an origin or construction plane, or a flat body face").clicked() {
-                    d.picking_target = !d.picking_target;
+                let is = |k: u8| k == now;
+                for (k, icon, name, tip) in [
+                    (0, Icon::StartProfile, "Profile Plane", "Profile Plane: starts on the sketch's plane"),
+                    (1, Icon::StartOffset, "Offset", "Offset: starts a set distance off the sketch's plane"),
+                    (2, Icon::StartObject, "Object", "Object: starts on a plane or flat face (the profile carried onto it)"),
+                ] {
+                    if icons::option(ui, icon, name, tip, true, is(k)).clicked() && !is(k) {
+                        d.start = match k {
+                            0 => ExtrudeStart::ProfilePlane,
+                            1 => ExtrudeStart::Offset(5.0),
+                            _ => ExtrudeStart::ProfilePlane,
+                        };
+                        d.picking_start = k == 2;
+                        d.picking_target = false;
+                        changed = true;
+                    }
                 }
             });
-        } else {
+            ui.end_row();
+            match d.start {
+                ExtrudeStart::Offset(mut off) => {
+                    ui.label("Offset");
+                    if ui.add(units::length_drag(&mut off, unit, 0.5).update_while_editing(false)).changed() {
+                        d.start = ExtrudeStart::Offset(off);
+                        changed = true;
+                    }
+                    ui.end_row();
+                }
+                _ if d.picking_start || matches!(d.start, ExtrudeStart::Object(_)) => {
+                    ui.label("Start Object");
+                    let name = if d.picking_start {
+                        "Click a plane or flat face…".to_string()
+                    } else if let ExtrudeStart::Object(t) = d.start {
+                        object_name(Some(t))
+                    } else {
+                        String::new()
+                    };
+                    let text = if d.picking_start { egui::RichText::new(name).strong() } else { egui::RichText::new(name) };
+                    if ui.add(egui::Button::selectable(d.picking_start, text).min_size(egui::vec2(150.0, 0.0))).on_hover_text("Click, then click an origin or construction plane, or a flat body face").clicked() {
+                        d.picking_start = !d.picking_start;
+                        d.picking_target = false;
+                    }
+                    ui.end_row();
+                }
+                _ => {}
+            }
+
+            ui.label("Direction");
             ui.horizontal(|ui| {
-                ui.label(match d.extent {
-                    model::Extent::OneSide => "Distance",
-                    model::Extent::Symmetric => "Length",
-                    _ => "Side 1",
-                });
-                changed |= ui
-                    .add(units::length_drag(&mut d.distance, unit, 0.5))
-                    .changed();
-                if ui.button("Flip").clicked() {
+                let side = match d.extent {
+                    Extent::Symmetric => Extent::Symmetric,
+                    Extent::TwoSides => Extent::TwoSides,
+                    _ => Extent::OneSide,
+                };
+                for (e, icon, name, tip) in [
+                    (Extent::OneSide, Icon::OneSide, "One Side", "One Side: out one way from the start"),
+                    (Extent::TwoSides, Icon::TwoSides, "Two Sides", "Two Sides: out both ways, each its own distance"),
+                    (Extent::Symmetric, Icon::Symmetric2, "Symmetric", "Symmetric: out both ways, the same each side (the length is the whole)"),
+                ] {
+                    if icons::option(ui, icon, name, tip, true, side == e).clicked() && side != e {
+                        // Both ways only with a distance.
+                        d.extent = if e == Extent::OneSide && !distance_kind { d.extent } else { e };
+                        d.picking_target = false;
+                        changed = true;
+                    }
+                }
+                ui.add_space(10.0);
+                if icons::option(ui, Icon::Flip, "Flip", "Flip: the other way from the sketch", true, false).clicked() {
                     d.distance = -d.distance;
                     changed = true;
                 }
             });
-        }
-        if d.extent == model::Extent::OneSide {
+            ui.end_row();
+
+            ui.label("Extent");
             ui.horizontal(|ui| {
-                ui.label("Taper");
-                changed |= ui.add(egui::DragValue::new(&mut d.taper).speed(0.2).range(-89.0..=89.0).suffix("°")).changed();
-            });
-        }
-        if d.extent == model::Extent::TwoSides {
-            ui.horizontal(|ui| {
-                ui.label("Side 2");
-                changed |= ui.add(units::length_drag(&mut d.distance2, unit, 0.5).range(0.0..=f64::MAX)).changed();
-            });
-        }
-        ui.horizontal(|ui| {
-            ui.label("Operation");
-            for op in Operation::ALL {
-                if ui.selectable_label(d.op == op, op.name()).clicked() && d.op != op {
-                    d.op_chosen = true;
-                    // A cut goes into the body by itself; leaving Cut goes back out.
-                    if op == Operation::Cut {
-                        d.distance = d.distance.abs() * toward.unwrap_or(-1.0);
-                    } else if d.op == Operation::Cut {
-                        d.distance = d.distance.abs();
+                for (k, icon, name, tip) in [
+                    (0, Icon::ExtentDistance, "Distance", "Distance: as far as set"),
+                    (1, Icon::ExtentTo, "To Object", "To Object: up to a plane or flat face (a slanted one cuts the end at its slant)"),
+                    (2, Icon::ExtentAll, "All", "All: right through every body"),
+                ] {
+                    let on = match k {
+                        0 => distance_kind,
+                        1 => d.extent == Extent::ToObject,
+                        _ => d.extent == Extent::All,
+                    };
+                    if icons::option(ui, icon, name, tip, true, on).clicked() && !on {
+                        d.extent = match k {
+                            0 => Extent::OneSide,
+                            1 => Extent::ToObject,
+                            _ => Extent::All,
+                        };
+                        // To Object: pick what it runs up to straight away (if nothing yet).
+                        d.picking_target = k == 1 && d.target.is_none();
+                        if d.picking_target {
+                            d.picking_start = false;
+                        }
+                        changed = true;
                     }
-                    d.op = op;
-                    changed = true;
+                }
+            });
+            ui.end_row();
+
+            match d.extent {
+                Extent::ToObject => {
+                    // What it runs up to: click the field, then a plane or flat face in the view.
+                    ui.label("Object");
+                    let name = if d.picking_target { "Click a plane or flat face…".to_string() } else { object_name(d.target) };
+                    let text = if d.picking_target { egui::RichText::new(name).strong() } else { egui::RichText::new(name) };
+                    if ui.add(egui::Button::selectable(d.picking_target, text).min_size(egui::vec2(150.0, 0.0))).on_hover_text("Click, then click an origin or construction plane, or a flat body face").clicked() {
+                        d.picking_target = !d.picking_target;
+                        d.picking_start = false;
+                    }
+                    ui.end_row();
+                }
+                Extent::All => {}
+                _ => {
+                    ui.label(match d.extent {
+                        Extent::OneSide => "Distance",
+                        Extent::Symmetric => "Length",
+                        _ => "Side 1",
+                    });
+                    changed |= ui.add(units::length_drag(&mut d.distance, unit, 0.5)).changed();
+                    ui.end_row();
                 }
             }
+            if d.extent == Extent::TwoSides {
+                ui.label("Side 2");
+                changed |= ui.add(units::length_drag(&mut d.distance2, unit, 0.5).range(0.0..=f64::MAX)).changed();
+                ui.end_row();
+            }
+            if d.extent == Extent::OneSide {
+                ui.label("Taper");
+                changed |= ui.add(egui::DragValue::new(&mut d.taper).speed(0.2).range(-89.0..=89.0).suffix("°")).on_hover_text("Taper Angle: the sides lean in (+) or out (−)").changed();
+                ui.end_row();
+            }
+
+            ui.label("Operation");
+            ui.horizontal(|ui| {
+                for (op, icon, tip) in [
+                    (Operation::Join, Icon::OpJoin, "Join: merges into the bodies it touches"),
+                    (Operation::Cut, Icon::OpCut, "Cut: removes its shape from the bodies"),
+                    (Operation::Intersect, Icon::OpIntersect, "Intersect: keeps only where it overlaps the bodies"),
+                    (Operation::NewBody, Icon::OpNewBody, "New Body: a body of its own"),
+                ] {
+                    if icons::option(ui, icon, op.name(), tip, true, d.op == op).clicked() && d.op != op {
+                        d.op_chosen = true;
+                        // A cut goes into the body by itself; leaving Cut goes back out.
+                        if op == Operation::Cut {
+                            d.distance = d.distance.abs() * toward.unwrap_or(-1.0);
+                        } else if d.op == Operation::Cut {
+                            d.distance = d.distance.abs();
+                        }
+                        d.op = op;
+                        changed = true;
+                    }
+                }
+            });
+            ui.end_row();
         });
         let editing = d.editing;
         let has_profiles = !d.profiles.is_empty();

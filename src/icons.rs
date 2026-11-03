@@ -46,6 +46,16 @@ pub enum Icon {
     Split,
     Scale,
     Emboss,
+    StartProfile,
+    StartOffset,
+    StartObject,
+    OneSide,
+    TwoSides,
+    Symmetric2,
+    OpJoin,
+    OpCut,
+    OpIntersect,
+    OpNewBody,
     /// The sketch tools' Fillet and Chamfer: a flat corner (the solid ones are 3-D blocks).
     SketchFillet,
     SketchChamfer,
@@ -485,6 +495,62 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
                 line((0.42, 0.04), (0.42, 0.66), screw);
                 line((0.58, 0.04), (0.58, 0.66), screw);
             }
+        }
+        // Extrude's Start: on the sketch's plane, off it, or on a face.
+        Icon::StartProfile => {
+            poly(&[(0.28, 0.22), (0.72, 0.22), (0.72, 0.72), (0.28, 0.72)], blue);
+            line((0.08, 0.72), (0.92, 0.72), Stroke::new(thin.width * 1.4, orange));
+        }
+        Icon::StartOffset => {
+            poly(&[(0.28, 0.12), (0.72, 0.12), (0.72, 0.5), (0.28, 0.5)], blue);
+            line((0.08, 0.86), (0.92, 0.86), Stroke::new(thin.width * 1.2, orange));
+            let s = Stroke::new(thin.width, ink);
+            line((0.15, 0.56), (0.15, 0.8), s);
+            arrow_head((0.15, 0.52), (0.15, 0.7), ink);
+            arrow_head((0.15, 0.84), (0.15, 0.66), ink);
+        }
+        Icon::StartObject => {
+            poly(&[(0.3, 0.12), (0.74, 0.12), (0.74, 0.5), (0.3, 0.66)], blue);
+            line((0.06, 0.78), (0.94, 0.42), Stroke::new(thin.width * 1.4, orange));
+        }
+        // Direction: one way from the sketch, unequal both ways, or the same both ways.
+        Icon::OneSide => {
+            poly(&[(0.28, 0.16), (0.72, 0.16), (0.72, 0.62), (0.28, 0.62)], blue);
+            line((0.08, 0.62), (0.92, 0.62), Stroke::new(thin.width * 1.4, orange));
+            line((0.5, 0.92), (0.5, 0.7), Stroke::new(thin.width, ink));
+        }
+        Icon::TwoSides => {
+            poly(&[(0.28, 0.12), (0.72, 0.12), (0.72, 0.58), (0.28, 0.58)], blue);
+            poly(&[(0.28, 0.58), (0.72, 0.58), (0.72, 0.8), (0.28, 0.8)], blue_dark);
+            line((0.08, 0.58), (0.92, 0.58), Stroke::new(thin.width * 1.4, orange));
+        }
+        Icon::Symmetric2 => {
+            poly(&[(0.28, 0.16), (0.72, 0.16), (0.72, 0.5), (0.28, 0.5)], blue);
+            poly(&[(0.28, 0.5), (0.72, 0.5), (0.72, 0.84), (0.28, 0.84)], blue);
+            line((0.08, 0.5), (0.92, 0.5), Stroke::new(thin.width * 1.4, orange));
+        }
+        // Operation: what the new solid does to the bodies.
+        Icon::OpJoin => {
+            poly(&[(0.1, 0.4), (0.6, 0.4), (0.6, 0.9), (0.1, 0.9)], blue);
+            poly(&[(0.4, 0.1), (0.9, 0.1), (0.9, 0.6), (0.4, 0.6)], blue);
+            line((0.4, 0.4), (0.6, 0.4), Stroke::new(thin.width * 0.8, blue));
+        }
+        Icon::OpCut => {
+            poly(&[(0.1, 0.4), (0.4, 0.4), (0.4, 0.9), (0.1, 0.9)], blue);
+            poly(&[(0.4, 0.6), (0.6, 0.6), (0.6, 0.9), (0.4, 0.9)], blue);
+            outline(&[(0.4, 0.1), (0.9, 0.1), (0.9, 0.6), (0.4, 0.6)], Stroke::new(thin.width * 1.2, orange));
+        }
+        Icon::OpIntersect => {
+            outline(&[(0.1, 0.4), (0.6, 0.4), (0.6, 0.9), (0.1, 0.9)], thin);
+            outline(&[(0.4, 0.1), (0.9, 0.1), (0.9, 0.6), (0.4, 0.6)], thin);
+            poly(&[(0.4, 0.4), (0.6, 0.4), (0.6, 0.6), (0.4, 0.6)], blue);
+        }
+        Icon::OpNewBody => {
+            poly(&[(0.08, 0.42), (0.5, 0.42), (0.5, 0.88), (0.08, 0.88)], blue);
+            poly(&[(0.58, 0.12), (0.92, 0.12), (0.92, 0.46), (0.58, 0.46)], orange);
+            let s = Stroke::new(thin.width * 1.2, ink);
+            line((0.75, 0.56), (0.75, 0.84), s);
+            line((0.61, 0.7), (0.89, 0.7), s);
         }
         Icon::ExtentDistance => {
             line((0.2, 0.15), (0.8, 0.15), thin);
