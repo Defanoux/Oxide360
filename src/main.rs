@@ -344,6 +344,18 @@ fn draw_dimension(
             text(unit.show(d_of(d))),
             color,
         ),
+        Constraint::HDistance(p, q, d) | Constraint::VDistance(p, q, d) => {
+            let axis = if matches!(c, Constraint::HDistance(..)) { DVec2::X } else { DVec2::Y };
+            view.linear_dimension_along(plane, *sk.points.get(p)?, *sk.points.get(q)?, axis, away_from, shift, text(unit.show(d_of(d).abs())), color)
+        }
+        // From the point square across to the line (extended).
+        Constraint::PointLine(p, l, d) => {
+            let (a, b) = line(l)?;
+            let at = *sk.points.get(p)?;
+            let u = (b - a).normalize_or_zero();
+            let foot = a + u * (at - a).dot(u);
+            view.linear_dimension(plane, foot, at, away_from, shift, text(unit.show(d_of(d).abs())), color)
+        }
         Constraint::Diameter(e, d) => match sk.entities.get(e)? {
             Entity::Circle { center, radius } => {
                 view.diameter_dimension(plane, sk.points[*center], *radius, shift, text(format!("Ø{}", unit.show(d_of(d)))), color)

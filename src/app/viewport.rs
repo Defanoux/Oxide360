@@ -2068,6 +2068,8 @@ impl OpenCad {
                         self.dim_preview = None;
                         if let (Some(c), Some(p)) = (self.dimension_candidate(), raw_hover) {
                             let sk = &self.sketches[i];
+                            // Two points: horizontal, vertical or straight, by where the label goes.
+                            let c = sk.dimension_to_place(c, p);
                             let hidden_painter = painter.with_clip_rect(egui::Rect::NOTHING);
                             let hidden = View { painter: &hidden_painter, ..view };
                             let centroid = sketch_centroid(&view, sk, &plane, to_vec(rect.center()));
@@ -3709,6 +3711,9 @@ impl OpenCad {
                     Constraint::Offset(..) if sk.offset_group(ci).first() != Some(&ci) => None,
                     Constraint::Length(..)
                     | Constraint::Distance(..)
+                    | Constraint::HDistance(..)
+                    | Constraint::VDistance(..)
+                    | Constraint::PointLine(..)
                     | Constraint::Diameter(..)
                     | Constraint::Radius(..)
                     | Constraint::Offset(..)

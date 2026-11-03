@@ -219,6 +219,21 @@ impl Eval<'_> {
                 }
                 self.pt(p).distance(self.pt(q)) - d
             }
+            HDistance(p, q, d) | VDistance(p, q, d) => {
+                if p.max(q) >= self.sk.points.len() {
+                    return None;
+                }
+                let v = self.pt(q) - self.pt(p);
+                (if matches!(c, HDistance(..)) { v.x } else { v.y }) - d
+            }
+            PointLine(p, l, d) => {
+                if p >= self.sk.points.len() {
+                    return None;
+                }
+                let (a, b) = self.line(l)?;
+                let n = b - a;
+                n.perp_dot(self.pt(p) - a) / n.length().max(1e-12) - d
+            }
             Angle(e1, e2, deg) => {
                 // sin(φ − target), φ the angle from line 1 to line 2: zero at
                 // the target or 180° from it (lines have no direction).

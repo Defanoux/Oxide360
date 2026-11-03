@@ -487,6 +487,8 @@ pub fn validate(doc: &Document) -> Result<(), String> {
                 Tangent(l, c) => line(l) && circle(c),
                 Angle(a, b, deg) => line(a) && line(b) && a != b && finite(deg),
                 Distance(p, q, dist) => p < np && q < np && p != q && finite(dist) && dist > 0.0,
+                HDistance(p, q, dist) | VDistance(p, q, dist) => p < np && q < np && p != q && finite(dist) && dist >= 0.0,
+                PointLine(p, l, d) => p < np && line(l) && finite(d) && d != 0.0,
                 OnCircle(p, c) => p < np && circle(c),
                 OnLine(p, l) => p < np && line(l),
                 OnAxis(p, axis) => p < np && axis < 2,

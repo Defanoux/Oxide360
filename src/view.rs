@@ -315,10 +315,30 @@ impl View<'_> {
         text: String,
         color: Color32,
     ) -> Option<egui::Rect> {
+        self.linear_dimension_along(plane, a, b, b - a, away_from, shift, text, color)
+    }
+
+    /// A dimension measured along `axis` (sketch units; `b − a` for the
+    /// straight distance, X or Y for a horizontal or vertical one): its line
+    /// runs along the axis past the farther point, extension lines out to it
+    /// from both points.
+    #[allow(clippy::too_many_arguments)]
+    pub fn linear_dimension_along(
+        &self,
+        plane: &Plane,
+        a: DVec2,
+        b: DVec2,
+        axis: DVec2,
+        away_from: Vec2,
+        shift: DVec2,
+        text: String,
+        color: Color32,
+    ) -> Option<egui::Rect> {
         let pa = self.project(plane.to_world(a))?;
         let pb = self.project(plane.to_world(b))?;
-        let dir = (pb - pa).normalize_or_zero();
-        if dir == Vec2::ZERO {
+        let tip = self.project(plane.to_world(a + axis.normalize_or_zero()))?;
+        let dir = (tip - pa).normalize_or_zero();
+        if dir == Vec2::ZERO || axis.length() < 1e-12 {
             return None;
         }
         let mid = (pa + pb) * 0.5;
@@ -331,21 +351,31 @@ impl View<'_> {
             (Some(p), Some(q)) => p - q,
             _ => Vec2::ZERO,
         };
-        let off = 28.0 + moved.dot(n);
+        // Across the axis: each point's place, and the line's (28 px past the
+        // farther one, then where the label was dragged).
+        let (ta, tb) = (pa.dot(n), pb.dot(n));
+        let line_at = ta.max(tb) + 28.0 + moved.dot(n);
         let along = moved.dot(dir);
-        let side = if off >= 0.0 { 1.0 } else { -1.0 };
         let stroke = Stroke::new(1.0, color);
-        self.seg(pa + n * 4.0 * side, pa + n * (off + 6.0 * side), stroke);
-        self.seg(pb + n * 4.0 * side, pb + n * (off + 6.0 * side), stroke);
-        let (da, db) = (pa + n * off, pb + n * off);
+        let (da, db) = (pa + n * (line_at - ta), pb + n * (line_at - tb));
+        for (p, t) in [(pa, ta), (pb, tb)] {
+            let side = if line_at >= t { 1.0 } else { -1.0 };
+            self.seg(p + n * 4.0 * side, p + n * (line_at - t + 6.0 * side), stroke);
+        }
+        let span = db - da;
+        if span.length() < 1e-3 {
+            return Some(self.label(da + dir * along, egui::Align2::CENTER_CENTER, text, color));
+        }
+        let ddir = span.normalize();
         self.seg(da, db, stroke);
-        self.arrow(da, dir * 8.0, stroke);
-        self.arrow(db, -dir * 8.0, stroke);
+        self.arrow(da, ddir * 8.0, stroke);
+        self.arrow(db, -ddir * 8.0, stroke);
         // Text slid past an end: extend the dimension line out to it.
-        let text_at = mid + n * off + dir * along;
-        let half = (pb - pa).length() * 0.5;
+        let text_at = (da + db) * 0.5 + dir * along;
+        let half = span.length() * 0.5;
         if along.abs() > half {
-            self.seg(if along > 0.0 { db } else { da }, text_at, stroke);
+            let end = if along * ddir.dot(dir) > 0.0 { db } else { da };
+            self.seg(end, text_at, stroke);
         }
         Some(self.label(text_at, egui::Align2::CENTER_CENTER, text, color))
     }

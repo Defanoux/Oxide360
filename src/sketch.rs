@@ -292,6 +292,15 @@ pub enum Constraint {
     Angle(EntityId, EntityId, f64),
     /// Two points a set distance apart.
     Distance(PointId, PointId, f64),
+    /// The second point a set distance to the right of the first, along the
+    /// sketch's X (a horizontal dimension; the points are put in that order).
+    HDistance(PointId, PointId, f64),
+    /// The second point a set distance above the first, along the sketch's Y.
+    VDistance(PointId, PointId, f64),
+    /// A point a set distance from a line (extended), square to it. The sign
+    /// keeps the side: left of the line's a→b (+) or right (−). Shown and
+    /// edited as the size.
+    PointLine(PointId, EntityId, f64),
     /// An offset copy (second) stays a set distance from its original
     /// (first): a line that far from the original's line, or an arc/circle
     /// sharing the original's centre with its radius that much bigger or
@@ -319,8 +328,8 @@ impl Constraint {
     pub fn value(&self) -> Option<f64> {
         use Constraint::*;
         match *self {
-            Length(_, d) | Diameter(_, d) | Angle(_, _, d) | Distance(_, _, d) | Radius(_, d) => Some(d),
-            Offset(_, _, d) => Some(d.abs()),
+            Length(_, d) | Diameter(_, d) | Angle(_, _, d) | Distance(_, _, d) | HDistance(_, _, d) | VDistance(_, _, d) | Radius(_, d) => Some(d),
+            Offset(_, _, d) | PointLine(_, _, d) => Some(d.abs()),
             _ => None,
         }
     }
@@ -329,8 +338,8 @@ impl Constraint {
     pub fn set_value(&mut self, v: f64) {
         use Constraint::*;
         match self {
-            Length(_, d) | Diameter(_, d) | Angle(_, _, d) | Distance(_, _, d) | Radius(_, d) => *d = v,
-            Offset(_, _, d) => *d = v.abs().copysign(*d),
+            Length(_, d) | Diameter(_, d) | Angle(_, _, d) | Distance(_, _, d) | HDistance(_, _, d) | VDistance(_, _, d) | Radius(_, d) => *d = v,
+            Offset(_, _, d) | PointLine(_, _, d) => *d = v.abs().copysign(*d),
             _ => {}
         }
     }
@@ -340,8 +349,8 @@ impl Constraint {
         match *self {
             Horizontal(e) | Vertical(e) | Length(e, _) | Diameter(e, _) => vec![e],
             Parallel(a, b) | Perpendicular(a, b) | Equal(a, b) | Tangent(a, b) | Angle(a, b, _) | Offset(a, b, _) | Collinear(a, b) | Concentric(a, b) => vec![a, b],
-            OnCircle(_, c) | OnLine(_, c) | Radius(c, _) | ArcEnds(c) | Symmetric(_, _, c) => vec![c],
-            Fix(_) | Distance(..) | Midpoint(..) | OnAxis(..) | Coincident(..) | SymmetricAxis(..) => vec![],
+            OnCircle(_, c) | OnLine(_, c) | Radius(c, _) | ArcEnds(c) | Symmetric(_, _, c) | PointLine(_, c, _) => vec![c],
+            Fix(_) | Distance(..) | HDistance(..) | VDistance(..) | Midpoint(..) | OnAxis(..) | Coincident(..) | SymmetricAxis(..) => vec![],
         }
     }
 
@@ -349,8 +358,8 @@ impl Constraint {
     pub fn points(&self) -> Vec<PointId> {
         match *self {
             Constraint::Fix(p) => vec![p],
-            Constraint::Distance(p, q, _) | Constraint::Coincident(p, q) | Constraint::Symmetric(p, q, _) | Constraint::SymmetricAxis(p, q, _) => vec![p, q],
-            Constraint::OnCircle(p, _) | Constraint::OnLine(p, _) => vec![p],
+            Constraint::Distance(p, q, _) | Constraint::HDistance(p, q, _) | Constraint::VDistance(p, q, _) | Constraint::Coincident(p, q) | Constraint::Symmetric(p, q, _) | Constraint::SymmetricAxis(p, q, _) => vec![p, q],
+            Constraint::OnCircle(p, _) | Constraint::OnLine(p, _) | Constraint::PointLine(p, _, _) => vec![p],
             Constraint::Midpoint(p, a, b) => vec![p, a, b],
             Constraint::OnAxis(p, _) => vec![p],
             _ => vec![],
@@ -363,7 +372,7 @@ impl Constraint {
         match self {
             Horizontal(_) => "Horizontal",
             Vertical(_) => "Vertical",
-            Length(..) | Diameter(..) | Radius(..) | Angle(..) | Distance(..) => "Dimension",
+            Length(..) | Diameter(..) | Radius(..) | Angle(..) | Distance(..) | HDistance(..) | VDistance(..) | PointLine(..) => "Dimension",
             Parallel(..) => "Parallel",
             Perpendicular(..) => "Perpendicular",
             Equal(..) => "Equal",
@@ -392,7 +401,9 @@ impl Constraint {
             Equal(..) => "=",
             Tangent(..) => "Tan",
             Angle(..) => "Angle",
-            Distance(..) => "Distance",
+            Distance(..) | PointLine(..) => "Distance",
+            HDistance(..) => "Horizontal distance",
+            VDistance(..) => "Vertical distance",
             Offset(..) => "Offset",
             Coincident(..) => "Coin",
             Collinear(..) => "Coll",
@@ -1109,6 +1120,14 @@ impl Sketch {
         p == Self::ORIGIN || self.constraints.contains(&Constraint::Fix(p))
     }
 
+    /// A line's two ends.
+    pub fn line_points(&self, e: EntityId) -> Option<(DVec2, DVec2)> {
+        match self.entities.get(e)? {
+            Entity::Line { a, b } => Some((*self.points.get(*a)?, *self.points.get(*b)?)),
+            _ => None,
+        }
+    }
+
     pub fn line_length(&self, e: EntityId) -> Option<f64> {
         match self.entities.get(e)? {
             Entity::Line { a, b } => Some(self.points[*a].distance(self.points[*b])),
@@ -1447,6 +1466,9 @@ impl Sketch {
                 Tangent(a, b) => Tangent(ent_map[a], ent_map[b]),
                 Angle(a, b, d) => Angle(ent_map[a], ent_map[b], d),
                 Distance(p, q, d) => Distance(pt_map[p], pt_map[q], d),
+                HDistance(p, q, d) => HDistance(pt_map[p], pt_map[q], d),
+                VDistance(p, q, d) => VDistance(pt_map[p], pt_map[q], d),
+                PointLine(p, l, d) => PointLine(pt_map[p], ent_map[l], d),
                 Offset(a, b, d) => Offset(ent_map[a], ent_map[b], d),
                 Coincident(p, q) => Coincident(pt_map[p], pt_map[q]),
                 Collinear(a, b) => Collinear(ent_map[a], ent_map[b]),
@@ -1844,6 +1866,9 @@ impl Sketch {
         match *c {
             Constraint::Length(e, _) => self.line_length(e),
             Constraint::Distance(p, q, _) => Some(self.points.get(p)?.distance(*self.points.get(q)?)),
+            Constraint::HDistance(p, q, _) => Some(self.points.get(q)?.x - self.points.get(p)?.x),
+            Constraint::VDistance(p, q, _) => Some(self.points.get(q)?.y - self.points.get(p)?.y),
+            Constraint::PointLine(p, l, _) => self.point_line_signed(p, l).map(f64::abs),
             Constraint::Diameter(e, _) => match self.entities.get(e)? {
                 Entity::Circle { radius, .. } => Some(2.0 * radius),
                 _ => None,
@@ -1859,6 +1884,44 @@ impl Sketch {
     /// line to the original's line, or the difference in radius.
     pub fn offset_between(&self, a: EntityId, b: EntityId) -> Option<f64> {
         self.signed_offset(a, b).map(f64::abs)
+    }
+
+    /// How far point `p` is from line `l` (extended), left of its a→b
+    /// positive (see `Constraint::PointLine`).
+    pub fn point_line_signed(&self, p: PointId, l: EntityId) -> Option<f64> {
+        let (a, b) = self.line_points(l)?;
+        let d = b - a;
+        Some(d.perp_dot(*self.points.get(p)? - a) / d.length().max(1e-12))
+    }
+
+    /// The dimension between two points `c` (a straight distance) as it
+    /// becomes when its label is put at `at` (as in Fusion): above or below
+    /// the pair, horizontal; beside it, vertical; off a corner or between
+    /// them, the straight distance.
+    pub fn dimension_to_place(&self, c: Constraint, at: DVec2) -> Constraint {
+        let Constraint::Distance(p, q, _) = c else { return c };
+        let (Some(&a), Some(&b)) = (self.points.get(p), self.points.get(q)) else { return c };
+        let within = |v: f64, x: f64, y: f64| v >= x.min(y) && v <= x.max(y);
+        let tiny = 1e-9 * a.distance(b).max(1.0);
+        if (b.x - a.x).abs() > tiny && within(at.x, a.x, b.x) && !within(at.y, a.y, b.y) {
+            Self::along(true, p, q, a, b)
+        } else if (b.y - a.y).abs() > tiny && within(at.y, a.y, b.y) && !within(at.x, a.x, b.x) {
+            Self::along(false, p, q, a, b)
+        } else {
+            c
+        }
+    }
+
+    /// A horizontal (`x`) or vertical dimension between two points, put in
+    /// the order that makes it positive.
+    fn along(x: bool, p: PointId, q: PointId, a: DVec2, b: DVec2) -> Constraint {
+        let d = if x { b.x - a.x } else { b.y - a.y };
+        match (x, d >= 0.0) {
+            (true, true) => Constraint::HDistance(p, q, d),
+            (true, false) => Constraint::HDistance(q, p, -d),
+            (false, true) => Constraint::VDistance(p, q, d),
+            (false, false) => Constraint::VDistance(q, p, -d),
+        }
     }
 
     /// `offset_between` with its side (see `Constraint::Offset`).
@@ -2743,7 +2806,11 @@ impl Sketch {
         self.constraints.iter().any(|x| match (*x, *c) {
             (Length(a, _), Length(b, _)) | (Diameter(a, _), Diameter(b, _)) | (Radius(a, _), Radius(b, _)) => a == b,
             (Offset(a, b, _), Offset(c, d, _)) => (a, b) == (c, d),
-            (Angle(a, b, _), Angle(c, d, _)) | (Distance(a, b, _), Distance(c, d, _)) => {
+            (PointLine(p, l, _), PointLine(q, m, _)) => (p, l) == (q, m),
+            (Angle(a, b, _), Angle(c, d, _))
+            | (Distance(a, b, _), Distance(c, d, _))
+            | (HDistance(a, b, _), HDistance(c, d, _))
+            | (VDistance(a, b, _), VDistance(c, d, _)) => {
                 (a, b) == (c, d) || (a, b) == (d, c)
             }
             (Parallel(a, b), Parallel(c, d))
@@ -2845,7 +2912,14 @@ impl Sketch {
         // parallel or square to it.
         if let [k] = axes[..] {
             match (lines.as_slice(), circles.as_slice(), points.as_slice()) {
-                ([], [], [p]) if *p != Self::ORIGIN => out.push(("Coincident", vec![OnAxis(*p, k)])),
+                ([], [], [p]) if *p != Self::ORIGIN => {
+                    // How far it is from the axis: across it, from the origin.
+                    let (o, at) = (Self::ORIGIN, self.points[*p]);
+                    if (if k == 0 { at.y } else { at.x }).abs() > 1e-9 {
+                        out.push(("Dimension", vec![Self::along(k == 1, o, *p, self.points[o], at)]));
+                    }
+                    out.push(("Coincident", vec![OnAxis(*p, k)]));
+                }
                 ([l], [], []) => {
                     if let Some(&Entity::Line { a, b }) = self.entities.get(*l) {
                         out.push(("Collinear", vec![OnAxis(a, k), OnAxis(b, k)]));
@@ -2899,10 +2973,14 @@ impl Sketch {
             // A point onto a circle or arc.
             ([], [c], [p]) => out.push(("Coincident", vec![OnCircle(*p, *c)])),
             ([l], [c], []) => out.push(("Tangent", vec![Tangent(*l, *c)])),
-            // A point and a line: the point sits at the line's middle.
+            // A point and a line: how far it is from the line, or it sits at
+            // the line's middle or on it.
             ([l], [], [p]) => {
                 if let Some(&Entity::Line { a, b }) = self.entities.get(*l) {
                     if *p != a && *p != b {
+                        if let Some(d) = self.point_line_signed(*p, *l).filter(|d| d.abs() > 1e-9) {
+                            out.push(("Dimension", vec![PointLine(*p, *l, d)]));
+                        }
                         out.push(("Midpoint", vec![Midpoint(*p, a, b)]));
                         out.push(("Coincident", vec![OnLine(*p, *l)]));
                     }
@@ -4487,6 +4565,86 @@ mod tests {
         let cs = sk.fillet_corner(2, 2.0).unwrap();
         assert!(cs.contains(&Constraint::Radius(3, 2.0)), "{cs:?}");
         assert!(sk.entities.iter().any(|e| matches!(e, Entity::Point { p: 2 })), "the sharp corner stays as a point");
+    }
+
+    /// Two points: the label above or below makes a horizontal dimension,
+    /// beside a vertical one, off a corner the straight distance; each solves.
+    #[test]
+    fn horizontal_vertical_and_straight_dimensions() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = line_tool();
+        ed.click(&mut sk, free(10.0, 0.0));
+        ed.click(&mut sk, free(30.0, 15.0));
+        let (p, q) = (1, 2);
+        let straight = Constraint::Distance(p, q, 25.0);
+        assert_eq!(sk.dimension_to_place(straight, DVec2::new(20.0, 30.0)), Constraint::HDistance(p, q, 20.0));
+        assert_eq!(sk.dimension_to_place(straight, DVec2::new(20.0, -5.0)), Constraint::HDistance(p, q, 20.0));
+        assert_eq!(sk.dimension_to_place(straight, DVec2::new(0.0, 5.0)), Constraint::VDistance(p, q, 15.0));
+        assert_eq!(sk.dimension_to_place(straight, DVec2::new(40.0, 25.0)), straight, "off a corner");
+        assert_eq!(sk.dimension_to_place(straight, DVec2::new(20.0, 7.0)), straight, "between them");
+        // Right to left: put in the order that keeps it positive.
+        assert_eq!(sk.dimension_to_place(Constraint::Distance(q, p, 25.0), DVec2::new(20.0, 30.0)), Constraint::HDistance(p, q, 20.0));
+        // Each holds its value when changed.
+        let mut h = sk.clone();
+        crate::solver::add_dimension(&mut h, Constraint::HDistance(p, q, 20.0)).unwrap();
+        let last = h.constraints.len() - 1;
+        crate::solver::set_dimension_value(&mut h, last, 12.0).unwrap();
+        assert!((h.points[q].x - h.points[p].x - 12.0).abs() < 1e-9, "{:?}", h.points);
+        let mut v = sk.clone();
+        crate::solver::add_dimension(&mut v, Constraint::VDistance(p, q, 15.0)).unwrap();
+        let last = v.constraints.len() - 1;
+        crate::solver::set_dimension_value(&mut v, last, 4.0).unwrap();
+        assert!((v.points[q].y - v.points[p].y - 4.0).abs() < 1e-9, "{:?}", v.points);
+    }
+
+    /// A point and a line, or a point and an axis: how far apart, square to it.
+    #[test]
+    fn a_point_is_dimensioned_from_a_line_or_an_axis() {
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        let mut ed = line_tool();
+        ed.click(&mut sk, free(0.0, 0.0));
+        ed.click(&mut sk, free(20.0, 20.0));
+        ed.cancel();
+        ed.set_tool(Tool::Point);
+        ed.click(&mut sk, free(20.0, 0.0));
+        let pt = sk.points.len() - 1;
+        let opts = sk.constraint_options(&[Sel::Point(pt), Sel::Entity(0)]);
+        let dim = opts.iter().find(|(l, _)| *l == "Dimension").expect("point and line").1[0];
+        let Constraint::PointLine(p, l, d) = dim else { panic!("{dim:?}") };
+        assert_eq!((p, l), (pt, 0));
+        assert!((d.abs() - 200f64.sqrt()).abs() < 1e-9 && dim.value() == Some(d.abs()));
+        let mut t = sk.clone();
+        crate::solver::add_dimension(&mut t, dim).unwrap();
+        let last = t.constraints.len() - 1;
+        crate::solver::set_dimension_value(&mut t, last, 5.0).unwrap();
+        assert!((t.point_line_signed(pt, 0).unwrap().abs() - 5.0).abs() < 1e-9);
+        assert_eq!(t.point_line_signed(pt, 0).unwrap().signum(), d.signum(), "stays on its side");
+        // From the X axis: its height above it (from the origin); from Y, across.
+        let x = sk.constraint_options(&[Sel::Point(pt), Sel::Axis(0)]);
+        assert_eq!(x.iter().find(|(l, _)| *l == "Dimension").map(|(_, cs)| cs[0]), None, "on the X axis: nothing to measure");
+        sk.points[pt] = DVec2::new(20.0, -6.0);
+        let x = sk.constraint_options(&[Sel::Point(pt), Sel::Axis(0)]);
+        assert_eq!(x.iter().find(|(l, _)| *l == "Dimension").map(|(_, cs)| cs[0]), Some(Constraint::VDistance(pt, Sketch::ORIGIN, 6.0)));
+        let y = sk.constraint_options(&[Sel::Point(pt), Sel::Axis(1)]);
+        assert_eq!(y.iter().find(|(l, _)| *l == "Dimension").map(|(_, cs)| cs[0]), Some(Constraint::HDistance(Sketch::ORIGIN, pt, 20.0)));
+    }
+
+    /// A sketch to try dimensions on by hand: a slanted line and a point.
+    #[test]
+    #[ignore]
+    fn dims_demo_file() {
+        let dir = std::env::var("SHOT_DIR").unwrap_or_else(|_| "/tmp".into());
+        let mut sk = Sketch::new("Sketch1".into(), OriginPlane::XY);
+        let mut ed = line_tool();
+        ed.click(&mut sk, free(10.0, 10.0));
+        ed.click(&mut sk, free(40.0, 30.0));
+        ed.cancel();
+        ed.set_tool(Tool::Point);
+        ed.click(&mut sk, free(40.0, 5.0));
+        let mut doc = crate::doc::Document::default();
+        doc.sketches = vec![sk];
+        doc.timeline = vec![crate::doc::Feature::Sketch(0)];
+        crate::doc::save(std::path::Path::new(&format!("{dir}/dims_demo.ox360")), &doc).unwrap();
     }
 
     #[test]
