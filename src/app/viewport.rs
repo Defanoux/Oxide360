@@ -1492,7 +1492,8 @@ impl OpenCad {
                         hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e)));
                     }
                     if tool == Tool::Mirror {
-                        hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e)));
+                        // A line, or one of the sketch's axes.
+                        hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e)) || matches!(h, Sel::Axis(_)));
                     }
                     let spline = |e: usize| matches!(sk.entities.get(e), Some(Entity::Spline { .. }));
                     if tool == Tool::Extend {
@@ -1502,8 +1503,8 @@ impl OpenCad {
                     if matches!(tool, Tool::Trim | Tool::Break) {
                         hovered = hovered.filter(|h| matches!(h, Sel::Entity(e) if sk.is_line(*e) || sk.is_round(*e) || spline(*e)));
                     }
-                    // Only Select and the constraint tools pick the sketch's axes.
-                    if !matches!(tool, Tool::Select | Tool::Constrain(_)) {
+                    // Only Select, the constraint tools and Mirror (a mirror line) pick the sketch's axes.
+                    if !matches!(tool, Tool::Select | Tool::Constrain(_) | Tool::Mirror) {
                         hovered = hovered.filter(|h| !matches!(h, Sel::Axis(_)));
                     }
                     if tool == Tool::Offset {
@@ -2143,6 +2144,7 @@ impl OpenCad {
                         let tol = SNAP_PX as f64 * mm_per_px;
                         match (hovered, raw_hover) {
                             (Some(Sel::Entity(e)), _) => self.mirror_across(pattern::MirrorLine::Entity(e)),
+                            (Some(Sel::Axis(k)), _) => self.mirror_across(pattern::MirrorLine::Axis(k as usize)),
                             // The origin axes work as mirror lines too.
                             (_, Some(p)) if p.y.abs() <= tol || p.x.abs() <= tol => {
                                 self.mirror_across(pattern::MirrorLine::Axis(if p.y.abs() <= p.x.abs() { 0 } else { 1 }))
