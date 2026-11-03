@@ -944,6 +944,7 @@ struct OpenCad {
     toast: Option<(String, f64)>,              // a notification in the viewport's corner, and when it appeared
     touchpad: bool,                            // touchpad controls instead of mouse
     label_carry: bool,                         // touchpad: a dimension label picked up, following the cursor
+    fit_on_open: bool,                         // a design was just opened: fit it in the view once built
     dim_preview: Option<(Constraint, DVec2)>,  // Dimension tool: what a click would place, and its label shift
     face_pick_point: Option<DVec3>,          // where the cursor ray met the face being hovered while picking
     face_pick: bool,                         // waiting for a click on an origin plane or a flat face to sketch on
@@ -1218,6 +1219,7 @@ impl Default for OpenCad {
             toast: None,
             touchpad: false,
             label_carry: false,
+            fit_on_open: false,
             dim_preview: None,
             face_pick_point: None,
             face_pick: false,

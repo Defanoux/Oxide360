@@ -448,6 +448,8 @@ impl OpenCad {
 
     /// Replace the whole design (New / Open) and reset every editing state.
     pub(crate) fn reset_with(&mut self, doc: Document, path: Option<PathBuf>) {
+        // A design from a file: shown whole, however big or small it is.
+        self.fit_on_open = path.is_some();
         self.active = None;
         self.editor = Editor::default();
         self.undo.clear();

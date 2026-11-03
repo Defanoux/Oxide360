@@ -142,6 +142,14 @@ impl OpenCad {
                 }
             }
         }
+        // Just opened: the whole design in view at once (the saved view's direction).
+        if std::mem::take(&mut self.fit_on_open) && (!self.sketches.is_empty() || !self.timeline.is_empty()) {
+            self.fit_view(aspect, now);
+            if let Some(t) = self.turn.take() {
+                self.camera.set_pose(t.to);
+            }
+            self.toast = None; // ("Nothing to fit yet" for an empty one)
+        }
         // Fit: F6 or a double-click of the middle button (wheel), as in Fusion.
         let f6 = !ui.ctx().text_edit_focused() && ui.input(|i| i.key_pressed(egui::Key::F6));
         if f6 || response.double_clicked_by(egui::PointerButton::Middle) {
