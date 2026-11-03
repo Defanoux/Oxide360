@@ -99,7 +99,8 @@ pub enum Operation {
 }
 
 impl Operation {
-    pub const ALL: [Operation; 4] = [Operation::NewBody, Operation::Join, Operation::Cut, Operation::Intersect];
+    /// In Fusion's order.
+    pub const ALL: [Operation; 4] = [Operation::Join, Operation::Cut, Operation::Intersect, Operation::NewBody];
 
     pub fn name(self) -> &'static str {
         match self {

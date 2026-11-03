@@ -35,6 +35,7 @@ impl Projection {
 
 /// Orbit camera: stores what it looks at and how it's angled.
 /// The eye position is derived (spherical -> Cartesian).
+#[derive(Clone)]
 pub struct OrbitCamera {
     pub target: Vec3,
     pub distance: f32,

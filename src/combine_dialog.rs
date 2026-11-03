@@ -104,11 +104,7 @@ impl CombineDialog {
                 ui.end_row();
             }
             ui.label("Operation");
-            ui.horizontal(|ui| {
-                for op in [Operation::Join, Operation::Cut, Operation::Intersect] {
-                    ui.selectable_value(&mut c.op, op, op.name());
-                }
-            });
+            crate::icons::operation_row(ui, &mut c.op, &[Operation::Join, Operation::Cut, Operation::Intersect]);
             ui.end_row();
             ui.label("Keep Tools");
             ui.checkbox(&mut c.keep_tools, "").on_hover_text("Keep the tool bodies as they were (else they're used up)");

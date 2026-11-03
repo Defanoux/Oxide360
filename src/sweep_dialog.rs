@@ -239,9 +239,7 @@ impl SweepDialog {
         }
         ui.horizontal(|ui| {
             ui.label("Operation");
-            for op in [Operation::Join, Operation::Cut, Operation::NewBody, Operation::Intersect] {
-                ui.selectable_value(&mut self.op, op, op.name());
-            }
+            crate::icons::operation_row(ui, &mut self.op, &Operation::ALL);
         });
         if let Some(e) = error {
             ui.colored_label(egui::Color32::from_rgb(230, 80, 80), e);

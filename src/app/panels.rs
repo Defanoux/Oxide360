@@ -1941,12 +1941,8 @@ impl OpenCad {
 
             ui.label("Operation");
             ui.horizontal(|ui| {
-                for (op, icon, tip) in [
-                    (Operation::Join, Icon::OpJoin, "Join: merges into the bodies it touches"),
-                    (Operation::Cut, Icon::OpCut, "Cut: removes its shape from the bodies"),
-                    (Operation::Intersect, Icon::OpIntersect, "Intersect: keeps only where it overlaps the bodies"),
-                    (Operation::NewBody, Icon::OpNewBody, "New Body: a body of its own"),
-                ] {
+                for op in Operation::ALL {
+                    let (icon, tip) = icons::operation(op);
                     if icons::option(ui, icon, op.name(), tip, true, d.op == op).clicked() && d.op != op {
                         d.op_chosen = true;
                         // A cut goes into the body by itself; leaving Cut goes back out.
@@ -2045,11 +2041,7 @@ impl OpenCad {
         });
         ui.horizontal(|ui| {
             ui.label("Operation");
-            for op in Operation::ALL {
-                if ui.selectable_label(d.op == op, op.name()).clicked() {
-                    d.op = op;
-                }
-            }
+            icons::operation_row(ui, &mut d.op, &Operation::ALL);
         });
         let editing = d.editing;
         let has_profiles = !d.profiles.is_empty();

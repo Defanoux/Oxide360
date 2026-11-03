@@ -4666,7 +4666,7 @@ impl OpenCad {
         let home = ui.put(home_rect, egui::Button::new("")).on_hover_text("Home view");
         View::house_icon(ui.painter(), home_rect.shrink2(egui::vec2(7.0, 6.0)), icon);
         if home.clicked() {
-            self.move_camera(self.home, now);
+            self.go_home(aspect, now);
         }
         // Looking straight at a face: arrows to roll the view 45° at a time (as in Fusion).
         if self.camera.face_on() {
@@ -4690,7 +4690,7 @@ impl OpenCad {
         View::menu_icon(ui.painter(), menu_rect, icon);
         egui::Popup::menu(&menu).show(|ui| {
             if ui.button("Go Home").clicked() {
-                self.move_camera(self.home, now);
+                self.go_home(aspect, now);
                 ui.close();
             }
             if ui.button("Fit                F6").on_hover_text("Show everything (or double-click the wheel)").clicked() {

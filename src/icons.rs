@@ -1159,6 +1159,33 @@ pub fn option(ui: &mut egui::Ui, icon: Icon, label: &str, tooltip: &str, enabled
     response.on_hover_text(tooltip)
 }
 
+/// An Operation's icon and what it does (Fusion's Join, Cut, Intersect, New Body).
+pub fn operation(op: crate::model::Operation) -> (Icon, &'static str) {
+    use crate::model::Operation::*;
+    match op {
+        Join => (Icon::OpJoin, "Join: merges into the bodies it touches"),
+        Cut => (Icon::OpCut, "Cut: removes its shape from the bodies"),
+        Intersect => (Icon::OpIntersect, "Intersect: keeps only where it overlaps the bodies"),
+        NewBody => (Icon::OpNewBody, "New Body: a body of its own"),
+    }
+}
+
+/// The Operation row's icons (those in `ops`, in Fusion's order); true when
+/// one was clicked and `op` changed.
+pub fn operation_row(ui: &mut egui::Ui, op: &mut crate::model::Operation, ops: &[crate::model::Operation]) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        for &o in ops {
+            let (icon, tip) = operation(o);
+            if option(ui, icon, o.name(), tip, true, *op == o).clicked() && *op != o {
+                *op = o;
+                changed = true;
+            }
+        }
+    });
+    changed
+}
+
 pub fn button(ui: &mut egui::Ui, icon: Icon, tooltip: &str, enabled: bool, selected: bool) -> egui::Response {
     button_sized(ui, icon, tooltip, enabled, selected, 34.0)
 }

@@ -728,6 +728,26 @@ impl OpenCad {
 
     /// Fit (F6): glide to show every visible body and sketch, looking the same way.
     pub(crate) fn fit_view(&mut self, aspect: f32, now: f64) {
+        let pts = self.fit_points();
+        match self.camera.fit(&pts, aspect) {
+            Some(to) => self.move_camera(to, now),
+            None => self.notify("Nothing to fit yet".into()),
+        }
+    }
+
+    /// Home: the home view's angle, near enough to show the whole design
+    /// (as Fit does), whatever its size.
+    pub(crate) fn go_home(&mut self, aspect: f32, now: f64) {
+        let pts = self.fit_points();
+        let mut cam = self.camera.clone();
+        cam.set_pose(self.home);
+        let to = cam.fit(&pts, aspect).unwrap_or(self.home);
+        self.move_camera(to, now);
+    }
+
+    /// The corners of every visible body and the shown sketches' geometry:
+    /// what Fit and Home frame.
+    fn fit_points(&mut self) -> Vec<Vec3> {
         // Just opened, still building: finish first, so there's something to fit.
         self.build_now(Slot::Committed);
         let mut pts: Vec<Vec3> = Vec::new();
@@ -767,10 +787,7 @@ impl OpenCad {
             }
             pts.extend(flat.into_iter().map(|p| plane.to_world(p)));
         }
-        match self.camera.fit(&pts, aspect) {
-            Some(to) => self.move_camera(to, now),
-            None => self.notify("Nothing to fit yet".into()),
-        }
+        pts
     }
 
     /// Glide the camera to `to` (used by the view cube and Home).

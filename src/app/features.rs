@@ -16,6 +16,8 @@ impl OpenCad {
         self.move_dialog = None;
         self.thread_dialog = None;
         self.finish_sketch();
+        // One command at a time: whatever else is open closes.
+        self.cancel_all_dialogs();
         self.cancel_edge_dialog();
         self.cancel_revolve();
         self.message = None;
@@ -516,6 +518,8 @@ impl OpenCad {
         self.move_dialog = None;
         self.thread_dialog = None;
         self.finish_sketch();
+        // One command at a time: whatever else is open closes.
+        self.cancel_all_dialogs();
         self.cancel_extrude();
         self.cancel_edge_dialog();
         self.message = None;
@@ -604,6 +608,8 @@ impl OpenCad {
     }
 
     pub(crate) fn open_copy(&mut self, mode: CopyMode, editing: Option<usize>) {
+        self.finish_sketch();
+        self.cancel_all_dialogs();
         self.axis_pick = false;
         self.angle_pick = false;
         self.hole_dialog = None;
@@ -2545,6 +2551,8 @@ impl OpenCad {
         self.move_dialog = None;
         self.thread_dialog = None;
         self.finish_sketch();
+        // One command at a time: whatever else is open closes.
+        self.cancel_all_dialogs();
         self.cancel_extrude();
         self.cancel_revolve();
         self.message = None;
