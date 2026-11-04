@@ -956,6 +956,7 @@ struct OpenCad {
     timeline_height: f32,                   // last frame's, so floating windows sit above it
     suppressed: Vec<Feature>,               // timeline features switched off
     renaming_feature: Option<(Feature, String)>, // a timeline feature being renamed, and the text so far
+    timeline_pick: Option<Feature>,              // the timeline entry clicked (Delete deletes it)
     renaming: Option<(BodyId, String)>,     // a body being renamed in the browser, and the text so far
     set_distance_text_pending: bool,        // the extrude distance changed outside its box
     marker: Option<usize>,                  // timeline rollback: features before this many are built (None = all)
@@ -1231,6 +1232,7 @@ impl Default for OpenCad {
             timeline_height: 40.0,
             suppressed: Vec::new(),
             renaming_feature: None,
+            timeline_pick: None,
             renaming: None,
             marker: None,
             set_distance_text_pending: false,

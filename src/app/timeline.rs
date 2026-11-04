@@ -631,6 +631,7 @@ impl OpenCad {
     pub(crate) fn timeline_bar(&mut self, ui: &mut egui::Ui) {
         let mut action = None;
         let mut delete = None;
+        let mut pick_click: Option<Option<Feature>> = None;
         let mut rename: Option<Feature> = None;
         let mut toggle_suppress: Option<Feature> = None;
         let mut redefine: Option<usize> = None;
@@ -661,6 +662,7 @@ impl OpenCad {
                 ui.weak("(empty)");
             }
             let mut rects: Vec<egui::Rect> = Vec::new();
+            let pick = self.timeline_pick;
             for (idx, f) in self.timeline.iter().enumerate() {
                 let future = idx >= applied; // rolled back past this one
                 let (name, selected) = match *f {
@@ -749,7 +751,9 @@ impl OpenCad {
                     (Some(e), _, _) => format!("{name}: {e}  (double-click to edit)"),
                     (None, _, _) => format!("{name}  (double-click to edit)"),
                 };
-                let r = icons::timeline_button(ui, icon, &tip, selected && !future, underline, future || off, error.is_some() && !future && !off);
+                let picked = pick == Some(*f);
+                let tip = if future { tip } else { format!("{tip} · click to select, Delete to delete") };
+                let r = icons::timeline_button(ui, icon, &tip, (selected || picked) && !future, underline, future || off, error.is_some() && !future && !off);
                 rects.push(r.rect);
                 if r.drag_started() {
                     self.timeline_drag = Some(idx);
@@ -758,6 +762,10 @@ impl OpenCad {
                 // double-click on a built one edits it (as in Fusion).
                 if r.clicked() && future {
                     goto = Some(idx + 1);
+                }
+                // A click on a built one selects it (again: unselects), for Delete.
+                if r.clicked() && !future {
+                    pick_click = Some(if picked { None } else { Some(*f) });
                 }
                 if r.double_clicked() && !future {
                     action = Some(*f);
@@ -845,6 +853,27 @@ impl OpenCad {
             self.move_feature(from, gap);
         }
         self.rename_feature_window(ui.ctx());
+        if let Some(p) = pick_click {
+            self.timeline_pick = p;
+            if p.is_some() {
+                // One thing selected at a time: Delete is for this entry.
+                self.selected_bodies.clear();
+                self.solid_sel.clear();
+            }
+        }
+        // The selected entry: Delete deletes it (when no tool is busy), Esc lets it go.
+        if let Some(f) = self.timeline_pick {
+            let typing = ui.ctx().text_edit_focused();
+            let (del, esc) = ui.input(|i| (i.key_pressed(egui::Key::Delete), i.key_pressed(egui::Key::Escape)));
+            if !self.timeline.contains(&f) || esc || !self.selected_bodies.is_empty() || self.active.is_some() {
+                self.timeline_pick = None;
+            } else if del && !typing && delete.is_none() && self.tool_name().is_none() {
+                delete = Some(f);
+            }
+        }
+        if delete.is_some() {
+            self.timeline_pick = None; // (numbers shift)
+        }
         match delete {
             Some(Feature::Sketch(i)) => self.delete_sketch(i),
             Some(Feature::Extrude(k)) => self.delete_extrude(k),

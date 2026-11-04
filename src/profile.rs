@@ -714,9 +714,12 @@ pub fn union(regions: &[&Region]) -> Vec<Region> {
     for (h, hc) in holes {
         let ccw: Vec<DVec2> = h.iter().rev().copied().collect();
         let inside = interior_point(&ccw);
+        // The smallest outline round it: bigger than the hole (an island
+        // standing inside the hole can hold the sample point too).
+        let size = signed_area(&ccw);
         if let Some(r) = result
             .iter_mut()
-            .filter(|r| point_in_polygon(inside, &r.outer))
+            .filter(|r| signed_area(&r.outer) > size && point_in_polygon(inside, &r.outer))
             .min_by(|a, b| signed_area(&a.outer).total_cmp(&signed_area(&b.outer)))
         {
             r.holes.push(h);
@@ -929,6 +932,26 @@ mod tests {
         // The ring alone keeps its hole.
         let ring = union(&[&r[0]]);
         assert_eq!(ring[0].holes.len(), 1);
+    }
+
+    #[test]
+    fn an_island_inside_a_hole_keeps_the_hole_on_the_ring() {
+        // A disc with a square hole, and a smaller square standing inside the
+        // hole (a strip between them): picked together they stay a ring with
+        // its hole plus the island, not the whole disc.
+        let mut sk = new();
+        circle(&mut sk, 0.0, 0.0, 30.0);
+        rect(&mut sk, -10.0, -10.0, 10.0, 10.0);
+        rect(&mut sk, -8.0, -8.0, 8.0, 8.0);
+        let r = find_regions(&sk);
+        let ring = r.iter().find(|x| x.holes.len() == 1 && x.outer.len() > 4).unwrap();
+        let island = r.iter().find(|x| (x.area() - 256.0).abs() < 1e-6).unwrap();
+        let mut u = union(&[ring, island]);
+        u.sort_by(|a, b| a.area().total_cmp(&b.area()));
+        assert_eq!(u.len(), 2);
+        assert!((u[0].area() - 256.0).abs() < 1e-6 && u[0].holes.is_empty(), "{}", u[0].area());
+        assert_eq!(u[1].holes.len(), 1, "the ring keeps its square hole");
+        assert!((u[1].area() - (ring.area())).abs() < 1e-6);
     }
 
     #[test]

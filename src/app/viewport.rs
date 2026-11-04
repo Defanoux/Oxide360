@@ -61,6 +61,9 @@ impl OpenCad {
             }
         }
         let typing = ui.ctx().text_edit_focused();
+        if response.clicked() {
+            self.timeline_pick = None; // (a click in the view moves on from the timeline)
+        }
         let press_px = ui.input(|i| i.pointer.press_origin()).map(to_vec);
         let hover_px = response.hover_pos().map(to_vec);
         let near_arrow = |p: Option<Vec2>, arrows: &[Option<(Vec2, Vec2)>]| -> Option<usize> {
