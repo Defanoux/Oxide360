@@ -1152,9 +1152,25 @@ impl OpenCad {
             None => "Finishing".into(),
         };
         let frac = (done as f32 + 0.5) / (all as f32 + 1.0);
-        egui::Area::new(egui::Id::new("build_progress"))
-            .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-14.0, -self.timeline_height - 14.0))
+        // Above a tool's box in the same corner (Emboss, Sweep…), never under it.
+        let screen = ctx.content_rect();
+        let mut bottom = screen.bottom() - self.timeline_height - 14.0;
+        let id = egui::Id::new("build_progress");
+        ctx.memory(|m| {
+            for layer in m.layer_ids() {
+                if layer.order != egui::Order::Middle || layer.id == id || !m.areas().is_visible(&layer) {
+                    continue;
+                }
+                if let Some(r) = m.area_rect(layer.id) {
+                    if r.right() > screen.right() - 60.0 && r.bottom() > bottom - 60.0 && r.top() < bottom {
+                        bottom = r.top() - 10.0;
+                    }
+                }
+            }
+        });
+        egui::Area::new(id)
+            .order(egui::Order::Tooltip)
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-14.0, bottom - screen.bottom()))
             .interactable(false)
             .show(ctx, |ui| view::progress_card(ui, &label, frac));
     }
