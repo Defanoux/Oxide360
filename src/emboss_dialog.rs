@@ -21,15 +21,18 @@ pub struct EmbossDialog {
     /// The profiles' sketch, once one is picked.
     pub sketch: Option<usize>,
     pub picking: Option<Field>,
+    /// What the preview shows: caught up by `settle` once nothing is being
+    /// dragged or typed (wrapping text round a shaft is slow).
+    pub shown: Option<EmbossFeature>,
 }
 
 impl EmbossDialog {
     pub fn new(name: String) -> Self {
-        EmbossDialog { editing: None, emboss: EmbossFeature { name, ..Default::default() }, sketch: None, picking: Some(Field::Profiles) }
+        EmbossDialog { editing: None, emboss: EmbossFeature { name, ..Default::default() }, sketch: None, picking: Some(Field::Profiles), shown: None }
     }
 
     pub fn from_feature(k: usize, f: &EmbossFeature) -> Self {
-        EmbossDialog { editing: Some(k), emboss: f.clone(), sketch: Some(f.sketch), picking: None }
+        EmbossDialog { editing: Some(k), emboss: f.clone(), sketch: Some(f.sketch), picking: None, shown: Some(f.clone()) }
     }
 
     /// The face clicked; then on to the profiles if there are none yet.
@@ -42,6 +45,14 @@ impl EmbossDialog {
     pub fn feature(&self) -> Option<EmbossFeature> {
         let sketch = self.sketch?;
         (!self.emboss.profiles.is_empty() && self.emboss.face.is_some() && self.emboss.depth > 0.0).then(|| EmbossFeature { sketch, ..self.emboss.clone() })
+    }
+
+    /// Bring the preview up to date, unless a value is still being dragged
+    /// or typed (`busy`).
+    pub fn settle(&mut self, busy: bool) {
+        if !busy {
+            self.shown = self.feature();
+        }
     }
 
     pub fn ready(&self) -> bool {
@@ -155,6 +166,20 @@ mod tests {
         // Editing comes back as it was.
         let e = EmbossDialog::from_feature(4, &f);
         assert_eq!((e.editing, e.sketch, e.emboss), (Some(4), Some(2), f));
+    }
+
+    #[test]
+    fn the_preview_waits_until_dragging_or_typing_stops() {
+        let mut d = EmbossDialog::new("Emboss1".into());
+        (d.sketch, d.emboss.profiles) = (Some(0), vec![0]);
+        d.set_face(shaft());
+        d.settle(false);
+        assert_eq!(d.shown.as_ref().map(|f| f.depth), Some(1.0));
+        d.emboss.depth = 3.0;
+        d.settle(true);
+        assert_eq!(d.shown.as_ref().map(|f| f.depth), Some(1.0), "not while busy");
+        d.settle(false);
+        assert_eq!(d.shown.as_ref().map(|f| f.depth), Some(3.0));
     }
 
     #[test]

@@ -926,7 +926,7 @@ impl OpenCad {
                         }
                     }
                 }
-                if let Some((d, e)) = self.emboss_dialog.as_ref().and_then(|d| Some((d, d.feature()?))) {
+                if let Some((d, e)) = self.emboss_dialog.as_ref().and_then(|d| Some((d, d.shown.clone()?))) {
                     match d.editing {
                         Some(k) => embosses[k] = e,
                         None => {

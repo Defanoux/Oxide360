@@ -208,6 +208,24 @@ impl OpenCad {
                 "Scale"
             } else if self.emboss_dialog.is_some() {
                 "Emboss"
+            } else if let Some(d) = &self.sweep_dialog {
+                d.mode.name()
+            } else if self.joint_dialog.is_some() {
+                "Joint"
+            } else if self.import_dialog.is_some() {
+                "Insert"
+            } else if self.section_dialog.is_some() {
+                "Section Analysis"
+            } else if self.point_pick {
+                "Construction Point"
+            } else if let Some(c) = &self.construct_pick {
+                match c {
+                    ConstructPick::Midplane(_) => "Midplane",
+                    ConstructPick::ThreePoints(_) => "Plane Through Three Points",
+                    ConstructPick::Tangent => "Tangent Plane",
+                    ConstructPick::AxisCylinder => "Axis Through Cylinder",
+                    ConstructPick::AxisTwoPoints(_) => "Axis Through Two Points",
+                }
             } else if self.appearance_dialog.is_some() {
                 "Appearance"
             } else if self.move_dialog.is_some() {

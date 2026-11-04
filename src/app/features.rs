@@ -103,6 +103,8 @@ impl OpenCad {
                 k
             }
             None => {
+                // The sketch it used hides (as Fusion), even if it was shown by hand.
+                self.sketch_shown.remove(&ex.sketch);
                 self.extrudes.push(ex);
                 self.timeline_insert(Feature::Extrude(self.extrudes.len() - 1));
                 self.extrudes.len() - 1
@@ -575,6 +577,7 @@ impl OpenCad {
                 k
             }
             None => {
+                self.sketch_shown.remove(&rv.sketch);
                 self.revolves.push(rv);
                 self.timeline_insert(Feature::Revolve(self.revolves.len() - 1));
                 self.revolves.len() - 1
@@ -1265,6 +1268,8 @@ impl OpenCad {
         match self.emboss_dialog.as_ref().and_then(|d| d.editing) {
             Some(k) => self.embosses[k] = e,
             None => {
+                // Its sketch hides (as Fusion), even if it was shown by hand.
+                self.sketch_shown.remove(&e.sketch);
                 self.embosses.push(e);
                 self.timeline_insert(Feature::Emboss(self.embosses.len() - 1));
             }
@@ -1299,7 +1304,11 @@ impl OpenCad {
         let error = self.dialog_error.clone();
         let unit = self.units;
         let Some(d) = self.emboss_dialog.as_mut() else { return };
-        match d.panel(ui, unit, error.as_deref()) {
+        let act = d.panel(ui, unit, error.as_deref());
+        // The preview catches up once a value is let go of or typed in (clicked out of).
+        let busy = ui.ctx().text_edit_focused() || ui.input(|i| i.pointer.any_down());
+        d.settle(busy);
+        match act {
             copy_dialog::Action::Ok => self.commit_emboss(),
             copy_dialog::Action::Cancel => self.cancel_emboss(),
             copy_dialog::Action::None => {}

@@ -260,7 +260,7 @@ impl OpenCad {
         self.message = None;
         self.drag = None;
         self.float = None;
-        let used = self.extrudes.iter().any(|e| e.sketch == i) || self.revolves.iter().any(|r| r.sketch == i);
+        let used = self.extrudes.iter().any(|e| e.sketch == i) || self.revolves.iter().any(|r| r.sketch == i) || self.embosses.iter().any(|e| e.sketch == i);
         if !self.sketches[i].entities.is_empty() || used {
             return None;
         }

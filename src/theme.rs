@@ -118,12 +118,22 @@ pub fn now() -> Palette {
 /// The colour opposite `c` on the colour wheel (its hue turned half way
 /// round, as light and as strong): a tool icon's highlight on its body.
 pub fn complement(c: Color32) -> Color32 {
+    turn_hue(c, 180.0)
+}
+
+/// `c` with its hue turned `degrees` round the colour wheel (as light and as
+/// strong). Grey has no hue: half way round goes the other way in lightness
+/// instead, any other turn leaves it as it is.
+pub fn turn_hue(c: Color32, degrees: f32) -> Color32 {
     let (r, g, b) = (c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0);
     let (max, min) = (r.max(g).max(b), r.min(g).min(b));
     let l = (max + min) / 2.0;
     let d = max - min;
     if d < 1e-6 {
         // Grey has no opposite hue: go the other way in lightness.
+        if (degrees.rem_euclid(360.0) - 180.0).abs() > 1e-3 {
+            return c;
+        }
         let v = ((1.0 - l) * 255.0).round() as u8;
         return Color32::from_rgb(v, v, v);
     }
@@ -135,7 +145,7 @@ pub fn complement(c: Color32) -> Color32 {
     } else {
         60.0 * ((r - g) / d + 4.0)
     };
-    let h = (h + 180.0) % 360.0;
+    let h = (h + degrees).rem_euclid(360.0);
     // Back from hue, saturation, lightness.
     let c2 = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let x = c2 * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
@@ -214,6 +224,8 @@ mod tests {
         let m = complement(g);
         assert!(m.r() > m.g() && m.b() > m.g(), "{m:?}");
         assert_eq!(complement(m), g, "twice round is back");
+        assert_eq!(turn_hue(Color32::from_rgb(255, 0, 0), 120.0), Color32::from_rgb(0, 255, 0));
+        assert_eq!(turn_hue(Color32::from_rgb(255, 0, 0), -120.0), Color32::from_rgb(0, 0, 255));
     }
 
     #[test]

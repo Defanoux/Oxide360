@@ -143,6 +143,17 @@ pub fn with_tint<R>(c: Option<Color32>, f: impl FnOnce() -> R) -> R {
     out
 }
 
+/// Construct tools are coloured by what they make: planes in the workspace's
+/// colour, axes and points in two others turned from it round the colour wheel
+/// (cyan and magenta beside SOLID's orange).
+pub fn construct_tint(icon: Icon, c: Color32) -> Color32 {
+    match icon {
+        Icon::Axis | Icon::AxisCylinder | Icon::Axis2Points => crate::theme::turn_hue(c, 155.0),
+        Icon::ConstructPoint => crate::theme::turn_hue(c, -95.0),
+        _ => c,
+    }
+}
+
 /// Draw `icon` inside `rect`. `ink` is the line colour (grey when disabled).
 pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
     let pal = crate::theme::now();
@@ -152,6 +163,7 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
     // and a darker shade of it for the parts that were blue).
     let (blue, blue_dark, orange, green) = match TOOL_TINT.with(|t| t.get()) {
         Some(c) => {
+            let c = construct_tint(icon, c);
             let mix = |c: Color32, to: u8, k: f32| Color32::from_rgb(
                 (c.r() as f32 + (to as f32 - c.r() as f32) * k) as u8,
                 (c.g() as f32 + (to as f32 - c.g() as f32) * k) as u8,

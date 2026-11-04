@@ -2752,7 +2752,7 @@ impl OpenCad {
             if d.ready() { model.scale_errors.get(k).cloned().flatten() } else { None }
         } else if let Some(d) = &self.emboss_dialog {
             let k = d.editing.unwrap_or(self.embosses.len());
-            if d.ready() { model.emboss_errors.get(k).cloned().flatten() } else { None }
+            if d.shown.is_some() { model.emboss_errors.get(k).cloned().flatten() } else { None }
         } else if let Some(d) = &self.offset_dialog {
             let k = d.editing.unwrap_or(self.offset_faces.len());
             if d.offset.faces.is_empty() { None } else { model.offset_face_errors.get(k).cloned().flatten() }
