@@ -23,9 +23,12 @@ pub enum MirrorLine {
 
 /// Mirror the selected entities across line `line`. Points shared between
 /// selected entities stay shared in the copy, and points lying on the mirror
-/// line are reused (so the copy stays joined to the original there). Returns
-/// the constraints worth adding (equal length / radius to each original) for
-/// the caller to add one at a time through the solver, and the new entities.
+/// line are reused (so the copy stays joined to the original there). Each
+/// copied point is tied to its original by Symmetric about the line (as
+/// Fusion): the copy stays the original's mirror image however either is
+/// changed. Returns the constraints to add (those ties first, then the rest,
+/// which may turn out redundant) one at a time through the solver, and the
+/// new entities.
 pub fn mirror(sk: &mut Sketch, objects: &[Sel], across: MirrorLine) -> Result<(Vec<Constraint>, Vec<EntityId>), String> {
     let (pa, pb, line) = match across {
         MirrorLine::Entity(line) => {
@@ -48,7 +51,11 @@ pub fn mirror(sk: &mut Sketch, objects: &[Sel], across: MirrorLine) -> Result<(V
     let theta = (pb - pa).to_angle().to_degrees();
     // A line at `deg` mirrors to 2θ − deg: horizontal or vertical only for some angles.
     let hv = |deg: f64| copy_is_horizontal(2.0 * theta - deg);
-    Ok(copy_chosen(sk, &chosen, &|p| reflect(p, pa, pb), true, &hv))
+    let tie = |p: PointId, q: PointId| match line {
+        Some(l) => Constraint::Symmetric(p, q, l),
+        None => Constraint::SymmetricAxis(p, q, if matches!(across, MirrorLine::Axis(0)) { 0 } else { 1 }),
+    };
+    Ok(copy_chosen(sk, &chosen, &|p| reflect(p, pa, pb), true, &hv, Some(&tie)))
 }
 
 /// Does a line at `deg` degrees lie horizontally (Some(true)), vertically (Some(false)) or neither?
@@ -69,6 +76,7 @@ fn copy_chosen(
     f: &dyn Fn(DVec2) -> DVec2,
     reverse_arcs: bool,
     hv: &dyn Fn(f64) -> Option<bool>,
+    tie: Option<&dyn Fn(PointId, PointId) -> Constraint>,
 ) -> (Vec<Constraint>, Vec<EntityId>) {
     let tol = 1e-7;
     let mut map: HashMap<PointId, PointId> = HashMap::new();
@@ -125,7 +133,15 @@ fn copy_chosen(
     // the copy keeps the shape (a rectangle stays a rectangle) …
     let e = |x: &EntityId| emap.get(x).copied();
     let q = |x: &PointId| map.get(x).copied();
-    let mut constraints = Vec::new();
+    // Each copied point tied to its original first (the copy follows it) …
+    let mut constraints: Vec<Constraint> = match tie {
+        Some(tie) => {
+            let mut pairs: Vec<(PointId, PointId)> = map.iter().filter(|(p, q)| p != q).map(|(&p, &q)| (p, q)).collect();
+            pairs.sort_unstable();
+            pairs.into_iter().map(|(p, q)| tie(p, q)).collect()
+        }
+        None => Vec::new(),
+    };
     for c in sk.constraints.clone() {
         use Constraint::*;
         let copy = match c {
@@ -201,7 +217,7 @@ pub fn pattern(sk: &mut Sketch, objects: &[Sel], layout: Layout) -> Result<(Vec<
     let mut constraints = Vec::new();
     let mut made = Vec::new();
     let mut add = |sk: &mut Sketch, f: &dyn Fn(DVec2) -> DVec2, hv: &dyn Fn(f64) -> Option<bool>| {
-        let (c, m) = copy_chosen(sk, &chosen, f, false, hv);
+        let (c, m) = copy_chosen(sk, &chosen, f, false, hv, None);
         constraints.extend(c);
         made.extend(m);
     };
@@ -286,7 +302,32 @@ mod tests {
             _ => unreachable!(),
         };
         assert_eq!(joint(made[0]), joint(made[1]));
-        assert_eq!(cs, vec![Constraint::Equal(1, made[0]), Constraint::Equal(2, made[1])]);
+        // Each new point tied to its original about the line, then the equal lengths.
+        let (Entity::Line { a: j, b: e1 }, Entity::Line { b: e2, .. }) = (sk.entities[made[0]], sk.entities[made[1]]) else { panic!() };
+        assert_eq!(cs, vec![Constraint::Symmetric(3, j, 0), Constraint::Symmetric(4, e1, 0), Constraint::Symmetric(5, e2, 0), Constraint::Equal(1, made[0]), Constraint::Equal(2, made[1])]);
+    }
+
+    #[test]
+    fn a_mirrored_copy_follows_its_original() {
+        // A slanted line right of the Y axis, mirrored across it; then its
+        // far end is moved: the copy's end moves to stay its mirror image.
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        sk.points.extend([DVec2::new(2.0, 1.0), DVec2::new(5.0, 4.0)]);
+        sk.entities.push(Entity::Line { a: 1, b: 2 });
+        let (cs, made) = mirror(&mut sk, &[Sel::Entity(0)], MirrorLine::Axis(1)).unwrap();
+        for c in cs {
+            let mut t = sk.clone();
+            if crate::solver::add_constraints(&mut t, &[c]).is_ok() {
+                sk = t;
+            }
+        }
+        let Entity::Line { a, b } = sk.entities[made[0]] else { panic!() };
+        let mut moved = sk.clone();
+        moved.points[2] = DVec2::new(7.0, 9.0);
+        crate::solver::solve(&mut moved, &[2]).unwrap();
+        assert!(moved.points[2].distance(DVec2::new(7.0, 9.0)) < 1e-6, "the original goes where it's put");
+        assert!(moved.points[b].distance(DVec2::new(-7.0, 9.0)) < 1e-6, "the copy follows: {}", moved.points[b]);
+        assert!(moved.points[a].distance(DVec2::new(-2.0, 1.0)) < 1e-6);
     }
 
     #[test]
@@ -309,7 +350,8 @@ mod tests {
         sk.entities.push(Entity::Arc { center: 3, a: 4, b: 5 });
         sk.set_construction(1, true);
         let (cs, made) = mirror(&mut sk, &[Sel::Entity(1), Sel::Entity(2)], MirrorLine::Entity(0)).unwrap();
-        assert_eq!(cs, vec![Constraint::Equal(1, made[0])], "arcs get no equal constraint");
+        assert_eq!(cs.last(), Some(&Constraint::Equal(1, made[0])), "arcs get no equal constraint");
+        assert!(cs[..cs.len() - 1].iter().all(|c| matches!(c, Constraint::Symmetric(_, _, 0))), "{cs:?}");
         let Entity::Circle { center, radius } = sk.entities[made[0]] else { panic!() };
         assert_eq!(radius, 2.0);
         assert!(sk.points[center].distance(DVec2::new(-4.0, 0.0)) < 1e-12);
