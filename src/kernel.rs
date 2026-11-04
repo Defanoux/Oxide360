@@ -3919,6 +3919,61 @@ pub struct Build {
     timing: bool,
     started: std::time::Instant,
     step: std::time::Instant,
+    pace: Pace,
+}
+
+thread_local! {
+    /// How long each timeline entry took last time it was really built (ms),
+    /// by `Pace::key`: what tells a slow one is coming.
+    static FEATURE_MS: std::cell::RefCell<HashMap<String, f64>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// Pausing a build for one frame before a slow entry, so the window can
+/// draw the progress bar ("Building Emboss1") before the work holds it up.
+#[derive(Default)]
+struct Pace {
+    /// The entry already paused for (it runs on the next go).
+    waited: Option<usize>,
+    /// The entry being built and when it started, timed when it's done.
+    running: Option<(String, std::time::Instant)>,
+}
+
+impl Pace {
+    /// Slower than this, an entry gets the progress bar first next time.
+    const SLOW_MS: f64 = 80.0;
+
+    /// What `f` is remembered by, and whether it's a kind that's usually slow
+    /// (paused for even before it's been timed). None: always quick.
+    fn key(f: Feature, inp: &BuildInputs) -> Option<(String, bool)> {
+        Some(match f {
+            Feature::Sketch(_) | Feature::Point(_) | Feature::Plane(_) | Feature::Axis(_) | Feature::Joint(_) => return None,
+            // These skip work they've done before themselves: tell them apart by what they are.
+            Feature::Hole(k) => (format!("{f:?}|{:?}", inp.holes.get(k)), true),
+            Feature::Thread(k) => (format!("{f:?}|{:?}", inp.thread_features.get(k)), true),
+            Feature::Emboss(_) | Feature::Sweep(_) | Feature::Shell(_) | Feature::Import(_) => (format!("{f:?}"), true),
+            _ => (format!("{f:?}"), false),
+        })
+    }
+
+    /// Should the build stop before entry `at` (`key`) to let the bar show?
+    fn pause_before(&mut self, at: usize, key: &(String, bool)) -> bool {
+        if self.waited == Some(at) {
+            return false;
+        }
+        let slow = FEATURE_MS.with(|m| m.borrow().get(&key.0).map_or(key.1, |&ms| ms >= Self::SLOW_MS));
+        if slow {
+            self.waited = Some(at);
+        }
+        slow
+    }
+
+    /// The entry before has finished: remember how long it took.
+    fn done(&mut self) {
+        if let Some((key, t)) = self.running.take() {
+            let ms = t.elapsed().as_secs_f64() * 1e3;
+            FEATURE_MS.with(|m| m.borrow_mut().insert(key, ms));
+        }
+    }
 }
 
 impl Build {
@@ -3960,7 +4015,7 @@ impl Build {
         let timing = std::env::var_os("OPENCAD_TIMING").is_some();
         let started = std::time::Instant::now();
         let step = std::time::Instant::now();
-        Build { next: 0, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, scale_errors, emboss_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step, inp }
+        Build { next: 0, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, scale_errors, emboss_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step, pace: Pace::default(), inp }
     }
 
     /// How far it's got: (entries built, all of them, the one being built next).
@@ -3978,10 +4033,11 @@ impl Build {
     pub fn step(&mut self, budget: std::time::Duration) -> bool {
         let began = std::time::Instant::now();
         let first = self.next;
-        let Build { inp, next, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, scale_errors, emboss_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step } = self;
+        let Build { inp, next, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, scale_errors, emboss_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live, linked, lost, touched_by, timing, started, step, pace } = self;
         let BuildInputs { sketches: _, extrudes, revolves, edge_features, copies, axis_features, plane_features, removes, holes, thread_features, shells, offset_faces, combines, splits, scales, embosses, moves, points, sweeps, imports, joints, components, timeline } = &*inp;
         let _ = (&timing, &started);
         loop {
+            pace.done();
             if *next >= timeline.len() {
                 return false;
             }
@@ -4029,6 +4085,15 @@ impl Build {
                 }
                 *shapes = next;
                 continue;
+            }
+            // Real work: a slow entry waits a frame so the progress bar shows first.
+            if let Some(key) = Pace::key(*f, inp) {
+                if pace.pause_before(*next - 1, &key) {
+                    *next -= 1;
+                    *shapes = current;
+                    return true;
+                }
+                pace.running = Some((key.0, std::time::Instant::now()));
             }
             let backup: Tagged = current.iter().flat_map(|(s, id)| s.solids().into_iter().map(move |x| (x, *id))).collect();
             let (result, slot) = match *f {
@@ -4419,7 +4484,7 @@ impl Build {
 
     /// The model built (bodies analysed for picking and Measure).
     pub fn finish(self) -> Model {
-        let Build { inp: _, next: _, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, scale_errors, emboss_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live: _, linked, lost, touched_by, timing, started, mut step } = self;
+        let Build { inp: _, next: _, sweep_errors, import_errors, joint_errors, point_pos, point_errors, hole_errors, thread_errors, shell_errors, offset_face_errors, combine_errors, split_errors, scale_errors, emboss_errors, move_errors, move_pivots, threads, remove_errors, planes, plane_errors, axes, axis_errors, copy_errors, shapes, errors, edge_errors, revolve_errors, extrude_ends, revolve_ends, frames, sketch_errors, live: _, linked, lost, touched_by, timing, started, mut step, pace: _ } = self;
     if timing {
         eprintln!("  {:>8.1} ms  last feature; analysing bodies…", step.elapsed().as_secs_f64() * 1e3);
         step = std::time::Instant::now();
@@ -6767,6 +6832,26 @@ mod tests {
         let mut b = Sketch::new("B".into(), OriginPlane::XY);
         rect(&mut b, 0.0, 0.0, 50.0, 30.0);
         build_all(&[b], &[ex(0, vec![0], h, Operation::NewBody)], &[], &[], &[], &[], &[], &[], &[], &[], &[sf], &[Feature::Sketch(0), Feature::Extrude(0), Feature::Shell(0)])
+    }
+
+    #[test]
+    fn a_slow_entry_waits_a_frame_so_the_progress_bar_shows_first() {
+        let mut b = Sketch::new("B".into(), OriginPlane::XY);
+        rect(&mut b, 0.0, 0.0, 50.0, 30.0);
+        let inputs = || BuildInputs {
+            sketches: vec![b.clone()], extrudes: vec![ex(0, vec![0], 10.0, Operation::NewBody)], revolves: vec![], edge_features: vec![], copies: vec![], axis_features: vec![], plane_features: vec![], removes: vec![], holes: vec![],
+            thread_features: vec![], shells: vec![ShellFeature { faces: vec![top_face(10.0)], ..Default::default() }], offset_faces: vec![], combines: vec![], splits: vec![], scales: vec![], embosses: vec![], moves: vec![], points: vec![], sweeps: vec![], imports: vec![], joints: vec![], components: vec![],
+            timeline: vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Shell(0)],
+        };
+        let mut bld = Build::start(inputs());
+        assert!(bld.step(std::time::Duration::MAX), "stops before the shell, however much time it has");
+        assert_eq!(bld.progress(), (2, 3, Some(Feature::Shell(0))), "the bar names it");
+        assert!(!bld.step(std::time::Duration::MAX), "then builds it");
+        let m = bld.finish();
+        assert!(close(total(&m), 15000.0 - 46.0 * 26.0 * 8.0), "{}", total(&m));
+        // Built before (remembered): no wait.
+        let mut again = Build::start(inputs());
+        assert!(!again.step(std::time::Duration::MAX));
     }
 
     #[test]
