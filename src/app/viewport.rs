@@ -1153,7 +1153,8 @@ impl OpenCad {
                     }
                 }
             }
-            if response.clicked() && near_arrow(hover_px, &self.arrows).is_none() {
+            if response.clicked() {
+                // (The drag arrow only takes drags: a click under it still picks the profile there.)
                 self.focus_distance();
                 // A letter of a text: the whole text (its letters, not the space inside them), as in Fusion.
                 let group: Vec<usize> = hover_profile.map_or(Vec::new(), |(s, ri)| {
