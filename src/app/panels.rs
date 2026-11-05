@@ -299,7 +299,10 @@ impl OpenCad {
                     }
                 });
             });
-            if icons::button(ui, Icon::Save, "Save (Ctrl+S) — each save is a new version", true, false).clicked() {
+            // Only when there's something new to save (File > Save As makes a copy any time).
+            let changed = self.is_dirty();
+            let tip = if changed { "Save (Ctrl+S) — each save is a new version" } else { "Nothing to save: no changes since the last save" };
+            if icons::button(ui, Icon::Save, tip, changed, false).clicked() {
                 self.cmd = Some(Cmd::Save);
             }
             // Undo / redo, each with a list to jump several steps.
@@ -333,10 +336,34 @@ impl OpenCad {
                 }
             });
             ui.separator();
+            let titles = if self.tab_titles.is_empty() { vec![(self.tab_title(), self.is_dirty(), self.showing_start())] } else { self.tab_titles.clone() };
+            // Home (as Fusion's): the start page, first of the tabs. A tab showing
+            // it isn't listed again as an "Untitled" design.
+            let home_on = titles.get(self.tab_index).is_some_and(|t| t.2);
+            let home = egui::Frame::new()
+                .fill(if home_on { theme::now().raised } else { theme::now().card })
+                .corner_radius(5.0)
+                .inner_margin(egui::Margin::symmetric(8, 3))
+                .show(ui, |ui| {
+                    let (rect, r) = ui.allocate_exact_size(egui::vec2(20.0, 18.0), egui::Sense::click());
+                    View::house_icon(ui.painter(), rect.shrink2(egui::vec2(1.0, 1.0)), if home_on || r.hovered() { theme::now().text } else { theme::now().weak });
+                    r
+                })
+                .inner
+                .on_hover_text("Home: New, Open, recent designs and your cloud folders");
+            if home.clicked() {
+                match titles.iter().position(|t| t.2) {
+                    Some(k) if k != self.tab_index => self.tab_request = Some(TabRequest::Switch(k)),
+                    Some(_) => {}
+                    None => self.cmd = Some(Cmd::StartPage),
+                }
+            }
             // The open designs: name, version, a dot when unsaved; × closes.
-            let titles = if self.tab_titles.is_empty() { vec![(self.tab_title(), self.is_dirty())] } else { self.tab_titles.clone() };
             let mut rename_done: Option<Option<String>> = None;
-            for (k, (title, dirty)) in titles.iter().enumerate() {
+            for (k, (title, dirty, start)) in titles.iter().enumerate() {
+                if *start {
+                    continue;
+                }
                 let current = k == self.tab_index;
                 // An asterisk while there are changes since the last save.
                 let text = if *dirty { format!("{title}*") } else { title.clone() };

@@ -723,7 +723,7 @@ impl OpenCad {
 
     /// Save As, the dialog starting in `dir` (a cloud folder) if given.
     pub(crate) fn save_as_in(&mut self, dir: Option<PathBuf>) -> bool {
-        let stem = self.file_name().trim_end_matches(".ocad").to_string();
+        let stem = self.design_name();
         let mut dialog = self.file_dialog();
         if let Some(d) = dir {
             dialog = dialog.set_directory(d);
@@ -1353,6 +1353,8 @@ impl OpenCad {
                     self.tab_request = Some(TabRequest::Open);
                 }
             }
+            // Nothing changed since the last save: nothing to save (Save As still makes a copy).
+            Cmd::Save if self.path.is_some() && !self.is_dirty() => self.notify("No changes to save".into()),
             Cmd::Save => {
                 self.save();
             }

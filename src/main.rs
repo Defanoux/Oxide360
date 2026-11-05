@@ -870,7 +870,7 @@ struct OpenCad {
     touchpad_zoom_flip: bool,               // touchpad Ctrl+scroll: fingers up zoom in
     version: u32,                           // saves so far (shown by the name)
     settings_open: bool,                    // the Settings window is open
-    tab_titles: Vec<(String, bool)>,        // every open design's title and unsaved mark (set by the tab holder)
+    tab_titles: Vec<(String, bool, bool)>,  // every open design's title, unsaved mark, and whether it's showing the start page (set by the tab holder)
     tab_index: usize,                       // which of them this is
     tab_request: Option<TabRequest>,        // what the tab strip asked for this frame
     open_in_tab: Option<PathBuf>,           // a design to open in a new tab (with TabRequest::Open)
@@ -1817,7 +1817,7 @@ impl eframe::App for Tabs {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        let titles: Vec<(String, bool)> = self.tabs.iter().map(|t| (t.tab_title(), t.is_dirty())).collect();
+        let titles: Vec<(String, bool, bool)> = self.tabs.iter().map(|t| (t.tab_title(), t.is_dirty(), t.showing_start())).collect();
         let current = self.current;
         let tab = &mut self.tabs[current];
         (tab.tab_titles, tab.tab_index) = (titles, current);
