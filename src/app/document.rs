@@ -672,12 +672,13 @@ impl OpenCad {
     /// elsewhere), and for a design in a cloud folder hold its lock — saying
     /// first if another computer (or another copy of the app) has it open.
     pub(crate) fn track_file(&mut self, path: &std::path::Path) {
-        self.file_stamp = cloud::stamp(path);
         if !cloud::in_cloud(&self.cloud_folders, path) {
+            self.file_stamp = cloud::stamp(path);
             self.file_lock = None;
             return;
         }
-        if self.file_lock.as_ref().is_some_and(|l| l.design() == path) {
+        // (A cloud design's saves are checked against the cloud as they upload.)
+        if self.file_lock.as_ref().is_some_and(|l| l.design() == path) || self.cloud_away(path) {
             return;
         }
         let me = cloud::Lock::mine();
@@ -688,19 +689,33 @@ impl OpenCad {
                 other.describe(std::time::SystemTime::now())
             ));
         }
-        self.file_lock = cloud::LockGuard::take(path, me);
+        self.file_lock = Some(cloud::LockGuard::take_in_background(path, me));
+    }
+
+    /// Is `path` in a cloud folder the last look found can't be reached?
+    pub(crate) fn cloud_away(&self, path: &std::path::Path) -> bool {
+        self.cloud_folders.iter().zip(&self.cloud_lists).any(|(f, l)| path.starts_with(&f.path) && matches!(l, Some(Err(_))))
+    }
+
+    /// The cloud folder's name `path` is in ("TrueNAS").
+    pub(crate) fn cloud_name(&self, path: &std::path::Path) -> String {
+        self.cloud_folders.iter().find(|f| path.starts_with(&f.path)).map_or_else(|| "the cloud folder".into(), |f| f.name.clone())
     }
 
     /// Save to `path`. Unless `overwrite`, a file saved from elsewhere since
     /// this design was opened or saved here isn't overwritten: it asks first.
     pub(crate) fn write_to(&mut self, path: PathBuf, overwrite: bool) -> bool {
-        if !overwrite && self.path.as_ref() == Some(&path) && cloud::changed_since(&path, self.file_stamp) {
+        let cloudy = cloud::in_cloud(&self.cloud_folders, &path);
+        if !cloudy && !overwrite && self.path.as_ref() == Some(&path) && cloud::changed_since(&path, self.file_stamp) {
             self.overwrite_asked = true;
             return false;
         }
         // Every save is a new version (v1, v2… by the name).
         let mut doc = self.document();
         doc.version = doc::Version(self.version + 1);
+        if cloudy {
+            return self.save_to_cloud(path, doc, overwrite);
+        }
         match doc::save(&path, &doc) {
             Ok(()) => {
                 self.version += 1;
@@ -708,6 +723,40 @@ impl OpenCad {
                 self.remember_recent(&path);
                 self.track_file(&path);
                 self.path = Some(path);
+                true
+            }
+            Err(e) => {
+                self.alert = Some(e);
+                false
+            }
+        }
+    }
+
+    /// A save into a cloud folder: kept on this computer at once, then
+    /// uploaded in the background (`Tabs::sync_cloud`) — now, or once the
+    /// share can be reached again. `overwrite`: replace the cloud file even
+    /// if it was saved from elsewhere (the user said so).
+    fn save_to_cloud(&mut self, path: PathBuf, doc: Document, overwrite: bool) -> bool {
+        let Some(cache) = cloud::Cache::default_cache() else {
+            self.alert = Some("No folder for copies on this computer (HOME isn't set)".into());
+            return false;
+        };
+        // Saving under another name onto a design that's there: the user chose to replace it.
+        let force = overwrite || self.path.as_ref() != Some(&path);
+        match cache.keep(&path, doc::to_json(&doc).as_bytes(), None, true) {
+            Ok(_) => {
+                cache.update(&path, |e| {
+                    e.force = force;
+                    e.conflict = false;
+                });
+                self.version += 1;
+                self.saved = doc;
+                self.remember_recent(&path);
+                self.track_file(&path);
+                self.path = Some(path.clone());
+                self.sync_now = true;
+                let name = self.cloud_name(&path);
+                self.notify(if self.cloud_away(&path) { format!("Saved on this computer — {name} can't be reached; it'll upload when it's back") } else { format!("Saving to {name}…") });
                 true
             }
             Err(e) => {
@@ -777,6 +826,9 @@ impl OpenCad {
 
     /// Open the design at `p` here (its file read and checked first).
     pub(crate) fn open_path(&mut self, p: PathBuf) {
+        if cloud::in_cloud(&self.cloud_folders, &p) {
+            return self.open_cloud(p);
+        }
         match doc::load(&p) {
             Ok(d) => {
                 self.remember_recent(&p);
@@ -784,6 +836,52 @@ impl OpenCad {
                 self.track_file(&p);
             }
             Err(e) => self.alert = Some(format!("Couldn't open {}: {e}", p.display())),
+        }
+    }
+
+    /// Open a cloud design: from the cloud (keeping a copy on this computer),
+    /// or — when the cloud can't be reached, or this computer has saves of it
+    /// not uploaded yet — from that copy. Either way it saves back to the cloud.
+    fn open_cloud(&mut self, p: PathBuf) {
+        let cache = cloud::Cache::default_cache();
+        let entry = cache.as_ref().and_then(|c| c.entry(&p));
+        let copy = cache.as_ref().and_then(|c| c.copy_of(&p));
+        let name = self.cloud_name(&p);
+        let from_copy = |app: &mut Self, why: String| match copy.as_ref().map(|c| doc::load(c)) {
+            Some(Ok(d)) => {
+                app.remember_recent(&p);
+                app.reset_with(d, Some(p.clone()));
+                app.track_file(&p);
+                app.notify(why);
+                true
+            }
+            _ => false,
+        };
+        if entry.as_ref().is_some_and(|e| e.pending) && from_copy(self, format!("Opened the copy on this computer: it has saves not uploaded to {name} yet")) {
+            self.sync_now = true;
+            return;
+        }
+        if self.cloud_away(&p) {
+            if !from_copy(self, format!("{name} can't be reached — opened the copy on this computer; saves upload when it's back")) {
+                self.alert = Some(format!("{name} can't be reached, and this computer has no copy of {}.", p.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
+            }
+            return;
+        }
+        let read = std::fs::read(&p).map_err(|e| format!("couldn't read {}: {e}", p.display())).and_then(|b| String::from_utf8(b).map_err(|e| e.to_string()));
+        match read.and_then(|text| doc::from_json(&text).map(|d| (d, text))) {
+            Ok((d, text)) => {
+                if let Some(c) = &cache {
+                    let _ = c.keep(&p, text.as_bytes(), cloud::base_of(&p), false);
+                }
+                self.remember_recent(&p);
+                self.reset_with(d, Some(p.clone()));
+                self.track_file(&p);
+            }
+            Err(e) => {
+                if !from_copy(self, format!("Couldn't read it from {name} ({e}) — opened the copy on this computer")) {
+                    self.alert = Some(format!("Couldn't open {}: {e}", p.display()));
+                }
+            }
         }
     }
 
@@ -1463,6 +1561,13 @@ impl OpenCad {
             match choice {
                 Some(0) => {
                     self.overwrite_asked = false;
+                    // (Yours goes to the copy: the old one stops waiting to upload.)
+                    if let (Some(c), Some(p)) = (cloud::Cache::default_cache(), self.path.clone()) {
+                        c.update(&p, |e| {
+                            e.pending = false;
+                            e.conflict = false;
+                        });
+                    }
                     self.save_as();
                 }
                 Some(1) => {

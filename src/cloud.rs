@@ -299,15 +299,30 @@ pub fn held_elsewhere(design: &Path, me: &Lock, alive: impl Fn(u32) -> bool) -> 
 pub struct LockGuard {
     design: PathBuf,
     lock: Lock,
+    /// Written and removed off the main thread (a share can be slow or away).
+    background: bool,
 }
 
 impl LockGuard {
-    /// Write the lock for `design` (a failure — a read-only share — just
+    /// `take`, with the file written (and later removed) in the background:
+    /// opening a design never waits on the share for its lock.
+    pub fn take_in_background(design: &Path, lock: Lock) -> LockGuard {
+        let (d, l) = (design.to_path_buf(), lock.clone());
+        std::thread::spawn(move || {
+            if let Ok(text) = serde_json::to_string(&l) {
+                let _ = std::fs::write(lock_path(&d), text);
+            }
+        });
+        LockGuard { design: design.to_path_buf(), lock, background: true }
+    }
+
+    /// Write the lock for `design` now (a failure — a read-only share — just
     /// means no lock: opening the design matters more).
+    #[cfg(test)]
     pub fn take(design: &Path, lock: Lock) -> Option<LockGuard> {
         let text = serde_json::to_string(&lock).ok()?;
         std::fs::write(lock_path(design), text).ok()?;
-        Some(LockGuard { design: design.to_path_buf(), lock })
+        Some(LockGuard { design: design.to_path_buf(), lock, background: false })
     }
 
     pub fn design(&self) -> &Path {
@@ -317,10 +332,205 @@ impl LockGuard {
 
 impl Drop for LockGuard {
     fn drop(&mut self) {
-        if read_lock(&self.design).as_ref() == Some(&self.lock) {
-            let _ = std::fs::remove_file(lock_path(&self.design));
+        let (design, lock) = (self.design.clone(), self.lock.clone());
+        let let_go = move || {
+            if read_lock(&design).as_ref() == Some(&lock) {
+                let _ = std::fs::remove_file(lock_path(&design));
+            }
+        };
+        if self.background {
+            std::thread::spawn(let_go);
+        } else {
+            let_go();
         }
     }
+}
+
+// ---------- copies on this computer, for working offline ----------
+
+/// How many cloud designs keep a copy on this computer (ones still to be
+/// uploaded are kept whatever).
+pub const KEEP: usize = 10;
+
+/// A cloud design's copy on this computer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Entry {
+    /// The design in the cloud folder.
+    pub cloud: PathBuf,
+    /// The copy's file name in the cache folder.
+    pub file: String,
+    /// When it was last opened or saved here (seconds since 1970).
+    pub used: u64,
+    /// The cloud file's time when the two were last the same (nanoseconds
+    /// since 1970; None: not in the cloud yet).
+    pub base: Option<u64>,
+    /// Saved here and not uploaded yet.
+    pub pending: bool,
+    /// Upload even though the cloud file changed (the user said Overwrite).
+    #[serde(default)]
+    pub force: bool,
+    /// The cloud file changed since, and someone has to choose: left alone until then.
+    #[serde(default)]
+    pub conflict: bool,
+}
+
+fn nanos(t: SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64)
+}
+
+/// The cloud file's time, as `Entry::base` keeps it.
+pub fn base_of(path: &Path) -> Option<u64> {
+    stamp(path).map(nanos)
+}
+
+/// The copies on this computer: a folder with the files and an index.
+#[derive(Clone, Debug)]
+pub struct Cache {
+    pub dir: PathBuf,
+}
+
+impl Cache {
+    /// `~/.local/share/oxide360/cloud-cache`.
+    pub fn default_cache() -> Option<Cache> {
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))?;
+        Some(Cache { dir: base.join("oxide360").join("cloud-cache") })
+    }
+
+    fn index_path(&self) -> PathBuf {
+        self.dir.join("index.json")
+    }
+
+    pub fn entries(&self) -> Vec<Entry> {
+        std::fs::read_to_string(self.index_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    }
+
+    fn write_index(&self, list: &[Entry]) -> Result<(), String> {
+        std::fs::create_dir_all(&self.dir).map_err(|e| format!("couldn't make {}: {e}", self.dir.display()))?;
+        let tmp = self.dir.join("index.json.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(list).unwrap_or_default()).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, self.index_path()).map_err(|e| e.to_string())
+    }
+
+    pub fn entry(&self, cloud: &Path) -> Option<Entry> {
+        self.entries().into_iter().find(|e| e.cloud == cloud)
+    }
+
+    /// Where `cloud`'s copy is (if there is one).
+    pub fn copy_of(&self, cloud: &Path) -> Option<PathBuf> {
+        self.entry(cloud).map(|e| self.dir.join(e.file)).filter(|p| p.is_file())
+    }
+
+    /// Keep `bytes` as `cloud`'s copy (`pending`: still to upload; `base`:
+    /// the cloud file's time it matches). The oldest copies past `KEEP` go,
+    /// unless they're still to upload. Returns the copy's path.
+    pub fn keep(&self, cloud: &Path, bytes: &[u8], base: Option<u64>, pending: bool) -> Result<PathBuf, String> {
+        std::fs::create_dir_all(&self.dir).map_err(|e| format!("couldn't make {}: {e}", self.dir.display()))?;
+        let mut list = self.entries();
+        let old = list.iter().position(|e| e.cloud == cloud).map(|k| list.remove(k));
+        let file = old.as_ref().map(|e| e.file.clone()).unwrap_or_else(|| {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            cloud.hash(&mut h);
+            let name = cloud.file_name().map_or_else(|| "design".into(), |n| n.to_string_lossy().into_owned());
+            format!("{:016x}-{name}", h.finish())
+        });
+        let path = self.dir.join(&file);
+        let tmp = self.dir.join(format!("{file}.tmp"));
+        std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &path)).map_err(|e| format!("couldn't keep a copy on this computer: {e}"))?;
+        // Saved here while a choice is waiting: still waiting (and still forced if it was).
+        let (force, conflict) = old.as_ref().filter(|_| pending).map_or((false, false), |e| (e.force, e.conflict));
+        let base = if pending { old.as_ref().map_or(base, |e| e.base.or(base)) } else { base };
+        list.insert(0, Entry { cloud: cloud.to_path_buf(), file, used: unix_now(), base, pending, force, conflict });
+        // Too many: the least lately used that are in the cloud already go.
+        while list.iter().filter(|e| !e.pending).count() > KEEP {
+            let Some(k) = list.iter().rposition(|e| !e.pending) else { break };
+            let gone = list.remove(k);
+            let _ = std::fs::remove_file(self.dir.join(gone.file));
+        }
+        self.write_index(&list)?;
+        Ok(path)
+    }
+
+    /// Change `cloud`'s entry.
+    pub fn update(&self, cloud: &Path, f: impl FnOnce(&mut Entry)) {
+        let mut list = self.entries();
+        if let Some(e) = list.iter_mut().find(|e| e.cloud == cloud) {
+            f(e);
+            let _ = self.write_index(&list);
+        }
+    }
+
+    /// The copies still to upload (and not waiting on a choice).
+    pub fn to_upload(&self) -> Vec<Entry> {
+        self.entries().into_iter().filter(|e| e.pending && (!e.conflict || e.force)).collect()
+    }
+}
+
+/// What uploading a copy did.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Uploaded {
+    /// In the cloud now; the cloud file's new time.
+    Done(Option<u64>),
+    /// The cloud file was saved from elsewhere since: not replaced.
+    Changed,
+    /// Saved next to it under another name instead (`conflict_copies`).
+    AsCopy(PathBuf),
+    /// The cloud folder can't be reached: try again later.
+    Away(String),
+}
+
+/// The name a copy that couldn't replace `cloud` is uploaded under:
+/// "key (conflict, framework 2026-11-05 14.05).ox360".
+pub fn conflict_name(cloud: &Path, host: &str, when: SystemTime) -> PathBuf {
+    let stem = cloud.file_stem().map_or_else(|| "design".into(), |s| s.to_string_lossy().into_owned());
+    let secs = when.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64;
+    let (y, m, d) = civil(secs.div_euclid(86400));
+    let (hh, mm) = (secs.rem_euclid(86400) / 3600, secs.rem_euclid(3600) / 60);
+    cloud.with_file_name(format!("{stem} (conflict, {host} {y:04}-{m:02}-{d:02} {hh:02}.{mm:02}).{}", crate::doc::EXTENSION))
+}
+
+/// Days since 1970 as (year, month, day) (UTC).
+fn civil(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
+/// Upload `e`'s copy from `cache` to its cloud file. A cloud file saved from
+/// elsewhere since the copy was made isn't replaced: `Changed` (when
+/// `as_copy` is false: someone will choose), or uploaded beside it under a
+/// conflict name. Runs off the main thread.
+pub fn upload(cache: &Cache, e: &Entry, as_copy: bool) -> Uploaded {
+    let Some(dir) = e.cloud.parent() else { return Uploaded::Away("no folder".into()) };
+    if !dir.is_dir() {
+        return Uploaded::Away(format!("{} can't be reached", dir.display()));
+    }
+    let Ok(bytes) = std::fs::read(cache.dir.join(&e.file)) else { return Uploaded::Away("the copy on this computer is gone".into()) };
+    let now = base_of(&e.cloud);
+    let changed = now.is_some() && now != e.base && !e.force;
+    let to = if changed {
+        if !as_copy {
+            return Uploaded::Changed;
+        }
+        conflict_name(&e.cloud, &host_name(), SystemTime::now())
+    } else {
+        e.cloud.clone()
+    };
+    let tmp = to.with_extension(format!("{}.tmp", crate::doc::EXTENSION));
+    if let Err(err) = std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, &to)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Uploaded::Away(format!("couldn't write {}: {err}", to.display()));
+    }
+    if changed { Uploaded::AsCopy(to) } else { Uploaded::Done(base_of(&e.cloud)) }
 }
 
 fn unix_now() -> u64 {
@@ -412,7 +622,7 @@ mod tests {
         assert_eq!(held_elsewhere(&design, &me, |_| true), Some(crashed), "another copy of the app here");
         // Someone else's lock isn't removed by ours going.
         let other = LockGuard::take(&design, theirs.clone()).unwrap();
-        let stale = LockGuard { design: design.clone(), lock: me.clone() };
+        let stale = LockGuard { design: design.clone(), lock: me.clone(), background: false };
         drop(stale);
         assert_eq!(read_lock(&design), Some(theirs));
         drop(other);
@@ -484,6 +694,76 @@ mod tests {
         let Found::Recent(seen) = &got[2] else { panic!("{got:?}") };
         assert_eq!(seen.iter().map(|s| s.2).collect::<Vec<_>>(), vec![true, false]);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn copies_are_kept_for_offline_and_the_oldest_go() {
+        let d = temp("cache");
+        let cache = Cache { dir: d.join("cache") };
+        let cloud = d.join("nas");
+        std::fs::create_dir_all(&cloud).unwrap();
+        for k in 0..12 {
+            cache.keep(&cloud.join(format!("d{k}.ox360")), b"x", Some(1), false).unwrap();
+        }
+        let list = cache.entries();
+        assert_eq!(list.len(), KEEP, "ten kept");
+        assert_eq!(list[0].cloud, cloud.join("d11.ox360"), "newest first");
+        assert!(cache.copy_of(&cloud.join("d0.ox360")).is_none(), "the oldest went");
+        assert_eq!(std::fs::read_dir(&cache.dir).unwrap().count(), KEEP + 1, "its file too (+ the index)");
+        // One saved offline is kept whatever.
+        cache.keep(&cloud.join("offline.ox360"), b"mine", None, true).unwrap();
+        for k in 20..32 {
+            cache.keep(&cloud.join(format!("d{k}.ox360")), b"x", Some(1), false).unwrap();
+        }
+        assert!(cache.copy_of(&cloud.join("offline.ox360")).is_some());
+        assert_eq!(cache.to_upload().len(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_copy_uploads_unless_the_cloud_one_changed_since() {
+        let d = temp("upload");
+        let cache = Cache { dir: d.join("cache") };
+        let nas = d.join("nas");
+        std::fs::create_dir_all(&nas).unwrap();
+        let design = nas.join("key.ox360");
+        std::fs::write(&design, "theirs v1").unwrap();
+        // Opened (copy kept, matching the cloud), then saved offline.
+        cache.keep(&design, b"theirs v1", base_of(&design), false).unwrap();
+        cache.keep(&design, b"mine", None, true).unwrap();
+        let e = cache.entry(&design).unwrap();
+        assert!(e.pending && e.base == base_of(&design), "still based on what was opened");
+        assert!(matches!(upload(&cache, &e, false), Uploaded::Done(Some(_))));
+        assert_eq!(std::fs::read_to_string(&design).unwrap(), "mine");
+        // Someone saved there since: not replaced…
+        cache.keep(&design, b"mine v2", base_of(&design), false).unwrap();
+        cache.keep(&design, b"mine v3", None, true).unwrap();
+        std::fs::write(&design, "theirs v2").unwrap();
+        std::fs::File::options().write(true).open(&design).unwrap().set_modified(SystemTime::now() + Duration::from_secs(9)).unwrap();
+        let e = cache.entry(&design).unwrap();
+        assert_eq!(upload(&cache, &e, false), Uploaded::Changed);
+        assert_eq!(std::fs::read_to_string(&design).unwrap(), "theirs v2");
+        // … put beside it when nobody's there to choose …
+        let Uploaded::AsCopy(beside) = upload(&cache, &e, true) else { panic!() };
+        assert!(beside.file_name().unwrap().to_string_lossy().starts_with("key (conflict, "), "{beside:?}");
+        assert_eq!(std::fs::read_to_string(&beside).unwrap(), "mine v3");
+        assert_eq!(std::fs::read_to_string(&design).unwrap(), "theirs v2");
+        // … or replaced when told to.
+        cache.update(&design, |e| e.force = true);
+        assert!(matches!(upload(&cache, &cache.entry(&design).unwrap(), false), Uploaded::Done(_)));
+        assert_eq!(std::fs::read_to_string(&design).unwrap(), "mine v3");
+        // Away: says so, nothing written.
+        let gone = Entry { cloud: d.join("unplugged/key.ox360"), ..cache.entry(&design).unwrap() };
+        assert!(matches!(upload(&cache, &gone, false), Uploaded::Away(_)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn conflict_copies_say_where_and_when() {
+        let t = UNIX_EPOCH + Duration::from_secs(1_793_889_141); // 2026-11-05 14:32 UTC
+        assert_eq!(conflict_name(Path::new("/nas/key.ox360"), "framework", t), PathBuf::from("/nas/key (conflict, framework 2026-11-05 14.32).ox360"));
+        assert_eq!(civil(0), (1970, 1, 1));
+        assert_eq!(civil(19723), (2024, 1, 1));
     }
 
     #[test]

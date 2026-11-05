@@ -176,6 +176,19 @@ impl OpenCad {
                             }
                             Some(Err(e)) => {
                                 ui.colored_label(egui::Color32::from_rgb(230, 120, 90), format!("    {e}"));
+                                // Away: what this computer has copies of, to work on until it's back.
+                                let copies: Vec<cloud::Entry> = cloud::Cache::default_cache().map_or_else(Vec::new, |c| c.entries()).into_iter().filter(|e| e.cloud.starts_with(&f.path)).collect();
+                                if !copies.is_empty() {
+                                    ui.weak("    Copies on this computer (saves upload when it's back):");
+                                }
+                                for c in copies {
+                                    let name = c.cloud.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+                                    let when = cloud::ago(now, std::time::UNIX_EPOCH + std::time::Duration::from_secs(c.used));
+                                    let note = if c.pending { "not uploaded yet" } else { "" };
+                                    if design_row(ui, &name, note, Some(&when), true, true).clicked() {
+                                        open = Some(c.cloud.clone());
+                                    }
+                                }
                             }
                             Some(Ok(list)) if list.is_empty() => {
                                 ui.weak("    No designs here yet — save one into this folder (File > Save to Cloud Folder).");

@@ -884,6 +884,7 @@ struct OpenCad {
     file_stamp: Option<std::time::SystemTime>, // when the file was written, as last opened or saved here
     file_lock: Option<cloud::LockGuard>,    // a cloud design's "open here" lock while it's open
     overwrite_asked: bool,                  // Save found the file saved from elsewhere since: asking
+    sync_now: bool,                         // a cloud save is waiting: upload now (see Tabs::sync_cloud)
     save_dialog: Option<save_dialog::SaveDialog>, // the Save window (name and where)
     save_listing: Option<(PathBuf, Option<Result<save_dialog::Listing, String>>)>, // the folder it shows, and what's in it (None: being read)
     save_listing_rx: Option<std::sync::mpsc::Receiver<(PathBuf, Result<save_dialog::Listing, String>)>>,
@@ -1171,6 +1172,7 @@ impl Default for OpenCad {
             file_stamp: None,
             file_lock: None,
             overwrite_asked: false,
+            sync_now: false,
             save_dialog: None,
             save_listing: None,
             save_listing_rx: None,
@@ -1790,6 +1792,11 @@ struct Tabs {
     recovered: Vec<recovery::Recovered>,
     /// The theme has been applied to egui at least once.
     themed: bool,
+    /// Cloud saves being uploaded (in the background), and when that was last tried.
+    sync: Option<std::sync::mpsc::Receiver<(PathBuf, cloud::Uploaded)>>,
+    sync_at: f64,
+    /// Designs whose upload was asked for by a save just now (told if it can't go).
+    sync_told: Vec<PathBuf>,
 }
 
 /// The control link's side in the app: requests come in one at a time;
@@ -1850,6 +1857,7 @@ impl eframe::App for Tabs {
         for t in &mut self.tabs {
             t.theme = chosen;
         }
+        self.sync_cloud(&ctx);
         let tab = &mut self.tabs[current];
         let close_me = std::mem::take(&mut tab.close_me);
         match tab.tab_request.take() {
@@ -2074,6 +2082,104 @@ impl Tabs {
         }
     }
 
+    /// Upload cloud saves kept on this computer: when one was just saved, and
+    /// every half minute while any wait (the share may be back). Results go
+    /// to the tab that has the design open.
+    fn sync_cloud(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        // What came back.
+        if let Some(rx) = &self.sync {
+            let mut done = false;
+            let mut got = Vec::new();
+            loop {
+                match rx.try_recv() {
+                    Ok(r) => got.push(r),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        done = true;
+                        break;
+                    }
+                }
+            }
+            if done {
+                self.sync = None;
+            }
+            let cache = cloud::Cache::default_cache();
+            for (path, r) in got {
+                let told = self.sync_told.contains(&path);
+                let at = self.tabs.iter().position(|t| t.path.as_ref() == Some(&path));
+                let tab = at.map_or(self.current, |k| k);
+                let name = self.tabs[tab].cloud_name(&path);
+                match r {
+                    cloud::Uploaded::Done(base) => {
+                        if let Some(c) = &cache {
+                            c.update(&path, |e| {
+                                (e.pending, e.force, e.conflict, e.base) = (false, false, false, base);
+                            });
+                        }
+                        if told || at.is_some() {
+                            self.tabs[tab].notify(format!("Saved to {name}"));
+                        }
+                        self.sync_told.retain(|p| *p != path);
+                    }
+                    cloud::Uploaded::Changed => {
+                        if let Some(c) = &cache {
+                            c.update(&path, |e| e.conflict = true);
+                        }
+                        if let Some(k) = at {
+                            self.tabs[k].overwrite_asked = true;
+                        }
+                        self.sync_told.retain(|p| *p != path);
+                    }
+                    cloud::Uploaded::AsCopy(beside) => {
+                        if let Some(c) = &cache {
+                            c.update(&path, |e| (e.pending, e.conflict) = (false, false));
+                        }
+                        let n = beside.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                        self.tabs[tab].notify(format!("{} changed on {name} meanwhile: yours is saved beside it as {n}", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
+                    }
+                    cloud::Uploaded::Away(_) => {
+                        if told {
+                            self.tabs[tab].notify(format!("Saved on this computer — {name} can't be reached; it'll upload when it's back"));
+                            self.sync_told.retain(|p| *p != path);
+                        }
+                    }
+                }
+            }
+        }
+        // Anything to send?
+        let asked: Vec<PathBuf> = self.tabs.iter_mut().filter_map(|t| if std::mem::take(&mut t.sync_now) { t.path.clone() } else { None }).collect();
+        let due = !asked.is_empty() || now - self.sync_at > 30.0;
+        if !due || self.sync.is_some() {
+            if !asked.is_empty() {
+                self.sync_told.extend(asked);
+                self.sync_at = f64::NEG_INFINITY; // (straight after the one running)
+            }
+            return;
+        }
+        self.sync_at = now;
+        self.sync_told.extend(asked);
+        let Some(cache) = cloud::Cache::default_cache() else { return };
+        let list = cache.to_upload();
+        if list.is_empty() {
+            return;
+        }
+        // An open design waits for its user to choose; one that isn't goes beside the changed one.
+        let open: Vec<PathBuf> = self.tabs.iter().filter_map(|t| t.path.clone()).collect();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            for e in list {
+                let r = cloud::upload(&cache, &e, !open.contains(&e.cloud));
+                if tx.send((e.cloud.clone(), r)).is_err() {
+                    return;
+                }
+                ctx.request_repaint();
+            }
+        });
+        self.sync = Some(rx);
+    }
+
     /// Bring tab `k` up, carrying the global settings over to it.
     fn show(&mut self, k: usize, settings: &settings::Settings) {
         self.current = k;
@@ -2183,7 +2289,7 @@ fn main() -> eframe::Result {
                 // Nothing to open: the start page (recent and cloud designs, New, Open).
                 None => first.start_page = true,
             }
-            Ok(Box::new(Tabs { tabs: vec![first], current: 0, gpu, title: String::new(), control, recovered, themed: false }))
+            Ok(Box::new(Tabs { tabs: vec![first], current: 0, gpu, title: String::new(), control, recovered, themed: false, sync: None, sync_at: f64::NEG_INFINITY, sync_told: Vec::new() }))
         }),
     )
 }
