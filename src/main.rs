@@ -56,6 +56,7 @@ mod offset_dialog;
 mod combine_dialog;
 mod scale_dialog;
 mod cloud;
+mod save_dialog;
 mod emboss_dialog;
 mod insert_drawing_dialog;
 mod print3d;
@@ -493,7 +494,7 @@ enum Cmd {
 
 /// What to do once the user has answered "save changes?".
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Pending {
+pub(crate) enum Pending {
     Quit,
     /// Close this tab (asked by the tab strip's ×).
     CloseTab,
@@ -883,6 +884,9 @@ struct OpenCad {
     file_stamp: Option<std::time::SystemTime>, // when the file was written, as last opened or saved here
     file_lock: Option<cloud::LockGuard>,    // a cloud design's "open here" lock while it's open
     overwrite_asked: bool,                  // Save found the file saved from elsewhere since: asking
+    save_dialog: Option<save_dialog::SaveDialog>, // the Save window (name and where)
+    save_listing: Option<(PathBuf, Option<Result<save_dialog::Listing, String>>)>, // the folder it shows, and what's in it (None: being read)
+    save_listing_rx: Option<std::sync::mpsc::Receiver<(PathBuf, Result<save_dialog::Listing, String>)>>,
     toolbar_hidden: Vec<String>,            // tools tucked into their group's ▾ list (settings)
     keymap: keys::Keymap,                   // tool keys (settings)
     toolbar_order: Vec<String>,             // tools' order within their groups, as dragged (settings)
@@ -1167,6 +1171,9 @@ impl Default for OpenCad {
             file_stamp: None,
             file_lock: None,
             overwrite_asked: false,
+            save_dialog: None,
+            save_listing: None,
+            save_listing_rx: None,
             toolbar_hidden: settings::Settings::default().toolbar_hidden,
             keymap: keys::Keymap::default(),
             toolbar_order: Vec::new(),
@@ -1690,6 +1697,7 @@ impl OpenCad {
         if let Some(cmd) = self.cmd.take() {
             self.run_cmd(cmd);
         }
+        self.save_window(&ctx);
         self.modals(&ctx);
         self.record_history(&ctx);
         self.save_settings_if_changed();

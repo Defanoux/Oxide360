@@ -242,3 +242,110 @@ fn design_row(ui: &mut egui::Ui, name: &str, place: &str, when: Option<&str>, th
     }
     r
 }
+
+// ---------- the Save window ----------
+
+impl OpenCad {
+    /// Where designs can be saved: the cloud folders (greyed when the start
+    /// page found one can't be reached), then this computer.
+    pub(crate) fn save_roots(&self) -> Vec<save_dialog::Root> {
+        let mut roots: Vec<save_dialog::Root> = self
+            .cloud_folders
+            .iter()
+            .enumerate()
+            .map(|(k, f)| match self.cloud_lists.get(k) {
+                Some(Some(Err(_))) => save_dialog::Root { name: f.name.clone(), path: None, cloud: true, note: Some("can't be reached".into()) },
+                _ => save_dialog::Root { name: f.name.clone(), path: Some(f.path.clone()), cloud: true, note: None },
+            })
+            .collect();
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let docs = home.as_ref().map(|h| h.join("Documents")).filter(|d| d.is_dir()).or(home);
+        roots.push(save_dialog::Root { name: "This computer".into(), path: docs, cloud: false, note: None });
+        // A design saved somewhere else on this computer: its own folder too.
+        if let Some(dir) = self.path.as_deref().and_then(std::path::Path::parent) {
+            if !roots.iter().any(|r| r.path.as_deref().is_some_and(|p| dir.starts_with(p))) {
+                let name = dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned());
+                roots.push(save_dialog::Root { name, path: Some(dir.to_path_buf()), cloud: false, note: None });
+            }
+        }
+        roots
+    }
+
+    /// Open the Save window (in cloud folder `root` if given), `then` to do once saved.
+    pub(crate) fn open_save_dialog(&mut self, then: Option<Pending>, root: Option<usize>) {
+        let roots = self.save_roots();
+        let (k, sub) = match root {
+            Some(k) => (k, PathBuf::new()),
+            None => save_dialog::SaveDialog::place_for(&roots, self.path.as_deref()),
+        };
+        let mut d = save_dialog::SaveDialog::new(&self.design_name(), k, sub);
+        d.then = then;
+        self.save_dialog = Some(d);
+        self.save_listing = None;
+    }
+
+    pub(crate) fn save_window(&mut self, ctx: &egui::Context) {
+        let Some(mut d) = self.save_dialog.take() else { return };
+        let roots = self.save_roots();
+        // What's in the folder shown: read in the background when it changes.
+        let folder = d.folder(&roots);
+        if let Some(rx) = &self.save_listing_rx {
+            if let Ok((dir, l)) = rx.try_recv() {
+                if self.save_listing.as_ref().is_some_and(|(at, _)| *at == dir) {
+                    self.save_listing = Some((dir, Some(l)));
+                }
+                self.save_listing_rx = None;
+            }
+        }
+        match &folder {
+            Some(dir) if self.save_listing.as_ref().is_none_or(|(at, _)| at != dir) => {
+                self.save_listing = Some((dir.clone(), None));
+                let (tx, rx) = std::sync::mpsc::channel();
+                let (dir, ctx) = (dir.clone(), ctx.clone());
+                std::thread::spawn(move || {
+                    let l = save_dialog::read(&dir);
+                    let _ = tx.send((dir, l));
+                    ctx.request_repaint();
+                });
+                self.save_listing_rx = Some(rx);
+            }
+            None => self.save_listing = None,
+            _ => {}
+        }
+        let listing = self.save_listing.as_ref().and_then(|(_, l)| l.as_ref());
+        let current = self.path.clone();
+        let mut act = save_dialog::Action::None;
+        let mut open = true;
+        egui::Window::new("Save")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| act = d.panel(ui, &roots, listing, current.as_deref()));
+        if !open || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            act = save_dialog::Action::Cancel;
+        }
+        match act {
+            save_dialog::Action::None => self.save_dialog = Some(d),
+            save_dialog::Action::Cancel => {}
+            save_dialog::Action::Browse => {
+                self.save_as_in(folder);
+            }
+            save_dialog::Action::MakeFolder(p) => {
+                if let Err(e) = std::fs::create_dir_all(&p) {
+                    self.alert = Some(format!("Couldn't make the folder {}: {e}", p.display()));
+                    d.up();
+                }
+                self.save_listing = None;
+                self.save_dialog = Some(d);
+            }
+            save_dialog::Action::Save(target) => {
+                if self.write_to(target, false) {
+                    if let Some(then) = d.then {
+                        self.run(then, ctx);
+                    }
+                }
+            }
+        }
+    }
+}

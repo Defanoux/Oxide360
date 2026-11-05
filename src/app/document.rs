@@ -717,8 +717,10 @@ impl OpenCad {
         }
     }
 
+    /// Save As: the Save window (name and where; the cloud folder first).
     pub(crate) fn save_as(&mut self) -> bool {
-        self.save_as_in(None)
+        self.open_save_dialog(None, None);
+        false
     }
 
     /// Save As, the dialog starting in `dir` (a cloud folder) if given.
@@ -748,6 +750,16 @@ impl OpenCad {
         match self.path.clone() {
             Some(p) => self.save_to(p),
             None => self.save_as(),
+        }
+    }
+
+    /// "Save" for `then` (closing, quitting): a design never saved gets the
+    /// Save window, and `then` happens once it's saved there.
+    pub(crate) fn save_then(&mut self, then: Pending, ctx: &egui::Context) {
+        if self.path.is_none() {
+            self.open_save_dialog(Some(then), None);
+        } else if self.save() {
+            self.run(then, ctx);
         }
     }
 
@@ -1365,11 +1377,8 @@ impl OpenCad {
             Cmd::SaveToCloud(k) => {
                 if let Some(f) = self.cloud_folders.get(k) {
                     let dir = f.path.clone();
-                    if dir.is_dir() {
-                        self.save_as_in(Some(dir));
-                    } else {
-                        self.alert = Some(format!("{} isn't there — is the share mounted?", dir.display()));
-                    }
+                    let _ = dir;
+                    self.open_save_dialog(None, Some(k));
                 }
             }
             Cmd::Export(f) => self.export(f),
@@ -1416,9 +1425,7 @@ impl OpenCad {
             match choice {
                 Some(0) => {
                     self.confirm = None;
-                    if self.save() {
-                        self.run(action, ctx);
-                    }
+                    self.save_then(action, ctx);
                 }
                 Some(1) => {
                     self.confirm = None;
