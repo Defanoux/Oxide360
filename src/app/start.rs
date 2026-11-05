@@ -15,20 +15,20 @@ impl OpenCad {
         self.start_page && self.path.is_none() && self.timeline.is_empty() && self.active.is_none() && self.tool_name().is_none()
     }
 
-    /// Look through every cloud folder again (in the background: a share
-    /// that's gone away can take a while to say so).
+    /// Look through every cloud folder again, and check the Recent designs
+    /// (in the background: a share that's gone away can take a while to say so).
     pub(crate) fn scan_cloud(&mut self, ctx: &egui::Context) {
         let folders = self.cloud_folders.clone();
+        let recent = self.recent.clone();
         self.cloud_lists = vec![None; folders.len()];
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            for (k, f) in folders.iter().enumerate() {
-                if tx.send((k, cloud::list(&f.path))).is_err() {
-                    return;
-                }
+            cloud::look(&folders, &recent, |found| {
+                let ok = tx.send(found).is_ok();
                 ctx.request_repaint();
-            }
+                ok
+            });
         });
         self.cloud_scan = Some(rx);
     }
@@ -36,17 +36,42 @@ impl OpenCad {
     /// Take in what the background look has found so far.
     fn poll_cloud(&mut self) {
         let Some(rx) = &self.cloud_scan else { return };
-        loop {
+        let mut got = Vec::new();
+        let done = loop {
             match rx.try_recv() {
-                Ok((k, found)) => {
+                Ok(f) => got.push(f),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break false,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break true,
+            }
+        };
+        if done {
+            self.cloud_scan = None;
+        }
+        for found in got {
+            match found {
+                cloud::Found::Folder(k, r) => {
+                    let r = r.map(|(at, list)| {
+                        // Found somewhere new (a new login's mount): remember where.
+                        if let Some(f) = self.cloud_folders.get_mut(k) {
+                            f.path = at;
+                        }
+                        list
+                    });
                     if let Some(slot) = self.cloud_lists.get_mut(k) {
-                        *slot = Some(found);
+                        *slot = Some(r);
                     }
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => return,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.cloud_scan = None;
-                    return;
+                cloud::Found::Recent(seen) => {
+                    for (was, now, _, _) in &seen {
+                        if was != now {
+                            for p in &mut self.recent {
+                                if p == was {
+                                    *p = now.clone();
+                                }
+                            }
+                        }
+                    }
+                    self.recent_seen = seen.into_iter().map(|(_, now, there, at)| (now, there, at)).collect();
                 }
             }
         }
@@ -111,9 +136,12 @@ impl OpenCad {
                     for p in self.recent.clone() {
                         let name = p.file_stem().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
                         let place = p.parent().map(|d| d.display().to_string()).unwrap_or_default();
-                        let when = cloud::stamp(&p).map(|t| cloud::ago(now, t));
+                        // (Looked up in the background; until then, taken to be there.)
+                        let seen = self.recent_seen.iter().find(|s| s.0 == p);
+                        let when = seen.and_then(|s| s.2).map(|t| cloud::ago(now, t));
+                        let there = seen.is_none_or(|s| s.1);
                         let cloudy = cloud::in_cloud(&self.cloud_folders, &p);
-                        if design_row(ui, &name, &place, when.as_deref(), p.exists(), cloudy).clicked() {
+                        if design_row(ui, &name, &place, when.as_deref(), there, cloudy).clicked() {
                             open = Some(p.clone());
                         }
                     }

@@ -878,7 +878,8 @@ struct OpenCad {
     cloud_folders: Vec<cloud::CloudFolder>, // folders on the user's own share (settings)
     start_page: bool,                       // the start page is up (on an empty new design)
     cloud_lists: Vec<Option<Result<Vec<cloud::Design>, String>>>, // each cloud folder's designs (None: still looking)
-    cloud_scan: Option<std::sync::mpsc::Receiver<(usize, Result<Vec<cloud::Design>, String>)>>, // a look through them under way
+    cloud_scan: Option<std::sync::mpsc::Receiver<cloud::Found>>, // a look through them under way
+    recent_seen: Vec<(PathBuf, bool, Option<std::time::SystemTime>)>, // Recent designs: there?, saved when (looked up off the main thread)
     file_stamp: Option<std::time::SystemTime>, // when the file was written, as last opened or saved here
     file_lock: Option<cloud::LockGuard>,    // a cloud design's "open here" lock while it's open
     overwrite_asked: bool,                  // Save found the file saved from elsewhere since: asking
@@ -1162,6 +1163,7 @@ impl Default for OpenCad {
             start_page: false,
             cloud_lists: Vec::new(),
             cloud_scan: None,
+            recent_seen: Vec::new(),
             file_stamp: None,
             file_lock: None,
             overwrite_asked: false,
@@ -1716,6 +1718,12 @@ impl OpenCad {
         self.theme = s.theme;
         self.tool_colors = s.tool_colors;
         self.cloud_folders = s.cloud_folders.clone();
+        // (Folders added before addresses were kept: noted now.)
+        for f in &mut self.cloud_folders {
+            if f.url.is_none() {
+                f.url = cloud::kio_url(&f.path).or_else(|| cloud::gvfs_url(&f.path));
+            }
+        }
         self.settings_saved = s.clone();
     }
 
@@ -1847,7 +1855,9 @@ impl eframe::App for Tabs {
                     self.tabs.push(OpenCad::fresh(&settings, self.gpu));
                     self.current = self.tabs.len() - 1;
                 }
-                self.tabs[self.current].start_page = true;
+                let t = &mut self.tabs[self.current];
+                t.start_page = true;
+                t.cloud_lists.clear(); // (looked through again when it shows)
             }
             Some(TabRequest::Open) => {
                 if let Some(path) = tab.open_in_tab.take() {

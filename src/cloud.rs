@@ -15,15 +15,164 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub struct CloudFolder {
     /// What it's called on the start page ("TrueNAS", "Nextcloud").
     pub name: String,
+    /// Where it is on this computer (as last found).
     pub path: PathBuf,
+    /// Its network address ("smb://192.168.50.5/defanoux/oxide360") when it's
+    /// a share KDE or GNOME mounted: their mount folder changes from one login
+    /// to the next, so the folder is found again from this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 impl CloudFolder {
-    /// A folder named after its last part.
+    /// A folder named after its last part (a network mount's address noted).
     pub fn at(path: PathBuf) -> CloudFolder {
         let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-        CloudFolder { name, path }
+        let url = kio_url(&path).or_else(|| gvfs_url(&path));
+        CloudFolder { name, path, url }
     }
+
+    /// Where the folder is now: a network share is mounted (again) if it can
+    /// be. Slow when a share is away — run it off the main thread.
+    pub fn resolve(&self) -> Result<PathBuf, String> {
+        if self.path.is_dir() {
+            return Ok(self.path.clone());
+        }
+        if let Some(url) = &self.url {
+            if let Some(p) = kio_mount(url).filter(|p| p.is_dir()) {
+                return Ok(p);
+            }
+            if let Some(p) = gvfs_path(&self.path).filter(|_| gio_mount(url)).filter(|p| p.is_dir()) {
+                return Ok(p);
+            }
+            return Err(format!("can't reach {url} — is the server on, and this computer on its network?"));
+        }
+        Err(format!("{} isn't there — is the share mounted?", self.path.display()))
+    }
+}
+
+/// `/run/user/1000/kio-fuse-AbCd/smb/host/share/dir` (KDE's mount of a
+/// network folder): its address, `smb://host/share/dir`.
+pub fn kio_url(path: &Path) -> Option<String> {
+    let parts: Vec<String> = path.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    let k = parts.iter().position(|p| p.starts_with("kio-fuse-"))?;
+    if parts.get(1).map(String::as_str) != Some("run") || parts.get(2).map(String::as_str) != Some("user") {
+        return None;
+    }
+    let scheme = parts.get(k + 1)?;
+    let rest = parts.get(k + 2..)?;
+    (!rest.is_empty()).then(|| format!("{scheme}://{}", rest.join("/")))
+}
+
+/// `/run/user/1000/gvfs/smb-share:server=host,share=s/dir` (GNOME's mount):
+/// its address, `smb://host/s/dir`.
+pub fn gvfs_url(path: &Path) -> Option<String> {
+    let parts: Vec<String> = path.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    let k = parts.iter().position(|p| p == "gvfs")?;
+    let mount = parts.get(k + 1)?;
+    let (kind, args) = mount.split_once(':')?;
+    let scheme = kind.strip_suffix("-share").unwrap_or(kind);
+    let get = |key: &str| args.split(',').find_map(|kv| kv.strip_prefix(key).and_then(|v| v.strip_prefix('=')));
+    let host = get("server").or_else(|| get("host"))?;
+    let mut url = format!("{scheme}://{host}");
+    if let Some(share) = get("share") {
+        url.push('/');
+        url.push_str(share);
+    }
+    for p in &parts[k + 2..] {
+        url.push('/');
+        url.push_str(p);
+    }
+    Some(url)
+}
+
+/// A gvfs path as it would be now (gvfs mounts keep their folder name).
+fn gvfs_path(path: &Path) -> Option<PathBuf> {
+    gvfs_url(path).map(|_| path.to_path_buf())
+}
+
+/// Ask KDE to mount `url` (KIO FUSE); the local folder it's at.
+fn kio_mount(url: &str) -> Option<PathBuf> {
+    let out = run_for("gdbus", &["call", "--session", "--dest", "org.kde.KIOFuse", "--object-path", "/org/kde/KIOFuse", "--method", "org.kde.KIOFuse.VFS.mountUrl", url], Duration::from_secs(20))?;
+    // ('/run/user/1000/kio-fuse-AbCd/smb/host/share',)
+    let start = out.find('\'')? + 1;
+    let end = out[start..].find('\'')? + start;
+    Some(PathBuf::from(&out[start..end]))
+}
+
+/// Ask GNOME to mount `url` (gvfs).
+fn gio_mount(url: &str) -> bool {
+    run_for("gio", &["mount", url], Duration::from_secs(20)).is_some()
+}
+
+/// Run `cmd` and give back what it printed, unless it fails or takes longer than `limit`.
+fn run_for(cmd: &str, args: &[&str], limit: Duration) -> Option<String> {
+    let mut child = std::process::Command::new(cmd)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let began = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut out = String::new();
+                use std::io::Read;
+                child.stdout.take()?.read_to_string(&mut out).ok()?;
+                return status.success().then_some(out);
+            }
+            Ok(None) if began.elapsed() < limit => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+/// What a look through the cloud folders (off the main thread) finds.
+#[derive(Debug)]
+pub enum Found {
+    /// Folder `k`: where it is now and its designs, or why it can't be read.
+    Folder(usize, Result<(PathBuf, Vec<Design>), String>),
+    /// The Recent list: each design (where it was listed, where it is now),
+    /// whether it's there, and when it was saved.
+    Recent(Vec<(PathBuf, PathBuf, bool, Option<SystemTime>)>),
+}
+
+/// Look through `folders` (mounting shares that need it) and check the
+/// `recent` designs, telling `send` as each is done. Recent designs in a
+/// folder that's moved (a new login's mount) are looked for where it is now.
+pub fn look(folders: &[CloudFolder], recent: &[PathBuf], mut send: impl FnMut(Found) -> bool) {
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for (k, f) in folders.iter().enumerate() {
+        let found = f.resolve().and_then(|at| {
+            if at != f.path {
+                moved.push((f.path.clone(), at.clone()));
+            }
+            list(&at).map(|l| (at, l))
+        });
+        if !send(Found::Folder(k, found)) {
+            return;
+        }
+    }
+    let seen = recent
+        .iter()
+        .map(|p| {
+            let now = moved.iter().find_map(|(from, to)| remap(p, from, to)).unwrap_or_else(|| p.clone());
+            let at = stamp(&now);
+            (p.clone(), now.clone(), at.is_some() || now.exists(), at)
+        })
+        .collect();
+    send(Found::Recent(seen));
+}
+
+/// `path` moved from under `from` to under `to` (a folder found somewhere new).
+pub fn remap(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    path.strip_prefix(from).ok().map(|rest| to.join(rest))
 }
 
 /// Is `path` inside one of `folders`?
@@ -295,6 +444,46 @@ mod tests {
         assert_eq!(at(90 * 86400), "3 months ago");
         assert_eq!(at(800 * 86400), "2 years ago");
         assert_eq!(ago(now, now + Duration::from_secs(60)), "just now", "a clock a little ahead");
+    }
+
+    #[test]
+    fn network_mounts_remember_their_address() {
+        let kde = Path::new("/run/user/1000/kio-fuse-sqeqML/smb/192.168.50.5/defanoux/oxide360");
+        assert_eq!(kio_url(kde).as_deref(), Some("smb://192.168.50.5/defanoux/oxide360"));
+        assert_eq!(kio_url(Path::new("/run/user/1000/kio-fuse-x/webdavs/cloud.example.org/remote.php/dav/files/sam")).as_deref(), Some("webdavs://cloud.example.org/remote.php/dav/files/sam"));
+        let gnome = Path::new("/run/user/1000/gvfs/smb-share:server=192.168.50.5,share=defanoux/oxide360");
+        assert_eq!(gvfs_url(gnome).as_deref(), Some("smb://192.168.50.5/defanoux/oxide360"));
+        assert_eq!(kio_url(Path::new("/home/g/kio-fuse-notes/a")), None, "only KDE's own mount folder");
+        assert_eq!(gvfs_url(Path::new("/mnt/truenas")), None);
+        let f = CloudFolder::at(kde.to_path_buf());
+        assert_eq!((f.name.as_str(), f.url.as_deref()), ("oxide360", Some("smb://192.168.50.5/defanoux/oxide360")));
+        // Found again after a new login: recent designs move with it.
+        let now = Path::new("/run/user/1000/kio-fuse-QQQQ/smb/192.168.50.5/defanoux/oxide360");
+        assert_eq!(remap(&kde.join("keys/key.ox360"), kde, now), Some(now.join("keys/key.ox360")));
+        assert_eq!(remap(Path::new("/home/g/a.ox360"), kde, now), None);
+        // A plain folder that's there is just there.
+        let d = temp("resolve");
+        assert_eq!(CloudFolder::at(d.clone()).resolve(), Ok(d.clone()));
+        assert!(CloudFolder::at(d.join("gone")).resolve().unwrap_err().contains("mounted"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_look_lists_each_folder_then_checks_recent() {
+        let d = temp("look");
+        std::fs::write(d.join("a.ox360"), "{}").unwrap();
+        let folders = vec![CloudFolder::at(d.clone()), CloudFolder::at(d.join("away"))];
+        let recent = vec![d.join("a.ox360"), d.join("gone.ox360")];
+        let mut got = Vec::new();
+        look(&folders, &recent, |f| {
+            got.push(f);
+            true
+        });
+        assert!(matches!(&got[0], Found::Folder(0, Ok((at, l))) if *at == d && l.len() == 1));
+        assert!(matches!(&got[1], Found::Folder(1, Err(_))));
+        let Found::Recent(seen) = &got[2] else { panic!("{got:?}") };
+        assert_eq!(seen.iter().map(|s| s.2).collect::<Vec<_>>(), vec![true, false]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
