@@ -79,13 +79,108 @@ impl OpenCad {
         }
     }
 
-    /// Add a cloud folder (picked in the folder chooser).
-    pub(crate) fn add_cloud_folder(&mut self, ctx: &egui::Context) {
-        if let Some(dir) = rfd::FileDialog::new().set_title("Add a cloud folder (your share or Nextcloud folder)").pick_folder() {
-            if !self.cloud_folders.iter().any(|f| f.path == dir) {
-                self.cloud_folders.push(cloud::CloudFolder::at(dir));
+    /// Add a cloud folder: the Connect your cloud window.
+    pub(crate) fn add_cloud_folder(&mut self, _ctx: &egui::Context) {
+        if self.connect.is_none() {
+            self.connect = Some(Connect::default());
+        }
+    }
+
+    /// The Connect your cloud window: a server's address (mounted through
+    /// KDE or GNOME, in the background), or a folder on this computer (a
+    /// Nextcloud sync folder).
+    pub(crate) fn connect_window(&mut self, ctx: &egui::Context) {
+        let Some(mut c) = self.connect.take() else { return };
+        // A try under way: done?
+        if let Some((url, rx)) = &c.busy {
+            match rx.try_recv() {
+                Ok(Ok(path)) => {
+                    let name = if c.name.trim().is_empty() { cloud::url_name(url) } else { c.name.trim().to_string() };
+                    if !self.cloud_folders.iter().any(|f| f.path == path) {
+                        self.cloud_folders.push(cloud::CloudFolder { name: name.clone(), path, url: Some(url.clone()) });
+                    }
+                    self.scan_cloud(ctx);
+                    self.note_saved(format!("Connected to {name}"), true, true);
+                    return; // (closed)
+                }
+                Ok(Err(e)) => {
+                    c.error = Some(e);
+                    c.busy = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => c.busy = None,
             }
-            self.scan_cloud(ctx);
+        }
+        let mut close = false;
+        let mut local = false;
+        egui::Modal::new(egui::Id::new("connect_cloud")).show(ctx, |ui| {
+            ui.set_width(480.0);
+            ui.heading("Connect your cloud");
+            ui.label("Keep your designs on your own server: a TrueNAS or other Samba share, or Nextcloud.");
+            ui.add_space(6.0);
+            egui::Grid::new("connect_grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                ui.label("Address");
+                ui.add(egui::TextEdit::singleline(&mut c.address).hint_text("smb://192.168.50.5/share/folder").desired_width(340.0));
+                ui.end_row();
+                ui.label("Name");
+                ui.add(egui::TextEdit::singleline(&mut c.name).hint_text(if c.address.is_empty() { "TrueNAS".to_string() } else { normalize_or(&c.address) }).desired_width(340.0));
+                ui.end_row();
+            });
+            ui.weak("TrueNAS / Samba: smb://server/share/folder (the server's name or IP).");
+            ui.weak("Nextcloud: webdavs://your.cloud/remote.php/dav/files/USER/folder");
+            ui.weak("Your password is asked for (and remembered) by the desktop the first time.");
+            if let Some(e) = &c.error {
+                ui.colored_label(egui::Color32::from_rgb(230, 120, 90), e);
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let busy = c.busy.is_some();
+                if busy {
+                    ui.spinner();
+                    ui.label("Connecting…");
+                } else if ui.button("Connect").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    match cloud::normalize_url(&c.address) {
+                        Ok(url) => {
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            let (u, ctx) = (url.clone(), ctx.clone());
+                            std::thread::spawn(move || {
+                                let _ = tx.send(cloud::connect(&u));
+                                ctx.request_repaint();
+                            });
+                            c.busy = Some((url, rx));
+                            c.error = None;
+                        }
+                        Err(e) => c.error = Some(e),
+                    }
+                }
+                if ui.button("Use a Folder on This Computer…").on_hover_text("A folder the Nextcloud app (or another sync app) keeps in step, or a share mounted already").clicked() {
+                    local = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+            });
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                close = true;
+            }
+        });
+        if local {
+            if let Some(dir) = rfd::FileDialog::new().set_title("A folder for your designs (synced, or on a share)").pick_folder() {
+                let mut f = cloud::CloudFolder::at(dir);
+                if !c.name.trim().is_empty() {
+                    f.name = c.name.trim().to_string();
+                }
+                if !self.cloud_folders.iter().any(|x| x.path == f.path) {
+                    let name = f.name.clone();
+                    self.cloud_folders.push(f);
+                    self.note_saved(format!("Added {name}"), true, true);
+                }
+                self.scan_cloud(ctx);
+                return;
+            }
+        }
+        if !close {
+            self.connect = Some(c);
         }
     }
 
@@ -95,6 +190,11 @@ impl OpenCad {
         self.tab_request = Some(TabRequest::Open);
     }
 
+}
+
+/// The name an address would give (for the Name box's hint).
+fn normalize_or(address: &str) -> String {
+    cloud::normalize_url(address).map(|u| cloud::url_name(&u)).unwrap_or_default()
 }
 
 // ---------- the Save window ----------

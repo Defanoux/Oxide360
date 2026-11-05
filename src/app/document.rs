@@ -1465,8 +1465,10 @@ impl OpenCad {
         match cmd {
             // Like Fusion: a new design opens in a tab of its own.
             Cmd::New => self.tab_request = Some(TabRequest::New),
+            // Opening is the start page's file viewer (as Fusion's Data panel).
+            Cmd::Open => self.tab_request = Some(TabRequest::Start),
             // Like Fusion: a design opens in a tab of its own, so nothing here is lost.
-            Cmd::Open => self.open_dialog(),
+            Cmd::OpenOther => self.open_dialog(),
             Cmd::OpenRecent(k) => {
                 if let Some(p) = self.recent.get(k).cloned() {
                     self.open_in_tab = Some(p);

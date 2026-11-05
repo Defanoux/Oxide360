@@ -185,11 +185,7 @@ impl OpenCad {
                             self.start_page = false;
                         }
                         ui.add_space(12.0);
-                        if big_button(ui, Icon::OpenDesign, "Open…", "Open a design from anywhere on this computer (the system's chooser)").clicked() {
-                            self.open_dialog();
-                        }
-                        ui.add_space(12.0);
-                        if big_button(ui, Icon::Cloud, "Add Cloud Folder…", "A folder on your own server (TrueNAS / Samba share, Nextcloud folder): its designs show here").clicked() {
+                        if big_button(ui, Icon::Cloud, "Connect Cloud…", "Your own server (TrueNAS / Samba share, Nextcloud): its designs show here, and new ones save there").clicked() {
                             self.add_cloud_folder(&ctx);
                         }
                     });
@@ -329,6 +325,9 @@ impl OpenCad {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.selectable_value(&mut self.browse.list_view, true, "List").on_hover_text("Designs as a list");
                 ui.selectable_value(&mut self.browse.list_view, false, "Tiles").on_hover_text("Designs as pictures");
+                if ui.button("Other File…").on_hover_text("Open a design kept somewhere else (the system's chooser)").clicked() {
+                    self.open_dialog();
+                }
                 if let (Some(_), Some(d)) = (self.browse.root, dir) {
                     if ui.button("New Project").on_hover_text("A folder to keep designs together").clicked() {
                         self.browse.edit = Some(BrowseEdit::NewProject(d.to_path_buf(), String::new()));

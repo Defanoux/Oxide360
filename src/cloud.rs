@@ -170,9 +170,56 @@ pub fn look(folders: &[CloudFolder], recent: &[PathBuf], mut send: impl FnMut(Fo
     send(Found::Recent(seen));
 }
 
+/// A server address as typed made into a URL: `\\\\nas\\share` (Windows style)
+/// and `nas/share` (no scheme) become `smb://nas/share`; a trailing `/` goes.
+pub fn normalize_url(typed: &str) -> Result<String, String> {
+    let t = typed.trim();
+    if t.is_empty() {
+        return Err("type the server's address".into());
+    }
+    let url = if let Some(rest) = t.strip_prefix("\\\\") {
+        format!("smb://{}", rest.replace('\\', "/"))
+    } else if t.contains("://") {
+        t.to_string()
+    } else {
+        format!("smb://{}", t.trim_start_matches('/'))
+    };
+    let url = url.trim_end_matches('/').to_string();
+    let (scheme, rest) = url.split_once("://").ok_or("not an address")?;
+    if !["smb", "webdav", "webdavs", "sftp", "ftp", "nfs"].contains(&scheme) {
+        return Err(format!("{scheme}:// isn't a kind of server this can connect to (smb, webdavs, sftp)"));
+    }
+    if rest.is_empty() || rest.starts_with('/') {
+        return Err("the address needs the server's name or IP".into());
+    }
+    Ok(url)
+}
+
+/// The last part of an address, to name a folder by.
+pub fn url_name(url: &str) -> String {
+    url.rsplit('/').find(|s| !s.is_empty() && !s.contains("://") && !s.ends_with(':')).unwrap_or("Cloud").to_string()
+}
+
+/// Connect to the server at `url` (KDE, else GNOME, mounting it): the
+/// folder on this computer it's at. Slow — off the main thread.
+pub fn connect(url: &str) -> Result<PathBuf, String> {
+    if let Some(p) = kio_mount(url).filter(|p| p.is_dir()) {
+        return Ok(p);
+    }
+    if gio_mount(url) {
+        if let Some(p) = run_for("gio", &["info", url], Duration::from_secs(10)).and_then(|out| out.lines().find_map(|l| l.trim().strip_prefix("local path:").map(|p| PathBuf::from(p.trim())))) {
+            if p.is_dir() {
+                return Ok(p);
+            }
+        }
+    }
+    Err(format!("couldn't connect to {url} — check the address, that the server is on, and your password (KDE or GNOME asks for it)"))
+}
+
 /// `path` moved from under `from` to under `to` (a folder found somewhere new).
 pub fn remap(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
-    path.strip_prefix(from).ok().map(|rest| to.join(rest))
+    // (`join("")` would leave a trailing slash on the file itself.)
+    path.strip_prefix(from).ok().map(|rest| if rest.as_os_str().is_empty() { to.to_path_buf() } else { to.join(rest) })
 }
 
 /// Is `path` inside one of `folders`?
@@ -730,6 +777,7 @@ mod tests {
         let now = Path::new("/run/user/1000/kio-fuse-QQQQ/smb/192.168.50.5/defanoux/oxide360");
         assert_eq!(remap(&kde.join("keys/key.ox360"), kde, now), Some(now.join("keys/key.ox360")));
         assert_eq!(remap(Path::new("/home/g/a.ox360"), kde, now), None);
+        assert_eq!(remap(Path::new("/nas/a.ox360"), Path::new("/nas/a.ox360"), Path::new("/nas/p/a.ox360")), Some(PathBuf::from("/nas/p/a.ox360")), "the file itself: no trailing slash");
         // A plain folder that's there is just there.
         let d = temp("resolve");
         assert_eq!(CloudFolder::at(d.clone()).resolve(), Ok(d.clone()));
@@ -857,6 +905,19 @@ mod tests {
         assert_eq!(conflict_name(Path::new("/nas/key.ox360"), "framework", t), PathBuf::from("/nas/key (conflict, framework 2026-11-05 14.32).ox360"));
         assert_eq!(civil(0), (1970, 1, 1));
         assert_eq!(civil(19723), (2024, 1, 1));
+    }
+
+    #[test]
+    fn typed_addresses_become_urls() {
+        assert_eq!(normalize_url("smb://192.168.50.5/defanoux/oxide360/").as_deref(), Ok("smb://192.168.50.5/defanoux/oxide360"));
+        assert_eq!(normalize_url("192.168.50.5/defanoux").as_deref(), Ok("smb://192.168.50.5/defanoux"));
+        assert_eq!(normalize_url("\\\\truenas\\cad\\keys").as_deref(), Ok("smb://truenas/cad/keys"));
+        assert_eq!(normalize_url(" webdavs://cloud.example.org/remote.php/dav/files/sam ").as_deref(), Ok("webdavs://cloud.example.org/remote.php/dav/files/sam"));
+        assert!(normalize_url("").is_err());
+        assert!(normalize_url("http://example.org").is_err());
+        assert!(normalize_url("smb:///share").is_err());
+        assert_eq!(url_name("smb://192.168.50.5/defanoux/oxide360"), "oxide360");
+        assert_eq!(url_name("smb://truenas"), "truenas");
     }
 
     #[test]

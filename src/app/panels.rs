@@ -248,6 +248,7 @@ impl OpenCad {
                 for (cmd, label) in [
                     (Cmd::New, "New Design         Ctrl+N"),
                     (Cmd::Open, "Open…             Ctrl+O"),
+                    (Cmd::OpenOther, "Open Other File…"),
                     (Cmd::Save, "Save                Ctrl+S"),
                     (Cmd::SaveAs, "Save As…  Ctrl+Shift+S"),
                 ] {
@@ -574,7 +575,7 @@ impl OpenCad {
                 self.cloud_folders.remove(k);
                 self.scan_cloud(ctx);
             }
-            if ui.button("Add Cloud Folder…").clicked() {
+            if ui.button("Connect Cloud…").clicked() {
                 self.add_cloud_folder(ctx);
             }
             ui.horizontal(|ui| {

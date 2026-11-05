@@ -490,6 +490,8 @@ enum Cmd {
     OpenRecent(usize),
     /// File → Start Page.
     StartPage,
+    /// File → Open Other File: the system's chooser (a design outside the cloud folders and Documents/Oxide360).
+    OpenOther,
     /// File → Save to Cloud Folder: Save As, starting in cloud folder `k`.
     SaveToCloud(usize),
 }
@@ -532,6 +534,16 @@ struct BrowseState {
     previews: std::collections::HashMap<PathBuf, (Option<std::time::SystemTime>, Option<egui::TextureHandle>)>,
     previews_rx: Option<std::sync::mpsc::Receiver<(PathBuf, Option<(usize, usize, Vec<u8>)>)>>,
     edit: Option<BrowseEdit>,
+}
+
+/// Connecting a cloud folder: its name and address as typed, the try under
+/// way (in the background), and why the last one failed.
+#[derive(Default)]
+struct Connect {
+    name: String,
+    address: String,
+    busy: Option<(String, std::sync::mpsc::Receiver<Result<PathBuf, String>>)>,
+    error: Option<String>,
 }
 
 /// A question the file viewer is asking.
@@ -919,6 +931,7 @@ struct OpenCad {
     save_note: Option<(String, bool, bool, f64)>, // "Saved to …": the text, in the cloud?, done (else under way), when shown
     tab_h: f32,                             // the design tabs' height (the Home tab is a square that high)
     browse: BrowseState,                    // the start page's file viewer (see app/browse.rs)
+    connect: Option<Connect>,               // the Connect your cloud window
     save_dialog: Option<save_dialog::SaveDialog>, // the Save window (name and where)
     save_listing: Option<(PathBuf, Option<Result<save_dialog::Listing, String>>)>, // the folder it shows, and what's in it (None: being read)
     save_listing_rx: Option<std::sync::mpsc::Receiver<(PathBuf, Result<save_dialog::Listing, String>)>>,
@@ -1211,6 +1224,7 @@ impl Default for OpenCad {
             save_note: None,
             tab_h: 26.0,
             browse: BrowseState::default(),
+            connect: None,
             save_dialog: None,
             save_listing: None,
             save_listing_rx: None,
@@ -1738,6 +1752,7 @@ impl OpenCad {
             self.run_cmd(cmd);
         }
         self.save_window(&ctx);
+        self.connect_window(&ctx);
         self.save_note_ui(&ctx);
         self.modals(&ctx);
         self.record_history(&ctx);

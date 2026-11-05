@@ -189,6 +189,7 @@ mod tests {
         assert_eq!(renamed, d.join("key-noelle.ox360"));
         assert!(renamed.is_file() && !key.exists());
         assert_eq!(recent[0], renamed);
+        assert!(recent[0].is_file(), "the very file (no trailing slash): {:?}", recent[0]);
         assert!(cache.entry(&renamed).is_some() && cache.entry(&key).is_none());
         // Taken names are refused.
         touch(&d.join("taken.ox360"), 0);

@@ -123,9 +123,8 @@ pub enum Icon {
     Gear,
     Part,
     Spline,
-    /// Start page: a new design, open one, a cloud folder.
+    /// Start page: a new design, a cloud folder.
     NewDesign,
-    OpenDesign,
     Cloud,
 }
 
@@ -1100,12 +1099,6 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             let s = Stroke::new(w * 0.07, Color32::WHITE);
             line((0.6, 0.72), (0.8, 0.72), s);
             line((0.7, 0.62), (0.7, 0.82), s);
-        }
-        Icon::OpenDesign => {
-            // An open folder: its back, and the front flap tipped forward.
-            poly(&[(0.08, 0.22), (0.38, 0.22), (0.46, 0.32), (0.86, 0.32), (0.86, 0.82), (0.08, 0.82)], Color32::from_rgb(150, 150, 150));
-            poly(&[(0.5, 0.12), (0.74, 0.12), (0.74, 0.6), (0.5, 0.6)], Color32::from_gray(235));
-            poly(&[(0.2, 0.46), (0.98, 0.46), (0.86, 0.82), (0.08, 0.82)], orange);
         }
         Icon::Cloud => {
             for (x, y, r) in [(0.3, 0.6, 0.16), (0.5, 0.46, 0.22), (0.72, 0.58, 0.17)] {
