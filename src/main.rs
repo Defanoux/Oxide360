@@ -536,6 +536,23 @@ struct BrowseState {
     edit: Option<BrowseEdit>,
 }
 
+/// What the cloud icon shows: each cloud folder reachable?, on a network at
+/// all?, saves waiting to upload — checked in the background every half
+/// minute — and the servers' ping while its menu is open.
+#[derive(Default)]
+struct CloudStatus {
+    /// When last checked (app time), and what was found.
+    checked: Option<f64>,
+    reachable: Vec<bool>,
+    network: bool,
+    waiting: usize,
+    rx: Option<std::sync::mpsc::Receiver<(Vec<bool>, bool, usize)>>,
+    /// By server: when last pinged, and how it went.
+    pings: std::collections::HashMap<String, Option<cloud::Ping>>,
+    pinged: Option<f64>,
+    ping_rx: Option<std::sync::mpsc::Receiver<(String, Option<cloud::Ping>)>>,
+}
+
 /// Connecting a cloud folder: its name and address as typed, the try under
 /// way (in the background), and why the last one failed.
 #[derive(Default)]
@@ -932,6 +949,7 @@ struct OpenCad {
     tab_h: f32,                             // the design tabs' height (the Home tab is a square that high)
     browse: BrowseState,                    // the start page's file viewer (see app/browse.rs)
     connect: Option<Connect>,               // the Connect your cloud window
+    cloud_status: CloudStatus,              // the title bar's cloud icon: how the servers are
     save_dialog: Option<save_dialog::SaveDialog>, // the Save window (name and where)
     save_listing: Option<(PathBuf, Option<Result<save_dialog::Listing, String>>)>, // the folder it shows, and what's in it (None: being read)
     save_listing_rx: Option<std::sync::mpsc::Receiver<(PathBuf, Result<save_dialog::Listing, String>)>>,
@@ -1225,6 +1243,7 @@ impl Default for OpenCad {
             tab_h: 26.0,
             browse: BrowseState::default(),
             connect: None,
+            cloud_status: CloudStatus::default(),
             save_dialog: None,
             save_listing: None,
             save_listing_rx: None,
@@ -2161,6 +2180,12 @@ impl Tabs {
                 self.sync = None;
             }
             let cache = cloud::Cache::default_cache();
+            if !got.is_empty() {
+                // (The cloud icon looks again: what's waiting changed.)
+                for t in &mut self.tabs {
+                    t.cloud_status.checked = None;
+                }
+            }
             for (path, r) in got {
                 let told = self.sync_told.contains(&path);
                 let at = self.tabs.iter().position(|t| t.path.as_ref() == Some(&path));
@@ -2205,10 +2230,19 @@ impl Tabs {
             }
         }
         // Anything to send?
-        let asked: Vec<PathBuf> = self.tabs.iter_mut().filter_map(|t| if std::mem::take(&mut t.sync_now) { t.path.clone() } else { None }).collect();
-        let due = !asked.is_empty() || now - self.sync_at > 30.0;
+        let mut poked = false;
+        let asked: Vec<PathBuf> = self
+            .tabs
+            .iter_mut()
+            .filter_map(|t| {
+                let p = std::mem::take(&mut t.sync_now);
+                poked |= p;
+                if p { t.path.clone() } else { None }
+            })
+            .collect();
+        let due = poked || now - self.sync_at > 30.0;
         if !due || self.sync.is_some() {
-            if !asked.is_empty() {
+            if poked {
                 self.sync_told.extend(asked);
                 self.sync_at = f64::NEG_INFINITY; // (straight after the one running)
             }

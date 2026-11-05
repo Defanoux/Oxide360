@@ -761,6 +761,7 @@ impl OpenCad {
                 self.track_file(&path);
                 self.path = Some(path.clone());
                 self.sync_now = true;
+                self.cloud_status.checked = None;
                 let (name, place) = (self.cloud_name(&path), self.place_text(&path));
                 if self.cloud_away(&path) {
                     self.note_saved(format!("Saved on this computer for now — {name} can't be reached; it'll upload when it's back"), false, true);

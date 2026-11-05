@@ -397,3 +397,230 @@ impl OpenCad {
         (!bodies.is_empty()).then(|| preview::png(&preview::render(&bodies)))
     }
 }
+
+// ---------- the cloud icon ----------
+
+/// How the cloud is, for the icon.
+#[derive(Clone, Copy, PartialEq)]
+enum Health {
+    NotSetUp,
+    NoNetwork,
+    Away,
+    Uploading,
+    Good,
+    Unknown,
+}
+
+impl OpenCad {
+    /// Check the cloud folders in the background (every half minute, or now if `now`).
+    fn cloud_check(&mut self, ctx: &egui::Context, now: bool) {
+        let t = ctx.input(|i| i.time);
+        let s = &mut self.cloud_status;
+        if let Some(rx) = &s.rx {
+            if let Ok((reachable, network, waiting)) = rx.try_recv() {
+                (s.reachable, s.network, s.waiting) = (reachable, network, waiting);
+                s.rx = None;
+            }
+        }
+        let due = now || s.checked.is_none_or(|c| t - c > 30.0);
+        if !due || s.rx.is_some() || self.cloud_folders.is_empty() {
+            return;
+        }
+        s.checked = Some(t);
+        let folders = self.cloud_folders.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let c = ctx.clone();
+        std::thread::spawn(move || {
+            let network = cloud::on_network();
+            let reachable = folders.iter().map(|f| f.resolve().is_ok()).collect();
+            let waiting = cloud::Cache::default_cache().map_or(0, |c| c.to_upload().len());
+            let _ = tx.send((reachable, network, waiting));
+            c.request_repaint();
+        });
+        s.rx = Some(rx);
+        // (Keeps checking while the app is open.)
+        ctx.request_repaint_after(std::time::Duration::from_secs(31));
+    }
+
+    fn health(&self) -> Health {
+        let s = &self.cloud_status;
+        if self.cloud_folders.is_empty() {
+            Health::NotSetUp
+        } else if s.checked.is_none() || s.reachable.len() != self.cloud_folders.len() {
+            Health::Unknown
+        } else if !s.network {
+            Health::NoNetwork
+        } else if s.reachable.iter().any(|r| !r) {
+            Health::Away
+        } else if s.waiting > 0 || self.save_note.as_ref().is_some_and(|n| n.1 && !n.2) {
+            Health::Uploading
+        } else {
+            Health::Good
+        }
+    }
+
+    /// Ping the servers every 10 s while the menu is open (only then).
+    fn cloud_pings(&mut self, ctx: &egui::Context) {
+        let t = ctx.input(|i| i.time);
+        let s = &mut self.cloud_status;
+        if let Some(rx) = &s.ping_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok((host, p)) => {
+                        s.pings.insert(host, p);
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        s.ping_rx = None;
+                        break;
+                    }
+                }
+            }
+        }
+        if s.ping_rx.is_some() || s.pinged.is_some_and(|p| t - p < 10.0) {
+            return;
+        }
+        s.pinged = Some(t);
+        let hosts: Vec<String> = self.cloud_folders.iter().filter_map(|f| f.url.as_deref().and_then(cloud::host_of)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let c = ctx.clone();
+        std::thread::spawn(move || {
+            for h in hosts {
+                let p = cloud::ping(&h);
+                if tx.send((h, p)).is_err() {
+                    return;
+                }
+                c.request_repaint();
+            }
+        });
+        s.ping_rx = Some(rx);
+        ctx.request_repaint_after(std::time::Duration::from_secs(10));
+    }
+
+    /// The cloud icon (top right, by Settings) and its menu.
+    pub(crate) fn cloud_button(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        self.cloud_check(&ctx, false);
+        let health = self.health();
+        let pal = theme::now();
+        let (rect, r) = ui.allocate_exact_size(egui::vec2(32.0, 26.0), egui::Sense::click());
+        if r.hovered() {
+            ui.painter().rect_filled(rect, 4.0, pal.raised);
+        }
+        icons::paint(ui.painter(), egui::Rect::from_center_size(rect.center(), egui::vec2(22.0, 22.0)), Icon::Cloud, health != Health::NotSetUp);
+        let dot = match health {
+            Health::Good => Some(egui::Color32::from_rgb(90, 200, 110)),
+            Health::Uploading => Some(egui::Color32::from_rgb(240, 170, 60)),
+            Health::Away => Some(egui::Color32::from_rgb(230, 90, 80)),
+            Health::NoNetwork => Some(egui::Color32::from_gray(150)),
+            Health::NotSetUp | Health::Unknown => None,
+        };
+        if let Some(c) = dot {
+            let at = rect.right_bottom() - egui::vec2(8.0, 7.0);
+            ui.painter().circle_filled(at, 4.5, pal.window);
+            ui.painter().circle_filled(at, 3.5, c);
+        }
+        let tip = match health {
+            Health::NotSetUp => "Cloud: not connected — click to connect your own server",
+            Health::NoNetwork => "Cloud: no network — saves stay on this computer until it's back",
+            Health::Away => "Cloud: a server can't be reached",
+            Health::Uploading => "Cloud: saves uploading",
+            Health::Good => "Cloud: connected, everything uploaded",
+            Health::Unknown => "Cloud: checking…",
+        };
+        let r = r.on_hover_text(tip);
+        let mut connect = false;
+        let mut again = false;
+        let mut upload = false;
+        egui::Popup::menu(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            ui.set_min_width(320.0);
+            if health == Health::NotSetUp {
+                ui.strong("No cloud connected");
+                ui.weak("Designs save on this computer, in Documents/Oxide360.");
+                ui.add_space(4.0);
+                if ui.button("Connect your cloud…").clicked() {
+                    connect = true;
+                }
+                return;
+            }
+            self.cloud_pings(&ctx);
+            let s = &self.cloud_status;
+            if !s.network && s.checked.is_some() {
+                ui.colored_label(egui::Color32::from_rgb(230, 120, 90), "No network: saves stay on this computer and upload when it's back.");
+            }
+            for (k, f) in self.cloud_folders.iter().enumerate() {
+                let ok = s.reachable.get(k).copied();
+                ui.horizontal(|ui| {
+                    let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    let c = match ok {
+                        Some(true) => egui::Color32::from_rgb(90, 200, 110),
+                        Some(false) => egui::Color32::from_rgb(230, 90, 80),
+                        None => egui::Color32::from_gray(130),
+                    };
+                    ui.painter().circle_filled(dot.center(), 4.0, c);
+                    ui.strong(&f.name);
+                    ui.weak(match ok {
+                        Some(true) => "connected",
+                        Some(false) => "can't be reached",
+                        None => "checking…",
+                    });
+                });
+                let host = f.url.as_deref().and_then(cloud::host_of);
+                ui.horizontal(|ui| {
+                    ui.add_space(18.0);
+                    ui.weak(f.url.clone().unwrap_or_else(|| f.path.display().to_string()));
+                });
+                if let Some(h) = host {
+                    let line = match s.pings.get(&h) {
+                        None => "Ping: measuring…".to_string(),
+                        Some(None) => "Ping: couldn't run ping".to_string(),
+                        Some(Some(p)) => match p.avg_ms {
+                            Some(ms) => format!("Ping {ms:.0} ms · {:.0}% of packets lost", p.loss_pct),
+                            None => format!("No answer from {h} ({:.0}% lost)", p.loss_pct),
+                        },
+                    };
+                    ui.horizontal(|ui| {
+                        ui.add_space(18.0);
+                        ui.label(line);
+                    });
+                }
+                ui.add_space(4.0);
+            }
+            ui.separator();
+            match s.waiting {
+                0 => {
+                    ui.weak("Everything is uploaded.");
+                }
+                n => {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{n} save{} on this computer waiting to upload", if n == 1 { "" } else { "s" }));
+                        if ui.button("Upload Now").clicked() {
+                            upload = true;
+                        }
+                    });
+                }
+            }
+            ui.weak("(Ping is measured every 10 s while this is open.)");
+            ui.horizontal(|ui| {
+                if ui.button("Check Again").clicked() {
+                    again = true;
+                }
+                if ui.button("Connect Cloud…").clicked() {
+                    connect = true;
+                }
+            });
+        });
+        if connect {
+            self.add_cloud_folder(&ctx);
+        }
+        if again {
+            self.cloud_status.pinged = None;
+            self.cloud_check(&ctx, true);
+            self.scan_cloud(&ctx);
+        }
+        if upload {
+            self.sync_now = true;
+            self.cloud_check(&ctx, true);
+        }
+    }
+}

@@ -425,6 +425,7 @@ impl OpenCad {
                 if ui.button("⚙").on_hover_text("Settings").clicked() {
                     self.settings_open = !self.settings_open;
                 }
+                self.cloud_button(ui);
                 let help = ui.button("?").on_hover_text("Help");
                 egui::Popup::menu(&help).show(|ui| {
                     if ui.button("Getting Started").clicked() {

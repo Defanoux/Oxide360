@@ -216,6 +216,45 @@ pub fn connect(url: &str) -> Result<PathBuf, String> {
     Err(format!("couldn't connect to {url} — check the address, that the server is on, and your password (KDE or GNOME asks for it)"))
 }
 
+/// The server's name or IP in an address (`smb://192.168.50.5/share` → `192.168.50.5`).
+pub fn host_of(url: &str) -> Option<String> {
+    let rest = url.split_once("://")?.1;
+    let host = rest.split('/').next()?;
+    let host = host.rsplit('@').next()?; // (user@host)
+    let host = if host.starts_with('[') { host } else { host.split(':').next()? }; // (host:port)
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+/// How the connection to a server is, from `ping`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ping {
+    /// Round trip, milliseconds (None: no answer at all).
+    pub avg_ms: Option<f32>,
+    pub loss_pct: f32,
+}
+
+/// `ping`'s summary lines read: "… 25% packet loss …" and "rtt min/avg/max/mdev = a/b/c/d ms".
+pub fn parse_ping(out: &str) -> Option<Ping> {
+    let loss = out.lines().find_map(|l| {
+        let i = l.find("% packet loss")?;
+        l[..i].rsplit(|c: char| c == ' ' || c == ',').next()?.trim().parse::<f32>().ok()
+    })?;
+    let avg = out.lines().find_map(|l| l.split_once(" = ").filter(|(k, _)| k.contains("min/avg")).and_then(|(_, v)| v.split('/').nth(1)?.trim().parse::<f32>().ok()));
+    Some(Ping { avg_ms: avg, loss_pct: loss })
+}
+
+/// Ping `host` a few times (a couple of seconds at most). Off the main thread.
+pub fn ping(host: &str) -> Option<Ping> {
+    let out = std::process::Command::new("ping").args(["-c", "4", "-i", "0.2", "-W", "1", "-q", host]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+    parse_ping(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Is this computer on a network at all (a default route)?
+pub fn on_network() -> bool {
+    let route = |p: &str| std::fs::read_to_string(p).ok().is_some_and(|t| t.lines().skip(1).any(|l| l.split_whitespace().nth(1) == Some("00000000")));
+    route("/proc/net/route") || std::fs::read_to_string("/proc/net/ipv6_route").ok().is_some_and(|t| t.lines().any(|l| l.starts_with("00000000000000000000000000000000 00") && !l.contains(" lo")))
+}
+
 /// `path` moved from under `from` to under `to` (a folder found somewhere new).
 pub fn remap(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
     // (`join("")` would leave a trailing slash on the file itself.)
@@ -918,6 +957,18 @@ mod tests {
         assert!(normalize_url("smb:///share").is_err());
         assert_eq!(url_name("smb://192.168.50.5/defanoux/oxide360"), "oxide360");
         assert_eq!(url_name("smb://truenas"), "truenas");
+    }
+
+    #[test]
+    fn servers_and_their_ping_read_from_text() {
+        assert_eq!(host_of("smb://192.168.50.5/defanoux/oxide360").as_deref(), Some("192.168.50.5"));
+        assert_eq!(host_of("webdavs://sam@cloud.example.org:8443/remote.php").as_deref(), Some("cloud.example.org"));
+        assert_eq!(host_of("/mnt/nas"), None);
+        let out = "--- 192.168.50.5 ping statistics ---\n4 packets transmitted, 3 received, 25% packet loss, time 603ms\nrtt min/avg/max/mdev = 38.034/122.586/207.138/84.552 ms, pipe 2\n";
+        assert_eq!(parse_ping(out), Some(Ping { avg_ms: Some(122.586), loss_pct: 25.0 }));
+        let none = "--- 10.0.0.9 ping statistics ---\n4 packets transmitted, 0 received, 100% packet loss, time 3060ms\n";
+        assert_eq!(parse_ping(none), Some(Ping { avg_ms: None, loss_pct: 100.0 }));
+        assert_eq!(parse_ping("ping: unknown host"), None);
     }
 
     #[test]
