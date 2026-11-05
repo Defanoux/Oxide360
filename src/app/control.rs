@@ -94,6 +94,14 @@ impl OpenCad {
 
     /// Open a design file (no dialog, no questions).
     pub(crate) fn control_open(&mut self, path: &str) -> Result<(), String> {
+        // A cloud design opens as File > Open does (its copy on this computer kept).
+        if cloud::in_cloud(&self.cloud_folders, std::path::Path::new(path)) {
+            self.open_cloud(path.into());
+            return match self.alert.take() {
+                Some(e) => Err(e),
+                None => Ok(()),
+            };
+        }
         let d = doc::load(std::path::Path::new(path))?;
         self.reset_with(d, Some(path.into()));
         // (As File → Open, but not added to Recent.)

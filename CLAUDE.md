@@ -153,6 +153,7 @@ lists there).
 | `units.rs`, `expr.rs`, `params_window.rs`, `threads.rs`, `keys.rs`, `settings.rs`, `shortcuts.rs`, `help.rs` | units + parsing, parameters/expressions, thread tables, key bindings, preferences file, tool names for menus/search, Help text + app icon |
 | `export.rs`, `sketch_export.rs`, `recovery.rs` | STL/3MF/OBJ export, sketch DXF/SVG, autosave + crash recovery |
 | `sketch_palette.rs` | the Sketch Palette (show switches, Slice) |
+| `file_browser.rs`, `app/browse.rs`, `preview.rs` | the start page's file viewer (projects = folders, tiles / list, ⋯ menu: rename, move, offline, delete) and design previews (CPU-drawn, kept in the file beside the document) |
 | `cloud.rs`, `app/start.rs`, `save_dialog.rs` | cloud folders (a mounted share or Nextcloud folder: listing, network-mount addresses, lock files, the offline copies + background upload — `Tabs::sync_cloud`), the start page (New / Open / Recent / cloud designs) and the app's own Save window |
 | `emboss_dialog.rs` | Emboss: profiles, face (flat or cylinder), depth, Emboss / Deboss (`kernel::emboss_tool` wraps round cylinders) |
 | `sketch_import.rs` | Insert SVG / DXF: reading drawings into sketch curves |

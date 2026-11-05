@@ -9,4 +9,5 @@ mod viewport;
 mod control;
 mod menus;
 mod start;
+mod browse;
 mod drawing;

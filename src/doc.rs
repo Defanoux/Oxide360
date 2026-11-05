@@ -395,14 +395,34 @@ struct File {
     #[serde(flatten)]
     header: FileHeader,
     document: Document,
+    /// A picture of the design for the file viewer (PNG, base64). Beside the
+    /// document, not in it: it's never read back into the design.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preview: Option<String>,
 }
 
+#[cfg(test)]
 pub fn to_json(doc: &Document) -> String {
+    to_json_with(doc, None)
+}
+
+/// The file's text, with `preview` (PNG bytes) kept beside the document.
+pub fn to_json_with(doc: &Document, preview: Option<&[u8]>) -> String {
     let file = File {
         header: FileHeader { format: FORMAT.into(), version: VERSION, units: "mm".into() },
         document: doc.clone(),
+        preview: preview.map(crate::control::base64),
     };
     serde_json::to_string_pretty(&file).expect("document always serializes")
+}
+
+/// The preview (PNG bytes) kept in a design file's text, if it has one.
+pub fn preview_of(text: &str) -> Option<Vec<u8>> {
+    #[derive(Deserialize)]
+    struct Only {
+        preview: Option<String>,
+    }
+    crate::preview::unbase64(&serde_json::from_str::<Only>(text).ok()?.preview?)
 }
 
 pub fn from_json(text: &str) -> Result<Document, String> {
@@ -847,10 +867,15 @@ impl History {
 }
 
 pub fn save(path: &Path, doc: &Document) -> Result<(), String> {
+    save_with(path, doc, None)
+}
+
+/// `save`, with a preview picture (PNG bytes) kept in the file.
+pub fn save_with(path: &Path, doc: &Document, preview: Option<&[u8]>) -> Result<(), String> {
     // Write to a temporary file first, then rename: a crash mid-save can't
     // leave a half-written file in place of the good one.
     let tmp = path.with_extension(format!("{EXTENSION}.tmp"));
-    std::fs::write(&tmp, to_json(doc)).map_err(|e| format!("couldn't write {}: {e}", tmp.display()))?;
+    std::fs::write(&tmp, to_json_with(doc, preview)).map_err(|e| format!("couldn't write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("couldn't save {}: {e}", path.display()))
 }
 
@@ -931,6 +956,16 @@ mod tests {
             face_appearances: Vec::new(),
             drawing: None,
         }
+    }
+
+    #[test]
+    fn a_preview_rides_beside_the_design_and_is_never_part_of_it() {
+        let doc = sample();
+        let text = to_json_with(&doc, Some(b"\x89PNG fake"));
+        assert_eq!(from_json(&text).unwrap(), doc, "the design reads back the same");
+        assert_eq!(preview_of(&text).as_deref(), Some(&b"\x89PNG fake"[..]));
+        assert_eq!(preview_of(&to_json(&doc)), None, "older files: none");
+        assert!(!to_json(&doc).contains("preview"));
     }
 
     #[test]

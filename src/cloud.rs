@@ -469,7 +469,6 @@ impl Cache {
     }
 
     /// Forget `cloud`'s copy (unless it has saves not uploaded yet).
-    #[allow(dead_code)] // (the file viewer's menu, next)
     pub fn forget(&self, cloud: &Path) {
         let mut list = self.entries();
         if let Some(k) = list.iter().position(|e| e.cloud == cloud && !e.pending) {
@@ -500,7 +499,6 @@ impl Cache {
 
 /// "Available offline" on (copied from the cloud now if there's no copy
 /// yet — off the main thread) or off (the copy goes like any other).
-#[allow(dead_code)] // (the file viewer's menu, next)
 pub fn set_kept(cache: &Cache, cloud: &Path, on: bool) -> Result<(), String> {
     if on && cache.entry(cloud).is_none() {
         let bytes = std::fs::read(cloud).map_err(|e| format!("couldn't copy it from the cloud: {e}"))?;

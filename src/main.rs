@@ -56,8 +56,10 @@ mod offset_dialog;
 mod combine_dialog;
 mod scale_dialog;
 mod cloud;
+mod preview;
 mod save_dialog;
 mod emboss_dialog;
+mod file_browser;
 mod insert_drawing_dialog;
 mod print3d;
 mod print_check_dialog;
@@ -513,6 +515,34 @@ enum TabRequest {
     Close(usize),
 }
 
+/// The file viewer on the start page: where it's looking, what it found
+/// (read in the background), the previews shown, and a rename / delete
+/// being asked about.
+#[derive(Default)]
+struct BrowseState {
+    /// None: Recent; Some(k): place `k` of `save_roots` (a cloud folder or this computer).
+    root: Option<usize>,
+    sub: PathBuf,
+    list_view: bool,
+    listing: Option<(PathBuf, Option<Result<Vec<file_browser::Item>, String>>)>,
+    listing_rx: Option<std::sync::mpsc::Receiver<(PathBuf, Result<Vec<file_browser::Item>, String>)>>,
+    /// Each place's top folders (projects), for Move to.
+    projects: std::collections::HashMap<PathBuf, Vec<String>>,
+    /// Pictures by design: the file's time they're of, and the picture (None: it has none).
+    previews: std::collections::HashMap<PathBuf, (Option<std::time::SystemTime>, Option<egui::TextureHandle>)>,
+    previews_rx: Option<std::sync::mpsc::Receiver<(PathBuf, Option<(usize, usize, Vec<u8>)>)>>,
+    edit: Option<BrowseEdit>,
+}
+
+/// A question the file viewer is asking.
+#[derive(Clone, Debug, PartialEq)]
+enum BrowseEdit {
+    Rename(PathBuf, String),
+    NewProject(PathBuf, String),
+    /// Delete this? (`no_trash`: the trash didn't take it — for good?)
+    Delete(PathBuf, bool),
+}
+
 /// What the floating number box is editing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum EditTarget {
@@ -888,6 +918,7 @@ struct OpenCad {
     save_place: String,                     // where new designs save first (settings; see Settings::save_place)
     save_note: Option<(String, bool, bool, f64)>, // "Saved to …": the text, in the cloud?, done (else under way), when shown
     tab_h: f32,                             // the design tabs' height (the Home tab is a square that high)
+    browse: BrowseState,                    // the start page's file viewer (see app/browse.rs)
     save_dialog: Option<save_dialog::SaveDialog>, // the Save window (name and where)
     save_listing: Option<(PathBuf, Option<Result<save_dialog::Listing, String>>)>, // the folder it shows, and what's in it (None: being read)
     save_listing_rx: Option<std::sync::mpsc::Receiver<(PathBuf, Result<save_dialog::Listing, String>)>>,
@@ -1179,6 +1210,7 @@ impl Default for OpenCad {
             save_place: String::new(),
             save_note: None,
             tab_h: 26.0,
+            browse: BrowseState::default(),
             save_dialog: None,
             save_listing: None,
             save_listing_rx: None,
@@ -1736,6 +1768,7 @@ impl OpenCad {
         self.tool_colors = s.tool_colors;
         self.cloud_folders = s.cloud_folders.clone();
         self.save_place = s.save_place.clone();
+        self.browse.list_view = s.browse_list;
         // (Folders added before addresses were kept: noted now.)
         for f in &mut self.cloud_folders {
             if f.url.is_none() {

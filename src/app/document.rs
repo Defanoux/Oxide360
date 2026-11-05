@@ -332,6 +332,7 @@ impl OpenCad {
             tool_colors: self.tool_colors,
             cloud_folders: self.cloud_folders.clone(),
             save_place: self.save_place.clone(),
+            browse_list: self.browse.list_view,
         }
     }
 
@@ -717,7 +718,8 @@ impl OpenCad {
         if cloudy {
             return self.save_to_cloud(path, doc, overwrite);
         }
-        match doc::save(&path, &doc) {
+        let picture = self.make_preview();
+        match doc::save_with(&path, &doc, picture.as_deref()) {
             Ok(()) => {
                 self.version += 1;
                 self.saved = doc;
@@ -746,7 +748,8 @@ impl OpenCad {
         };
         // Saving under another name onto a design that's there: the user chose to replace it.
         let force = overwrite || self.path.as_ref() != Some(&path);
-        match cache.keep(&path, doc::to_json(&doc).as_bytes(), None, true) {
+        let picture = self.make_preview();
+        match cache.keep(&path, doc::to_json_with(&doc, picture.as_deref()).as_bytes(), None, true) {
             Ok(_) => {
                 cache.update(&path, |e| {
                     e.force = force;
@@ -849,7 +852,7 @@ impl OpenCad {
     /// Open a cloud design: from the cloud (keeping a copy on this computer),
     /// or — when the cloud can't be reached, or this computer has saves of it
     /// not uploaded yet — from that copy. Either way it saves back to the cloud.
-    fn open_cloud(&mut self, p: PathBuf) {
+    pub(crate) fn open_cloud(&mut self, p: PathBuf) {
         let cache = cloud::Cache::default_cache();
         let entry = cache.as_ref().and_then(|c| c.entry(&p));
         let copy = cache.as_ref().and_then(|c| c.copy_of(&p));
