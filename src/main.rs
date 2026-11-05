@@ -885,6 +885,9 @@ struct OpenCad {
     file_lock: Option<cloud::LockGuard>,    // a cloud design's "open here" lock while it's open
     overwrite_asked: bool,                  // Save found the file saved from elsewhere since: asking
     sync_now: bool,                         // a cloud save is waiting: upload now (see Tabs::sync_cloud)
+    save_place: String,                     // where new designs save first (settings; see Settings::save_place)
+    save_note: Option<(String, bool, bool, f64)>, // "Saved to …": the text, in the cloud?, done (else under way), when shown
+    tab_h: f32,                             // the design tabs' height (the Home tab is a square that high)
     save_dialog: Option<save_dialog::SaveDialog>, // the Save window (name and where)
     save_listing: Option<(PathBuf, Option<Result<save_dialog::Listing, String>>)>, // the folder it shows, and what's in it (None: being read)
     save_listing_rx: Option<std::sync::mpsc::Receiver<(PathBuf, Result<save_dialog::Listing, String>)>>,
@@ -1173,6 +1176,9 @@ impl Default for OpenCad {
             file_lock: None,
             overwrite_asked: false,
             sync_now: false,
+            save_place: String::new(),
+            save_note: None,
+            tab_h: 26.0,
             save_dialog: None,
             save_listing: None,
             save_listing_rx: None,
@@ -1700,6 +1706,7 @@ impl OpenCad {
             self.run_cmd(cmd);
         }
         self.save_window(&ctx);
+        self.save_note_ui(&ctx);
         self.modals(&ctx);
         self.record_history(&ctx);
         self.save_settings_if_changed();
@@ -1728,6 +1735,7 @@ impl OpenCad {
         self.theme = s.theme;
         self.tool_colors = s.tool_colors;
         self.cloud_folders = s.cloud_folders.clone();
+        self.save_place = s.save_place.clone();
         // (Folders added before addresses were kept: noted now.)
         for f in &mut self.cloud_folders {
             if f.url.is_none() {
@@ -2118,7 +2126,8 @@ impl Tabs {
                             });
                         }
                         if told || at.is_some() {
-                            self.tabs[tab].notify(format!("Saved to {name}"));
+                            let place = self.tabs[tab].place_text(&path);
+                            self.tabs[tab].note_saved(format!("Saved to {place}"), true, true);
                         }
                         self.sync_told.retain(|p| *p != path);
                     }
@@ -2140,7 +2149,7 @@ impl Tabs {
                     }
                     cloud::Uploaded::Away(_) => {
                         if told {
-                            self.tabs[tab].notify(format!("Saved on this computer — {name} can't be reached; it'll upload when it's back"));
+                            self.tabs[tab].note_saved(format!("Saved on this computer for now — {name} can't be reached; it'll upload when it's back"), false, true);
                             self.sync_told.retain(|p| *p != path);
                         }
                     }

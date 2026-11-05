@@ -29,6 +29,10 @@ impl OpenCad {
                 ctx.request_repaint();
                 ok
             });
+            // Designs kept on this computer on purpose: brought up to date.
+            if let Some(c) = cloud::Cache::default_cache() {
+                c.refresh_kept();
+            }
         });
         self.cloud_scan = Some(rx);
     }
@@ -103,7 +107,6 @@ impl OpenCad {
         ui.painter().rect_filled(ui.max_rect(), 0.0, pal.view);
         let now = std::time::SystemTime::now();
         let mut open: Option<PathBuf> = None;
-        let mut remove: Option<usize> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let width = ui.available_width().min(980.0);
             let side = ((ui.available_width() - width) / 2.0).max(16.0);
@@ -135,7 +138,7 @@ impl OpenCad {
                     }
                     for p in self.recent.clone() {
                         let name = p.file_stem().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
-                        let place = p.parent().map(|d| d.display().to_string()).unwrap_or_default();
+                        let place = self.place_text(&p);
                         // (Looked up in the background; until then, taken to be there.)
                         let seen = self.recent_seen.iter().find(|s| s.0 == p);
                         let when = seen.and_then(|s| s.2).map(|t| cloud::ago(now, t));
@@ -164,11 +167,8 @@ impl OpenCad {
                         ui.horizontal(|ui| {
                             let (r, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
                             icons::paint(ui.painter(), r, Icon::Cloud, true);
-                            ui.label(egui::RichText::new(&f.name).strong().size(15.0));
-                            ui.weak(f.path.display().to_string());
-                            if ui.small_button("×").on_hover_text("Stop listing this folder (its files stay where they are)").clicked() {
-                                remove = Some(k);
-                            }
+                            // (Its path, and taking it off the list, are in Settings.)
+                            ui.label(egui::RichText::new(&f.name).strong().size(15.0)).on_hover_text(f.url.clone().unwrap_or_else(|| f.path.display().to_string()));
                         });
                         match self.cloud_lists.get(k).cloned().flatten() {
                             None => {
@@ -210,10 +210,6 @@ impl OpenCad {
                 });
             });
         });
-        if let Some(k) = remove {
-            self.cloud_folders.remove(k);
-            self.scan_cloud(&ctx);
-        }
         if let Some(p) = open {
             self.open_from_start(p);
         }
@@ -271,9 +267,12 @@ impl OpenCad {
                 _ => save_dialog::Root { name: f.name.clone(), path: Some(f.path.clone()), cloud: true, note: None },
             })
             .collect();
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        let docs = home.as_ref().map(|h| h.join("Documents")).filter(|d| d.is_dir()).or(home);
-        roots.push(save_dialog::Root { name: "This computer".into(), path: docs, cloud: false, note: None });
+        // This computer: Documents/Oxide360 (made the first time it's needed).
+        let local = cloud::local_dir();
+        if let Some(d) = &local {
+            let _ = std::fs::create_dir_all(d);
+        }
+        roots.push(save_dialog::Root { name: settings::THIS_COMPUTER.into(), path: local, cloud: false, note: None });
         // A design saved somewhere else on this computer: its own folder too.
         if let Some(dir) = self.path.as_deref().and_then(std::path::Path::parent) {
             if !roots.iter().any(|r| r.path.as_deref().is_some_and(|p| dir.starts_with(p))) {
@@ -289,7 +288,14 @@ impl OpenCad {
         let roots = self.save_roots();
         let (k, sub) = match root {
             Some(k) => (k, PathBuf::new()),
-            None => save_dialog::SaveDialog::place_for(&roots, self.path.as_deref()),
+            None => {
+                // A new design: where Settings says (by name), else the cloud first.
+                let chosen = (self.path.is_none() && !self.save_place.is_empty()).then(|| roots.iter().position(|r| r.name == self.save_place && r.path.is_some())).flatten();
+                match chosen {
+                    Some(k) => (k, PathBuf::new()),
+                    None => save_dialog::SaveDialog::place_for(&roots, self.path.as_deref()),
+                }
+            }
         };
         let mut d = save_dialog::SaveDialog::new(&self.design_name(), k, sub);
         d.then = then;
@@ -360,5 +366,70 @@ impl OpenCad {
                 }
             }
         }
+    }
+}
+
+// ---------- "Saved to …" ----------
+
+impl OpenCad {
+    /// Where `path` is, in words: "TrueNAS › keys" or "This computer › Documents/Oxide360".
+    pub(crate) fn place_text(&self, path: &std::path::Path) -> String {
+        let dir = path.parent().unwrap_or(path);
+        if let Some(f) = self.cloud_folders.iter().find(|f| path.starts_with(&f.path)) {
+            let rest = dir.strip_prefix(&f.path).map(|r| r.display().to_string()).unwrap_or_default();
+            return if rest.is_empty() { f.name.clone() } else { format!("{} › {rest}", f.name) };
+        }
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let shown = match home.as_ref().and_then(|h| dir.strip_prefix(h).ok()) {
+            Some(r) => r.display().to_string(),
+            None => dir.display().to_string(),
+        };
+        format!("This computer › {shown}")
+    }
+
+    /// Say where a save went (`done`: it's there; else it's on its way).
+    pub(crate) fn note_saved(&mut self, text: String, cloud: bool, done: bool) {
+        self.save_note = Some((text, cloud, done, f64::NAN));
+    }
+
+    /// The "Saved to …" card, bottom left over whatever's showing; it fades
+    /// a few seconds after the save is done.
+    pub(crate) fn save_note_ui(&mut self, ctx: &egui::Context) {
+        let Some((text, cloud, done, since)) = self.save_note.as_mut() else { return };
+        let now = ctx.input(|i| i.time);
+        if since.is_nan() {
+            *since = now;
+        }
+        let age = now - *since;
+        let life = if *done { 5.0 } else { 60.0 };
+        if age > life {
+            self.save_note = None;
+            return;
+        }
+        let alpha = ((life - age).min(1.0) as f32).clamp(0.0, 1.0);
+        let (text, cloud, done) = (text.clone(), *cloud, *done);
+        let pal = theme::now();
+        egui::Area::new(egui::Id::new("save_note"))
+            .order(egui::Order::Tooltip)
+            .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(14.0, -self.timeline_height - 14.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                ui.set_opacity(alpha);
+                egui::Frame::new().fill(pal.window).corner_radius(8.0).stroke(egui::Stroke::new(1.0, pal.raised)).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
+                        icons::paint(ui.painter(), r, if cloud { Icon::Cloud } else { Icon::Folder }, true);
+                        if done {
+                            // A tick (the UI font has none), bottom right of the icon.
+                            let c = r.right_bottom() + egui::vec2(-2.0, -2.0);
+                            let s = egui::Stroke::new(2.5, egui::Color32::from_rgb(90, 200, 110));
+                            ui.painter().line_segment([c + egui::vec2(-8.0, -4.0), c + egui::vec2(-4.0, 0.0)], s);
+                            ui.painter().line_segment([c + egui::vec2(-4.0, 0.0), c + egui::vec2(3.0, -9.0)], s);
+                        }
+                        ui.label(egui::RichText::new(text).color(pal.text).size(14.0));
+                    });
+                });
+            });
+        ctx.request_repaint();
     }
 }

@@ -331,6 +331,7 @@ impl OpenCad {
             theme: self.theme,
             tool_colors: self.tool_colors,
             cloud_folders: self.cloud_folders.clone(),
+            save_place: self.save_place.clone(),
         }
     }
 
@@ -722,6 +723,8 @@ impl OpenCad {
                 self.saved = doc;
                 self.remember_recent(&path);
                 self.track_file(&path);
+                let place = self.place_text(&path);
+                self.note_saved(format!("Saved to {place}"), false, true);
                 self.path = Some(path);
                 true
             }
@@ -755,8 +758,12 @@ impl OpenCad {
                 self.track_file(&path);
                 self.path = Some(path.clone());
                 self.sync_now = true;
-                let name = self.cloud_name(&path);
-                self.notify(if self.cloud_away(&path) { format!("Saved on this computer — {name} can't be reached; it'll upload when it's back") } else { format!("Saving to {name}…") });
+                let (name, place) = (self.cloud_name(&path), self.place_text(&path));
+                if self.cloud_away(&path) {
+                    self.note_saved(format!("Saved on this computer for now — {name} can't be reached; it'll upload when it's back"), false, true);
+                } else {
+                    self.note_saved(format!("Saving to {place}…"), true, false);
+                }
                 true
             }
             Err(e) => {

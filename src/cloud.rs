@@ -372,6 +372,9 @@ pub struct Entry {
     /// The cloud file changed since, and someone has to choose: left alone until then.
     #[serde(default)]
     pub conflict: bool,
+    /// "Available offline": kept whatever, and brought up to date when the cloud one changes.
+    #[serde(default)]
+    pub keep: bool,
 }
 
 fn nanos(t: SystemTime) -> u64 {
@@ -442,11 +445,13 @@ impl Cache {
         std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &path)).map_err(|e| format!("couldn't keep a copy on this computer: {e}"))?;
         // Saved here while a choice is waiting: still waiting (and still forced if it was).
         let (force, conflict) = old.as_ref().filter(|_| pending).map_or((false, false), |e| (e.force, e.conflict));
+        let keep = old.as_ref().is_some_and(|e| e.keep);
         let base = if pending { old.as_ref().map_or(base, |e| e.base.or(base)) } else { base };
-        list.insert(0, Entry { cloud: cloud.to_path_buf(), file, used: unix_now(), base, pending, force, conflict });
-        // Too many: the least lately used that are in the cloud already go.
-        while list.iter().filter(|e| !e.pending).count() > KEEP {
-            let Some(k) = list.iter().rposition(|e| !e.pending) else { break };
+        list.insert(0, Entry { cloud: cloud.to_path_buf(), file, used: unix_now(), base, pending, force, conflict, keep });
+        // Too many: the least lately used that are in the cloud already (and not kept on purpose) go.
+        let spare = |e: &Entry| !e.pending && !e.keep;
+        while list.iter().filter(|e| spare(e)).count() > KEEP {
+            let Some(k) = list.iter().rposition(spare) else { break };
             let gone = list.remove(k);
             let _ = std::fs::remove_file(self.dir.join(gone.file));
         }
@@ -463,10 +468,66 @@ impl Cache {
         }
     }
 
+    /// Forget `cloud`'s copy (unless it has saves not uploaded yet).
+    #[allow(dead_code)] // (the file viewer's menu, next)
+    pub fn forget(&self, cloud: &Path) {
+        let mut list = self.entries();
+        if let Some(k) = list.iter().position(|e| e.cloud == cloud && !e.pending) {
+            let gone = list.remove(k);
+            let _ = std::fs::remove_file(self.dir.join(gone.file));
+            let _ = self.write_index(&list);
+        }
+    }
+
+    /// Bring the copies kept on purpose up to date with their cloud files
+    /// (ones with saves not uploaded are left: they're newer). Off the main thread.
+    pub fn refresh_kept(&self) {
+        for e in self.entries().into_iter().filter(|e| e.keep && !e.pending) {
+            let now = base_of(&e.cloud);
+            if now.is_some() && now != e.base {
+                if let Ok(bytes) = std::fs::read(&e.cloud) {
+                    let _ = self.keep(&e.cloud, &bytes, now, false);
+                }
+            }
+        }
+    }
+
     /// The copies still to upload (and not waiting on a choice).
     pub fn to_upload(&self) -> Vec<Entry> {
         self.entries().into_iter().filter(|e| e.pending && (!e.conflict || e.force)).collect()
     }
+}
+
+/// "Available offline" on (copied from the cloud now if there's no copy
+/// yet — off the main thread) or off (the copy goes like any other).
+#[allow(dead_code)] // (the file viewer's menu, next)
+pub fn set_kept(cache: &Cache, cloud: &Path, on: bool) -> Result<(), String> {
+    if on && cache.entry(cloud).is_none() {
+        let bytes = std::fs::read(cloud).map_err(|e| format!("couldn't copy it from the cloud: {e}"))?;
+        cache.keep(cloud, &bytes, base_of(cloud), false)?;
+    }
+    cache.update(cloud, |e| e.keep = on);
+    Ok(())
+}
+
+/// Where designs are saved on this computer when there's no cloud folder:
+/// the Documents folder (as the desktop names it) / Oxide360.
+pub fn local_dir() -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| home.join(".config"));
+    let docs = std::fs::read_to_string(config.join("user-dirs.dirs")).ok().and_then(|t| documents_from(&t, &home)).unwrap_or_else(|| home.join("Documents"));
+    Some(docs.join("Oxide360"))
+}
+
+/// `XDG_DOCUMENTS_DIR="$HOME/Dokumente"` out of a `user-dirs.dirs` file.
+fn documents_from(text: &str, home: &Path) -> Option<PathBuf> {
+    let line = text.lines().find(|l| l.trim_start().starts_with("XDG_DOCUMENTS_DIR="))?;
+    let v = line.split_once('=')?.1.trim().trim_matches('"');
+    let p = match v.strip_prefix("$HOME") {
+        Some(rest) => home.join(rest.trim_start_matches('/')),
+        None => PathBuf::from(v),
+    };
+    (p.is_absolute() && p != home).then_some(p)
 }
 
 /// What uploading a copy did.
@@ -756,6 +817,40 @@ mod tests {
         let gone = Entry { cloud: d.join("unplugged/key.ox360"), ..cache.entry(&design).unwrap() };
         assert!(matches!(upload(&cache, &gone, false), Uploaded::Away(_)));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_design_kept_offline_stays_and_follows_the_cloud() {
+        let d = temp("kept");
+        let cache = Cache { dir: d.join("cache") };
+        let nas = d.join("nas");
+        std::fs::create_dir_all(&nas).unwrap();
+        let key = nas.join("key.ox360");
+        std::fs::write(&key, "v1").unwrap();
+        set_kept(&cache, &key, true).unwrap();
+        assert!(cache.entry(&key).unwrap().keep, "copied and kept");
+        for k in 0..15 {
+            cache.keep(&nas.join(format!("d{k}.ox360")), b"x", Some(1), false).unwrap();
+        }
+        assert!(cache.copy_of(&key).is_some(), "not pushed out by newer ones");
+        // Changed in the cloud: brought up to date.
+        std::fs::write(&key, "v2").unwrap();
+        std::fs::File::options().write(true).open(&key).unwrap().set_modified(SystemTime::now() + Duration::from_secs(9)).unwrap();
+        cache.refresh_kept();
+        assert_eq!(std::fs::read_to_string(cache.copy_of(&key).unwrap()).unwrap(), "v2");
+        set_kept(&cache, &key, false).unwrap();
+        cache.forget(&key);
+        assert!(cache.copy_of(&key).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_local_folder_is_in_the_desktops_documents() {
+        let home = Path::new("/home/g");
+        assert_eq!(documents_from("# xdg\nXDG_DESKTOP_DIR=\"$HOME/Desktop\"\nXDG_DOCUMENTS_DIR=\"$HOME/Dokumente\"\n", home), Some(PathBuf::from("/home/g/Dokumente")));
+        assert_eq!(documents_from("XDG_DOCUMENTS_DIR=\"/data/docs\"", home), Some(PathBuf::from("/data/docs")));
+        assert_eq!(documents_from("XDG_DOCUMENTS_DIR=\"$HOME/\"", home), None, "unset (home itself)");
+        assert_eq!(documents_from("", home), None);
     }
 
     #[test]

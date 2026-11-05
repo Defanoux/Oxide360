@@ -52,7 +52,14 @@ pub struct Settings {
     /// Folders on the user's own share (TrueNAS / Samba, Nextcloud) that the
     /// start page lists designs from.
     pub cloud_folders: Vec<crate::cloud::CloudFolder>,
+    /// Where a new design's first save goes: "" the first cloud folder that
+    /// can be reached (else this computer), a cloud folder's name, or
+    /// `THIS_COMPUTER`.
+    pub save_place: String,
 }
+
+/// `Settings::save_place` for Documents/Oxide360 on this computer.
+pub const THIS_COMPUTER: &str = "This computer";
 
 /// How many designs File → Recent lists.
 pub const RECENT: usize = 10;
@@ -79,6 +86,7 @@ impl Default for Settings {
             theme: crate::theme::Theme::default(),
             tool_colors: [None; 3],
             cloud_folders: Vec::new(),
+            save_place: String::new(),
         }
     }
 }
@@ -136,7 +144,7 @@ mod tests {
         let d = dir("roundtrip");
         let path = d.join("nested").join("settings.json");
         assert_eq!(load(&path), Settings::default(), "nothing saved yet");
-        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic, measure_unit_own: Some(Unit::In), measure_unit2: Some(Unit::Mm), measure_precision: 5, measure_snap: false, measure_xyz: false, default_units: Unit::In, touchpad_zoom_flip: false, toolbar_hidden: vec!["Trim".into()], keybinds: vec![("Trim".into(), "T".into())], toolbar_order: vec!["Trim".into(), "Fillet".into()], style: crate::gpu::Style::Wireframe, recent: vec![PathBuf::from("/d/a.opencad")], printer: "Custom".into(), printer_custom: [100.0, 120.0, 130.0], overhang_limit: 50.0, theme: crate::theme::Theme::Slate, tool_colors: [Some([1, 2, 3]), None, Some([200, 0, 90])], cloud_folders: vec![crate::cloud::CloudFolder { name: "NAS".into(), path: PathBuf::from("/mnt/nas/cad"), url: Some("smb://nas/cad".into()) }] };
+        let s = Settings { touchpad: true, cube_axes: false, projection: Projection::Orthographic, measure_unit_own: Some(Unit::In), measure_unit2: Some(Unit::Mm), measure_precision: 5, measure_snap: false, measure_xyz: false, default_units: Unit::In, touchpad_zoom_flip: false, toolbar_hidden: vec!["Trim".into()], keybinds: vec![("Trim".into(), "T".into())], toolbar_order: vec!["Trim".into(), "Fillet".into()], style: crate::gpu::Style::Wireframe, recent: vec![PathBuf::from("/d/a.opencad")], printer: "Custom".into(), printer_custom: [100.0, 120.0, 130.0], overhang_limit: 50.0, theme: crate::theme::Theme::Slate, tool_colors: [Some([1, 2, 3]), None, Some([200, 0, 90])], cloud_folders: vec![crate::cloud::CloudFolder { name: "NAS".into(), path: PathBuf::from("/mnt/nas/cad"), url: Some("smb://nas/cad".into()) }], save_place: "NAS".into() };
         save(&path, &s).unwrap();
         assert_eq!(load(&path), s);
         let _ = std::fs::remove_dir_all(&d);

@@ -340,17 +340,12 @@ impl OpenCad {
             // Home (as Fusion's): the start page, first of the tabs. A tab showing
             // it isn't listed again as an "Untitled" design.
             let home_on = titles.get(self.tab_index).is_some_and(|t| t.2);
-            let home = egui::Frame::new()
-                .fill(if home_on { theme::now().raised } else { theme::now().card })
-                .corner_radius(5.0)
-                .inner_margin(egui::Margin::symmetric(8, 3))
-                .show(ui, |ui| {
-                    let (rect, r) = ui.allocate_exact_size(egui::vec2(20.0, 18.0), egui::Sense::click());
-                    View::house_icon(ui.painter(), rect.shrink2(egui::vec2(1.0, 1.0)), if home_on || r.hovered() { theme::now().text } else { theme::now().weak });
-                    r
-                })
-                .inner
-                .on_hover_text("Home: New, Open, recent designs and your cloud folders");
+            // A square as tall as the design tabs.
+            let side = self.tab_h;
+            let (rect, home) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
+            ui.painter().rect_filled(rect, 5.0, if home_on || home.hovered() { theme::now().raised } else { theme::now().card });
+            View::house_icon(ui.painter(), rect.shrink(side * 0.27), if home_on || home.hovered() { theme::now().text } else { theme::now().weak });
+            let home = home.on_hover_text("Home: New, Open, recent designs and your cloud folders");
             if home.clicked() {
                 match titles.iter().position(|t| t.2) {
                     Some(k) if k != self.tab_index => self.tab_request = Some(TabRequest::Switch(k)),
@@ -367,7 +362,7 @@ impl OpenCad {
                 let current = k == self.tab_index;
                 // An asterisk while there are changes since the last save.
                 let text = if *dirty { format!("{title}*") } else { title.clone() };
-                egui::Frame::new()
+                let tab = egui::Frame::new()
                     .fill(if current { theme::now().raised } else { theme::now().card })
                     .corner_radius(5.0)
                     .inner_margin(egui::Margin::symmetric(8, 3))
@@ -410,6 +405,7 @@ impl OpenCad {
                             }
                         });
                     });
+                self.tab_h = tab.response.rect.height();
             }
             match rename_done {
                 Some(Some(name)) => {
@@ -581,6 +577,17 @@ impl OpenCad {
             if ui.button("Add Cloud Folder…").clicked() {
                 self.add_cloud_folder(ctx);
             }
+            ui.horizontal(|ui| {
+                ui.label("Save new designs to").on_hover_text("Where a design's first save starts (the Save window can still pick another place)");
+                let shown = if self.save_place.is_empty() { "Cloud first (else this computer)".to_string() } else { self.save_place.clone() };
+                egui::ComboBox::from_id_salt("settings_save_place").selected_text(shown).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.save_place, String::new(), "Cloud first (else this computer)");
+                    for f in &self.cloud_folders {
+                        ui.selectable_value(&mut self.save_place, f.name.clone(), f.name.as_str());
+                    }
+                    ui.selectable_value(&mut self.save_place, settings::THIS_COMPUTER.to_string(), "This computer (Documents/Oxide360)");
+                });
+            });
         });
         self.settings_open = open;
         self.keybinds_window(ctx);
