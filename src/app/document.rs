@@ -330,6 +330,7 @@ impl OpenCad {
             overhang_limit: self.overhang_limit,
             theme: self.theme,
             tool_colors: self.tool_colors,
+            cloud_folders: self.cloud_folders.clone(),
         }
     }
 
@@ -450,6 +451,11 @@ impl OpenCad {
     pub(crate) fn reset_with(&mut self, doc: Document, path: Option<PathBuf>) {
         // A design from a file: shown whole, however big or small it is.
         self.fit_on_open = path.is_some();
+        // (The last design's lock, if it had one, goes with it.)
+        self.file_lock = None;
+        self.file_stamp = None;
+        self.overwrite_asked = false;
+        self.start_page = false;
         self.active = None;
         self.editor = Editor::default();
         self.undo.clear();
@@ -659,6 +665,39 @@ impl OpenCad {
     }
 
     pub(crate) fn save_to(&mut self, path: PathBuf) -> bool {
+        self.write_to(path, false)
+    }
+
+    /// Note when the file at `path` was written (to notice a save from
+    /// elsewhere), and for a design in a cloud folder hold its lock — saying
+    /// first if another computer (or another copy of the app) has it open.
+    pub(crate) fn track_file(&mut self, path: &std::path::Path) {
+        self.file_stamp = cloud::stamp(path);
+        if !cloud::in_cloud(&self.cloud_folders, path) {
+            self.file_lock = None;
+            return;
+        }
+        if self.file_lock.as_ref().is_some_and(|l| l.design() == path) {
+            return;
+        }
+        let me = cloud::Lock::mine();
+        if let Some(other) = cloud::held_elsewhere(path, &me, recovery::process_alive) {
+            let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            self.alert = Some(format!(
+                "{name} is open somewhere else too: {}.\n\nIf it gets saved there, saving here will ask before overwriting it.",
+                other.describe(std::time::SystemTime::now())
+            ));
+        }
+        self.file_lock = cloud::LockGuard::take(path, me);
+    }
+
+    /// Save to `path`. Unless `overwrite`, a file saved from elsewhere since
+    /// this design was opened or saved here isn't overwritten: it asks first.
+    pub(crate) fn write_to(&mut self, path: PathBuf, overwrite: bool) -> bool {
+        if !overwrite && self.path.as_ref() == Some(&path) && cloud::changed_since(&path, self.file_stamp) {
+            self.overwrite_asked = true;
+            return false;
+        }
         // Every save is a new version (v1, v2… by the name).
         let mut doc = self.document();
         doc.version = doc::Version(self.version + 1);
@@ -667,6 +706,7 @@ impl OpenCad {
                 self.version += 1;
                 self.saved = doc;
                 self.remember_recent(&path);
+                self.track_file(&path);
                 self.path = Some(path);
                 true
             }
@@ -678,9 +718,17 @@ impl OpenCad {
     }
 
     pub(crate) fn save_as(&mut self) -> bool {
+        self.save_as_in(None)
+    }
+
+    /// Save As, the dialog starting in `dir` (a cloud folder) if given.
+    pub(crate) fn save_as_in(&mut self, dir: Option<PathBuf>) -> bool {
         let stem = self.file_name().trim_end_matches(".ocad").to_string();
-        let picked = self
-            .file_dialog()
+        let mut dialog = self.file_dialog();
+        if let Some(d) = dir {
+            dialog = dialog.set_directory(d);
+        }
+        let picked = dialog
             .set_title("Save design")
             .add_filter("Oxide360 design", &[doc::EXTENSION])
             .set_file_name(format!("{stem}.{}", doc::EXTENSION))
@@ -720,7 +768,8 @@ impl OpenCad {
         match doc::load(&p) {
             Ok(d) => {
                 self.remember_recent(&p);
-                self.reset_with(d, Some(p));
+                self.reset_with(d, Some(p.clone()));
+                self.track_file(&p);
             }
             Err(e) => self.alert = Some(format!("Couldn't open {}: {e}", p.display())),
         }
@@ -1310,6 +1359,17 @@ impl OpenCad {
             Cmd::SaveAs => {
                 self.save_as();
             }
+            Cmd::StartPage => self.tab_request = Some(TabRequest::Start),
+            Cmd::SaveToCloud(k) => {
+                if let Some(f) = self.cloud_folders.get(k) {
+                    let dir = f.path.clone();
+                    if dir.is_dir() {
+                        self.save_as_in(Some(dir));
+                    } else {
+                        self.alert = Some(format!("{} isn't there — is the share mounted?", dir.display()));
+                    }
+                }
+            }
             Cmd::Export(f) => self.export(f),
             Cmd::InsertDrawing => {
                 let picked = self.file_dialog().set_title("Insert SVG / DXF").add_filter("SVG or DXF drawing", &["svg", "dxf", "SVG", "DXF"]).pick_file();
@@ -1363,6 +1423,46 @@ impl OpenCad {
                     self.run(action, ctx);
                 }
                 Some(_) => self.confirm = None,
+                None => {}
+            }
+        }
+        // Save found the file written from elsewhere since it was opened here.
+        if self.overwrite_asked {
+            let mut choice = None;
+            let name = self.file_name();
+            let who = self.path.as_deref().and_then(|p| cloud::held_elsewhere(p, &cloud::Lock::mine(), recovery::process_alive));
+            let _ = egui::Modal::new(egui::Id::new("confirm_overwrite")).show(ctx, |ui| {
+                ui.heading("Saved somewhere else");
+                ui.label(format!("\"{name}\" was saved from somewhere else since you opened it here."));
+                if let Some(l) = who {
+                    ui.label(format!("It's open: {}.", l.describe(std::time::SystemTime::now())));
+                }
+                ui.label("Overwriting replaces that version with yours.");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Save as a Copy…").clicked() {
+                        choice = Some(0);
+                    }
+                    if ui.button("Overwrite").clicked() {
+                        choice = Some(1);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(2);
+                    }
+                });
+            });
+            match choice {
+                Some(0) => {
+                    self.overwrite_asked = false;
+                    self.save_as();
+                }
+                Some(1) => {
+                    self.overwrite_asked = false;
+                    if let Some(p) = self.path.clone() {
+                        self.write_to(p, true);
+                    }
+                }
+                Some(_) => self.overwrite_asked = false,
                 None => {}
             }
         }

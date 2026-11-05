@@ -13,6 +13,15 @@ finish-args:
   - --share=ipc
   # The 3D view draws on the graphics card (Vulkan).
   - --device=dri
+  # Cloud folders (start page): designs on the user's own share — a Nextcloud
+  # sync folder in home, a TrueNAS / Samba share mounted in /mnt or /media,
+  # or one KDE / GNOME connected to (gvfs, KIO FUSE) — read and saved in place.
+  - --filesystem=home
+  - --filesystem=/mnt
+  - --filesystem=/media
+  - --filesystem=/run/media
+  - --filesystem=xdg-run/gvfs
+  - --filesystem=xdg-run/kio-fuse
 
 modules:
   - name: opencascade

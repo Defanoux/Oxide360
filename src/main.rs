@@ -55,6 +55,7 @@ mod shortcuts;
 mod offset_dialog;
 mod combine_dialog;
 mod scale_dialog;
+mod cloud;
 mod emboss_dialog;
 mod insert_drawing_dialog;
 mod print3d;
@@ -484,6 +485,10 @@ enum Cmd {
     InsertDrawing,
     /// File → Recent: open the design listed `k`th.
     OpenRecent(usize),
+    /// File → Start Page.
+    StartPage,
+    /// File → Save to Cloud Folder: Save As, starting in cloud folder `k`.
+    SaveToCloud(usize),
 }
 
 /// What to do once the user has answered "save changes?".
@@ -498,6 +503,8 @@ enum Pending {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum TabRequest {
     New,
+    /// The start page: here if this is an empty new design, else in a new tab.
+    Start,
     /// Open the design in `OpenCad::open_in_tab` in a tab of its own (or
     /// this one, when it's an empty new design), as Fusion does.
     Open,
@@ -868,6 +875,13 @@ struct OpenCad {
     tab_request: Option<TabRequest>,        // what the tab strip asked for this frame
     open_in_tab: Option<PathBuf>,           // a design to open in a new tab (with TabRequest::Open)
     close_me: bool,                         // this tab is done (its × was confirmed)
+    cloud_folders: Vec<cloud::CloudFolder>, // folders on the user's own share (settings)
+    start_page: bool,                       // the start page is up (on an empty new design)
+    cloud_lists: Vec<Option<Result<Vec<cloud::Design>, String>>>, // each cloud folder's designs (None: still looking)
+    cloud_scan: Option<std::sync::mpsc::Receiver<(usize, Result<Vec<cloud::Design>, String>)>>, // a look through them under way
+    file_stamp: Option<std::time::SystemTime>, // when the file was written, as last opened or saved here
+    file_lock: Option<cloud::LockGuard>,    // a cloud design's "open here" lock while it's open
+    overwrite_asked: bool,                  // Save found the file saved from elsewhere since: asking
     toolbar_hidden: Vec<String>,            // tools tucked into their group's ▾ list (settings)
     keymap: keys::Keymap,                   // tool keys (settings)
     toolbar_order: Vec<String>,             // tools' order within their groups, as dragged (settings)
@@ -1144,6 +1158,13 @@ impl Default for OpenCad {
             renaming_design: None,
             rename_select_all: false,
             close_me: false,
+            cloud_folders: Vec::new(),
+            start_page: false,
+            cloud_lists: Vec::new(),
+            cloud_scan: None,
+            file_stamp: None,
+            file_lock: None,
+            overwrite_asked: false,
             toolbar_hidden: settings::Settings::default().toolbar_hidden,
             keymap: keys::Keymap::default(),
             toolbar_order: Vec::new(),
@@ -1649,7 +1670,7 @@ impl OpenCad {
         mark("timeline bar");
         self.timeline_height = egui::Panel::bottom("timeline").show(ui, |ui| self.timeline_bar(ui)).response.rect.height();
         mark("view");
-        egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui));
+        egui::CentralPanel::no_frame().show(ui, |ui| if self.showing_start() { self.start_page_ui(ui) } else { self.viewport(ui) });
         self.toolbar_overlay(&ctx);
         self.marking_menu(&ctx);
         self.shortcut_box(&ctx);
@@ -1694,6 +1715,7 @@ impl OpenCad {
         self.overhang_limit = if s.overhang_limit.is_finite() { s.overhang_limit.clamp(10.0, 85.0) } else { 45.0 };
         self.theme = s.theme;
         self.tool_colors = s.tool_colors;
+        self.cloud_folders = s.cloud_folders.clone();
         self.settings_saved = s.clone();
     }
 
@@ -1818,6 +1840,14 @@ impl eframe::App for Tabs {
             Some(TabRequest::New) => {
                 self.tabs.push(OpenCad::fresh(&settings, self.gpu));
                 self.current = self.tabs.len() - 1;
+            }
+            Some(TabRequest::Start) => {
+                let here = tab.path.is_none() && tab.timeline.is_empty() && !tab.is_dirty();
+                if !here {
+                    self.tabs.push(OpenCad::fresh(&settings, self.gpu));
+                    self.current = self.tabs.len() - 1;
+                }
+                self.tabs[self.current].start_page = true;
             }
             Some(TabRequest::Open) => {
                 if let Some(path) = tab.open_in_tab.take() {
@@ -2130,8 +2160,10 @@ fn main() -> eframe::Result {
             };
             let recovered = recovery::default_dir().map_or_else(Vec::new, |d| recovery::left_behind(&d, recovery::process_alive));
             let mut first = OpenCad::fresh(&s, gpu);
-            if let Some(p) = open_at_start {
-                first.open_path(p);
+            match open_at_start {
+                Some(p) => first.open_path(p),
+                // Nothing to open: the start page (recent and cloud designs, New, Open).
+                None => first.start_page = true,
             }
             Ok(Box::new(Tabs { tabs: vec![first], current: 0, gpu, title: String::new(), control, recovered, themed: false }))
         }),

@@ -256,6 +256,17 @@ impl OpenCad {
                         ui.close();
                     }
                 }
+                ui.menu_button("Save to Cloud Folder", |ui| {
+                    if self.cloud_folders.is_empty() {
+                        ui.weak("No cloud folders yet (add one on the start page or in Settings)");
+                    }
+                    for (k, f) in self.cloud_folders.iter().enumerate() {
+                        if ui.button(&f.name).on_hover_text(f.path.display().to_string()).clicked() {
+                            self.cmd = Some(Cmd::SaveToCloud(k));
+                            ui.close();
+                        }
+                    }
+                });
                 ui.menu_button("Recent", |ui| {
                     if self.recent.is_empty() {
                         ui.weak("Nothing opened yet");
@@ -270,6 +281,10 @@ impl OpenCad {
                         }
                     }
                 });
+                if ui.button("Start Page").on_hover_text("New, Open, recent designs and your cloud folders").clicked() {
+                    self.cmd = Some(Cmd::StartPage);
+                    ui.close();
+                }
                 ui.separator();
                 if ui.button("Insert into Design… (STEP, STL)").clicked() {
                     self.cmd = Some(Cmd::Import);
@@ -519,6 +534,25 @@ impl OpenCad {
             ui.weak("A design's own units are under Document Settings in the browser.");
             if ui.button("Set keybinds…").clicked() {
                 self.keybinds_open = true;
+            }
+            ui.separator();
+            ui.label("Cloud folders").on_hover_text("Folders on your own share (TrueNAS / Samba, mounted here) or your Nextcloud folder: the start page lists their designs");
+            let mut remove = None;
+            for (k, f) in self.cloud_folders.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut f.name).desired_width(110.0)).on_hover_text("Its name on the start page");
+                    ui.weak(f.path.display().to_string());
+                    if ui.small_button("×").on_hover_text("Stop listing this folder (its files stay where they are)").clicked() {
+                        remove = Some(k);
+                    }
+                });
+            }
+            if let Some(k) = remove {
+                self.cloud_folders.remove(k);
+                self.scan_cloud(ctx);
+            }
+            if ui.button("Add Cloud Folder…").clicked() {
+                self.add_cloud_folder(ctx);
             }
         });
         self.settings_open = open;

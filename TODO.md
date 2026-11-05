@@ -7,6 +7,8 @@ Work top to bottom. Move finished items to **Done** with a one-line note.
 Focus: solid and sketch modelling for 3D printing (Gavin, 2026-10-29).
 Fusion's behaviour is the spec for each; FEATURES.md has the full Fusion list.
 
+- **Profiles found by their edges, not their number**: an extrude keeps its regions when a sketch edit adds or renumbers regions (resizing key-noelle's box used to send every extrude to the wrong area). Gavin still sees key-noelle's snap wedge come loose when he changes the 7.0 box dims — not reproduced on 2026-11-05 (kernel and app both kept one body at 6.8 / 7.2); ask for the exact steps.
+- **Cloud folders, next step**: Nextcloud straight over WebDAV (no sync app), and a proper conflict copy name.
 - **Pattern along path**, **Draft**.
 - **Joint limits** and motion settings (min/max, animation speed).
 - **Own Flatpak repository** (Flathub's AI policy rules it out — see docs/PROJECT.md): CI builds the Flatpak on each release tag, signs it, publishes the repo on GitHub Pages, plus an `Oxide360.flatpakref` so Discover installs it and shows updates.
@@ -21,6 +23,9 @@ Later (drawings, on hold — few users): views placed by hand (Base / Projected 
   load from the built model.
 
 ## Done
+
+- Start page and cloud folders (2026-11-05): on launch an empty design shows New Design / Open / Add Cloud Folder (icons), Recent (time ago, cloud ones marked, missing greyed) and each cloud folder's designs (subfolders too, newest first, "isn't there — is the share mounted?"). A cloud folder is any folder: a mounted TrueNAS / Samba share or a Nextcloud sync folder (`cloud.rs`). A design open from one keeps a hidden `.~name.ox360.lock` (who, which computer, since when); opening one held elsewhere says so; Save asks (Save as a Copy / Overwrite / Cancel) if the file was saved from elsewhere since. File → Start Page, File → Save to Cloud Folder; Settings lists, renames and removes folders.
+- Timeline: click an entry to select it, Delete deletes it. Profiles: an island inside a hole no longer takes the hole (Extrude2 + the centre squares made a flat body). Sketch Mirror ties each copy point to its original with Symmetric (the copy follows). Build progress card waits a frame before slow work so it's seen, and sits above a tool's box.
 
 - Extrude dialog as Fusion's: rows of icons (hover for name and what it does) for Start (Profile Plane, Offset, Object — a slanted face slants both ends), Direction (One Side, Two Sides, Symmetric, Flip), Extent (Distance, To Object, All — right through every body) and Operation. Opening a design fits it in the view. Sketch Mirror lights up the axes as mirror lines. Not yet: To Object from a slanted start, Thin extrude, New Component.
 - Dimensions (Gavin asked): two points dimension horizontally (label above / below), vertically (label beside) or straight (label off a corner or between), as Fusion; a point and a line: its distance square to the line; a point and an axis: its distance across it from the origin. New constraints HDistance / VDistance / PointLine.

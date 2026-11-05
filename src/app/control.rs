@@ -96,6 +96,8 @@ impl OpenCad {
     pub(crate) fn control_open(&mut self, path: &str) -> Result<(), String> {
         let d = doc::load(std::path::Path::new(path))?;
         self.reset_with(d, Some(path.into()));
+        // (As File → Open, but not added to Recent.)
+        self.track_file(std::path::Path::new(path));
         Ok(())
     }
 
