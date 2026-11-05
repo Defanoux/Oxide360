@@ -930,7 +930,9 @@ struct OpenCad {
     touchpad_zoom_flip: bool,               // touchpad Ctrl+scroll: fingers up zoom in
     version: u32,                           // saves so far (shown by the name)
     settings_open: bool,                    // the Settings window is open
-    tab_titles: Vec<(String, bool, bool)>,  // every open design's title, unsaved mark, and whether it's showing the start page (set by the tab holder)
+    tab_titles: Vec<(String, bool, bool, f64)>, // every open design's title, unsaved mark, showing the start page?, and when its tab came (set by the tab holder)
+    born: f64,                              // when this tab came (its tab slides in), NaN until first drawn
+    title_bottom: f32,                      // where the title bar ends (a switch of tabs fades in what's under it)
     tab_index: usize,                       // which of them this is
     tab_request: Option<TabRequest>,        // what the tab strip asked for this frame
     open_in_tab: Option<PathBuf>,           // a design to open in a new tab (with TabRequest::Open)
@@ -1222,6 +1224,8 @@ impl Default for OpenCad {
             version: 0,
             settings_open: false,
             tab_titles: Vec::new(),
+            born: f64::NAN,
+            title_bottom: 0.0,
             tab_index: 0,
             tab_request: None,
             open_in_tab: None,
@@ -1574,7 +1578,7 @@ impl OpenCad {
             }
         }
 
-        egui::Panel::top("titlebar").show(ui, |ui| self.title_bar(ui));
+        self.title_bottom = egui::Panel::top("titlebar").show(ui, |ui| self.title_bar(ui)).response.rect.bottom();
         self.settings_window(&ctx);
         self.help_window(&ctx);
         self.properties_window(&ctx);
@@ -1869,6 +1873,9 @@ struct Tabs {
     themed: bool,
     /// Cloud saves being uploaded (in the background), and when that was last tried.
     sync: Option<std::sync::mpsc::Receiver<(PathBuf, cloud::Uploaded)>>,
+    /// The tab last shown, and when another was switched to (it fades in).
+    shown_tab: Option<usize>,
+    switched_at: Option<f64>,
     sync_at: f64,
     /// Designs whose upload was asked for by a save just now (told if it can't go).
     sync_told: Vec<PathBuf>,
@@ -1915,7 +1922,15 @@ impl eframe::App for Tabs {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        let titles: Vec<(String, bool, bool)> = self.tabs.iter().map(|t| (t.tab_title(), t.is_dirty(), t.showing_start())).collect();
+        // A new tab's start: it slides in (the first one, there from the start, doesn't).
+        let now = ctx.input(|i| i.time);
+        let first = self.tabs.len() == 1 && self.switched_at.is_none();
+        for t in &mut self.tabs {
+            if t.born.is_nan() {
+                t.born = if first { f64::NEG_INFINITY } else { now };
+            }
+        }
+        let titles: Vec<(String, bool, bool, f64)> = self.tabs.iter().map(|t| (t.tab_title(), t.is_dirty(), t.showing_start(), t.born)).collect();
         let current = self.current;
         let tab = &mut self.tabs[current];
         (tab.tab_titles, tab.tab_index) = (titles, current);
@@ -1926,6 +1941,22 @@ impl eframe::App for Tabs {
             self.themed = true;
         }
         tab.tab_ui(ui);
+        // Switched to another tab: what's under the title bar fades in.
+        if self.shown_tab != Some(current) {
+            self.switched_at = Some(if self.shown_tab.is_some() { now } else { f64::NEG_INFINITY });
+            self.shown_tab = Some(current);
+        }
+        if let Some(at) = self.switched_at {
+            const FADE: f64 = 0.18;
+            let k = ((now - at) / FADE) as f32;
+            if k < 1.0 {
+                let area = egui::Rect::from_min_max(egui::pos2(0.0, self.tabs[current].title_bottom), ctx.content_rect().max);
+                let c = theme::now().view;
+                ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("tab_fade"))).rect_filled(area, 0.0, egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), ((1.0 - k) * 255.0) as u8));
+                ctx.request_repaint();
+            }
+        }
+        let tab = &mut self.tabs[current];
         let settings = tab.current_settings();
         // One theme for every tab.
         let chosen = self.tabs[current].theme;
@@ -2380,7 +2411,7 @@ fn main() -> eframe::Result {
                 // Nothing to open: the start page (recent and cloud designs, New, Open).
                 None => first.start_page = true,
             }
-            Ok(Box::new(Tabs { tabs: vec![first], current: 0, gpu, title: String::new(), control, recovered, themed: false, sync: None, sync_at: f64::NEG_INFINITY, sync_told: Vec::new() }))
+            Ok(Box::new(Tabs { tabs: vec![first], current: 0, gpu, title: String::new(), control, recovered, themed: false, shown_tab: None, switched_at: None, sync: None, sync_at: f64::NEG_INFINITY, sync_told: Vec::new() }))
         }),
     )
 }

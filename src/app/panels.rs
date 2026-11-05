@@ -337,7 +337,8 @@ impl OpenCad {
                 }
             });
             ui.separator();
-            let titles = if self.tab_titles.is_empty() { vec![(self.tab_title(), self.is_dirty(), self.showing_start())] } else { self.tab_titles.clone() };
+            let titles = if self.tab_titles.is_empty() { vec![(self.tab_title(), self.is_dirty(), self.showing_start(), f64::NEG_INFINITY)] } else { self.tab_titles.clone() };
+            let now = ui.input(|i| i.time);
             // Home (as Fusion's): the start page, first of the tabs. A tab showing
             // it isn't listed again as an "Untitled" design.
             let home_on = titles.get(self.tab_index).is_some_and(|t| t.2);
@@ -356,14 +357,24 @@ impl OpenCad {
             }
             // The open designs: name, version, a dot when unsaved; × closes.
             let mut rename_done: Option<Option<String>> = None;
-            for (k, (title, dirty, start)) in titles.iter().enumerate() {
+            for (k, (title, dirty, start, born)) in titles.iter().enumerate() {
                 if *start {
                     continue;
+                }
+                // A new tab slides in from the left, fading up (as it's made).
+                const SLIDE: f64 = 0.22;
+                let k_in = ((now - born) / SLIDE).clamp(0.0, 1.0) as f32;
+                let ease = 1.0 - (1.0 - k_in).powi(3);
+                if k_in < 1.0 {
+                    ui.add_space(-(1.0 - ease) * 40.0);
+                    ui.ctx().request_repaint();
                 }
                 let current = k == self.tab_index;
                 // An asterisk while there are changes since the last save.
                 let text = if *dirty { format!("{title}*") } else { title.clone() };
-                let tab = egui::Frame::new()
+                let tab = ui.scope(|ui| {
+                    ui.set_opacity(ease);
+                    egui::Frame::new()
                     .fill(if current { theme::now().raised } else { theme::now().card })
                     .corner_radius(5.0)
                     .inner_margin(egui::Margin::symmetric(8, 3))
@@ -405,7 +416,9 @@ impl OpenCad {
                                 self.tab_request = Some(TabRequest::Close(k));
                             }
                         });
-                    });
+                    })
+                })
+                .inner;
                 self.tab_h = tab.response.rect.height();
             }
             match rename_done {
