@@ -208,7 +208,8 @@ impl OpenCad {
             .iter()
             .enumerate()
             .map(|(k, f)| match self.folder_away(k) {
-                true => save_dialog::Root { name: f.name.clone(), path: None, cloud: true, note: Some("can't be reached".into()) },
+                // (Still a place to save: kept on this computer, uploaded when it's back.)
+                true => save_dialog::Root { name: f.name.clone(), path: Some(f.path.clone()), cloud: true, note: Some("offline".into()) },
                 false => save_dialog::Root { name: f.name.clone(), path: Some(f.path.clone()), cloud: true, note: None },
             })
             .collect();

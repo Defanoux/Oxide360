@@ -592,17 +592,25 @@ impl OpenCad {
             if ui.button("Connect Cloud…").clicked() {
                 self.add_cloud_folder(ctx);
             }
-            ui.horizontal(|ui| {
-                ui.label("Save new designs to").on_hover_text("Where a design's first save starts (the Save window can still pick another place)");
-                let shown = if self.save_place.is_empty() { "Cloud first (else this computer)".to_string() } else { self.save_place.clone() };
-                egui::ComboBox::from_id_salt("settings_save_place").selected_text(shown).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.save_place, String::new(), "Cloud first (else this computer)");
-                    for f in &self.cloud_folders {
-                        ui.selectable_value(&mut self.save_place, f.name.clone(), f.name.as_str());
-                    }
-                    ui.selectable_value(&mut self.save_place, settings::THIS_COMPUTER.to_string(), "This computer (Documents/Oxide360)");
+            // Where new designs save: a cloud folder (even while it's away: kept
+            // here and uploaded later) or this computer. No cloud: no choice.
+            if self.cloud_folders.is_empty() {
+                ui.weak("New designs save on this computer, in Documents/Oxide360 (connect a cloud to save there instead).");
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label("Save new designs to").on_hover_text("Where a design's first save goes (the Save window can still pick another place)");
+                    let first = self.cloud_folders[0].name.clone();
+                    let shown = if self.save_place.is_empty() { first.clone() } else if self.save_place == settings::THIS_COMPUTER { "This computer (Documents/Oxide360)".to_string() } else { self.save_place.clone() };
+                    egui::ComboBox::from_id_salt("settings_save_place").selected_text(shown).show_ui(ui, |ui| {
+                        for (k, f) in self.cloud_folders.iter().enumerate() {
+                            // (The first one is the default: kept as "" so renaming it doesn't lose the choice.)
+                            let value = if k == 0 { String::new() } else { f.name.clone() };
+                            ui.selectable_value(&mut self.save_place, value, f.name.as_str());
+                        }
+                        ui.selectable_value(&mut self.save_place, settings::THIS_COMPUTER.to_string(), "This computer (Documents/Oxide360)");
+                    });
                 });
-            });
+            }
         });
         self.settings_open = open;
         self.keybinds_window(ctx);

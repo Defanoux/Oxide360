@@ -168,9 +168,9 @@ impl SaveDialog {
                 ui.set_width(170.0);
                 ui.weak("LOCATION");
                 for (k, r) in roots.iter().enumerate() {
-                    let label = match (&r.note, r.cloud) {
-                        (Some(n), _) => format!("{}  ({n})", r.name),
-                        (None, _) => r.name.clone(),
+                    let label = match &r.note {
+                        Some(n) => format!("{}  ({n})", r.name),
+                        None => r.name.clone(),
                     };
                     let on = k == self.root;
                     let b = ui.add_enabled(r.path.is_some(), egui::Button::selectable(on, label).min_size(egui::vec2(165.0, 0.0)));
@@ -192,6 +192,10 @@ impl SaveDialog {
                     }
                     ui.label(egui::RichText::new(crumbs.join(" > ")).strong());
                 });
+                let offline = roots.get(self.root).is_some_and(|r| r.cloud && r.note.is_some());
+                if let Some(r) = roots.get(self.root).filter(|_| offline) {
+                    ui.colored_label(egui::Color32::from_rgb(230, 170, 80), format!("{} can't be reached now: it's saved on this computer and uploads when it's back.", r.name));
+                }
                 egui::ScrollArea::vertical().max_height(220.0).min_scrolled_height(220.0).show(ui, |ui| {
                     ui.set_min_width(320.0);
                     ui.set_min_height(220.0);
@@ -199,6 +203,8 @@ impl SaveDialog {
                         None => {
                             ui.weak("Looking…");
                         }
+                        // (Offline: said above; the read error is no news.)
+                        Some(Err(_)) if offline => {}
                         Some(Err(e)) => {
                             ui.colored_label(egui::Color32::from_rgb(230, 120, 90), e);
                         }
