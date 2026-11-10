@@ -121,6 +121,6 @@ impl OpenCad {
 
     /// Is a rebuild still under way?
     pub(crate) fn control_busy(&self) -> bool {
-        self.builds.iter().any(|b| b.is_some())
+        self.builds.iter().any(|b| b.is_some()) || self.opening.is_some()
     }
 }

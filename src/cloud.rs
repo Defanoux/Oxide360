@@ -17,7 +17,7 @@ pub struct CloudFolder {
     pub name: String,
     /// Where it is on this computer (as last found).
     pub path: PathBuf,
-    /// Its network address ("smb://192.168.50.5/defanoux/oxide360") when it's
+    /// Its network address ("smb://192.168.1.20/cad/designs") when it's
     /// a share KDE or GNOME mounted: their mount folder changes from one login
     /// to the next, so the folder is found again from this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -216,7 +216,7 @@ pub fn connect(url: &str) -> Result<PathBuf, String> {
     Err(format!("couldn't connect to {url} — check the address, that the server is on, and your password (KDE or GNOME asks for it)"))
 }
 
-/// The server's name or IP in an address (`smb://192.168.50.5/share` → `192.168.50.5`).
+/// The server's name or IP in an address (`smb://192.168.1.20/share` → `192.168.1.20`).
 pub fn host_of(url: &str) -> Option<String> {
     let rest = url.split_once("://")?.1;
     let host = rest.split('/').next()?;
@@ -803,17 +803,17 @@ mod tests {
 
     #[test]
     fn network_mounts_remember_their_address() {
-        let kde = Path::new("/run/user/1000/kio-fuse-sqeqML/smb/192.168.50.5/defanoux/oxide360");
-        assert_eq!(kio_url(kde).as_deref(), Some("smb://192.168.50.5/defanoux/oxide360"));
+        let kde = Path::new("/run/user/1000/kio-fuse-AbCdEf/smb/192.168.1.20/cad/designs");
+        assert_eq!(kio_url(kde).as_deref(), Some("smb://192.168.1.20/cad/designs"));
         assert_eq!(kio_url(Path::new("/run/user/1000/kio-fuse-x/webdavs/cloud.example.org/remote.php/dav/files/sam")).as_deref(), Some("webdavs://cloud.example.org/remote.php/dav/files/sam"));
-        let gnome = Path::new("/run/user/1000/gvfs/smb-share:server=192.168.50.5,share=defanoux/oxide360");
-        assert_eq!(gvfs_url(gnome).as_deref(), Some("smb://192.168.50.5/defanoux/oxide360"));
+        let gnome = Path::new("/run/user/1000/gvfs/smb-share:server=192.168.1.20,share=cad/designs");
+        assert_eq!(gvfs_url(gnome).as_deref(), Some("smb://192.168.1.20/cad/designs"));
         assert_eq!(kio_url(Path::new("/home/g/kio-fuse-notes/a")), None, "only KDE's own mount folder");
         assert_eq!(gvfs_url(Path::new("/mnt/truenas")), None);
         let f = CloudFolder::at(kde.to_path_buf());
-        assert_eq!((f.name.as_str(), f.url.as_deref()), ("oxide360", Some("smb://192.168.50.5/defanoux/oxide360")));
+        assert_eq!((f.name.as_str(), f.url.as_deref()), ("designs", Some("smb://192.168.1.20/cad/designs")));
         // Found again after a new login: recent designs move with it.
-        let now = Path::new("/run/user/1000/kio-fuse-QQQQ/smb/192.168.50.5/defanoux/oxide360");
+        let now = Path::new("/run/user/1000/kio-fuse-QQQQ/smb/192.168.1.20/cad/designs");
         assert_eq!(remap(&kde.join("keys/key.ox360"), kde, now), Some(now.join("keys/key.ox360")));
         assert_eq!(remap(Path::new("/home/g/a.ox360"), kde, now), None);
         assert_eq!(remap(Path::new("/nas/a.ox360"), Path::new("/nas/a.ox360"), Path::new("/nas/p/a.ox360")), Some(PathBuf::from("/nas/p/a.ox360")), "the file itself: no trailing slash");
@@ -948,23 +948,23 @@ mod tests {
 
     #[test]
     fn typed_addresses_become_urls() {
-        assert_eq!(normalize_url("smb://192.168.50.5/defanoux/oxide360/").as_deref(), Ok("smb://192.168.50.5/defanoux/oxide360"));
-        assert_eq!(normalize_url("192.168.50.5/defanoux").as_deref(), Ok("smb://192.168.50.5/defanoux"));
+        assert_eq!(normalize_url("smb://192.168.1.20/cad/designs/").as_deref(), Ok("smb://192.168.1.20/cad/designs"));
+        assert_eq!(normalize_url("192.168.1.20/cad").as_deref(), Ok("smb://192.168.1.20/cad"));
         assert_eq!(normalize_url("\\\\truenas\\cad\\keys").as_deref(), Ok("smb://truenas/cad/keys"));
         assert_eq!(normalize_url(" webdavs://cloud.example.org/remote.php/dav/files/sam ").as_deref(), Ok("webdavs://cloud.example.org/remote.php/dav/files/sam"));
         assert!(normalize_url("").is_err());
         assert!(normalize_url("http://example.org").is_err());
         assert!(normalize_url("smb:///share").is_err());
-        assert_eq!(url_name("smb://192.168.50.5/defanoux/oxide360"), "oxide360");
+        assert_eq!(url_name("smb://192.168.1.20/cad/designs"), "designs");
         assert_eq!(url_name("smb://truenas"), "truenas");
     }
 
     #[test]
     fn servers_and_their_ping_read_from_text() {
-        assert_eq!(host_of("smb://192.168.50.5/defanoux/oxide360").as_deref(), Some("192.168.50.5"));
+        assert_eq!(host_of("smb://192.168.1.20/cad/designs").as_deref(), Some("192.168.1.20"));
         assert_eq!(host_of("webdavs://sam@cloud.example.org:8443/remote.php").as_deref(), Some("cloud.example.org"));
         assert_eq!(host_of("/mnt/nas"), None);
-        let out = "--- 192.168.50.5 ping statistics ---\n4 packets transmitted, 3 received, 25% packet loss, time 603ms\nrtt min/avg/max/mdev = 38.034/122.586/207.138/84.552 ms, pipe 2\n";
+        let out = "--- 192.168.1.20 ping statistics ---\n4 packets transmitted, 3 received, 25% packet loss, time 603ms\nrtt min/avg/max/mdev = 38.034/122.586/207.138/84.552 ms, pipe 2\n";
         assert_eq!(parse_ping(out), Some(Ping { avg_ms: Some(122.586), loss_pct: 25.0 }));
         let none = "--- 10.0.0.9 ping statistics ---\n4 packets transmitted, 0 received, 100% packet loss, time 3060ms\n";
         assert_eq!(parse_ping(none), Some(Ping { avg_ms: None, loss_pct: 100.0 }));

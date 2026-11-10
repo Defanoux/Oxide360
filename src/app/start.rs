@@ -120,7 +120,7 @@ impl OpenCad {
             ui.add_space(6.0);
             egui::Grid::new("connect_grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
                 ui.label("Address");
-                ui.add(egui::TextEdit::singleline(&mut c.address).hint_text("smb://192.168.50.5/share/folder").desired_width(340.0));
+                ui.add(egui::TextEdit::singleline(&mut c.address).hint_text("smb://192.168.1.20/share/folder").desired_width(340.0));
                 ui.end_row();
                 ui.label("Name");
                 ui.add(egui::TextEdit::singleline(&mut c.name).hint_text(if c.address.is_empty() { "TrueNAS".to_string() } else { normalize_or(&c.address) }).desired_width(340.0));
@@ -207,9 +207,9 @@ impl OpenCad {
             .cloud_folders
             .iter()
             .enumerate()
-            .map(|(k, f)| match self.cloud_lists.get(k) {
-                Some(Some(Err(_))) => save_dialog::Root { name: f.name.clone(), path: None, cloud: true, note: Some("can't be reached".into()) },
-                _ => save_dialog::Root { name: f.name.clone(), path: Some(f.path.clone()), cloud: true, note: None },
+            .map(|(k, f)| match self.folder_away(k) {
+                true => save_dialog::Root { name: f.name.clone(), path: None, cloud: true, note: Some("can't be reached".into()) },
+                false => save_dialog::Root { name: f.name.clone(), path: Some(f.path.clone()), cloud: true, note: None },
             })
             .collect();
         // This computer: Documents/Oxide360 (made the first time it's needed).
@@ -418,10 +418,17 @@ impl OpenCad {
         let s = &mut self.cloud_status;
         if let Some(rx) = &s.rx {
             if let Ok((reachable, network, waiting)) = rx.try_recv() {
+                // A folder came back (or went): the start page looks again, so both agree.
+                let changed = reachable.iter().enumerate().any(|(k, &ok)| matches!(self.cloud_lists.get(k), Some(Some(Err(_)))) == ok || s.reachable.get(k).is_some_and(|&was| was != ok));
                 (s.reachable, s.network, s.waiting) = (reachable, network, waiting);
                 s.rx = None;
+                if changed && self.cloud_scan.is_none() {
+                    self.scan_cloud(ctx);
+                    self.browse.listing = None;
+                }
             }
         }
+        let s = &mut self.cloud_status;
         let due = now || s.checked.is_none_or(|c| t - c > 30.0);
         if !due || s.rx.is_some() || self.cloud_folders.is_empty() {
             return;
@@ -457,6 +464,15 @@ impl OpenCad {
         } else {
             Health::Good
         }
+    }
+
+    /// Look at the cloud again now: the servers, the start page's lists, the ping.
+    pub(crate) fn cloud_refresh(&mut self, ctx: &egui::Context) {
+        self.cloud_status.pinged = None;
+        self.cloud_check(ctx, true);
+        self.scan_cloud(ctx);
+        self.browse.listing = None;
+        self.browse.projects.clear();
     }
 
     /// Ping the servers every 10 s while the menu is open (only then).
@@ -522,7 +538,7 @@ impl OpenCad {
         }
         let tip = match health {
             Health::NotSetUp => "Cloud: not connected — click to connect your own server",
-            Health::NoNetwork => "Cloud: no network — saves stay on this computer until it's back",
+            Health::NoNetwork => "Cloud: not connected to a network — turn on Wi-Fi to reach your cloud",
             Health::Away => "Cloud: a server can't be reached",
             Health::Uploading => "Cloud: saves uploading",
             Health::Good => "Cloud: connected, everything uploaded",
@@ -546,7 +562,7 @@ impl OpenCad {
             self.cloud_pings(&ctx);
             let s = &self.cloud_status;
             if !s.network && s.checked.is_some() {
-                ui.colored_label(egui::Color32::from_rgb(230, 120, 90), "No network: saves stay on this computer and upload when it's back.");
+                ui.colored_label(egui::Color32::from_rgb(230, 120, 90), "Not connected to a network: turn on Wi-Fi (or plug in) to reach your cloud. Saves stay on this computer and upload when it's back.");
             }
             for (k, f) in self.cloud_folders.iter().enumerate() {
                 let ok = s.reachable.get(k).copied();
@@ -614,9 +630,7 @@ impl OpenCad {
             self.add_cloud_folder(&ctx);
         }
         if again {
-            self.cloud_status.pinged = None;
-            self.cloud_check(&ctx, true);
-            self.scan_cloud(&ctx);
+            self.cloud_refresh(&ctx);
         }
         if upload {
             self.sync_now = true;

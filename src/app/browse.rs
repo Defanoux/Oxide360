@@ -132,7 +132,8 @@ impl OpenCad {
 
     /// Is `path` open in this app (its lock is this program's)? Then it isn't renamed, moved or deleted.
     fn open_here(&self, path: &std::path::Path) -> bool {
-        self.path.as_deref() == Some(path) || cloud::read_lock(path).is_some_and(|l| l.pid == std::process::id())
+        // (From the tabs, not the share: nothing here reads the share on the main thread.)
+        self.path.as_deref() == Some(path) || self.open_paths.iter().any(|p| p == path || p.starts_with(path))
     }
 
     pub(crate) fn start_page_ui(&mut self, ui: &mut egui::Ui) {
@@ -143,6 +144,7 @@ impl OpenCad {
         self.poll_cloud();
         let roots = self.save_roots();
         self.browse_poll(&roots, &ctx);
+        self.browse_job_done(&ctx);
         if self.browse.root.is_some_and(|k| k >= roots.len()) {
             self.browse.root = None;
         }
@@ -162,6 +164,11 @@ impl OpenCad {
                     self.browse.listing_rx = Some(rx);
                 }
             }
+        }
+        // Which designs are kept offline (this computer's list, read now and then).
+        let t = ctx.input(|i| i.time);
+        if t - self.browse.kept.0 > 2.0 {
+            self.browse.kept = (t, cloud::Cache::default_cache().map_or_else(Default::default, |c| c.entries().into_iter().filter(|e| e.keep).map(|e| e.cloud).collect()));
         }
         let items = self.browse_items(&roots, dir.as_deref());
         self.browse_want_previews(&items, &ctx);
@@ -189,6 +196,14 @@ impl OpenCad {
                             self.add_cloud_folder(&ctx);
                         }
                     });
+                    // No network at all: say what to do.
+                    if !self.cloud_folders.is_empty() && self.cloud_status.checked.is_some() && !self.cloud_status.network {
+                        ui.add_space(14.0);
+                        let names: Vec<&str> = self.cloud_folders.iter().map(|f| f.name.as_str()).collect();
+                        egui::Frame::new().fill(egui::Color32::from_rgb(70, 45, 30)).corner_radius(6.0).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+                            ui.label(egui::RichText::new(format!("This computer isn't connected to a network. Turn on Wi-Fi (or plug in a cable) to reach {}. Until then you can work on the copies kept here; saves upload when it's back.", names.join(" and "))).color(egui::Color32::from_rgb(255, 220, 190)));
+                        });
+                    }
                     ui.add_space(22.0);
                     ui.horizontal_top(|ui| {
                         self.browse_sidebar(ui, &roots);
@@ -325,6 +340,9 @@ impl OpenCad {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.selectable_value(&mut self.browse.list_view, true, "List").on_hover_text("Designs as a list");
                 ui.selectable_value(&mut self.browse.list_view, false, "Tiles").on_hover_text("Designs as pictures");
+                if ui.button("Refresh").on_hover_text("Look at your cloud folders and this list again").clicked() {
+                    self.cloud_refresh(ui.ctx());
+                }
                 if ui.button("Other File…").on_hover_text("Open a design kept somewhere else (the system's chooser)").clicked() {
                     self.open_dialog();
                 }
@@ -499,7 +517,7 @@ impl OpenCad {
                 }
             }
             if it.cloudy && !it.folder {
-                let kept = cloud::Cache::default_cache().and_then(|c| c.entry(&it.path)).is_some_and(|e| e.keep);
+                let kept = self.browse.kept.1.contains(&it.path);
                 let mut on = kept;
                 if ui.checkbox(&mut on, "Available offline").on_hover_text("Keep it on this computer too, to work on with no connection (kept up to date)").changed() {
                     ask = Some(Ask::Keep(it.path.clone(), on));
@@ -518,6 +536,34 @@ impl OpenCad {
         ask
     }
 
+    /// Do `work` on the files off the main thread (a share can be slow); it
+    /// gets Recent to keep up to date, and says what it did.
+    fn browse_job(&mut self, ctx: &egui::Context, work: impl FnOnce(&mut Vec<PathBuf>) -> (Result<String, String>, Option<PathBuf>) + Send + 'static) {
+        let mut recent = self.recent.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let (r, retry) = work(&mut recent);
+            let _ = tx.send((r, recent, retry));
+            ctx.request_repaint();
+        });
+        self.browse.job = Some(rx);
+    }
+
+    /// A file job finished: Recent as it left it, and what it said.
+    fn browse_job_done(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.browse.job else { return };
+        let Ok((r, recent, retry)) = rx.try_recv() else { return };
+        self.browse.job = None;
+        self.recent = recent;
+        match (r, retry) {
+            (_, Some(p)) => self.browse.edit = Some(BrowseEdit::Delete(p, true)),
+            (Ok(msg), None) => self.note_saved(msg, true, true),
+            (Err(e), None) => self.alert = Some(e),
+        }
+        self.browse_refresh(ctx);
+    }
+
     fn browse_do(&mut self, a: Ask, roots: &[save_dialog::Root], ctx: &egui::Context) {
         let _ = roots;
         match a {
@@ -530,12 +576,11 @@ impl OpenCad {
                 self.browse.edit = Some(BrowseEdit::Rename(p, name));
             }
             Ask::MoveTo(p, d) => {
-                let cache = cloud::Cache::default_cache();
-                match file_browser::move_to(&p, &d, cache.as_ref(), &mut self.recent) {
-                    Ok(to) => self.note_saved(format!("Moved to {}", self.place_text(&to)), cloud::in_cloud(&self.cloud_folders, &to), true),
-                    Err(e) => self.alert = Some(format!("Couldn't move it: {e}")),
-                }
-                self.browse_refresh(ctx);
+                let place = self.place_text(&d.join("x"));
+                self.browse_job(ctx, move |recent| {
+                    let r = file_browser::move_to(&p, &d, cloud::Cache::default_cache().as_ref(), recent);
+                    (r.map(|_| format!("Moved to {place}")).map_err(|e| format!("Couldn't move it: {e}")), None)
+                });
             }
             Ask::Keep(p, on) => {
                 // (Copying from the share can take a moment: in the background.)
@@ -572,6 +617,7 @@ impl OpenCad {
         let _ = roots;
         let Some(edit) = self.browse.edit.clone() else { return };
         let mut done: Option<Option<BrowseEdit>> = None; // Some(None): close
+        let mut job: Option<(BrowseEdit, String)> = None; // what to do, off the main thread
         let (title, keep) = match &edit {
             BrowseEdit::Rename(..) => ("Rename", true),
             BrowseEdit::NewProject(..) => ("New Project", true),
@@ -595,15 +641,8 @@ impl OpenCad {
                     ui.horizontal(|ui| {
                         let ok = save_dialog::clean_name(&text).is_ok();
                         if (ui.add_enabled(ok, egui::Button::new("OK")).clicked() || (enter && ok)) && done.is_none() {
-                            let cache = cloud::Cache::default_cache();
-                            let r = match &edit {
-                                BrowseEdit::Rename(p, _) => file_browser::rename(p, &text, cache.as_ref(), &mut self.recent).map(|_| ()),
-                                _ => file_browser::new_project(p, &text).map(|_| ()),
-                            };
-                            match r {
-                                Ok(()) => done = Some(None),
-                                Err(e) => self.alert = Some(e),
-                            }
+                            job = Some((edit.clone(), text.clone()));
+                            done = Some(None);
                         }
                         if ui.button("Cancel").clicked() {
                             done = Some(None);
@@ -619,18 +658,8 @@ impl OpenCad {
                     }
                     ui.horizontal(|ui| {
                         if ui.button(if *no_trash { "Delete for Good" } else { "Delete" }).clicked() {
-                            let how = if *no_trash { file_browser::Delete::ForGood } else { file_browser::Delete::Trash };
-                            match file_browser::delete(p, how, cloud::Cache::default_cache().as_ref()) {
-                                Ok(()) => {
-                                    self.recent.retain(|r| !r.starts_with(p));
-                                    done = Some(None);
-                                }
-                                Err(_) if !*no_trash => done = Some(Some(BrowseEdit::Delete(p.clone(), true))),
-                                Err(e) => {
-                                    self.alert = Some(e);
-                                    done = Some(None);
-                                }
-                            }
+                            job = Some((edit.clone(), String::new()));
+                            done = Some(None);
                         }
                         if ui.button("Cancel").clicked() {
                             done = Some(None);
@@ -642,10 +671,31 @@ impl OpenCad {
                 done = Some(None);
             }
         });
+        if let Some((what, text)) = job {
+            self.browse_job(ctx, move |recent| {
+                let cache = cloud::Cache::default_cache();
+                match what {
+                    BrowseEdit::Rename(p, _) => (file_browser::rename(&p, &text, cache.as_ref(), recent).map(|to| format!("Renamed to {}", to.file_stem().map_or_else(String::new, |n| n.to_string_lossy().into_owned()))), None),
+                    BrowseEdit::NewProject(p, _) => (file_browser::new_project(&p, &text).map(|_| format!("Made the project {}", text.trim())), None),
+                    BrowseEdit::Delete(p, for_good) => {
+                        let how = if for_good { file_browser::Delete::ForGood } else { file_browser::Delete::Trash };
+                        let name = p.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                        match file_browser::delete(&p, how, cache.as_ref()) {
+                            Ok(()) => {
+                                recent.retain(|r| !r.starts_with(&p));
+                                (Ok(format!("Deleted {name}")), None)
+                            }
+                            // The trash didn't take it: ask about for good.
+                            Err(_) if !for_good => (Ok(String::new()), Some(p)),
+                            Err(e) => (Err(e), None),
+                        }
+                    }
+                }
+            });
+        }
         match done {
             Some(None) => {
                 self.browse.edit = None;
-                self.browse_refresh(ctx);
             }
             Some(Some(e)) => self.browse.edit = Some(e),
             None => {}

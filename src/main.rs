@@ -534,6 +534,11 @@ struct BrowseState {
     previews: std::collections::HashMap<PathBuf, (Option<std::time::SystemTime>, Option<egui::TextureHandle>)>,
     previews_rx: Option<std::sync::mpsc::Receiver<(PathBuf, Option<(usize, usize, Vec<u8>)>)>>,
     edit: Option<BrowseEdit>,
+    /// Designs kept offline, and when that was read (app time).
+    kept: (f64, std::collections::HashSet<PathBuf>),
+    /// A rename / move / new project / delete under way (off the main thread):
+    /// what it said, Recent as it left it, and a delete the trash refused (ask: for good?).
+    job: Option<std::sync::mpsc::Receiver<(Result<String, String>, Vec<PathBuf>, Option<PathBuf>)>>,
 }
 
 /// What the cloud icon shows: each cloud folder reachable?, on a network at
@@ -951,6 +956,8 @@ struct OpenCad {
     tab_h: f32,                             // the design tabs' height (the Home tab is a square that high)
     browse: BrowseState,                    // the start page's file viewer (see app/browse.rs)
     connect: Option<Connect>,               // the Connect your cloud window
+    opening: Option<(PathBuf, std::sync::mpsc::Receiver<Result<(String, Option<u64>, Option<cloud::Lock>), String>>)>, // a cloud design being read in the background
+    open_paths: Vec<PathBuf>,               // every tab's design (set by the tab holder)
     cloud_status: CloudStatus,              // the title bar's cloud icon: how the servers are
     save_dialog: Option<save_dialog::SaveDialog>, // the Save window (name and where)
     save_listing: Option<(PathBuf, Option<Result<save_dialog::Listing, String>>)>, // the folder it shows, and what's in it (None: being read)
@@ -1247,6 +1254,8 @@ impl Default for OpenCad {
             tab_h: 26.0,
             browse: BrowseState::default(),
             connect: None,
+            opening: None,
+            open_paths: Vec::new(),
             cloud_status: CloudStatus::default(),
             save_dialog: None,
             save_listing: None,
@@ -1503,6 +1512,7 @@ impl OpenCad {
         let frame_start = std::time::Instant::now();
         let _slow = SlowFrame(frame_start);
         self.frame_no += 1;
+        self.poll_opening();
         // Previews of modeled threads wait until a value is finished.
         let busy = ui.ctx().text_edit_focused() || ui.ctx().egui_is_using_pointer() || self.arrow_drag.is_some();
         if let Some(d) = self.hole_dialog.as_mut() {
@@ -1932,8 +1942,10 @@ impl eframe::App for Tabs {
         }
         let titles: Vec<(String, bool, bool, f64)> = self.tabs.iter().map(|t| (t.tab_title(), t.is_dirty(), t.showing_start(), t.born)).collect();
         let current = self.current;
+        let open_paths: Vec<PathBuf> = self.tabs.iter().filter_map(|t| t.path.clone()).collect();
         let tab = &mut self.tabs[current];
         (tab.tab_titles, tab.tab_index) = (titles, current);
+        tab.open_paths = open_paths;
         // The theme (switched in Settings): egui's look, and what icons and the view draw with.
         if theme::current() != tab.theme || !self.themed {
             theme::set(tab.theme);
@@ -1983,6 +1995,12 @@ impl eframe::App for Tabs {
             }
             Some(TabRequest::Open) => {
                 if let Some(path) = tab.open_in_tab.take() {
+                    // Open already: that tab comes up (as Fusion).
+                    if let Some(k) = self.tabs.iter().position(|t| t.path.as_ref() == Some(&path)) {
+                        self.show(k, &settings);
+                        return;
+                    }
+                    let tab = &mut self.tabs[current];
                     // An untouched new design gives its tab up; otherwise a tab of its own.
                     let here = tab.path.is_none() && tab.timeline.is_empty() && !tab.is_dirty();
                     if !here {
@@ -1992,7 +2010,7 @@ impl eframe::App for Tabs {
                     let t = &mut self.tabs[self.current];
                     t.open_path(path);
                     // Couldn't be read: the new tab goes again (the alert stays in the old one).
-                    if t.path.is_none() && !here {
+                    if t.path.is_none() && !here && t.opening.is_none() {
                         let alert = t.alert.take();
                         self.tabs.pop();
                         self.current = current;

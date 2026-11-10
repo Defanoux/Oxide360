@@ -683,20 +683,25 @@ impl OpenCad {
         if self.file_lock.as_ref().is_some_and(|l| l.design() == path) || self.cloud_away(path) {
             return;
         }
-        let me = cloud::Lock::mine();
-        if let Some(other) = cloud::held_elsewhere(path, &me, recovery::process_alive) {
-            let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-            self.alert = Some(format!(
-                "{name} is open somewhere else too: {}.\n\nIf it gets saved there, saving here will ask before overwriting it.",
-                other.describe(std::time::SystemTime::now())
-            ));
-        }
-        self.file_lock = Some(cloud::LockGuard::take_in_background(path, me));
+        // (Who else has it open was asked while opening, off the main thread.)
+        self.file_lock = Some(cloud::LockGuard::take_in_background(path, cloud::Lock::mine()));
     }
 
     /// Is `path` in a cloud folder the last look found can't be reached?
     pub(crate) fn cloud_away(&self, path: &std::path::Path) -> bool {
-        self.cloud_folders.iter().zip(&self.cloud_lists).any(|(f, l)| path.starts_with(&f.path) && matches!(l, Some(Err(_))))
+        self.cloud_folders.iter().enumerate().any(|(k, f)| path.starts_with(&f.path) && self.folder_away(k))
+    }
+
+    /// Cloud folder `k` can't be reached: the last look said so, and the
+    /// cloud icon's check (if newer) hasn't found it since.
+    pub(crate) fn folder_away(&self, k: usize) -> bool {
+        let looked = matches!(self.cloud_lists.get(k), Some(Some(Err(_))));
+        let checked = self.cloud_status.reachable.get(k).copied();
+        match checked {
+            Some(true) => false,
+            Some(false) => true,
+            None => looked,
+        }
     }
 
     /// The cloud folder's name `path` is in ("TrueNAS").
@@ -878,21 +883,54 @@ impl OpenCad {
             }
             return;
         }
-        let read = std::fs::read(&p).map_err(|e| format!("couldn't read {}: {e}", p.display())).and_then(|b| String::from_utf8(b).map_err(|e| e.to_string()));
-        match read.and_then(|text| doc::from_json(&text).map(|d| (d, text))) {
-            Ok((d, text)) => {
+        // From the share: read in the background (a share that's busy or
+        // slow must never hold the window up), with who else has it open.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = p.clone();
+        std::thread::spawn(move || {
+            let read = std::fs::read(&path).map_err(|e| format!("couldn't read {}: {e}", path.display())).and_then(|b| String::from_utf8(b).map_err(|e| e.to_string()));
+            let got = read.map(|text| (text, cloud::base_of(&path), cloud::held_elsewhere(&path, &cloud::Lock::mine(), recovery::process_alive)));
+            let _ = tx.send(got);
+        });
+        self.opening = Some((p.clone(), rx));
+        self.note_saved(format!("Opening {}…", p.file_stem().map_or_else(String::new, |n| n.to_string_lossy().into_owned())), true, false);
+    }
+
+    /// A cloud design being read in the background: open it once it's here.
+    pub(crate) fn poll_opening(&mut self) {
+        let Some((p, rx)) = &self.opening else { return };
+        let got = match rx.try_recv() {
+            Ok(g) => g,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the read stopped".into()),
+        };
+        let p = p.clone();
+        self.opening = None;
+        self.save_note = None;
+        let name = self.cloud_name(&p);
+        let cache = cloud::Cache::default_cache();
+        match got.and_then(|(text, base, other)| doc::from_json(&text).map(|d| (d, text, base, other))) {
+            Ok((d, text, base, other)) => {
                 if let Some(c) = &cache {
-                    let _ = c.keep(&p, text.as_bytes(), cloud::base_of(&p), false);
+                    let _ = c.keep(&p, text.as_bytes(), base, false);
                 }
                 self.remember_recent(&p);
                 self.reset_with(d, Some(p.clone()));
                 self.track_file(&p);
-            }
-            Err(e) => {
-                if !from_copy(self, format!("Couldn't read it from {name} ({e}) — opened the copy on this computer")) {
-                    self.alert = Some(format!("Couldn't open {}: {e}", p.display()));
+                if let Some(other) = other {
+                    let file = p.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                    self.alert = Some(format!("{file} is open somewhere else too: {}.\n\nIf it gets saved there, saving here will ask before overwriting it.", other.describe(std::time::SystemTime::now())));
                 }
             }
+            Err(e) => match cache.as_ref().and_then(|c| c.copy_of(&p)).map(|c| doc::load(&c)) {
+                Some(Ok(d)) => {
+                    self.remember_recent(&p);
+                    self.reset_with(d, Some(p.clone()));
+                    self.track_file(&p);
+                    self.notify(format!("Couldn't read it from {name} ({e}) — opened the copy on this computer"));
+                }
+                _ => self.alert = Some(format!("Couldn't open {}: {e}", p.display())),
+            },
         }
     }
 
