@@ -1584,6 +1584,41 @@ impl OpenCad {
                 None => {}
             }
         }
+        // Closing with saves to a server not uploaded yet.
+        if let Some((n, to)) = self.uploads_warning.clone() {
+            let mut choice = None;
+            let _ = egui::Modal::new(egui::Id::new("uploads_waiting")).show(ctx, |ui| {
+                ui.set_max_width(440.0);
+                ui.heading("Not uploaded yet");
+                ui.label(format!(
+                    "{n} save{} to {to} {} only on this computer so far: {to} can't be reached (or the upload hasn't finished).",
+                    if n == 1 { "" } else { "s" },
+                    if n == 1 { "is" } else { "are" }
+                ));
+                ui.label("They're safe here, and upload the next time Oxide360 is open and connected.");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Keep Open").clicked() {
+                        choice = Some(false);
+                    }
+                    if ui.button("Close Anyway").clicked() {
+                        choice = Some(true);
+                    }
+                });
+            });
+            match choice {
+                Some(true) => {
+                    self.uploads_warning = None;
+                    self.allow_close_uploads = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Some(false) => {
+                    self.uploads_warning = None;
+                    self.sync_now = true; // (try again now)
+                }
+                None => {}
+            }
+        }
         // Save found the file written from elsewhere since it was opened here.
         if self.overwrite_asked {
             let mut choice = None;

@@ -962,6 +962,7 @@ struct OpenCad {
     save_dialog: Option<save_dialog::SaveDialog>, // the Save window (name and where)
     save_listing: Option<(PathBuf, Option<Result<save_dialog::Listing, String>>)>, // the folder it shows, and what's in it (None: being read)
     save_listing_rx: Option<std::sync::mpsc::Receiver<(PathBuf, Result<save_dialog::Listing, String>)>>,
+    save_listing_since: f64,                // when that folder's read started (a share that doesn't answer in a few seconds counts as away)
     toolbar_hidden: Vec<String>,            // tools tucked into their group's ▾ list (settings)
     keymap: keys::Keymap,                   // tool keys (settings)
     toolbar_order: Vec<String>,             // tools' order within their groups, as dragged (settings)
@@ -1104,6 +1105,8 @@ struct OpenCad {
     confirm: Option<Pending>,
     alert: Option<String>,
     allow_close: bool,
+    allow_close_uploads: bool,              // closing with saves not uploaded yet was said to be fine
+    uploads_warning: Option<(usize, String)>, // asking: this many saves not uploaded yet, to these servers
     gpu: bool, // GPU renderer available (otherwise the CPU fallback draws)
 }
 
@@ -1260,6 +1263,7 @@ impl Default for OpenCad {
             save_dialog: None,
             save_listing: None,
             save_listing_rx: None,
+            save_listing_since: 0.0,
             toolbar_hidden: settings::Settings::default().toolbar_hidden,
             keymap: keys::Keymap::default(),
             toolbar_order: Vec::new(),
@@ -1402,6 +1406,8 @@ impl Default for OpenCad {
             confirm: None,
             alert: None,
             allow_close: false,
+            allow_close_uploads: false,
+            uploads_warning: None,
             gpu: false,
         }
     }
@@ -2040,6 +2046,15 @@ impl eframe::App for Tabs {
                 let settings = self.tabs[self.current].current_settings();
                 self.show(k, &settings);
                 self.tabs[k].confirm = Some(Pending::Quit);
+            } else if !self.tabs.iter().any(|t| t.allow_close_uploads) {
+                // Saves to a server not uploaded yet: say so before closing.
+                let waiting = cloud::Cache::default_cache().map_or_else(Vec::new, |c| c.to_upload());
+                if !waiting.is_empty() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    let t = &mut self.tabs[self.current];
+                    let names: Vec<String> = waiting.iter().map(|e| t.cloud_name(&e.cloud)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+                    t.uploads_warning = Some((waiting.len(), names.join(" and ")));
+                }
             }
         }
         let t = &self.tabs[self.current];

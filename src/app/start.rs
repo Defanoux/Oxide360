@@ -123,7 +123,7 @@ impl OpenCad {
                 ui.add(egui::TextEdit::singleline(&mut c.address).hint_text("smb://192.168.1.20/share/folder").desired_width(340.0));
                 ui.end_row();
                 ui.label("Name");
-                ui.add(egui::TextEdit::singleline(&mut c.name).hint_text(if c.address.is_empty() { "TrueNAS".to_string() } else { normalize_or(&c.address) }).desired_width(340.0));
+                ui.add(egui::TextEdit::singleline(&mut c.name).hint_text(if c.address.is_empty() { "Server name".to_string() } else { normalize_or(&c.address) }).desired_width(340.0));
                 ui.end_row();
             });
             ui.weak("TrueNAS / Samba: smb://server/share/folder (the server's name or IP).");
@@ -251,7 +251,8 @@ impl OpenCad {
 
     pub(crate) fn save_window(&mut self, ctx: &egui::Context) {
         let Some(mut d) = self.save_dialog.take() else { return };
-        let roots = self.save_roots();
+        let mut roots = self.save_roots();
+        let now = ctx.input(|i| i.time);
         // What's in the folder shown: read in the background when it changes.
         let folder = d.folder(&roots);
         if let Some(rx) = &self.save_listing_rx {
@@ -265,19 +266,34 @@ impl OpenCad {
         match &folder {
             Some(dir) if self.save_listing.as_ref().is_none_or(|(at, _)| at != dir) => {
                 self.save_listing = Some((dir.clone(), None));
+                self.save_listing_since = now;
                 let (tx, rx) = std::sync::mpsc::channel();
-                let (dir, ctx) = (dir.clone(), ctx.clone());
+                let (dir, c) = (dir.clone(), ctx.clone());
                 std::thread::spawn(move || {
                     let l = save_dialog::read(&dir);
                     let _ = tx.send((dir, l));
-                    ctx.request_repaint();
+                    c.request_repaint();
                 });
                 self.save_listing_rx = Some(rx);
+                ctx.request_repaint_after(std::time::Duration::from_secs(4));
             }
             None => self.save_listing = None,
             _ => {}
         }
-        let listing = self.save_listing.as_ref().and_then(|(_, l)| l.as_ref());
+        // A share that hasn't answered in 4 s (Wi-Fi off, the network drive
+        // stuck): treated as away — the save is kept here and uploaded later.
+        let silent = self.save_listing.as_ref().is_some_and(|(_, l)| l.is_none()) && now - self.save_listing_since > 4.0;
+        if silent {
+            if let Some(r) = roots.get_mut(d.root).filter(|r| r.cloud) {
+                r.note = Some("not answering".into());
+                // (The cloud folders come first in `roots`: the same number.)
+                if let Some(ok) = self.cloud_status.reachable.get_mut(d.root) {
+                    *ok = false;
+                }
+            }
+        }
+        let no_answer: Result<save_dialog::Listing, String> = Err("not answering".into());
+        let listing = if silent { Some(&no_answer) } else { self.save_listing.as_ref().and_then(|(_, l)| l.as_ref()) };
         let current = self.path.clone();
         let mut act = save_dialog::Action::None;
         let mut open = true;
@@ -297,10 +313,12 @@ impl OpenCad {
                 self.save_as_in(folder);
             }
             save_dialog::Action::MakeFolder(p) => {
-                if let Err(e) = std::fs::create_dir_all(&p) {
-                    self.alert = Some(format!("Couldn't make the folder {}: {e}", p.display()));
-                    d.up();
-                }
+                // (On a share: off the main thread; the list is read again after.)
+                let c = ctx.clone();
+                std::thread::spawn(move || {
+                    let _ = std::fs::create_dir_all(&p);
+                    c.request_repaint();
+                });
                 self.save_listing = None;
                 self.save_dialog = Some(d);
             }
@@ -524,10 +542,18 @@ impl OpenCad {
         if r.hovered() {
             ui.painter().rect_filled(rect, 4.0, pal.raised);
         }
-        icons::paint(ui.painter(), egui::Rect::from_center_size(rect.center(), egui::vec2(22.0, 22.0)), Icon::Cloud, health != Health::NotSetUp);
+        let spot = egui::Rect::from_center_size(rect.center(), egui::vec2(22.0, 22.0));
+        if health == Health::Uploading {
+            // Uploading: a circular arrow turning slowly clockwise until it's done.
+            let t = ui.input(|i| i.time) as f32;
+            icons::circle_arrow(ui.painter(), spot, t * 2.2, egui::Color32::from_rgb(70, 145, 230));
+            ui.ctx().request_repaint();
+        } else {
+            icons::paint(ui.painter(), spot, Icon::Cloud, health != Health::NotSetUp);
+        }
         let dot = match health {
             Health::Good => Some(egui::Color32::from_rgb(90, 200, 110)),
-            Health::Uploading => Some(egui::Color32::from_rgb(240, 170, 60)),
+            Health::Uploading => None, // (the arrow says it)
             Health::Away => Some(egui::Color32::from_rgb(230, 90, 80)),
             Health::NoNetwork => Some(egui::Color32::from_gray(150)),
             Health::NotSetUp | Health::Unknown => None,

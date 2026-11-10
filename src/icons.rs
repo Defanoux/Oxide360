@@ -126,6 +126,8 @@ pub enum Icon {
     /// Start page: a new design, a cloud folder.
     NewDesign,
     Cloud,
+    /// Look again: a circular arrow.
+    Refresh,
 }
 
 const BLUE: Color32 = Color32::from_rgb(70, 145, 230);
@@ -155,6 +157,24 @@ pub fn construct_tint(icon: Icon, c: Color32) -> Color32 {
         Icon::ConstructPoint => crate::theme::turn_hue(c, -95.0),
         _ => c,
     }
+}
+
+/// A circular arrow in `rect`: three quarters of a circle with its head at
+/// `turn` (radians, screen y down; turning it clockwise spins the arrow).
+pub fn circle_arrow(painter: &egui::Painter, rect: Rect, turn: f32, c: Color32) {
+    let w = rect.width().min(rect.height());
+    let center = rect.center();
+    let r = w * 0.32;
+    let stroke = Stroke::new((w * 0.1).max(1.4), c);
+    let (a0, a1) = (turn - 4.4, turn);
+    let pts: Vec<Pos2> = (0..=28).map(|i| a0 + (a1 - a0) * i as f32 / 28.0).map(|a| center + egui::vec2(a.cos(), a.sin()) * r).collect();
+    painter.add(egui::Shape::line(pts, stroke));
+    // The head, pointing on round (clockwise).
+    let tip = center + egui::vec2(a1.cos(), a1.sin()) * r;
+    let along = egui::vec2(-a1.sin(), a1.cos());
+    let out = egui::vec2(a1.cos(), a1.sin());
+    let s = w * 0.17;
+    painter.add(egui::Shape::convex_polygon(vec![tip + along * s * 0.9, tip - along * s * 0.3 + out * s * 0.75, tip - along * s * 0.3 - out * s * 0.75], c, Stroke::NONE));
 }
 
 /// Draw `icon` inside `rect`. `ink` is the line colour (grey when disabled).
@@ -1107,6 +1127,7 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
             poly(&[(0.3, 0.6), (0.72, 0.6), (0.72, 0.76), (0.3, 0.76)], blue);
             painter.circle_filled(p(0.3, 0.6), w * 0.16, blue);
         }
+        Icon::Refresh => circle_arrow(painter, rect, -0.6, ink),
         Icon::Folder => {
             poly(&[(0.08, 0.28), (0.4, 0.28), (0.48, 0.38), (0.92, 0.38), (0.92, 0.84), (0.08, 0.84)], Color32::from_rgb(150, 150, 150));
             poly(&[(0.08, 0.44), (0.92, 0.44), (0.92, 0.84), (0.08, 0.84)], Color32::from_rgb(185, 185, 185));
@@ -1320,6 +1341,16 @@ mod shot_tests {
                 for icon in [Icon::PressPull, Icon::Fillet, Icon::Chamfer, Icon::Shell, Icon::Combine, Icon::Move, Icon::Parameters, Icon::ArcTangent, Icon::Symmetric, Icon::Ellipse, Icon::Break, Icon::ControlSpline, Icon::Text, Icon::Section, Icon::Midplane, Icon::Plane3Points, Icon::TangentPlane, Icon::AxisCylinder, Icon::Axis2Points, Icon::ConstructPoint, Icon::Sweep, Icon::Loft, Icon::Pipe, Icon::Coil, Icon::Import, Icon::Interference, Icon::Component, Icon::Joint, Icon::Appearance, Icon::Split, Icon::Scale, Icon::Emboss, Icon::PrintCheck, Icon::SketchFillet, Icon::SketchChamfer] {
                     button(ui, icon, "", true, false);
                 }
+            });
+        });
+        // The start page's and cloud icon's: refresh, cloud, new design, and the upload arrow turned.
+        crate::ui_shot::shot(&format!("{dir}/icons_cloud.png"), [260, 50], |ui| {
+            ui.horizontal(|ui| {
+                for icon in [Icon::Refresh, Icon::Cloud, Icon::NewDesign] {
+                    button(ui, icon, "", true, false);
+                }
+                let (r, _) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::hover());
+                circle_arrow(ui.painter(), r.shrink(6.0), 1.0, Color32::from_rgb(70, 145, 230));
             });
         });
         // As the toolbar draws them: in SOLID's orange and SKETCH's green.

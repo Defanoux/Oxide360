@@ -255,7 +255,7 @@ impl SaveDialog {
         };
         match &target {
             Ok(t) => {
-                ui.weak(format!("Saves to {}", t.display()));
+                ui.weak(format!("Saves to {}", place_name(roots, t)));
             }
             Err(e) => {
                 ui.colored_label(egui::Color32::from_rgb(230, 120, 90), e);
@@ -288,6 +288,19 @@ impl SaveDialog {
         }
         act
     }
+}
+
+/// Where `target` is, by the place's name: "TrueNAS › Keys › key.ox360"
+/// (not the folder path a network drive happens to have).
+pub fn place_name(roots: &[Root], target: &Path) -> String {
+    for r in roots {
+        if let Some(rest) = r.path.as_ref().and_then(|p| target.strip_prefix(p).ok()) {
+            let mut parts = vec![r.name.clone()];
+            parts.extend(rest.iter().map(|c| c.to_string_lossy().into_owned()));
+            return parts.join(" › ");
+        }
+    }
+    target.display().to_string()
 }
 
 /// A folder or design in the list: its icon and name, clickable.
@@ -333,6 +346,14 @@ mod tests {
         assert_eq!(SaveDialog::place_for(&r, None), (0, PathBuf::new()), "a new design goes to the cloud");
         let offline = vec![r[1].clone(), r[2].clone()];
         assert_eq!(SaveDialog::place_for(&offline, None), (1, PathBuf::new()), "this computer when the cloud is away");
+    }
+
+    #[test]
+    fn where_it_saves_reads_by_the_places_name() {
+        let r = roots();
+        assert_eq!(place_name(&r, Path::new("/nas/cad/keys/key.ox360")), "TrueNAS › keys › key.ox360");
+        assert_eq!(place_name(&r, Path::new("/home/g/Documents/a.ox360")), "This computer › a.ox360");
+        assert_eq!(place_name(&r, Path::new("/elsewhere/a.ox360")), "/elsewhere/a.ox360");
     }
 
     #[test]

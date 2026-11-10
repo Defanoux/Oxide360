@@ -185,6 +185,23 @@ pub fn normalize_url(typed: &str) -> Result<String, String> {
         format!("smb://{}", t.trim_start_matches('/'))
     };
     let url = url.trim_end_matches('/').to_string();
+    // A password typed into the address never gets kept (the settings file is
+    // plain text): it's taken out, and the desktop asks for it instead and
+    // keeps it in its own wallet (KWallet / GNOME Keyring, encrypted).
+    let url = match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let (host_part, path) = rest.split_once('/').map_or((rest, None), |(h, p)| (h, Some(p)));
+            let host_part = match host_part.rsplit_once('@') {
+                Some((user, host)) => format!("{}@{host}", user.split(':').next().unwrap_or(user)),
+                None => host_part.to_string(),
+            };
+            match path {
+                Some(p) => format!("{scheme}://{host_part}/{p}"),
+                None => format!("{scheme}://{host_part}"),
+            }
+        }
+        None => url,
+    };
     let (scheme, rest) = url.split_once("://").ok_or("not an address")?;
     if !["smb", "webdav", "webdavs", "sftp", "ftp", "nfs"].contains(&scheme) {
         return Err(format!("{scheme}:// isn't a kind of server this can connect to (smb, webdavs, sftp)"));
@@ -952,6 +969,7 @@ mod tests {
         assert_eq!(normalize_url("192.168.1.20/cad").as_deref(), Ok("smb://192.168.1.20/cad"));
         assert_eq!(normalize_url("\\\\truenas\\cad\\keys").as_deref(), Ok("smb://truenas/cad/keys"));
         assert_eq!(normalize_url(" webdavs://cloud.example.org/remote.php/dav/files/sam ").as_deref(), Ok("webdavs://cloud.example.org/remote.php/dav/files/sam"));
+        assert_eq!(normalize_url("smb://gavin:hunter2@192.168.1.20/cad").as_deref(), Ok("smb://gavin@192.168.1.20/cad"), "no password kept");
         assert!(normalize_url("").is_err());
         assert!(normalize_url("http://example.org").is_err());
         assert!(normalize_url("smb:///share").is_err());

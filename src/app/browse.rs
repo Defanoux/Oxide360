@@ -324,14 +324,21 @@ impl OpenCad {
                     ui.label(egui::RichText::new("Recent").size(18.0).strong());
                 }
                 Some(k) => {
+                    // The place and the folders down to here, each a box to go back up to.
                     let name = roots.get(k).map_or_else(String::new, |r| r.name.clone());
-                    if ui.add(egui::Button::new(egui::RichText::new(name).size(18.0).strong()).frame(false)).clicked() {
+                    let parts: Vec<String> = self.browse.sub.iter().map(|c| c.to_string_lossy().into_owned()).collect();
+                    let crumb = |ui: &mut egui::Ui, text: &str, here: bool| {
+                        let t = egui::RichText::new(text).size(17.0).strong();
+                        let b = if here { egui::Button::selectable(true, t) } else { egui::Button::new(t).fill(pal.raised) }.corner_radius(6.0).min_size(egui::vec2(0.0, 30.0));
+                        let r = ui.add(b);
+                        if here { r } else { r.on_hover_text(format!("Back to {text}")) }
+                    };
+                    if crumb(ui, &name, parts.is_empty()).clicked() {
                         self.browse.sub = PathBuf::new();
                     }
-                    let parts: Vec<String> = self.browse.sub.iter().map(|c| c.to_string_lossy().into_owned()).collect();
                     for (n, part) in parts.iter().enumerate() {
                         ui.label(egui::RichText::new("›").size(18.0).color(pal.weak));
-                        if ui.add(egui::Button::new(egui::RichText::new(part).size(18.0)).frame(false)).clicked() {
+                        if crumb(ui, part, n + 1 == parts.len()).clicked() {
                             self.browse.sub = parts[..=n].iter().collect();
                         }
                     }
@@ -340,7 +347,7 @@ impl OpenCad {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.selectable_value(&mut self.browse.list_view, true, "List").on_hover_text("Designs as a list");
                 ui.selectable_value(&mut self.browse.list_view, false, "Tiles").on_hover_text("Designs as pictures");
-                if ui.button("Refresh").on_hover_text("Look at your cloud folders and this list again").clicked() {
+                if icons::button_sized(ui, Icon::Refresh, "Refresh: look at your cloud folders and this list again", true, false, 28.0).clicked() {
                     self.cloud_refresh(ui.ctx());
                 }
                 if ui.button("Other File…").on_hover_text("Open a design kept somewhere else (the system's chooser)").clicked() {
