@@ -577,6 +577,30 @@ enum BrowseEdit {
     Delete(PathBuf, bool),
 }
 
+/// Which of the system's file choosers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PickKind {
+    File,
+    Save,
+    Folder,
+}
+
+/// What a file chooser (the system's, run off the main thread) was opened for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PickFor {
+    Open,
+    SaveAs,
+    /// Connect your cloud > Use a Folder on This Computer.
+    CloudFolder,
+    Export(export::Format),
+    /// The drawing sheet as PDF (true) or DXF.
+    Drawing(bool),
+    /// Sketch `0` as SVG (true) or DXF.
+    SketchDrawing(usize, bool),
+    InsertDrawing,
+    Import,
+}
+
 /// What the floating number box is editing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum EditTarget {
@@ -958,6 +982,8 @@ struct OpenCad {
     connect: Option<Connect>,               // the Connect your cloud window
     opening: Option<(PathBuf, std::sync::mpsc::Receiver<Result<(String, Option<u64>, Option<cloud::Lock>), String>>)>, // a cloud design being read in the background
     open_paths: Vec<PathBuf>,               // every tab's design (set by the tab holder)
+    upload_progress: Option<f32>,           // uploads under way: how far (0 to 1; set by the tab holder)
+    picking: Option<(PickFor, String, std::sync::mpsc::Receiver<Option<PathBuf>>)>, // a system file chooser open (off the main thread), what for, and a name to go with it
     cloud_status: CloudStatus,              // the title bar's cloud icon: how the servers are
     save_dialog: Option<save_dialog::SaveDialog>, // the Save window (name and where)
     save_listing: Option<(PathBuf, Option<Result<save_dialog::Listing, String>>)>, // the folder it shows, and what's in it (None: being read)
@@ -1259,6 +1285,8 @@ impl Default for OpenCad {
             connect: None,
             opening: None,
             open_paths: Vec::new(),
+            upload_progress: None,
+            picking: None,
             cloud_status: CloudStatus::default(),
             save_dialog: None,
             save_listing: None,
@@ -1519,6 +1547,7 @@ impl OpenCad {
         let _slow = SlowFrame(frame_start);
         self.frame_no += 1;
         self.poll_opening();
+        self.poll_pick();
         // Previews of modeled threads wait until a value is finished.
         let busy = ui.ctx().text_edit_focused() || ui.ctx().egui_is_using_pointer() || self.arrow_drag.is_some();
         if let Some(d) = self.hole_dialog.as_mut() {
@@ -1889,6 +1918,8 @@ struct Tabs {
     themed: bool,
     /// Cloud saves being uploaded (in the background), and when that was last tried.
     sync: Option<std::sync::mpsc::Receiver<(PathBuf, cloud::Uploaded)>>,
+    /// How far the uploads under way have got (0 to 1, as f32 bits).
+    sync_progress: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
     /// The tab last shown, and when another was switched to (it fades in).
     shown_tab: Option<usize>,
     switched_at: Option<f64>,
@@ -1982,6 +2013,11 @@ impl eframe::App for Tabs {
             t.theme = chosen;
         }
         self.sync_cloud(&ctx);
+        // (Every tab's cloud icon shows how far the uploads have got.)
+        let up = self.sync_progress.as_ref().map(|p| f32::from_bits(p.load(std::sync::atomic::Ordering::Relaxed)));
+        for t in &mut self.tabs {
+            t.upload_progress = up;
+        }
         let tab = &mut self.tabs[current];
         let close_me = std::mem::take(&mut tab.close_me);
         match tab.tab_request.take() {
@@ -2048,7 +2084,9 @@ impl eframe::App for Tabs {
                 self.tabs[k].confirm = Some(Pending::Quit);
             } else if !self.tabs.iter().any(|t| t.allow_close_uploads) {
                 // Saves to a server not uploaded yet: say so before closing.
-                let waiting = cloud::Cache::default_cache().map_or_else(Vec::new, |c| c.to_upload());
+                // (Only for designs open now that were saved to a server and haven't got there.)
+                let open: Vec<PathBuf> = self.tabs.iter().filter_map(|t| t.path.clone()).collect();
+                let waiting: Vec<cloud::Entry> = cloud::Cache::default_cache().map_or_else(Vec::new, |c| c.to_upload()).into_iter().filter(|e| open.contains(&e.cloud)).collect();
                 if !waiting.is_empty() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                     let t = &mut self.tabs[self.current];
@@ -2242,6 +2280,7 @@ impl Tabs {
             }
             if done {
                 self.sync = None;
+                self.sync_progress = None;
             }
             let cache = cloud::Cache::default_cache();
             if !got.is_empty() {
@@ -2323,9 +2362,16 @@ impl Tabs {
         let open: Vec<PathBuf> = self.tabs.iter().filter_map(|t| t.path.clone()).collect();
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = ctx.clone();
+        let progress = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        self.sync_progress = Some(progress.clone());
         std::thread::spawn(move || {
-            for e in list {
-                let r = cloud::upload(&cache, &e, !open.contains(&e.cloud));
+            let n = list.len().max(1) as f32;
+            for (i, e) in list.into_iter().enumerate() {
+                let tell = |f: f32| {
+                    progress.store(((i as f32 + f) / n).to_bits(), std::sync::atomic::Ordering::Relaxed);
+                    ctx.request_repaint();
+                };
+                let r = cloud::upload_with(&cache, &e, !open.contains(&e.cloud), &tell);
                 if tx.send((e.cloud.clone(), r)).is_err() {
                     return;
                 }
@@ -2444,7 +2490,7 @@ fn main() -> eframe::Result {
                 // Nothing to open: the start page (recent and cloud designs, New, Open).
                 None => first.start_page = true,
             }
-            Ok(Box::new(Tabs { tabs: vec![first], current: 0, gpu, title: String::new(), control, recovered, themed: false, shown_tab: None, switched_at: None, sync: None, sync_at: f64::NEG_INFINITY, sync_told: Vec::new() }))
+            Ok(Box::new(Tabs { tabs: vec![first], current: 0, gpu, title: String::new(), control, recovered, themed: false, sync_progress: None, shown_tab: None, switched_at: None, sync: None, sync_at: f64::NEG_INFINITY, sync_told: Vec::new() }))
         }),
     )
 }

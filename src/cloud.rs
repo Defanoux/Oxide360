@@ -671,7 +671,13 @@ fn civil(days: i64) -> (i64, u32, u32) {
 /// elsewhere since the copy was made isn't replaced: `Changed` (when
 /// `as_copy` is false: someone will choose), or uploaded beside it under a
 /// conflict name. Runs off the main thread.
+#[cfg(test)]
 pub fn upload(cache: &Cache, e: &Entry, as_copy: bool) -> Uploaded {
+    upload_with(cache, e, as_copy, &|_| {})
+}
+
+/// `upload`, telling `progress` how much of the file is written (0 to 1) as it goes.
+pub fn upload_with(cache: &Cache, e: &Entry, as_copy: bool, progress: &dyn Fn(f32)) -> Uploaded {
     let Some(dir) = e.cloud.parent() else { return Uploaded::Away("no folder".into()) };
     if !dir.is_dir() {
         return Uploaded::Away(format!("{} can't be reached", dir.display()));
@@ -688,7 +694,20 @@ pub fn upload(cache: &Cache, e: &Entry, as_copy: bool) -> Uploaded {
         e.cloud.clone()
     };
     let tmp = to.with_extension(format!("{}.tmp", crate::doc::EXTENSION));
-    if let Err(err) = std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, &to)) {
+    // In pieces, saying how far it's got (a big design over a slow link takes a while).
+    let write = || -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        let piece = 64 * 1024;
+        for (k, chunk) in bytes.chunks(piece).enumerate() {
+            f.write_all(chunk)?;
+            progress(((k + 1) * piece).min(bytes.len()) as f32 / bytes.len().max(1) as f32);
+        }
+        f.sync_all()?;
+        std::fs::rename(&tmp, &to)
+    };
+    progress(0.0);
+    if let Err(err) = write() {
         let _ = std::fs::remove_file(&tmp);
         return Uploaded::Away(format!("couldn't write {}: {err}", to.display()));
     }
@@ -911,6 +930,14 @@ mod tests {
         assert!(beside.file_name().unwrap().to_string_lossy().starts_with("key (conflict, "), "{beside:?}");
         assert_eq!(std::fs::read_to_string(&beside).unwrap(), "mine v3");
         assert_eq!(std::fs::read_to_string(&design).unwrap(), "theirs v2");
+        // Progress is told as it goes, ending at all of it.
+        let seen = std::cell::RefCell::new(Vec::new());
+        cache.keep(&design, &vec![7u8; 200_000], None, true).unwrap();
+        cache.update(&design, |e| e.force = true);
+        assert!(matches!(upload_with(&cache, &cache.entry(&design).unwrap(), false, &|f| seen.borrow_mut().push(f)), Uploaded::Done(_)));
+        let seen = seen.into_inner();
+        assert!(seen.len() >= 4 && seen.windows(2).all(|w| w[0] <= w[1]) && *seen.last().unwrap() == 1.0, "{seen:?}");
+        cache.keep(&design, b"mine v3", None, true).unwrap();
         // … or replaced when told to.
         cache.update(&design, |e| e.force = true);
         assert!(matches!(upload(&cache, &cache.entry(&design).unwrap(), false), Uploaded::Done(_)));

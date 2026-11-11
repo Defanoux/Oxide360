@@ -228,19 +228,8 @@ impl OpenCad {
     pub(crate) fn export_drawing(&mut self, pdf: bool) {
         let ext = if pdf { "pdf" } else { "dxf" };
         let name = self.file_name().trim_end_matches(".ox360").trim_end_matches(".ocad").to_string();
-        let picked = self
-            .file_dialog()
-            .set_title(format!("Export Drawing As {}", ext.to_uppercase()))
-            .add_filter(if pdf { "PDF document" } else { "DXF drawing" }, &[ext])
-            .set_file_name(format!("{name}.{ext}"))
-            .save_file();
-        let Some(mut p) = picked else { return };
-        if p.extension().is_none_or(|e| e != ext) {
-            p.set_extension(ext);
-        }
-        if let Err(e) = self.export_drawing_to(&p) {
-            self.alert = Some(e);
-        }
+        let d = self.file_dialog().set_title(format!("Export Drawing As {}", ext.to_uppercase())).add_filter(if pdf { "PDF document" } else { "DXF drawing" }, &[ext]).set_file_name(format!("{name}.{ext}"));
+        self.ask_path(d, PickKind::Save, PickFor::Drawing(pdf), String::new());
     }
 
     /// Write the sheet to `path`: PDF or DXF by its extension.

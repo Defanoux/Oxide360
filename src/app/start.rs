@@ -165,19 +165,10 @@ impl OpenCad {
             }
         });
         if local {
-            if let Some(dir) = rfd::FileDialog::new().set_title("A folder for your designs (synced, or on a share)").pick_folder() {
-                let mut f = cloud::CloudFolder::at(dir);
-                if !c.name.trim().is_empty() {
-                    f.name = c.name.trim().to_string();
-                }
-                if !self.cloud_folders.iter().any(|x| x.path == f.path) {
-                    let name = f.name.clone();
-                    self.cloud_folders.push(f);
-                    self.note_saved(format!("Added {name}"), true, true);
-                }
-                self.scan_cloud(ctx);
-                return;
-            }
+            // (The system's chooser, off the main thread: `add_local_cloud_folder` when picked.)
+            let d = rfd::FileDialog::new().set_title("A folder for your designs (synced, or on a share)");
+            self.ask_path(d, PickKind::Folder, PickFor::CloudFolder, c.name.trim().to_string());
+            return;
         }
         if !close {
             self.connect = Some(c);
@@ -190,6 +181,23 @@ impl OpenCad {
         self.tab_request = Some(TabRequest::Open);
     }
 
+}
+
+impl OpenCad {
+    /// A folder on this computer picked as a cloud folder (`name` if given).
+    pub(crate) fn add_local_cloud_folder(&mut self, dir: PathBuf, name: &str) {
+        let mut f = cloud::CloudFolder::at(dir);
+        if !name.is_empty() {
+            f.name = name.to_string();
+        }
+        if !self.cloud_folders.iter().any(|x| x.path == f.path) {
+            let n = f.name.clone();
+            self.cloud_folders.push(f);
+            self.note_saved(format!("Added {n}"), true, true);
+        }
+        self.cloud_status.checked = None;
+        self.cloud_lists.clear();
+    }
 }
 
 /// The name an address would give (for the Name box's hint).
@@ -543,11 +551,9 @@ impl OpenCad {
             ui.painter().rect_filled(rect, 4.0, pal.raised);
         }
         let spot = egui::Rect::from_center_size(rect.center(), egui::vec2(22.0, 22.0));
-        if health == Health::Uploading {
-            // Uploading: a circular arrow turning slowly clockwise until it's done.
-            let t = ui.input(|i| i.time) as f32;
-            icons::circle_arrow(ui.painter(), spot, t * 2.2, egui::Color32::from_rgb(70, 145, 230));
-            ui.ctx().request_repaint();
+        if let Some(frac) = self.upload_progress.or((health == Health::Uploading).then_some(0.0)) {
+            // Uploading: a ring filling clockwise as it goes, until it's all up.
+            icons::progress_ring(ui.painter(), spot, frac, egui::Color32::from_rgb(70, 145, 230), pal.raised);
         } else {
             icons::paint(ui.painter(), spot, Icon::Cloud, health != Health::NotSetUp);
         }

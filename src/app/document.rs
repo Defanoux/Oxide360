@@ -795,20 +795,9 @@ impl OpenCad {
         if let Some(d) = dir {
             dialog = dialog.set_directory(d);
         }
-        let picked = dialog
-            .set_title("Save design")
-            .add_filter("Oxide360 design", &[doc::EXTENSION])
-            .set_file_name(format!("{stem}.{}", doc::EXTENSION))
-            .save_file();
-        match picked {
-            Some(mut p) => {
-                if p.extension().is_none_or(|e| e != doc::EXTENSION) {
-                    p.set_extension(doc::EXTENSION);
-                }
-                self.save_to(p)
-            }
-            None => false, // cancelled
-        }
+        let dialog = dialog.set_title("Save design").add_filter("Oxide360 design", &[doc::EXTENSION]).set_file_name(format!("{stem}.{}", doc::EXTENSION));
+        self.ask_path(dialog, PickKind::Save, PickFor::SaveAs, String::new());
+        false // (saved once it's picked)
     }
 
     pub(crate) fn save(&mut self) -> bool {
@@ -829,14 +818,84 @@ impl OpenCad {
     }
 
     pub(crate) fn open_dialog(&mut self) {
-        let picked = self
-            .file_dialog()
-            .set_title("Open design")
-            .add_filter("Oxide360 design", &[doc::EXTENSION, doc::OLD_EXTENSION])
-            .pick_file();
-        if let Some(p) = picked {
-            self.open_in_tab = Some(p);
-            self.tab_request = Some(TabRequest::Open);
+        let d = self.file_dialog().set_title("Open design").add_filter("Oxide360 design", &[doc::EXTENSION, doc::OLD_EXTENSION]);
+        self.ask_path(d, PickKind::File, PickFor::Open, String::new());
+    }
+
+    /// Open the system's file chooser off the main thread (it can take a
+    /// while to come up, and the window must keep answering meanwhile);
+    /// `poll_pick` carries on with what's picked.
+    pub(crate) fn ask_path(&mut self, dialog: rfd::FileDialog, kind: PickKind, what: PickFor, note: String) {
+        if self.picking.is_some() {
+            return; // (one at a time)
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let p = match kind {
+                PickKind::File => dialog.pick_file(),
+                PickKind::Save => dialog.save_file(),
+                PickKind::Folder => dialog.pick_folder(),
+            };
+            let _ = tx.send(p);
+        });
+        self.picking = Some((what, note, rx));
+    }
+
+    /// A file chooser answered: do what it was opened for.
+    pub(crate) fn poll_pick(&mut self) {
+        let Some((what, _, rx)) = &self.picking else { return };
+        let got = match rx.try_recv() {
+            Ok(p) => p,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+        };
+        let what = *what;
+        let note = self.picking.take().map(|(_, n, _)| n).unwrap_or_default();
+        let Some(mut p) = got else { return }; // (cancelled)
+        let with_ext = |p: &mut PathBuf, ext: &str| {
+            if p.extension().is_none_or(|e| e != ext) {
+                p.set_extension(ext);
+            }
+        };
+        match what {
+            PickFor::Open => {
+                self.open_in_tab = Some(p);
+                self.tab_request = Some(TabRequest::Open);
+            }
+            PickFor::SaveAs => {
+                with_ext(&mut p, doc::EXTENSION);
+                self.save_to(p);
+            }
+            PickFor::CloudFolder => self.add_local_cloud_folder(p, &note),
+            PickFor::Export(format) => {
+                with_ext(&mut p, format.extension());
+                self.export_to(format, &p);
+            }
+            PickFor::Drawing(pdf) => {
+                with_ext(&mut p, if pdf { "pdf" } else { "dxf" });
+                if let Err(e) = self.export_drawing_to(&p) {
+                    self.alert = Some(e);
+                }
+            }
+            PickFor::SketchDrawing(i, svg) => {
+                with_ext(&mut p, if svg { "svg" } else { "dxf" });
+                if let Some(sk) = self.sketches.get(i) {
+                    let text = if svg { sketch_export::svg(sk) } else { sketch_export::dxf(sk) };
+                    if let Err(e) = std::fs::write(&p, text) {
+                        self.alert = Some(format!("Couldn't save {}: {e}", p.display()));
+                    }
+                }
+            }
+            PickFor::InsertDrawing => {
+                if let Err(e) = self.insert_drawing_path(&p) {
+                    self.alert = Some(e);
+                }
+            }
+            PickFor::Import => {
+                if let Err(e) = self.import_path(&p) {
+                    self.alert = Some(e);
+                }
+            }
         }
     }
 
@@ -1426,20 +1485,17 @@ impl OpenCad {
         let ext = format.extension();
         // Named with the version ("bracket v3.step"), so several exports say which is which.
         let stem = self.tab_title();
-        let picked = self
-            .file_dialog()
-            .set_title(format!("Export {}", ext.to_uppercase()))
-            .add_filter(format.label(), &[ext])
-            .set_file_name(format!("{stem}.{ext}"))
-            .save_file();
-        let Some(mut p) = picked else { return };
-        if p.extension().is_none_or(|e| e != ext) {
-            p.set_extension(ext);
-        }
+        let d = self.file_dialog().set_title(format!("Export {}", ext.to_uppercase())).add_filter(format.label(), &[ext]).set_file_name(format!("{stem}.{ext}"));
+        self.ask_path(d, PickKind::Save, PickFor::Export(format), String::new());
+    }
+
+    /// Write the shown bodies to `p` as `format`.
+    pub(crate) fn export_to(&mut self, format: export::Format, p: &std::path::Path) {
+        let shown: Vec<usize> = self.model(Slot::Committed).bodies.iter().enumerate().filter(|(_, b)| !self.hidden_bodies.contains(&b.id)).map(|(k, _)| k).collect();
         let model = self.model(Slot::Committed);
         let visible: Vec<&kernel::Body> = shown.iter().map(|&k| &model.bodies[k]).collect();
         let result = match format {
-            export::Format::Step => kernel::write_step(&p, &visible),
+            export::Format::Step => kernel::write_step(p, &visible),
             _ => {
                 let names: Vec<String> = visible.iter().map(|b| self.body_name(b.id)).collect();
                 let bodies: Vec<export::Body> = visible
@@ -1447,7 +1503,7 @@ impl OpenCad {
                     .zip(&names)
                     .map(|(b, name)| export::Body { name: name.clone(), mesh: &b.mesh })
                     .collect();
-                export::write(&p, format, &bodies)
+                export::write(p, format, &bodies)
             }
         };
         if let Err(e) = result {
@@ -1474,20 +1530,12 @@ impl OpenCad {
     pub(crate) fn save_sketch_drawing(&mut self, i: usize, svg: bool) {
         let Some(sk) = self.sketches.get(i) else { return };
         let ext = if svg { "svg" } else { "dxf" };
-        let picked = self
+        let d = self
             .file_dialog()
             .set_title(format!("Save {} As {}", sk.name, ext.to_uppercase()))
             .add_filter(if svg { "SVG drawing" } else { "DXF drawing" }, &[ext])
-            .set_file_name(format!("{}.{ext}", sk.name))
-            .save_file();
-        let Some(mut p) = picked else { return };
-        if p.extension().is_none_or(|e| e != ext) {
-            p.set_extension(ext);
-        }
-        let text = if svg { sketch_export::svg(sk) } else { sketch_export::dxf(sk) };
-        if let Err(e) = std::fs::write(&p, text) {
-            self.alert = Some(format!("Couldn't save {}: {e}", p.display()));
-        }
+            .set_file_name(format!("{}.{ext}", sk.name));
+        self.ask_path(d, PickKind::Save, PickFor::SketchDrawing(i, svg), String::new());
     }
 
     pub(crate) fn run(&mut self, action: Pending, ctx: &egui::Context) {
@@ -1532,20 +1580,12 @@ impl OpenCad {
             }
             Cmd::Export(f) => self.export(f),
             Cmd::InsertDrawing => {
-                let picked = self.file_dialog().set_title("Insert SVG / DXF").add_filter("SVG or DXF drawing", &["svg", "dxf", "SVG", "DXF"]).pick_file();
-                if let Some(p) = picked {
-                    if let Err(e) = self.insert_drawing_path(&p) {
-                        self.alert = Some(e);
-                    }
-                }
+                let d = self.file_dialog().set_title("Insert SVG / DXF").add_filter("SVG or DXF drawing", &["svg", "dxf", "SVG", "DXF"]);
+                self.ask_path(d, PickKind::File, PickFor::InsertDrawing, String::new());
             }
             Cmd::Import => {
-                let picked = self.file_dialog().set_title("Insert into Design").add_filter("STEP or STL", &["step", "stp", "stl", "STEP", "STP", "STL"]).pick_file();
-                if let Some(p) = picked {
-                    if let Err(e) = self.import_path(&p) {
-                        self.alert = Some(e);
-                    }
-                }
+                let d = self.file_dialog().set_title("Insert into Design").add_filter("STEP or STL", &["step", "stp", "stl", "STEP", "STP", "STL"]);
+                self.ask_path(d, PickKind::File, PickFor::Import, String::new());
             }
         }
     }

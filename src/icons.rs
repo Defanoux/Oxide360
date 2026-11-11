@@ -159,6 +159,21 @@ pub fn construct_tint(icon: Icon, c: Color32) -> Color32 {
     }
 }
 
+/// A ring filling clockwise from the top: `frac` (0 to 1) of it done.
+pub fn progress_ring(painter: &egui::Painter, rect: Rect, frac: f32, c: Color32, track: Color32) {
+    let w = rect.width().min(rect.height());
+    let (center, r) = (rect.center(), w * 0.36);
+    let width = (w * 0.14).max(2.0);
+    painter.circle_stroke(center, r, Stroke::new(width, track));
+    let frac = frac.clamp(0.0, 1.0);
+    if frac > 0.0 {
+        let a0 = -std::f32::consts::FRAC_PI_2;
+        let n = (48.0 * frac).ceil().max(2.0) as usize;
+        let pts: Vec<Pos2> = (0..=n).map(|i| a0 + std::f32::consts::TAU * frac * i as f32 / n as f32).map(|a| center + egui::vec2(a.cos(), a.sin()) * r).collect();
+        painter.add(egui::Shape::line(pts, Stroke::new(width, c)));
+    }
+}
+
 /// A circular arrow in `rect`: three quarters of a circle with its head at
 /// `turn` (radians, screen y down; turning it clockwise spins the arrow).
 pub fn circle_arrow(painter: &egui::Painter, rect: Rect, turn: f32, c: Color32) {
@@ -1350,7 +1365,7 @@ mod shot_tests {
                     button(ui, icon, "", true, false);
                 }
                 let (r, _) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::hover());
-                circle_arrow(ui.painter(), r.shrink(6.0), 1.0, Color32::from_rgb(70, 145, 230));
+                progress_ring(ui.painter(), r.shrink(6.0), 0.6, Color32::from_rgb(70, 145, 230), Color32::from_gray(70));
             });
         });
         // As the toolbar draws them: in SOLID's orange and SKETCH's green.
