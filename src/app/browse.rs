@@ -32,7 +32,8 @@ struct Shown {
 enum Ask {
     Open(PathBuf),
     Enter(String),
-    Rename(PathBuf),
+    /// (A project folder if true.)
+    Rename(PathBuf, bool),
     MoveTo(PathBuf, PathBuf),
     Keep(PathBuf, bool),
     Forget(PathBuf),
@@ -498,7 +499,7 @@ impl OpenCad {
             let busy = self.open_here(&it.path);
             if it.there {
                 if ui.add_enabled(!busy, egui::Button::new("Rename…")).on_disabled_hover_text("It's open here: close it first").clicked() {
-                    ask = Some(Ask::Rename(it.path.clone()));
+                    ask = Some(Ask::Rename(it.path.clone(), it.folder));
                 }
                 // Move to another project of the same place.
                 if !it.folder {
@@ -578,8 +579,8 @@ impl OpenCad {
             Ask::Enter(name) => {
                 self.browse.sub.push(name);
             }
-            Ask::Rename(p) => {
-                let name = if p.is_dir() { p.file_name() } else { p.file_stem() }.map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            Ask::Rename(p, folder) => {
+                let name = if folder { p.file_name() } else { p.file_stem() }.map_or_else(String::new, |n| n.to_string_lossy().into_owned());
                 self.browse.edit = Some(BrowseEdit::Rename(p, name));
             }
             Ask::MoveTo(p, d) => {

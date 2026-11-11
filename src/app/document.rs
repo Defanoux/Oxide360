@@ -433,19 +433,32 @@ impl OpenCad {
         match self.path.clone() {
             None => self.name = Some(new.to_string()),
             Some(old) => {
-                let to = old.with_file_name(format!("{new}.{}", doc::EXTENSION));
-                if to == old {
-                    return;
-                }
-                if to.exists() {
-                    self.alert = Some(format!("There's already a design called \"{new}\" in that folder."));
-                    return;
-                }
-                match std::fs::rename(&old, &to) {
-                    Ok(()) => self.path = Some(to),
-                    Err(e) => self.alert = Some(format!("Couldn't rename the file: {e}")),
-                }
+                // (The file may be on a share: renamed off the main thread, its
+                // offline copy and Recent following.)
+                let (name, mut recent) = (new.to_string(), self.recent.clone());
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let r = file_browser::rename(&old, &name, cloud::Cache::default_cache().as_ref(), &mut recent);
+                    let _ = tx.send((r, recent));
+                });
+                self.rename_rx = Some(rx);
             }
+        }
+    }
+
+    /// The design's file renamed: it's at its new name now.
+    pub(crate) fn poll_rename(&mut self) {
+        let Some(rx) = &self.rename_rx else { return };
+        let Ok((r, recent)) = rx.try_recv() else { return };
+        self.rename_rx = None;
+        match r {
+            Ok(to) => {
+                self.recent = recent;
+                self.file_lock = None;
+                self.track_file(&to);
+                self.path = Some(to);
+            }
+            Err(e) => self.alert = Some(format!("Couldn't rename it: {e}")),
         }
     }
 
@@ -768,7 +781,7 @@ impl OpenCad {
                 self.sync_now = true;
                 self.cloud_status.checked = None;
                 let (name, place) = (self.cloud_name(&path), self.place_text(&path));
-                if self.cloud_away(&path) {
+                if self.cloud_away(&path) || (self.cloud_status.checked.is_some() && !self.cloud_status.network) || !cloud::on_network() {
                     self.note_saved(format!("Saved on this computer for now — {name} can't be reached; it'll upload when it's back"), false, true);
                 } else {
                     self.note_saved(format!("Saving to {place}…"), true, false);
@@ -1663,7 +1676,7 @@ impl OpenCad {
         if self.overwrite_asked {
             let mut choice = None;
             let name = self.file_name();
-            let who = self.path.as_deref().and_then(|p| cloud::held_elsewhere(p, &cloud::Lock::mine(), recovery::process_alive));
+            let who = self.overwrite_who.clone();
             let _ = egui::Modal::new(egui::Id::new("confirm_overwrite")).show(ctx, |ui| {
                 ui.heading("Saved somewhere else");
                 ui.label(format!("\"{name}\" was saved from somewhere else since you opened it here."));

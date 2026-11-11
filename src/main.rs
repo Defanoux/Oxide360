@@ -974,6 +974,8 @@ struct OpenCad {
     file_stamp: Option<std::time::SystemTime>, // when the file was written, as last opened or saved here
     file_lock: Option<cloud::LockGuard>,    // a cloud design's "open here" lock while it's open
     overwrite_asked: bool,                  // Save found the file saved from elsewhere since: asking
+    overwrite_who: Option<cloud::Lock>,     // … and who has it open there (found off the main thread)
+    rename_rx: Option<std::sync::mpsc::Receiver<(Result<PathBuf, String>, Vec<PathBuf>)>>, // the design's file being renamed (off the main thread)
     sync_now: bool,                         // a cloud save is waiting: upload now (see Tabs::sync_cloud)
     save_place: String,                     // where new designs save first (settings; see Settings::save_place)
     save_note: Option<(String, bool, bool, f64)>, // "Saved to …": the text, in the cloud?, done (else under way), when shown
@@ -1277,6 +1279,8 @@ impl Default for OpenCad {
             file_stamp: None,
             file_lock: None,
             overwrite_asked: false,
+            overwrite_who: None,
+            rename_rx: None,
             sync_now: false,
             save_place: String::new(),
             save_note: None,
@@ -1548,6 +1552,7 @@ impl OpenCad {
         self.frame_no += 1;
         self.poll_opening();
         self.poll_pick();
+        self.poll_rename();
         // Previews of modeled threads wait until a value is finished.
         let busy = ui.ctx().text_edit_focused() || ui.ctx().egui_is_using_pointer() || self.arrow_drag.is_some();
         if let Some(d) = self.hole_dialog.as_mut() {
@@ -1917,7 +1922,7 @@ struct Tabs {
     /// The theme has been applied to egui at least once.
     themed: bool,
     /// Cloud saves being uploaded (in the background), and when that was last tried.
-    sync: Option<std::sync::mpsc::Receiver<(PathBuf, cloud::Uploaded)>>,
+    sync: Option<std::sync::mpsc::Receiver<(PathBuf, cloud::Uploaded, Option<cloud::Lock>)>>,
     /// How far the uploads under way have got (0 to 1, as f32 bits).
     sync_progress: Option<std::sync::Arc<std::sync::atomic::AtomicU32>>,
     /// The tab last shown, and when another was switched to (it fades in).
@@ -2289,7 +2294,7 @@ impl Tabs {
                     t.cloud_status.checked = None;
                 }
             }
-            for (path, r) in got {
+            for (path, r, who) in got {
                 let told = self.sync_told.contains(&path);
                 let at = self.tabs.iter().position(|t| t.path.as_ref() == Some(&path));
                 let tab = at.map_or(self.current, |k| k);
@@ -2313,6 +2318,7 @@ impl Tabs {
                         }
                         if let Some(k) = at {
                             self.tabs[k].overwrite_asked = true;
+                            self.tabs[k].overwrite_who = who;
                         }
                         self.sync_told.retain(|p| *p != path);
                     }
@@ -2371,8 +2377,12 @@ impl Tabs {
                     progress.store(((i as f32 + f) / n).to_bits(), std::sync::atomic::Ordering::Relaxed);
                     ctx.request_repaint();
                 };
-                let r = cloud::upload_with(&cache, &e, !open.contains(&e.cloud), &tell);
-                if tx.send((e.cloud.clone(), r)).is_err() {
+                // No network at all: don't touch the share (a network drive with
+                // nowhere to go can hang for minutes); try again later.
+                let r = if cloud::on_network() { cloud::upload_with(&cache, &e, !open.contains(&e.cloud), &tell) } else { cloud::Uploaded::Away("no network".into()) };
+                // Saved there since: who has it open, for the question (asked here, off the main thread).
+                let who = matches!(r, cloud::Uploaded::Changed).then(|| cloud::held_elsewhere(&e.cloud, &cloud::Lock::mine(), recovery::process_alive)).flatten();
+                if tx.send((e.cloud.clone(), r, who)).is_err() {
                     return;
                 }
                 ctx.request_repaint();

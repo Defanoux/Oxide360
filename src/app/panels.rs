@@ -274,7 +274,8 @@ impl OpenCad {
                     }
                     for (k, p) in self.recent.iter().enumerate() {
                         let name = p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
-                        let there = p.exists();
+                        // (Looked up in the background: nothing here waits on a share.)
+                        let there = self.recent_seen.iter().find(|s| s.0 == *p).is_none_or(|s| s.1);
                         let r = ui.add_enabled(there, egui::Button::new(name)).on_hover_text(p.display().to_string()).on_disabled_hover_text(format!("{} (moved or deleted)", p.display()));
                         if r.clicked() {
                             self.cmd = Some(Cmd::OpenRecent(k));
