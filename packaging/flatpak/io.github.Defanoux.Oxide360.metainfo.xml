@@ -45,6 +45,11 @@
     <control>keyboard</control>
   </supports>
   <releases>
+    <release version="0.3.2" date="2026-11-12">
+      <description>
+        <p>Fixes a crash with big coils on graphics cards with smaller limits; meshing uses every core and keeps bodies to a size any card can draw; the taskbar entry flashes when a long rebuild finishes in the background.</p>
+      </description>
+    </release>
     <release version="0.3.1" date="2026-11-12">
       <description>
         <p>Crash logs: each run keeps a log, and after a crash the next start says where it is. The start page greets you by the time of day.</p>
