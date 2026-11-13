@@ -93,6 +93,9 @@ Rough order of what landed (see `git log` and TODO.md's Done list for detail):
    into `packaging/flatpak/site-preview/` without pushing. The signing key is
    in `~/.local/share/oxide360-signing/gnupg` (outside the project, never
    committed; keep a backup — a new key means everyone re-installs).
+7. Fedora COPR: bump `Version:` + `%changelog` in `packaging/rpm/oxide360.spec`,
+   then `packaging/rpm/copr.sh` (builds the RPM from the tag on COPR; setup in
+   `packaging/rpm/README.md`).
 
 To try a built Flatpak: `flatpak install --user -y dist/Oxide360.flatpak`,
 then `flatpak run io.github.Defanoux.Oxide360`. To drive it with the control
