@@ -406,6 +406,59 @@ impl OpenCad {
     }
 }
 
+impl OpenCad {
+    /// Bottom right, while a cloud design is open from the copy on this
+    /// computer: says so and why, until the connection is back (looked at
+    /// once a second) or it's closed.
+    pub(crate) fn local_open_ui(&mut self, ctx: &egui::Context) {
+        let Some((p, why)) = self.local_open.clone() else { return };
+        if self.path.as_ref() != Some(&p) {
+            self.local_open = None;
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        let name = self.cloud_name(&p);
+        if now - self.local_checked > 1.0 {
+            self.local_checked = now;
+            let pending = cloud::Cache::default_cache().and_then(|c| c.entry(&p)).is_some_and(|e| e.pending);
+            if cloud::on_network() && !self.cloud_away(&p) && !pending {
+                self.local_open = None;
+                self.notify(format!("Back online: {} is up to date on {name}", p.file_stem().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
+                return;
+            }
+        }
+        ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        let pal = theme::now();
+        let mut close = false;
+        egui::Area::new(egui::Id::new("local_open"))
+            .order(egui::Order::Middle)
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-14.0, -self.timeline_height - 14.0))
+            .show(ctx, |ui| {
+                egui::Frame::new().fill(pal.window).corner_radius(8.0).stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(235, 150, 60))).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
+                    ui.set_max_width(330.0);
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
+                        icons::place_badge(ui.painter(), r.center(), 22.0, crate::file_browser::Stored::Waiting);
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Opened from this computer").strong().color(pal.text).size(14.0));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.small_button("×").on_hover_text("Hide").clicked() {
+                                        close = true;
+                                    }
+                                });
+                            });
+                            ui.label(egui::RichText::new(format!("This design is on {name}. {why} You're working on the copy kept here; saves upload to {name} when it's back.")).color(pal.weak).size(13.0));
+                        });
+                    });
+                });
+            });
+        if close {
+            self.local_open = None;
+        }
+    }
+}
+
 // ---------- previews ----------
 
 impl OpenCad {

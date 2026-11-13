@@ -940,12 +940,12 @@ impl OpenCad {
                 app.remember_recent(&p);
                 app.reset_with(d, Some(p.clone()));
                 app.track_file(&p);
-                app.notify(why);
+                app.local_open = Some((p.clone(), why));
                 true
             }
             _ => false,
         };
-        if entry.as_ref().is_some_and(|e| e.pending) && from_copy(self, format!("Opened the copy on this computer: it has saves not uploaded to {name} yet")) {
+        if entry.as_ref().is_some_and(|e| e.pending) && from_copy(self, format!("It has saves not uploaded to {name} yet.")) {
             self.sync_now = true;
             return;
         }
@@ -953,7 +953,7 @@ impl OpenCad {
         // share away: the copy here, without waiting on the share.
         let offline = !cloud::on_network();
         if offline || self.cloud_away(&p) {
-            let why = if offline { format!("No network — opened the copy on this computer; saves upload to {name} when it's back") } else { format!("{name} can't be reached — opened the copy on this computer; saves upload when it's back") };
+            let why = if offline { "Wi-Fi is off (no network).".to_string() } else { format!("{name} can't be reached.") };
             if !from_copy(self, why) {
                 self.alert = Some(format!("{name} can't be reached, and this computer has no copy of {}.", p.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
             }
@@ -980,7 +980,7 @@ impl OpenCad {
             Ok(g) => g,
             // The share hasn't answered in 3 s and there's a copy here: that
             // opens (the read is left to finish on its own).
-            Err(std::sync::mpsc::TryRecvError::Empty) if self.opening_since.is_some_and(|t| t.elapsed().as_secs_f32() > 3.0) && cloud::Cache::default_cache().is_some_and(|c| c.copy_of(p).is_some()) => Err(format!("{} didn't answer", self.cloud_name(p))),
+            Err(std::sync::mpsc::TryRecvError::Empty) if self.opening_since.is_some_and(|t| t.elapsed().as_secs_f32() > 3.0) && cloud::Cache::default_cache().is_some_and(|c| c.copy_of(p).is_some()) => Err("too slow".to_string()),
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the read stopped".into()),
         };
@@ -1008,7 +1008,7 @@ impl OpenCad {
                     self.remember_recent(&p);
                     self.reset_with(d, Some(p.clone()));
                     self.track_file(&p);
-                    self.notify(format!("Couldn't read it from {name} ({e}) — opened the copy on this computer"));
+                    self.local_open = Some((p.clone(), format!("{name} didn't answer ({e}).")));
                 }
                 _ => self.alert = Some(format!("Couldn't open {}: {e}", p.display())),
             },

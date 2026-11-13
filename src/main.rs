@@ -981,6 +981,8 @@ struct OpenCad {
     sync_now: bool,                         // a cloud save is waiting: upload now (see Tabs::sync_cloud)
     save_place: String,                     // where new designs save first (settings; see Settings::save_place)
     save_note: Option<(String, bool, bool, f64)>, // "Saved to …": the text, in the cloud?, done (else under way), when shown
+    local_open: Option<(PathBuf, String)>, // a cloud design opened from the copy on this computer (no network / server away): its path, and why
+    local_checked: f64, // when the connection was last looked at for that notice (app time)
     tab_h: f32,                             // the design tabs' height (the Home tab is a square that high)
     browse: BrowseState,                    // the start page's file viewer (see app/browse.rs)
     connect: Option<Connect>,               // the Connect your cloud window
@@ -1287,6 +1289,8 @@ impl Default for OpenCad {
             sync_now: false,
             save_place: String::new(),
             save_note: None,
+            local_open: None,
+            local_checked: 0.0,
             tab_h: 26.0,
             browse: BrowseState::default(),
             connect: None,
@@ -1835,6 +1839,7 @@ impl OpenCad {
         self.save_window(&ctx);
         self.connect_window(&ctx);
         self.save_note_ui(&ctx);
+        self.local_open_ui(&ctx);
         self.modals(&ctx);
         self.record_history(&ctx);
         self.save_settings_if_changed();
