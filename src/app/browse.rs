@@ -189,6 +189,7 @@ impl OpenCad {
                     ui.horizontal(|ui| {
                         ui.heading(egui::RichText::new("Oxide360").size(28.0));
                     });
+                    ui.label(egui::RichText::new(greetings::now()).size(16.0).color(theme::now().weak));
                     ui.add_space(14.0);
                     ui.horizontal(|ui| {
                         if big_button(ui, Icon::NewDesign, "New Design", "Start an empty design (Ctrl+N)").clicked() {

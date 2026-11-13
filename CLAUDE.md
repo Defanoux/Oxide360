@@ -157,6 +157,7 @@ lists there).
 | `cloud.rs`, `app/start.rs`, `save_dialog.rs` | cloud folders (a mounted share or Nextcloud folder: listing, network-mount addresses, lock files, the offline copies + background upload — `Tabs::sync_cloud`), the start page (New / Open / Recent / cloud designs) and the app's own Save window |
 | `emboss_dialog.rs` | Emboss: profiles, face (flat or cylinder), depth, Emboss / Deboss (`kernel::emboss_tool` wraps round cylinders) |
 | `scad.rs`, `scad_kernel.rs` | OpenSCAD scripts: the language run into a shape tree (`scad::run`, parameters = top-level `name = value;`), then exact OCCT solids (`scad_kernel::make`); kept as an Insert (`ImportFeature::scad`) whose parameters change in its dialog |
+| `debuglog.rs`, `greetings.rs` | each run's log (`$XDG_DATA_HOME/oxide360/logs`, last 10: steps, GPU, stderr, panics with backtraces; a run that never closed is reported at the next start — `debuglog::line` to add to it) and the start page's time-of-day line |
 | `sketch_import.rs` | Insert SVG / DXF: reading drawings into sketch curves |
 | `theme.rs` | colour themes (Dark, Slate, Light): egui visuals, view background, grid and icon ink — use `theme::now()` instead of fixed greys on panels |
 | `print3d.rs` | Print Check: printers, overhangs, fit, best orientations (`kernel::lay_flat` turns it) |

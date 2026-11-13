@@ -58,6 +58,8 @@ mod scale_dialog;
 mod cloud;
 mod preview;
 mod save_dialog;
+mod greetings;
+mod debuglog;
 mod scad;
 mod scad_kernel;
 mod emboss_dialog;
@@ -1002,6 +1004,7 @@ struct OpenCad {
     connect: Option<Connect>,               // the Connect your cloud window
     opening: Option<(PathBuf, std::sync::mpsc::Receiver<Result<(String, Option<u64>, Option<cloud::Lock>), String>>)>, // a cloud design being read in the background
     opening_since: Option<std::time::Instant>, // when that read started (a share that doesn't answer in 3 s: the copy here opens)
+    alert_logged: Option<String>, // the last message written to the debug log
     scad_job: Option<(ScadFor, std::sync::mpsc::Receiver<Result<scad_kernel::Made, String>>)>, // an OpenSCAD script being run in the background, and for what
     open_paths: Vec<PathBuf>,               // every tab's design (set by the tab holder)
     upload_progress: Option<f32>,           // uploads under way: how far (0 to 1; set by the tab holder)
@@ -1312,6 +1315,7 @@ impl Default for OpenCad {
             opening: None,
             opening_since: None,
             scad_job: None,
+            alert_logged: None,
             open_paths: Vec::new(),
             upload_progress: None,
             picking: None,
@@ -1944,6 +1948,8 @@ struct Tabs {
     tabs: Vec<OpenCad>,
     current: usize,
     gpu: bool,
+    /// Logs of runs that crashed (or were force-quit), to say where they are.
+    crash_logs: Vec<PathBuf>,
     title: String,
     /// Driven from outside (`--control PORT`): see `control`.
     control: Option<Control>,
@@ -2143,10 +2149,12 @@ impl eframe::App for Tabs {
             t.autosave(now);
         }
         self.recovery_prompt(&ctx);
+        self.crash_prompt(&ctx);
     }
 
     /// A normal close: this run's autosaves aren't needed.
     fn on_exit(&mut self) {
+        debuglog::closed();
         if let Some(dir) = recovery::default_dir() {
             for t in &self.tabs {
                 recovery::remove(&dir, std::process::id(), t.tab_id);
@@ -2156,6 +2164,46 @@ impl eframe::App for Tabs {
 }
 
 impl Tabs {
+    /// After a run that crashed: where its log is (once any recovery
+    /// question is answered).
+    fn crash_prompt(&mut self, ctx: &egui::Context) {
+        if self.crash_logs.is_empty() || !self.recovered.is_empty() {
+            return;
+        }
+        let mut close = false;
+        egui::Window::new("Oxide360 closed unexpectedly").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
+            ui.set_max_width(560.0);
+            ui.label("Last time, Oxide360 crashed or was closed by the system. A log of what it was doing was saved here:");
+            ui.add_space(4.0);
+            for p in &self.crash_logs {
+                let text = p.display().to_string();
+                ui.horizontal(|ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(&text).monospace()).selectable(true));
+                    if ui.small_button("Copy").on_hover_text("Copy the path").clicked() {
+                        ctx.copy_text(text.clone());
+                    }
+                });
+            }
+            ui.add_space(4.0);
+            ui.weak("Attaching it to a bug report helps find what went wrong.");
+            ui.horizontal(|ui| {
+                if ui.button("Open Folder").clicked() {
+                    if let Some(dir) = self.crash_logs[0].parent().map(std::path::Path::to_path_buf) {
+                        std::thread::spawn(move || {
+                            let _ = std::process::Command::new("xdg-open").arg(dir).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+                        });
+                    }
+                }
+                if ui.button("OK").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if close {
+            self.crash_logs.clear();
+        }
+    }
+
     /// After a run that didn't close properly: offer its autosaves back.
     fn recovery_prompt(&mut self, ctx: &egui::Context) {
         if self.recovered.is_empty() {
@@ -2488,6 +2536,7 @@ fn main() -> eframe::Result {
     let control_port: Option<u16> = args.iter().position(|a| a == "--control").map(|k| args.get(k + 1).and_then(|p| p.parse().ok()).unwrap_or(control::DEFAULT_PORT));
     // `oxide360 part.ox360`: open that design (a double-clicked file, from the app menu entry).
     let open_at_start: Option<PathBuf> = args.iter().find(|a| !a.starts_with('-') && a.parse::<u16>().is_err()).map(PathBuf::from).filter(|p| p.is_file());
+    let crash_logs = debuglog::start();
     opencascade::catch_crashes();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -2497,13 +2546,15 @@ fn main() -> eframe::Result {
             .with_inner_size([1280.0, 800.0]),
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "Oxide360",
         options,
         Box::new(|cc| {
             let s = settings::default_path().map(|p| settings::load(&p)).unwrap_or_default();
             // Set up the GPU renderer once and keep it with egui's renderer (all tabs share it).
             let gpu = if let Some(rs) = cc.wgpu_render_state.as_ref() {
+                let a = rs.adapter.get_info();
+                debuglog::line(&format!("GPU: {} ({:?}, driver {} {})", a.name, a.backend, a.driver, a.driver_info));
                 let g = gpu::Gpu::new(&rs.device, rs.target_format);
                 rs.renderer.write().callback_resources.insert(g);
                 true
@@ -2530,9 +2581,15 @@ fn main() -> eframe::Result {
                 // Nothing to open: the start page (recent and cloud designs, New, Open).
                 None => first.start_page = true,
             }
-            Ok(Box::new(Tabs { tabs: vec![first], current: 0, gpu, title: String::new(), control, recovered, themed: false, sync_progress: None, shown_tab: None, switched_at: None, sync: None, sync_at: f64::NEG_INFINITY, sync_told: Vec::new() }))
+            Ok(Box::new(Tabs { tabs: vec![first], current: 0, gpu, crash_logs, title: String::new(), control, recovered, themed: false, sync_progress: None, shown_tab: None, switched_at: None, sync: None, sync_at: f64::NEG_INFINITY, sync_told: Vec::new() }))
         }),
-    )
+    );
+    // (Couldn't open a window at all: no usable graphics driver, say.)
+    if let Err(e) = &result {
+        debuglog::line(&format!("couldn't start: {e}"));
+        eprintln!("oxide360: couldn't start: {e}");
+    }
+    result
 }
 
 #[cfg(test)]

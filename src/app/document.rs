@@ -736,6 +736,7 @@ impl OpenCad {
     /// Save to `path`. Unless `overwrite`, a file saved from elsewhere since
     /// this design was opened or saved here isn't overwritten: it asks first.
     pub(crate) fn write_to(&mut self, path: PathBuf, overwrite: bool) -> bool {
+        debuglog::line(&format!("save {}", path.display()));
         let cloudy = cloud::in_cloud(&self.cloud_folders, &path);
         if !cloudy && !overwrite && self.path.as_ref() == Some(&path) && cloud::changed_since(&path, self.file_stamp) {
             self.overwrite_asked = true;
@@ -925,6 +926,7 @@ impl OpenCad {
 
     /// Open the design at `p` here (its file read and checked first).
     pub(crate) fn open_path(&mut self, p: PathBuf) {
+        debuglog::line(&format!("open {}", p.display()));
         if is_scad(&p) {
             return self.run_scad(None, Some(p.clone()), Vec::new(), ScadFor::Open(p));
         }
@@ -1839,6 +1841,11 @@ impl OpenCad {
             }
         }
         if let Some(msg) = self.alert.clone() {
+            // (Each message once in the log.)
+            if self.alert_logged.as_deref() != Some(msg.as_str()) {
+                debuglog::line(&format!("message: {msg}"));
+                self.alert_logged = Some(msg.clone());
+            }
             let mut ok = false;
             let _ = egui::Modal::new(egui::Id::new("alert")).show(ctx, |ui| {
                 ui.heading("Oxide360");
