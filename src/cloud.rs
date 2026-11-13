@@ -262,8 +262,44 @@ pub fn parse_ping(out: &str) -> Option<Ping> {
 
 /// Ping `host` a few times (a couple of seconds at most). Off the main thread.
 pub fn ping(host: &str) -> Option<Ping> {
-    let out = std::process::Command::new("ping").args(["-c", "4", "-i", "0.2", "-W", "1", "-q", host]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
-    parse_ping(&String::from_utf8_lossy(&out.stdout))
+    match std::process::Command::new("ping").args(["-c", "4", "-i", "0.2", "-W", "1", "-q", host]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output() {
+        Ok(out) => parse_ping(&String::from_utf8_lossy(&out.stdout)),
+        // No `ping` here (the Flatpak's sandbox): timed connections instead.
+        Err(_) => connect_ping(host, &[445, 443, 80]),
+    }
+}
+
+/// Four timed connections to `host` (the first of `ports` that answers):
+/// a refused connection is still an answer from the server. Each waits 1 s.
+pub fn connect_ping(host: &str, ports: &[u16]) -> Option<Ping> {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let answered = |e: &std::io::Error| e.kind() == std::io::ErrorKind::ConnectionRefused;
+    let wait = Duration::from_secs(1);
+    // The port to time: the first that answers at all.
+    let addr = ports.iter().find_map(|&port| {
+        let a = (host, port).to_socket_addrs().ok()?.next()?;
+        match TcpStream::connect_timeout(&a, wait) {
+            Ok(_) => Some(a),
+            Err(e) if answered(&e) => Some(a),
+            Err(_) => None,
+        }
+    });
+    let Some(addr) = addr else {
+        return Some(Ping { avg_ms: None, loss_pct: 100.0 });
+    };
+    let times: Vec<f32> = (0..4)
+        .filter_map(|_| {
+            let t = std::time::Instant::now();
+            let ok = match TcpStream::connect_timeout(&addr, wait) {
+                Ok(_) => true,
+                Err(e) => answered(&e),
+            };
+            ok.then(|| t.elapsed().as_secs_f32() * 1000.0)
+        })
+        .collect();
+    let loss_pct = (4 - times.len()) as f32 * 25.0;
+    let avg_ms = (!times.is_empty()).then(|| times.iter().sum::<f32>() / times.len() as f32);
+    Some(Ping { avg_ms, loss_pct })
 }
 
 /// Is this computer on a network at all (a default route)?
@@ -1022,5 +1058,18 @@ mod tests {
         assert_eq!(f[0].name, "cad");
         assert!(in_cloud(&f, Path::new("/mnt/truenas/cad/keys/key.ox360")));
         assert!(!in_cloud(&f, Path::new("/home/g/Documents/key.ox360")));
+    }
+
+    #[test]
+    fn a_connection_times_like_a_ping() {
+        // A port that's listening, and one that refuses: both are answers.
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let p = connect_ping("127.0.0.1", &[port]).unwrap();
+        assert_eq!(p.loss_pct, 0.0);
+        assert!(p.avg_ms.is_some_and(|ms| ms < 1000.0));
+        drop(l);
+        let p = connect_ping("127.0.0.1", &[port]).unwrap();
+        assert_eq!(p.loss_pct, 0.0, "refused is still an answer");
     }
 }

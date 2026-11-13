@@ -45,6 +45,11 @@
     <control>keyboard</control>
   </supports>
   <releases>
+    <release version="0.2.0" date="2026-11-12">
+      <description>
+        <p>Cloud saving to your own server (TrueNAS / Samba share or Nextcloud): a start page and file viewer with previews and projects, offline copies of recent designs that upload in the background, and the app's own Save window. Also Emboss, Scale, Split Body, Print Check, Insert SVG / DXF, appearances, 2-D drawings, themes and many fixes.</p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-10-18">
       <description>
         <p>App store details (screenshots) for Flathub; no changes to the app itself.</p>
