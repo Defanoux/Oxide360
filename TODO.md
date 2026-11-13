@@ -11,7 +11,7 @@ Fusion's behaviour is the spec for each; FEATURES.md has the full Fusion list.
 - **Cloud folders, next step**: Nextcloud straight over WebDAV (no sync app, if KIO / gvfs WebDAV isn't enough); conflict copy names use UTC (local time would need the time zone).
 - **Pattern along path**, **Draft**.
 - **Joint limits** and motion settings (min/max, animation speed).
-- **Own Flatpak repository**: done locally (2026-11-13: `packaging/flatpak/publish.sh`, signed, checked from a sandboxed Flatpak setup); first publish + turning on GitHub Pages waits on Gavin running it. Later: CI builds it on each release tag.
+- **Own Flatpak repository**: live at https://defanoux.github.io/Oxide360/ (2026-11-13, `packaging/flatpak/publish.sh`, release step 6). Later: CI builds it on each release tag.
 
 Later (big): sheet metal, surfaces, CAM, mesh bodies for big STLs.
 Later (drawings, on hold — few users): views placed by hand (Base / Projected View), centre marks and centre lines, dimensions.
