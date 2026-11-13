@@ -2428,6 +2428,14 @@ impl OpenCad {
             d.bounds_for = d.feature.angles;
         }
         let act = d.panel(ui, units);
+        // Its OpenSCAD parameters changed: the script runs again (in the background).
+        if std::mem::take(&mut d.rerun) {
+            if let Some(src) = d.feature.scad.clone() {
+                d.busy = true;
+                let values = d.values();
+                self.run_scad(Some(src.text.0.to_string()), None, values, ScadFor::Dialog);
+            }
+        }
         let esc = ui.input(|i| i.key_pressed(egui::Key::Escape)) && !ui.ctx().text_edit_focused();
         match act {
             copy_dialog::Action::Ok => {

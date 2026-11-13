@@ -227,6 +227,24 @@ pub struct ImportFeature {
     pub offset: [f64; 3],
     #[serde(default)]
     pub angles: [f64; 3],
+    /// Made by an OpenSCAD script: the script and its parameters, so they
+    /// can be changed and the bodies made again (None: a STEP / STL file).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scad: Option<ScadSource>,
+}
+
+/// An OpenSCAD script kept with its import: its text, the parameter values
+/// typed (the rest as the script has them), and each part (body) it made:
+/// name and colour, in the order of the bodies.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScadSource {
+    pub text: Blob,
+    #[serde(default)]
+    pub values: Vec<(String, String)>,
+    #[serde(default)]
+    pub parts: Vec<String>,
+    #[serde(default)]
+    pub colors: Vec<Option<[f32; 4]>>,
 }
 
 /// Big text shared rather than copied (undo keeps a copy of the design per

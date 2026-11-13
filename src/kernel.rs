@@ -2482,6 +2482,12 @@ pub fn stl_triangles(path: &Path) -> Option<usize> {
     Some(text.lines().filter(|l| l.trim_start().starts_with("facet")).count())
 }
 
+/// A STEP or STL file's solids (what OpenSCAD's `import()` reads).
+pub fn import_shape(path: &Path) -> Result<Shape, String> {
+    let text = import_file(path).map_err(|e| format!("import({}): {e}", path.display()))?;
+    Shape::try_from_brep_string(&text).ok_or_else(|| "its geometry couldn't be read back".into())
+}
+
 /// A STEP or STL file's solids as BRep text, to keep in the design (see
 /// `ImportFeature`). STL triangles are sewn into solids, with coplanar
 /// ones merged into single faces.
@@ -5489,7 +5495,7 @@ mod tests {
         write_step(&step, &made.bodies.iter().collect::<Vec<_>>()).unwrap();
         let block: Vec<&Body> = made.bodies.iter().filter(|b| b.shape.volume() > 500.0).collect();
         crate::export::write(&stl, crate::export::Format::Stl, &[crate::export::Body { name: "block".into(), mesh: &block[0].mesh }]).unwrap();
-        let import = |p: &Path| ImportFeature { name: "I".into(), source: "x".into(), brep: Blob::new(import_file(p).unwrap()), offset: [0.0; 3], angles: [0.0; 3] };
+        let import = |p: &Path| ImportFeature { name: "I".into(), source: "x".into(), brep: Blob::new(import_file(p).unwrap()), offset: [0.0; 3], angles: [0.0; 3], scad: None };
         let m = run_imports(vec![import(&step), import(&stl)]);
         assert_eq!(m.import_errors, vec![None, None]);
         let from = |k: usize| m.bodies.iter().filter(|b| b.id.feature == Feature::Import(k)).map(|b| b.shape.volume()).collect::<Vec<f64>>();

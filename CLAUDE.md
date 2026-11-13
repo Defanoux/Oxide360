@@ -156,6 +156,7 @@ lists there).
 | `file_browser.rs`, `app/browse.rs`, `preview.rs` | the start page's file viewer (projects = folders, tiles / list, ⋯ menu: rename, move, offline, delete) and design previews (CPU-drawn, kept in the file beside the document) |
 | `cloud.rs`, `app/start.rs`, `save_dialog.rs` | cloud folders (a mounted share or Nextcloud folder: listing, network-mount addresses, lock files, the offline copies + background upload — `Tabs::sync_cloud`), the start page (New / Open / Recent / cloud designs) and the app's own Save window |
 | `emboss_dialog.rs` | Emboss: profiles, face (flat or cylinder), depth, Emboss / Deboss (`kernel::emboss_tool` wraps round cylinders) |
+| `scad.rs`, `scad_kernel.rs` | OpenSCAD scripts: the language run into a shape tree (`scad::run`, parameters = top-level `name = value;`), then exact OCCT solids (`scad_kernel::make`); kept as an Insert (`ImportFeature::scad`) whose parameters change in its dialog |
 | `sketch_import.rs` | Insert SVG / DXF: reading drawings into sketch curves |
 | `theme.rs` | colour themes (Dark, Slate, Light): egui visuals, view background, grid and icon ink — use `theme::now()` instead of fixed greys on panels |
 | `print3d.rs` | Print Check: printers, overhangs, fit, best orientations (`kernel::lay_flat` turns it) |

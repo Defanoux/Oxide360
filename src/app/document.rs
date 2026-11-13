@@ -129,8 +129,15 @@ impl OpenCad {
         // By how old the body is among the bodies there are now, so no two share a default.
         let at = |b: &BodyId| (self.timeline.iter().position(|f| *f == b.feature).unwrap_or(usize::MAX), b.piece);
         let rank = colors::rank(self.body_ids.iter().map(at), &at(&id));
-        let c = self.body_colors.get(&id).copied().unwrap_or_else(|| colors::default_color(rank));
+        let scad = self.scad_part(id).and_then(|(s, k)| s.colors.get(k).copied().flatten()).map(|c| c.map(|x| (x.clamp(0.0, 1.0) * 255.0).round() as u8));
+        let c = self.body_colors.get(&id).copied().or(scad.map(|c| [c[0], c[1], c[2]])).unwrap_or_else(|| colors::default_color(rank));
         Color32::from_rgb(c[0], c[1], c[2])
+    }
+
+    /// The OpenSCAD script that made body `id` (an import of one) and which of its parts it is.
+    fn scad_part(&self, id: BodyId) -> Option<(&model::ScadSource, usize)> {
+        let Feature::Import(k) = id.feature else { return None };
+        Some((self.imports.get(k)?.scad.as_ref()?, id.piece))
     }
 
     /// A body's name: the one the user gave it, else "Body1", "Body2"… by how
@@ -139,6 +146,10 @@ impl OpenCad {
     pub(crate) fn body_name(&self, id: BodyId) -> String {
         if let Some(n) = self.body_names.get(&id) {
             return n.clone();
+        }
+        // A body an OpenSCAD script made: named as the script's part.
+        if let Some(n) = self.scad_part(id).and_then(|(s, k)| s.parts.get(k).cloned()) {
+            return n;
         }
         doc::default_body_name(&self.timeline, &self.body_ids, id)
     }
@@ -831,7 +842,7 @@ impl OpenCad {
     }
 
     pub(crate) fn open_dialog(&mut self) {
-        let d = self.file_dialog().set_title("Open design").add_filter("Oxide360 design", &[doc::EXTENSION, doc::OLD_EXTENSION]);
+        let d = self.file_dialog().set_title("Open design").add_filter("Oxide360 design or OpenSCAD script", &[doc::EXTENSION, doc::OLD_EXTENSION, "scad"]);
         self.ask_path(d, PickKind::File, PickFor::Open, String::new());
     }
 
@@ -914,6 +925,9 @@ impl OpenCad {
 
     /// Open the design at `p` here (its file read and checked first).
     pub(crate) fn open_path(&mut self, p: PathBuf) {
+        if is_scad(&p) {
+            return self.run_scad(None, Some(p.clone()), Vec::new(), ScadFor::Open(p));
+        }
         if cloud::in_cloud(&self.cloud_folders, &p) {
             return self.open_cloud(p);
         }
@@ -1012,6 +1026,98 @@ impl OpenCad {
                 }
                 _ => self.alert = Some(format!("Couldn't open {}: {e}", p.display())),
             },
+        }
+    }
+
+    /// Run an OpenSCAD script in the background (`text`, or the file at
+    /// `path`) with parameter `values`; `poll_scad` takes what it made.
+    pub(crate) fn run_scad(&mut self, text: Option<String>, path: Option<PathBuf>, values: Vec<(String, String)>, why: ScadFor) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let file = path.clone();
+        std::thread::spawn(move || {
+            let text = match text {
+                Some(t) => Ok(t),
+                None => file.as_ref().map_or(Err("no script".to_string()), |p| std::fs::read_to_string(p).map_err(|e| format!("couldn't read {} ({e})", p.display()))),
+            };
+            let made = text.and_then(|t| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scad_kernel::make(&t, file.as_deref(), &values))).unwrap_or_else(|_| Err("the geometry kernel failed on it".into())));
+            let _ = tx.send(made);
+        });
+        if why != ScadFor::Dialog {
+            let name = path.as_ref().and_then(|p| p.file_name()).map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            self.note_saved(format!("Running {name}…"), false, false);
+        }
+        self.scad_job = Some((why, rx));
+    }
+
+    /// An OpenSCAD script finished: a design of its own, an import to
+    /// place, or the open dialog's bodies made again.
+    pub(crate) fn poll_scad(&mut self) {
+        let Some((_, rx)) = &self.scad_job else { return };
+        let got = match rx.try_recv() {
+            Ok(g) => g,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("it stopped".into()),
+        };
+        let Some((why, _)) = self.scad_job.take() else { return };
+        if why != ScadFor::Dialog {
+            self.save_note = None;
+        }
+        let made = match got {
+            Ok(m) => m,
+            Err(e) => {
+                if let Some(d) = self.import_dialog.as_mut() {
+                    d.busy = false;
+                }
+                let file = match &why {
+                    ScadFor::Open(p) | ScadFor::Insert(p) => p.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+                    ScadFor::Dialog => "the script".into(),
+                };
+                self.alert = Some(format!("Couldn't make {file}: {e}"));
+                return;
+            }
+        };
+        let feature = |p: &std::path::Path, made: scad_kernel::Made| model::ImportFeature {
+            name: p.file_stem().map_or_else(|| "OpenSCAD".into(), |s| s.to_string_lossy().into_owned()),
+            source: p.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+            brep: model::Blob::new(made.brep),
+            offset: [0.0; 3],
+            angles: [0.0; 3],
+            scad: Some(made.source),
+        };
+        let messages = made.messages.clone();
+        match why {
+            ScadFor::Open(p) => {
+                // A new design: the script's parts, its parameters shown to change.
+                let f = feature(&p, made);
+                self.reset_with(Document::default(), None);
+                self.name = Some(f.name.clone());
+                self.fit_on_open = true;
+                self.imports.push(f.clone());
+                self.timeline_insert(Feature::Import(0));
+                let mut d = import_dialog::ImportDialog::edit(0, &f);
+                d.messages = messages;
+                self.import_dialog = Some(d);
+            }
+            ScadFor::Insert(p) => {
+                self.finish_sketch();
+                self.cancel_all_dialogs();
+                let mut f = feature(&p, made);
+                if self.imports.iter().any(|i| i.name == f.name) {
+                    f.name = format!("{} ({})", f.name, self.imports.len() + 1);
+                }
+                let mut d = import_dialog::ImportDialog::new(f);
+                d.messages = messages;
+                self.import_dialog = Some(d);
+            }
+            ScadFor::Dialog => {
+                if let Some(d) = self.import_dialog.as_mut() {
+                    d.feature.brep = model::Blob::new(made.brep);
+                    d.feature.scad = Some(made.source);
+                    d.bounds = None;
+                    d.busy = false;
+                    d.messages = messages;
+                }
+            }
         }
     }
 
@@ -1537,6 +1643,10 @@ impl OpenCad {
     /// added at the timeline marker (Fusion's Insert). The geometry is kept in
     /// the design, so the file isn't needed again.
     pub(crate) fn import_path(&mut self, path: &std::path::Path) -> Result<(), String> {
+        if is_scad(path) {
+            self.run_scad(None, Some(path.to_path_buf()), Vec::new(), ScadFor::Insert(path.to_path_buf()));
+            return Ok(());
+        }
         let file = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
         let brep = kernel::import_file(path).map_err(|e| format!("Couldn't import {file}: {e}"))?;
         let stem = path.file_stem().map_or_else(|| "Import".into(), |s| s.to_string_lossy().into_owned());
@@ -1544,7 +1654,7 @@ impl OpenCad {
         // Placed in the Insert dialog first (it joins the timeline on OK).
         self.finish_sketch();
         self.cancel_all_dialogs();
-        self.import_dialog = Some(import_dialog::ImportDialog::new(model::ImportFeature { name, source: file, brep: model::Blob::new(brep), offset: [0.0; 3], angles: [0.0; 3] }));
+        self.import_dialog = Some(import_dialog::ImportDialog::new(model::ImportFeature { name, source: file, brep: model::Blob::new(brep), offset: [0.0; 3], angles: [0.0; 3], scad: None }));
         Ok(())
     }
 
@@ -1606,7 +1716,7 @@ impl OpenCad {
                 self.ask_path(d, PickKind::File, PickFor::InsertDrawing, String::new());
             }
             Cmd::Import => {
-                let d = self.file_dialog().set_title("Insert into Design").add_filter("STEP or STL", &["step", "stp", "stl", "STEP", "STP", "STL"]);
+                let d = self.file_dialog().set_title("Insert into Design").add_filter("STEP, STL or OpenSCAD", &["step", "stp", "stl", "scad", "STEP", "STP", "STL", "SCAD"]);
                 self.ask_path(d, PickKind::File, PickFor::Import, String::new());
             }
         }
@@ -1744,4 +1854,9 @@ impl OpenCad {
 
     // ---------- sketch lifecycle ----------
 
+}
+
+/// An OpenSCAD script (.scad)?
+pub(crate) fn is_scad(p: &std::path::Path) -> bool {
+    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("scad"))
 }

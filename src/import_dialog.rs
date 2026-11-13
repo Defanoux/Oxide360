@@ -26,11 +26,125 @@ pub struct ImportDialog {
     /// on (body, plane) if any.
     pub spot: Option<DVec3>,
     pub spot_face: Option<(usize, crate::sketch::FacePlane)>,
+    /// An OpenSCAD import: its parameters as shown (Customizer), a change
+    /// waiting to be made (the app runs it), one under way, and what the
+    /// script said.
+    pub rows: Vec<ScadRow>,
+    pub rerun: bool,
+    pub busy: bool,
+    pub messages: Vec<String>,
+}
+
+/// One OpenSCAD parameter in the dialog.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScadRow {
+    pub name: String,
+    pub text: String,
+    /// As the script has it.
+    pub default: String,
+    /// The comment after it (what it's for).
+    pub note: String,
+    /// Choices listed in the comment ("assembly | shell_left | …") for a text value.
+    pub options: Vec<String>,
+    pub boolean: bool,
+    /// Typed in and not run yet (runs when the box is left).
+    pub edited: bool,
+}
+
+/// The parameters of `src`, with the values typed before.
+pub fn scad_rows(src: &crate::model::ScadSource) -> Vec<ScadRow> {
+    crate::scad::params(&src.text.0)
+        .into_iter()
+        .map(|p| {
+            let default = match &p.value {
+                crate::scad::Value::Str(s) => s.clone(),
+                v => v.show(),
+            };
+            let text = src.values.iter().find(|(k, _)| *k == p.name).map_or_else(|| default.clone(), |(_, v)| v.clone());
+            let options = match &p.value {
+                crate::scad::Value::Str(_) if p.note.contains('|') => p.note.split('|').filter_map(|o| o.split_whitespace().next()).map(str::to_string).collect(),
+                _ => Vec::new(),
+            };
+            ScadRow { boolean: matches!(p.value, crate::scad::Value::Bool(_)), name: p.name, text, default, note: p.note, options, edited: false }
+        })
+        .collect()
 }
 
 impl ImportDialog {
     pub fn new(feature: ImportFeature) -> Self {
-        ImportDialog { editing: None, feature, picking: false, bounds: None, bounds_for: [f64::NAN; 3], screen: Vec::new(), hover: None, drag: None, spot: None, spot_face: None }
+        let rows = feature.scad.as_ref().map(scad_rows).unwrap_or_default();
+        ImportDialog { editing: None, feature, picking: false, bounds: None, bounds_for: [f64::NAN; 3], screen: Vec::new(), hover: None, drag: None, spot: None, spot_face: None, rows, rerun: false, busy: false, messages: Vec::new() }
+    }
+
+    /// The parameter values that differ from the script's own.
+    pub fn values(&self) -> Vec<(String, String)> {
+        self.rows.iter().filter(|r| r.text.trim() != r.default).map(|r| (r.name.clone(), r.text.trim().to_string())).collect()
+    }
+
+    /// The OpenSCAD parameters (as its Customizer): a change is made when
+    /// the box is left, a choice or tick at once.
+    fn scad_panel(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.strong("Parameters");
+            if self.busy {
+                ui.spinner();
+                ui.weak("Making it…");
+            }
+        });
+        if self.rows.is_empty() {
+            ui.weak("The script has no parameters (top-level name = value lines).");
+        }
+        let mut run = false;
+        egui::ScrollArea::vertical().max_height(340.0).auto_shrink([false, true]).show(ui, |ui| {
+            egui::Grid::new("scad_params").num_columns(2).striped(true).show(ui, |ui| {
+                for r in &mut self.rows {
+                    let label = ui.label(&r.name);
+                    if !r.note.is_empty() {
+                        label.on_hover_text(&r.note);
+                    }
+                    if r.boolean {
+                        let mut on = r.text == "true";
+                        if ui.checkbox(&mut on, "").changed() {
+                            r.text = on.to_string();
+                            run = true;
+                        }
+                    } else if !r.options.is_empty() {
+                        let before = r.text.clone();
+                        egui::ComboBox::from_id_salt(("scad_opt", &r.name)).selected_text(&r.text).show_ui(ui, |ui| {
+                            for o in &r.options {
+                                ui.selectable_value(&mut r.text, o.clone(), o);
+                            }
+                        });
+                        if r.text != before {
+                            run = true;
+                        }
+                    } else {
+                        let resp = ui.add(egui::TextEdit::singleline(&mut r.text).desired_width(140.0));
+                        if resp.changed() {
+                            r.edited = true;
+                        }
+                        if resp.lost_focus() && r.edited {
+                            r.edited = false;
+                            run = true;
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
+        });
+        if ui.add_enabled(self.rows.iter().any(|r| r.text.trim() != r.default), egui::Button::new("Reset to the script's values")).clicked() {
+            for r in &mut self.rows {
+                r.text = r.default.clone();
+            }
+            run = true;
+        }
+        for m in &self.messages {
+            ui.weak(m);
+        }
+        if run {
+            self.rerun = true;
+        }
     }
 
     pub fn edit(k: usize, feature: &ImportFeature) -> Self {
@@ -71,7 +185,7 @@ impl ImportDialog {
     }
 
     pub fn panel(&mut self, ui: &mut egui::Ui, unit: crate::units::Unit) -> Action {
-        ui.heading("Insert");
+        ui.heading(if self.feature.scad.is_some() { "OpenSCAD" } else { "Insert" });
         ui.label(&self.feature.source);
         ui.horizontal(|ui| {
             if ui.selectable_label(self.picking, if self.picking { "Click where it goes…" } else { "Place by clicking" }).on_hover_text("Click a face of the model, or the ground, to put its bottom there").clicked() {
@@ -103,9 +217,12 @@ impl ImportDialog {
             }
             ui.end_row();
         });
+        if self.feature.scad.is_some() {
+            self.scad_panel(ui);
+        }
         let mut act = Action::None;
         ui.horizontal(|ui| {
-            if ui.button("OK").clicked() {
+            if ui.add_enabled(!self.busy, egui::Button::new("OK")).clicked() {
                 act = Action::Ok;
             }
             if ui.button("Cancel").clicked() {
@@ -122,11 +239,25 @@ mod tests {
     use crate::model::Blob;
 
     fn dialog() -> ImportDialog {
-        let mut d = ImportDialog::new(ImportFeature { name: "part".into(), source: "part.step".into(), brep: Blob::new(String::new()), offset: [0.0; 3], angles: [0.0; 3] });
+        let mut d = ImportDialog::new(ImportFeature { name: "part".into(), source: "part.step".into(), brep: Blob::new(String::new()), offset: [0.0; 3], angles: [0.0; 3], scad: None });
         // A part 10 × 20 × 30 sitting from (100, 0, -5).
         d.bounds = Some((DVec3::new(100.0, 0.0, -5.0), DVec3::new(110.0, 20.0, 25.0)));
         d.bounds_for = [0.0; 3];
         d
+    }
+
+    #[test]
+    fn openscad_parameters_with_choices_from_their_comments() {
+        let text = "part = \"assembly\";   // assembly | shell_left | back_right\nwall = 4; // side wall\nflip = false;\n";
+        let src = crate::model::ScadSource { text: Blob::new(text.into()), values: vec![("wall".into(), "5".into())], ..Default::default() };
+        let mut d = ImportDialog::new(ImportFeature { scad: Some(src), ..dialog().feature });
+        assert_eq!(d.rows.len(), 3);
+        assert_eq!(d.rows[0].options, vec!["assembly", "shell_left", "back_right"]);
+        assert_eq!((d.rows[1].text.as_str(), d.rows[1].default.as_str(), d.rows[1].note.as_str()), ("5", "4", "side wall"));
+        assert!(d.rows[2].boolean);
+        assert_eq!(d.values(), vec![("wall".to_string(), "5".to_string())], "only what differs is kept");
+        d.rows[0].text = "shell_left".into();
+        assert_eq!(d.values().len(), 2);
     }
 
     #[test]

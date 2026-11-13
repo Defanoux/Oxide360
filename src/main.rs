@@ -58,6 +58,8 @@ mod scale_dialog;
 mod cloud;
 mod preview;
 mod save_dialog;
+mod scad;
+mod scad_kernel;
 mod emboss_dialog;
 mod file_browser;
 mod insert_drawing_dialog;
@@ -515,6 +517,17 @@ enum TabRequest {
     Open,
     Switch(usize),
     Close(usize),
+}
+
+/// What an OpenSCAD script is being run for.
+#[derive(Clone, Debug, PartialEq)]
+enum ScadFor {
+    /// Opened as a design of its own (the file).
+    Open(PathBuf),
+    /// Inserted into this design (the file): placed in the Insert dialog.
+    Insert(PathBuf),
+    /// Its parameters changed in the open dialog.
+    Dialog,
 }
 
 /// The file viewer on the start page: where it's looking, what it found
@@ -988,6 +1001,7 @@ struct OpenCad {
     connect: Option<Connect>,               // the Connect your cloud window
     opening: Option<(PathBuf, std::sync::mpsc::Receiver<Result<(String, Option<u64>, Option<cloud::Lock>), String>>)>, // a cloud design being read in the background
     opening_since: Option<std::time::Instant>, // when that read started (a share that doesn't answer in 3 s: the copy here opens)
+    scad_job: Option<(ScadFor, std::sync::mpsc::Receiver<Result<scad_kernel::Made, String>>)>, // an OpenSCAD script being run in the background, and for what
     open_paths: Vec<PathBuf>,               // every tab's design (set by the tab holder)
     upload_progress: Option<f32>,           // uploads under way: how far (0 to 1; set by the tab holder)
     picking: Option<(PickFor, String, std::sync::mpsc::Receiver<Option<PathBuf>>)>, // a system file chooser open (off the main thread), what for, and a name to go with it
@@ -1296,6 +1310,7 @@ impl Default for OpenCad {
             connect: None,
             opening: None,
             opening_since: None,
+            scad_job: None,
             open_paths: Vec::new(),
             upload_progress: None,
             picking: None,
@@ -1559,7 +1574,8 @@ impl OpenCad {
         let _slow = SlowFrame(frame_start);
         self.frame_no += 1;
         self.poll_opening();
-        if self.opening.is_some() {
+        self.poll_scad();
+        if self.opening.is_some() || self.scad_job.is_some() {
             // (Looked at again soon, so a share that doesn't answer gives way to the copy here.)
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
         }

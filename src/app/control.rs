@@ -94,6 +94,10 @@ impl OpenCad {
 
     /// Open a design file (no dialog, no questions).
     pub(crate) fn control_open(&mut self, path: &str) -> Result<(), String> {
+        if crate::app::document::is_scad(std::path::Path::new(path)) {
+            self.open_path(path.into());
+            return Ok(());
+        }
         // A cloud design opens as File > Open does (its copy on this computer kept).
         if cloud::in_cloud(&self.cloud_folders, std::path::Path::new(path)) {
             self.open_cloud(path.into());
@@ -121,6 +125,6 @@ impl OpenCad {
 
     /// Is a rebuild still under way?
     pub(crate) fn control_busy(&self) -> bool {
-        self.builds.iter().any(|b| b.is_some()) || self.opening.is_some()
+        self.builds.iter().any(|b| b.is_some()) || self.opening.is_some() || self.scad_job.is_some()
     }
 }
