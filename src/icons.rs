@@ -159,6 +159,48 @@ pub fn construct_tint(icon: Icon, c: Color32) -> Color32 {
     }
 }
 
+/// The small badge on a file tile saying where the design is: a laptop
+/// (this computer), a grey cloud (cloud only), a blue cloud with a tick
+/// (cloud + a copy here), an orange cloud with an up arrow (not uploaded yet).
+/// Drawn on a dark disc so it reads over any preview.
+pub fn place_badge(painter: &egui::Painter, center: Pos2, size: f32, s: crate::file_browser::Stored) {
+    use crate::file_browser::Stored;
+    let w = size;
+    let p = |x: f32, y: f32| center + egui::vec2((x - 0.5) * w, (y - 0.5) * w);
+    painter.circle_filled(center, w * 0.62, Color32::from_black_alpha(150));
+    let white = Stroke::new(w * 0.09, Color32::WHITE);
+    match s {
+        Stored::Computer => {
+            let ink = Color32::from_gray(225);
+            painter.rect_stroke(Rect::from_min_max(p(0.2, 0.22), p(0.8, 0.64)), w * 0.04, Stroke::new(w * 0.08, ink), egui::StrokeKind::Middle);
+            painter.line_segment([p(0.06, 0.78), p(0.94, 0.78)], Stroke::new(w * 0.1, ink));
+        }
+        _ => {
+            let c = match s {
+                Stored::CloudOnly => Color32::from_gray(170),
+                Stored::Waiting => Color32::from_rgb(235, 150, 60),
+                _ => Color32::from_rgb(80, 160, 235),
+            };
+            for (x, y, r) in [(0.28, 0.6, 0.17), (0.5, 0.44, 0.23), (0.73, 0.57, 0.18)] {
+                painter.circle_filled(p(x, y), w * r, c);
+            }
+            painter.rect_filled(Rect::from_min_max(p(0.28, 0.58), p(0.73, 0.77)), 0.0, c);
+            match s {
+                Stored::Both => {
+                    painter.line_segment([p(0.36, 0.58), p(0.47, 0.68)], white);
+                    painter.line_segment([p(0.47, 0.68), p(0.66, 0.46)], white);
+                }
+                Stored::Waiting => {
+                    painter.line_segment([p(0.5, 0.72), p(0.5, 0.42)], white);
+                    painter.line_segment([p(0.39, 0.53), p(0.5, 0.42)], white);
+                    painter.line_segment([p(0.61, 0.53), p(0.5, 0.42)], white);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// A ring filling clockwise from the top: `frac` (0 to 1) of it done.
 pub fn progress_ring(painter: &egui::Painter, rect: Rect, frac: f32, c: Color32, track: Color32) {
     let w = rect.width().min(rect.height());

@@ -169,7 +169,9 @@ impl OpenCad {
         // Which designs are kept offline (this computer's list, read now and then).
         let t = ctx.input(|i| i.time);
         if t - self.browse.kept.0 > 2.0 {
-            self.browse.kept = (t, cloud::Cache::default_cache().map_or_else(Default::default, |c| c.entries().into_iter().filter(|e| e.keep).map(|e| e.cloud).collect()));
+            let entries = cloud::Cache::default_cache().map_or_else(Vec::new, |c| c.entries());
+            self.browse.copies = entries.iter().map(|e| (e.cloud.clone(), e.pending)).collect();
+            self.browse.kept = (t, entries.into_iter().filter(|e| e.keep).map(|e| e.cloud).collect());
         }
         let items = self.browse_items(&roots, dir.as_deref());
         self.browse_want_previews(&items, &ctx);
@@ -426,6 +428,7 @@ impl OpenCad {
         ui.painter().rect_filled(rect, 8.0, if hot { pal.raised } else { pal.panel });
         let pic = egui::Rect::from_min_size(rect.min, egui::vec2(TILE, TILE));
         self.paint_preview(ui, pic, it);
+        let badge = self.place_badge(ui, pic.left_top() + egui::vec2(21.0, 21.0), 22.0, it);
         let ink = if it.there { pal.text } else { pal.weak };
         let name = ui.painter().layout(it.name.clone(), egui::FontId::proportional(14.0), ink, TILE - 16.0);
         let name_h = name.size().y.min(18.0);
@@ -433,6 +436,10 @@ impl OpenCad {
         let sub = self.item_note(it);
         ui.painter().text(egui::pos2(rect.min.x + 8.0, pic.max.y + 31.0), egui::Align2::LEFT_CENTER, sub, egui::FontId::proportional(12.0), pal.weak);
         let tip = it.place.clone().unwrap_or_else(|| it.path.display().to_string());
+        let tip = match badge {
+            Some(b) => format!("{tip}\n{b}"),
+            None => tip,
+        };
         let r = r.on_hover_text(tip);
         // ⋯ in the corner.
         let dots = egui::Rect::from_min_size(egui::pos2(rect.max.x - 30.0, rect.min.y + 6.0), egui::vec2(24.0, 22.0));
@@ -451,6 +458,9 @@ impl OpenCad {
             ui.painter().rect_filled(rect, 5.0, pal.raised);
         }
         self.paint_preview(ui, egui::Rect::from_min_size(rect.min + egui::vec2(4.0, 3.0), egui::vec2(40.0, 40.0)), it);
+        if let Some(b) = self.place_badge(ui, rect.min + egui::vec2(40.0, 37.0), 13.0, it) {
+            ui.interact(egui::Rect::from_center_size(rect.min + egui::vec2(40.0, 37.0), egui::vec2(16.0, 16.0)), ui.id().with(("badge", &it.path)), egui::Sense::hover()).on_hover_text(b);
+        }
         let ink = if it.there { pal.text } else { pal.weak };
         ui.painter().text(rect.min + egui::vec2(56.0, 15.0), egui::Align2::LEFT_CENTER, &it.name, egui::FontId::proportional(15.0), ink);
         let place = it.place.clone().map(|p| format!("{p}   ")).unwrap_or_default();
@@ -461,6 +471,16 @@ impl OpenCad {
             return menu;
         }
         (r.clicked() && it.there).then(|| if it.folder { Ask::Enter(it.name.clone()) } else { Ask::Open(it.path.clone()) })
+    }
+
+    /// The badge saying where design `it` is, at `center`; what it means (None: a project, or gone).
+    fn place_badge(&self, ui: &egui::Ui, center: egui::Pos2, size: f32, it: &Shown) -> Option<String> {
+        if it.folder || !it.there {
+            return None;
+        }
+        let s = file_browser::Stored::of(it.cloudy, self.browse.copies.get(&it.path).copied());
+        icons::place_badge(ui.painter(), center, size, s);
+        Some(s.tip(&self.cloud_name(&it.path)))
     }
 
     /// "Saved 5 min ago", "Project", "moved or deleted".

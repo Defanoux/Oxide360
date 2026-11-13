@@ -536,6 +536,8 @@ struct BrowseState {
     edit: Option<BrowseEdit>,
     /// Designs kept offline, and when that was read (app time).
     kept: (f64, std::collections::HashSet<PathBuf>),
+    /// Cloud designs with a copy on this computer: has it saves not uploaded yet? (read with `kept`)
+    copies: std::collections::HashMap<PathBuf, bool>,
     /// A rename / move / new project / delete under way (off the main thread):
     /// what it said, Recent as it left it, and a delete the trash refused (ask: for good?).
     job: Option<std::sync::mpsc::Receiver<(Result<String, String>, Vec<PathBuf>, Option<PathBuf>)>>,
@@ -983,6 +985,7 @@ struct OpenCad {
     browse: BrowseState,                    // the start page's file viewer (see app/browse.rs)
     connect: Option<Connect>,               // the Connect your cloud window
     opening: Option<(PathBuf, std::sync::mpsc::Receiver<Result<(String, Option<u64>, Option<cloud::Lock>), String>>)>, // a cloud design being read in the background
+    opening_since: Option<std::time::Instant>, // when that read started (a share that doesn't answer in 3 s: the copy here opens)
     open_paths: Vec<PathBuf>,               // every tab's design (set by the tab holder)
     upload_progress: Option<f32>,           // uploads under way: how far (0 to 1; set by the tab holder)
     picking: Option<(PickFor, String, std::sync::mpsc::Receiver<Option<PathBuf>>)>, // a system file chooser open (off the main thread), what for, and a name to go with it
@@ -1288,6 +1291,7 @@ impl Default for OpenCad {
             browse: BrowseState::default(),
             connect: None,
             opening: None,
+            opening_since: None,
             open_paths: Vec::new(),
             upload_progress: None,
             picking: None,
@@ -1551,6 +1555,10 @@ impl OpenCad {
         let _slow = SlowFrame(frame_start);
         self.frame_no += 1;
         self.poll_opening();
+        if self.opening.is_some() {
+            // (Looked at again soon, so a share that doesn't answer gives way to the copy here.)
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+        }
         self.poll_pick();
         self.poll_rename();
         // Previews of modeled threads wait until a value is finished.

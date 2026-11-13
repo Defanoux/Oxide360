@@ -42,6 +42,40 @@ pub fn list(dir: &Path) -> Result<Vec<Item>, String> {
     Ok(folders)
 }
 
+/// Where a design is, for the badge on its tile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stored {
+    /// A file on this computer (not in a cloud folder).
+    Computer,
+    /// In the cloud only: needs a connection to open.
+    CloudOnly,
+    /// In the cloud, with a copy on this computer (opens with no connection).
+    Both,
+    /// Saved on this computer, not uploaded yet.
+    Waiting,
+}
+
+impl Stored {
+    /// `copy`: this computer's copy of a cloud design, and whether it has saves not uploaded yet.
+    pub fn of(cloudy: bool, copy: Option<bool>) -> Stored {
+        match (cloudy, copy) {
+            (false, _) => Stored::Computer,
+            (true, None) => Stored::CloudOnly,
+            (true, Some(false)) => Stored::Both,
+            (true, Some(true)) => Stored::Waiting,
+        }
+    }
+
+    pub fn tip(self, cloud: &str) -> String {
+        match self {
+            Stored::Computer => "On this computer".into(),
+            Stored::CloudOnly => format!("Only on {cloud}: needs a connection to open"),
+            Stored::Both => format!("On {cloud}, with a copy on this computer (opens offline)"),
+            Stored::Waiting => format!("Saved on this computer, not uploaded to {cloud} yet"),
+        }
+    }
+}
+
 pub fn is_design(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == crate::doc::EXTENSION || e == crate::doc::OLD_EXTENSION)
 }
@@ -174,6 +208,16 @@ mod tests {
         let names: Vec<(String, bool)> = list(&d).unwrap().into_iter().map(|i| (i.name, i.folder)).collect();
         assert_eq!(names, vec![("brackets".into(), true), ("Keys".into(), true), ("new".into(), false), ("old".into(), false)]);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn where_a_design_is() {
+        assert_eq!(Stored::of(false, None), Stored::Computer);
+        assert_eq!(Stored::of(false, Some(true)), Stored::Computer);
+        assert_eq!(Stored::of(true, None), Stored::CloudOnly);
+        assert_eq!(Stored::of(true, Some(false)), Stored::Both);
+        assert_eq!(Stored::of(true, Some(true)), Stored::Waiting);
+        assert!(Stored::CloudOnly.tip("TrueNAS").contains("Only on TrueNAS"));
     }
 
     #[test]

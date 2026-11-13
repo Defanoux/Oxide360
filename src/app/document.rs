@@ -949,8 +949,12 @@ impl OpenCad {
             self.sync_now = true;
             return;
         }
-        if self.cloud_away(&p) {
-            if !from_copy(self, format!("{name} can't be reached — opened the copy on this computer; saves upload when it's back")) {
+        // No network (this computer knows at once), or the last look found the
+        // share away: the copy here, without waiting on the share.
+        let offline = !cloud::on_network();
+        if offline || self.cloud_away(&p) {
+            let why = if offline { format!("No network — opened the copy on this computer; saves upload to {name} when it's back") } else { format!("{name} can't be reached — opened the copy on this computer; saves upload when it's back") };
+            if !from_copy(self, why) {
                 self.alert = Some(format!("{name} can't be reached, and this computer has no copy of {}.", p.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
             }
             return;
@@ -965,6 +969,7 @@ impl OpenCad {
             let _ = tx.send(got);
         });
         self.opening = Some((p.clone(), rx));
+        self.opening_since = Some(std::time::Instant::now());
         self.note_saved(format!("Opening {}…", p.file_stem().map_or_else(String::new, |n| n.to_string_lossy().into_owned())), true, false);
     }
 
@@ -973,11 +978,15 @@ impl OpenCad {
         let Some((p, rx)) = &self.opening else { return };
         let got = match rx.try_recv() {
             Ok(g) => g,
+            // The share hasn't answered in 3 s and there's a copy here: that
+            // opens (the read is left to finish on its own).
+            Err(std::sync::mpsc::TryRecvError::Empty) if self.opening_since.is_some_and(|t| t.elapsed().as_secs_f32() > 3.0) && cloud::Cache::default_cache().is_some_and(|c| c.copy_of(p).is_some()) => Err(format!("{} didn't answer", self.cloud_name(p))),
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the read stopped".into()),
         };
         let p = p.clone();
         self.opening = None;
+        self.opening_since = None;
         self.save_note = None;
         let name = self.cloud_name(&p);
         let cache = cloud::Cache::default_cache();
