@@ -24,6 +24,7 @@ Later (drawings, on hold — few users): views placed by hand (Base / Projected 
 
 ## Done
 
+- Release 0.3.0 (2026-11-12): OpenSCAD scripts open / insert as exact solids with editable parameters (scad.rs, scad_kernel.rs); Help > Tool Reference with icons; workspace tab hover, SKETCH tab only while sketching. Next: Coil with many turns lags and hides the progress card; a friend's Flatpak crashed (cause unknown, waiting on their terminal output).
 - Release 0.2.0 (2026-11-12): cloud saving (own server), offline copies opening at once with no network (notice bottom right), where-it-is badges on the file viewer; Flatpak gets network access (else it looks offline) and talks to KIO FUSE / gvfs.
 - Files as Fusion's (2026-11-05): the start page is a file viewer (Recent, cloud folders, This computer; projects = folders; preview tiles or a list with last save; ⋯: Open, Rename, Move to, Available offline, Remove from Recent, Delete); designs carry a small preview in their file (CPU-drawn at save, body colours, fitted); Connect your cloud in the app (smb:// / webdavs:// mounted through KDE / GNOME, or a folder here); Open = the viewer (File > Open Other File for the system chooser); cloud icon by Settings (status dot; menu with each server, ping + packet loss every 10 s while open, uploads waiting, Upload Now); every save says where it went; no cloud: Documents/Oxide360 (Settings: Save new designs to); Home tab square; tabs fade in on switch and slide in when added.
 
