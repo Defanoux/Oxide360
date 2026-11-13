@@ -4,6 +4,16 @@
 
 <p align="center">A parametric 3D CAD modeller for Linux, written in Rust: sketches, extrudes, fillets, sweeps, assemblies and more, in the spirit of Fusion 360.</p>
 
+## Install
+
+**[Install Oxide360](https://defanoux.github.io/Oxide360/)**: one click opens Discover or GNOME Software, and updates arrive there like any other app. Or in a terminal:
+
+```sh
+flatpak install --user https://defanoux.github.io/Oxide360/Oxide360.flatpakref
+```
+
+Works on any Linux with Flatpak (Fedora, Ubuntu, Mint, Arch…). Each [release](https://github.com/Defanoux/Oxide360/releases) also has the `.flatpak` file on its own.
+
 ## What it does
 
 - **Sketches** on planes and faces: lines, rectangles, circles, arcs, polygons, slots, splines, ellipses and text; constraints (coincident, parallel, tangent, equal, symmetric…) and dimensions, solved live; trim, extend, offset, fillet, mirror, patterns, projection of body edges.
@@ -12,7 +22,8 @@
 - **A timeline** of every step: edit any of them, roll back, suppress; named parameters and expressions.
 - **Assemblies**: components and joints (rigid, revolute, slider) with motion.
 - **Inspect**: measure, section analysis, interference, physical materials and mass properties.
-- **Files**: its own design format; STEP, STL, 3MF and OBJ export; STEP and STL import; DXF and SVG export of sketches. Autosave and crash recovery.
+- **Files**: its own design format; STEP, STL, 3MF and OBJ export; STEP and STL import; OpenSCAD scripts (with their parameters); DXF and SVG export of sketches. Autosave and crash recovery.
+- **Your own cloud**: designs on your TrueNAS / Samba share or Nextcloud, with offline copies and background upload.
 
 The geometry is exact (OpenCASCADE B-rep), so volumes, fillets and STEP files are the real thing, not meshes.
 
@@ -25,7 +36,7 @@ cargo run --release
 
 `cargo test` runs the tests (the 3D renderer's tests use Mesa's software Vulkan, so they run without a GPU).
 
-`packaging/make-bundle.sh` builds a folder that runs on another Fedora machine without installing anything; a Flatpak is planned.
+`packaging/flatpak/build.sh` builds the Flatpak; `packaging/make-bundle.sh` builds a folder that runs on another Fedora machine without installing anything.
 
 ## Status
 
