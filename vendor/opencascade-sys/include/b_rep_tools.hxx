@@ -246,3 +246,29 @@ inline bool opencad_try_face_cylinder(const TopoDS_Face &face, rust::Slice<doubl
     return false;
   }
 }
+
+// opencad patch: drop the triangles kept on a shape's faces, so meshing it
+// again (coarser) really meshes it again. False if OCCT failed.
+inline bool opencad_try_clean_mesh(const TopoDS_Shape &shape) {
+  try {
+    OCC_CATCH_SIGNALS
+    BRepTools::Clean(shape, Standard_True);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+// opencad patch: mesh a shape afresh (old triangles dropped) to `linear`
+// deflection and `angular` (radians), on all cores. False if OCCT failed.
+#include <BRepMesh_IncrementalMesh.hxx>
+inline bool opencad_try_mesh(const TopoDS_Shape &shape, double linear, double angular) {
+  try {
+    OCC_CATCH_SIGNALS
+    BRepTools::Clean(shape, Standard_True);
+    BRepMesh_IncrementalMesh mesh(shape, linear, Standard_False, angular, Standard_True);
+    return mesh.IsDone();
+  } catch (...) {
+    return false;
+  }
+}

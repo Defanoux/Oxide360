@@ -1460,6 +1460,7 @@ impl OpenCad {
         };
         if !self.builds[i].as_ref().is_some_and(same) {
             self.builds[i] = Some(kernel::Build::start(inp));
+            self.build_started[i] = Some(std::time::Instant::now());
         } else if self.stepped[i] == self.frame_no && self.caches[i].is_some() {
             return; // (once a frame)
         }
@@ -1473,6 +1474,10 @@ impl OpenCad {
             return;
         }
         let Some(b) = self.builds[i].take() else { return };
+        // A long one done: worth telling someone who went to do something else.
+        if self.build_started[i].take().is_some_and(|t| t.elapsed().as_secs_f32() > 2.0) {
+            self.build_done_notice = true;
+        }
         let inp = b.inputs().clone();
         let model = b.finish();
         self.caches[i] = Some(KernelCache {

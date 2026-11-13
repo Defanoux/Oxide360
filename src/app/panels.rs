@@ -464,6 +464,10 @@ impl OpenCad {
         });
         // Which workspace you're in, like Fusion's SOLID / SKETCH tabs.
         // DRAWING switches to the 2-D drawing sheet; SOLID back.
+        // (Not on the start page: there's no design to switch workspace in.)
+        if self.showing_start() {
+            return;
+        }
         let sketching = self.active.is_some();
         let drawing = self.drawing_open;
         ui.horizontal(|ui| {

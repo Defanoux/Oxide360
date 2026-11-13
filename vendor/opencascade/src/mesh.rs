@@ -33,13 +33,19 @@ impl Mesher {
     }
 
     pub fn mesh(mut self) -> Result<Mesh, Error> {
+        let triangulated_shape = Shape::from_shape(self.inner.pin_mut().Shape());
+        mesh_of(&triangulated_shape)
+    }
+}
+
+/// opencad patch: the triangles already on `triangulated_shape`'s faces.
+pub fn mesh_of(triangulated_shape: &Shape) -> Result<Mesh, Error> {
+    {
         let mut vertices = vec![];
         let mut uvs = vec![];
         let mut normals = vec![];
         let mut indices = vec![];
         let mut face_ends = vec![];
-
-        let triangulated_shape = Shape::from_shape(self.inner.pin_mut().Shape());
 
         for face in triangulated_shape.faces() {
             let mut location = ffi::top_loc::Location_new();

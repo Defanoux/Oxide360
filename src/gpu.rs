@@ -356,12 +356,23 @@ impl GrowBuffer {
         Self { buffer, capacity }
     }
 
-    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, data: &[u8]) {
+    /// Put `data` (items of `stride` bytes) on the card; how many items
+    /// went. Never more than the card's largest buffer: what doesn't fit
+    /// isn't drawn (and the log says so) rather than the app stopping.
+    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, data: &[u8], stride: usize) -> u32 {
         if data.is_empty() {
-            return;
+            return 0;
         }
-        if data.len() as u64 > self.capacity {
-            self.capacity = (data.len() as u64).next_power_of_two();
+        let max = device.limits().max_buffer_size;
+        let fits = (data.len() as u64).min(max / stride as u64 * stride as u64) as usize;
+        if fits < data.len() {
+            static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                crate::debuglog::line(&format!("the scene ({} MB) is more than the graphics card's largest buffer ({} MB): part of it isn't drawn", data.len() >> 20, max >> 20));
+            }
+        }
+        if fits as u64 > self.capacity {
+            self.capacity = (fits as u64).next_power_of_two().min(max);
             self.buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("oxide360 vertices"),
                 size: self.capacity,
@@ -369,7 +380,8 @@ impl GrowBuffer {
                 mapped_at_creation: false,
             });
         }
-        queue.write_buffer(&self.buffer, 0, data);
+        queue.write_buffer(&self.buffer, 0, &data[..fits]);
+        (fits / stride) as u32
     }
 }
 
@@ -748,15 +760,15 @@ impl Gpu {
         self.ensure_targets(device, size);
         queue.write_buffer(&self.uniforms, 0, &scene.uniform_bytes());
         let (solid, clear) = split_clear(&scene.tris);
-        self.tris.upload(device, queue, &f32_bytes(&solid));
-        self.clear.upload(device, queue, &f32_bytes(&clear));
-        self.clear_count = clear.len() as u32;
-        self.edges.upload(device, queue, &f32_bytes(&scene.edges));
-        self.lines.upload(device, queue, &f32_bytes(&scene.lines));
-        self.glass.upload(device, queue, &f32_bytes(&scene.glass));
-        self.counts = (solid.len() as u32, scene.edges.len() as u32, scene.lines.len() as u32, scene.glass.len() as u32);
-        self.xray.upload(device, queue, &f32_bytes(&scene.xray));
-        self.xray_count = scene.xray.len() as u32;
+        // (Counts of whole triangles for the triangle lists, whole segments for the line lists.)
+        let whole = |n: u32, k: u32| n / k * k;
+        let tris = whole(self.tris.upload(device, queue, &f32_bytes(&solid), 48), 3);
+        self.clear_count = whole(self.clear.upload(device, queue, &f32_bytes(&clear), 48), 3);
+        let edges = whole(self.edges.upload(device, queue, &f32_bytes(&scene.edges), 12), 2);
+        let lines = whole(self.lines.upload(device, queue, &f32_bytes(&scene.lines), 28), 2);
+        let glass = whole(self.glass.upload(device, queue, &f32_bytes(&scene.glass), 28), 3);
+        self.counts = (tris, edges, lines, glass);
+        self.xray_count = whole(self.xray.upload(device, queue, &f32_bytes(&scene.xray), 28), 2);
 
         let t = self.targets.as_ref().expect("targets were just created");
         let resolved_view = t.resolved.create_view(&Default::default());

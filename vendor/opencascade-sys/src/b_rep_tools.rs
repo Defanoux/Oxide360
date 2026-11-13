@@ -22,6 +22,10 @@ mod inner {
         pub fn opencad_try_read_step(path: &str) -> UniquePtr<TopoDS_Shape>;
         /// opencad patch: an STL mesh as solids (null on failure).
         pub fn opencad_try_read_stl(path: &str) -> UniquePtr<TopoDS_Shape>;
+        /// opencad patch: drop the triangles kept on the shape's faces (false on failure).
+        pub fn opencad_try_clean_mesh(shape: &TopoDS_Shape) -> bool;
+        /// opencad patch: mesh afresh to a linear and angular deflection, in parallel (false on failure).
+        pub fn opencad_try_mesh(shape: &TopoDS_Shape, linear: f64, angular: f64) -> bool;
         /// opencad patch: a shape as BRep text (empty on failure).
         pub fn opencad_brep_to_string(shape: &TopoDS_Shape) -> String;
         /// opencad patch: a shape back from BRep text (null on failure).

@@ -877,6 +877,21 @@ impl Shape {
         self.mesh_with_tolerance(0.01)
     }
 
+    /// opencad patch: forget the triangles kept on the faces, so the next
+    /// mesh is made afresh (at whatever tolerance it asks). False on failure.
+    pub fn try_clean_mesh(&self) -> bool {
+        ffi::b_rep_tools::opencad_try_clean_mesh(&self.inner)
+    }
+
+    /// opencad patch: mesh afresh to `linear` deflection and `angular`
+    /// (radians), using every core.
+    pub fn try_mesh(&self, linear: f64, angular: f64) -> Result<Mesh, Error> {
+        if !ffi::b_rep_tools::opencad_try_mesh(&self.inner, linear, angular) {
+            return Err(Error::TriangulationFailed);
+        }
+        crate::mesh::mesh_of(self)
+    }
+
     pub fn mesh_with_tolerance(&self, triangulation_tolerance: f64) -> Result<Mesh, Error> {
         let mesher = Mesher::try_new(self, triangulation_tolerance)?;
         mesher.mesh()

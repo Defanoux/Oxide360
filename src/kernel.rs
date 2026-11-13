@@ -2118,6 +2118,35 @@ fn edge_face(shape: &Shape, edge: &EdgeRef, want: DVec3) -> Option<Face> {
     best.map(|(_, f)| f)
 }
 
+/// About how many triangles one body is drawn with at most.
+pub const MESH_BUDGET: usize = 300_000;
+
+/// The usual angle between neighbouring triangles on a curve (radians).
+const MESH_ANGLE: f64 = 0.5;
+
+/// `shape` meshed (on every core) to `deflection`, as finely as the
+/// budget allows: a long coil of thin wire would be millions of triangles at
+/// the usual angle — slow to make, slow to draw, and more than a modest
+/// graphics card takes. Counts fall about as a power of the angle, found
+/// from a rough mesh or two.
+fn budget_mesh(shape: &Shape, deflection: f64) -> Result<opencascade::mesh::Mesh, String> {
+    let mesh = |ang: f64| shape.try_mesh(deflection, ang).map_err(|e| format!("meshing failed: {e:?}"));
+    let count = |m: &opencascade::mesh::Mesh| (m.indices.len() / 3).max(1) as f64;
+    let at1 = mesh(1.0)?;
+    let n1 = count(&at1);
+    // At worst a quarter of the usual count: the usual angle fits.
+    if n1 * (1.0 / MESH_ANGLE).powi(2) <= MESH_BUDGET as f64 {
+        return mesh(MESH_ANGLE);
+    }
+    let n2 = count(&mesh(2.0)?);
+    let p = (n1 / n2).log2().clamp(0.3, 3.0);
+    let ang = (n1 / MESH_BUDGET as f64).powf(1.0 / p).clamp(MESH_ANGLE, 2.0);
+    if (ang - 1.0).abs() < 1e-9 {
+        return Ok(at1);
+    }
+    mesh(ang)
+}
+
 /// Triangulate a body for drawing and mesh export. Faces are meshed
 /// separately by the kernel; shared vertices are welded back together so
 /// edges between faces can be found and drawn.
@@ -2126,7 +2155,7 @@ pub fn mesh_tagged(shape: &Shape) -> Result<(Mesh, Vec<u32>), String> {
     let bb = opencascade::bounding_box::aabb(shape);
     let diag = (bb.max() - bb.min()).length();
     let deflection = (diag * 0.0005).clamp(0.001, 0.5);
-    let m = shape.mesh_with_tolerance(deflection).map_err(|e| format!("meshing failed: {e:?}"))?;
+    let m = budget_mesh(shape, deflection)?;
     let q = (diag * 1e-7).max(1e-9);
     let mut index: HashMap<(i64, i64, i64), u32> = HashMap::new();
     let mut out = Mesh::default();
@@ -7475,5 +7504,30 @@ mod tests {
         let back = Shape::read_step(&path).unwrap();
         assert!(close(back.volume(), PI * 100.0 * 30.0));
         std::fs::remove_file(&path).ok();
+    }
+}
+
+#[cfg(test)]
+mod mesh_budget_tests {
+    use super::*;
+
+    #[test]
+    fn a_long_thin_coil_stays_within_the_triangle_budget() {
+        // 400 turns of 0.4 mm wire: millions of triangles at the usual detail.
+        let s = Shape::try_coil(kv(DVec3::ZERO), kv(DVec3::Z), kv(DVec3::X), 10.0, 1.0, 400.0, 0, 0.4).unwrap();
+        let t = std::time::Instant::now();
+        let (m, faces) = mesh_tagged(&s).unwrap();
+        assert!(m.tris.len() <= MESH_BUDGET * 3 / 2, "{} triangles", m.tris.len());
+        assert!(t.elapsed().as_secs_f64() < 8.0, "{:.1} s", t.elapsed().as_secs_f64());
+        assert!(m.tris.len() > 1000, "still a coil: {}", m.tris.len());
+        assert_eq!(faces.len(), m.tris.len());
+        eprintln!("{} triangles in {:.1} s", m.tris.len(), t.elapsed().as_secs_f64());
+        // A plain part keeps its full detail.
+        let c = Shape::cylinder(kv(DVec3::ZERO), 10.0, kv(DVec3::Z), 20.0);
+        let (fine, _) = mesh_tagged(&c).unwrap();
+        let bb = 20.0f64.hypot(28.28);
+        let want = (bb * 0.0005).clamp(0.001, 0.5);
+        let direct = Shape::cylinder(kv(DVec3::ZERO), 10.0, kv(DVec3::Z), 20.0).mesh_with_tolerance(want).unwrap().indices.len() / 3;
+        assert!(((fine.tris.len() as f64 - direct as f64).abs() / (direct as f64)) < 0.1, "{} vs {direct}", fine.tris.len());
     }
 }

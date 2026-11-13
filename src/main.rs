@@ -1004,6 +1004,8 @@ struct OpenCad {
     connect: Option<Connect>,               // the Connect your cloud window
     opening: Option<(PathBuf, std::sync::mpsc::Receiver<Result<(String, Option<u64>, Option<cloud::Lock>), String>>)>, // a cloud design being read in the background
     opening_since: Option<std::time::Instant>, // when that read started (a share that doesn't answer in 3 s: the copy here opens)
+    build_started: [Option<std::time::Instant>; 2], // when each kernel slot's build began
+    build_done_notice: bool, // a long build just finished: flash the taskbar if the window isn't in front
     alert_logged: Option<String>, // the last message written to the debug log
     scad_job: Option<(ScadFor, std::sync::mpsc::Receiver<Result<scad_kernel::Made, String>>)>, // an OpenSCAD script being run in the background, and for what
     open_paths: Vec<PathBuf>,               // every tab's design (set by the tab holder)
@@ -1316,6 +1318,8 @@ impl Default for OpenCad {
             opening_since: None,
             scad_job: None,
             alert_logged: None,
+            build_started: [None, None],
+            build_done_notice: false,
             open_paths: Vec::new(),
             upload_progress: None,
             picking: None,
@@ -1580,6 +1584,12 @@ impl OpenCad {
         self.frame_no += 1;
         self.poll_opening();
         self.poll_scad();
+        // A long rebuild finished while the window was behind others: the
+        // taskbar entry asks for attention (flashes on KDE).
+        if std::mem::take(&mut self.build_done_notice) && ui.ctx().input(|i| i.viewport().focused == Some(false)) {
+            debuglog::line("long rebuild done while away: asking for attention");
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+        }
         if self.opening.is_some() || self.scad_job.is_some() {
             // (Looked at again soon, so a share that doesn't answer gives way to the copy here.)
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
