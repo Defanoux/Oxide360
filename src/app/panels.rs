@@ -446,6 +446,10 @@ impl OpenCad {
                         self.help_open = Some(HelpPage::GettingStarted);
                         ui.close();
                     }
+                    if ui.button("Tool Reference").clicked() {
+                        self.help_open = Some(HelpPage::Tools);
+                        ui.close();
+                    }
                     if ui.button("Keyboard Shortcuts").clicked() {
                         self.keybinds_open = true;
                         ui.close();
@@ -463,15 +467,28 @@ impl OpenCad {
         let sketching = self.active.is_some();
         let drawing = self.drawing_open;
         ui.horizontal(|ui| {
-            for (name, on) in [("SOLID", !sketching && !drawing), ("SKETCH", sketching && !drawing), ("DRAWING", drawing)] {
+            // (SKETCH only while a sketch is being edited, as Fusion's contextual tab.)
+            let tabs: Vec<(&str, bool)> = [("SOLID", !sketching && !drawing), ("SKETCH", sketching && !drawing), ("DRAWING", drawing)].into_iter().filter(|(n, _)| *n != "SKETCH" || sketching).collect();
+            for (name, on) in tabs {
+                let id = ui.id().with(("workspace_tab", name));
+                let hot = ui.ctx().read_response(id).is_some_and(|r| r.hovered());
+                let pal = theme::now();
                 let text = egui::RichText::new(name).size(12.0);
-                let text = if on { text.color(theme::now().accent).strong() } else { text.color(theme::now().weak) };
+                let text = if on { text.color(pal.accent).strong() } else if hot { text.color(pal.text) } else { text.color(pal.weak) };
                 let tip = match name {
                     "SOLID" => "Back to the 3-D design",
-                    "SKETCH" => "Sketching (double-click a sketch to edit it)",
+                    "SKETCH" => "Editing a sketch (Finish Sketch to leave it)",
                     _ => "A 2-D drawing of the part: front, top, right and iso views, title block, PDF / DXF",
                 };
-                let r = ui.add(egui::Label::new(text).sense(egui::Sense::click())).on_hover_text(tip);
+                let galley = egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button);
+                let size = galley.size() + egui::vec2(12.0, 6.0);
+                let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                let r = ui.interact(rect, id, egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                if r.hovered() && !on {
+                    ui.painter().rect_filled(rect, 4.0, pal.raised);
+                }
+                ui.painter().galley(rect.center() - galley.size() / 2.0, galley, pal.text);
+                let r = r.on_hover_text(tip);
                 if r.clicked() {
                     match name {
                         "SOLID" => self.drawing_open = false,
@@ -479,7 +496,7 @@ impl OpenCad {
                         _ => {}
                     }
                 }
-                ui.add_space(10.0);
+                ui.add_space(4.0);
             }
             if let Some(i) = self.active {
                 ui.weak(format!("— editing {}", self.sketches[i].name));
@@ -699,6 +716,7 @@ impl OpenCad {
         let mut open = true;
         let title = match page {
             HelpPage::GettingStarted => "Getting Started",
+            HelpPage::Tools => "Tool Reference",
             HelpPage::About => "About Oxide360",
         };
         egui::Window::new(title).id(egui::Id::new("help_window")).open(&mut open).collapsible(false).default_width(460.0).show(ctx, |ui| match page {
@@ -710,6 +728,37 @@ impl OpenCad {
                         ui.add_space(6.0);
                     }
                     ui.weak("Hover any button for what it does. Keys can be changed in ? > Keyboard Shortcuts.");
+                });
+            }
+            HelpPage::Tools => {
+                // Each tool with its toolbar icon; the box finds one by name.
+                let id = egui::Id::new("help_tools_find");
+                let mut find: String = ui.data_mut(|d| d.get_temp(id).unwrap_or_default());
+                ui.add(egui::TextEdit::singleline(&mut find).hint_text("Find a tool…").desired_width(f32::INFINITY));
+                ui.data_mut(|d| d.insert_temp(id, find.clone()));
+                let f = find.trim().to_lowercase();
+                egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
+                    for (section, tools) in help::TOOLS {
+                        let shown: Vec<_> = tools.iter().filter(|(n, _, t)| f.is_empty() || n.to_lowercase().contains(&f) || t.to_lowercase().contains(&f)).collect();
+                        if shown.is_empty() {
+                            continue;
+                        }
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(section.to_uppercase()).size(12.0).color(theme::now().weak));
+                        for (name, sketching, text) in shown {
+                            ui.horizontal_top(|ui| {
+                                let (r, _) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
+                                if let Some(icon) = crate::app::menus::tool_icon(name, *sketching) {
+                                    icons::paint(ui.painter(), r, icon, true);
+                                }
+                                ui.vertical(|ui| {
+                                    ui.strong(*name);
+                                    ui.label(*text);
+                                });
+                            });
+                            ui.add_space(4.0);
+                        }
+                    }
                 });
             }
             HelpPage::About => {

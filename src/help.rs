@@ -56,3 +56,113 @@ mod tests {
         assert!(GETTING_STARTED.iter().all(|(h, t)| !h.is_empty() && t.len() > 40));
     }
 }
+
+/// The tool reference in Help (each shown with its toolbar icon): sections
+/// of (tool name as the toolbar has it, a sketch tool?, what it does).
+pub const TOOLS: &[(&str, &[(&str, bool, &str)])] = &[
+    ("Sketch: draw", &[
+        ("Create Sketch", false, "Start a sketch on an origin plane, a construction plane or a flat face. Everything 2-D starts here."),
+        ("Line", true, "Click point after point; each click starts the next line. Click and drag from an end for a tangent arc. Esc or double-click ends the chain."),
+        ("Rectangle", true, "Two corners, a centre and a corner, or three points for a turned one. Type the width and height while drawing."),
+        ("Circle", true, "Centre and radius, two points across, three points, or tangent to lines."),
+        ("Arc", true, "Through three points, centre and two ends, or tangent to where a line ends."),
+        ("Polygon", true, "A regular polygon around a centre: drawn inside or outside a circle, or by an edge. Type how many sides."),
+        ("Slot", true, "A rounded slot: centre to centre, overall, or along an arc."),
+        ("Spline", true, "A smooth curve through the points clicked (drag its handles after)."),
+        ("Ellipse", true, "Centre, then the end of one axis, then how wide the other is."),
+        ("Point", true, "A single point, for holes and for constraints to hold on to."),
+        ("Text", true, "Text in any installed font; extrude or emboss it later."),
+        ("Insert SVG / DXF", true, "Brings a drawing's lines, arcs and curves into the sketch, at its real size, placed with drag arrows."),
+    ]),
+    ("Sketch: change", &[
+        ("Fillet", true, "Rounds the corner where two sketch lines meet."),
+        ("Chamfer", true, "Cuts a straight bevel across the corner where two lines meet."),
+        ("Trim", true, "Click a piece of a curve to cut it back to where it crosses others (X)."),
+        ("Break", true, "Splits a curve where it crosses others, without removing anything."),
+        ("Extend", true, "Lengthens a curve to the next one it would meet."),
+        ("Offset", true, "A copy of a chain of curves, a set distance to one side."),
+        ("Mirror", true, "Copies picked curves across a line or axis; the copies stay tied to the originals."),
+        ("Rectangular Pattern", true, "Copies picked curves in rows and columns."),
+        ("Circular Pattern", true, "Copies picked curves round a point."),
+        ("Project", true, "Brings a body's edges into the sketch; they follow the body when it changes."),
+        ("Construction", true, "Turns picked curves into construction lines (dashed): they guide, but aren't part of any profile (K)."),
+        ("Change Parameters", true, "Named values (width = 40 mm) that dimensions and features can use in place of numbers."),
+    ]),
+    ("Sketch: constraints", &[
+        ("Dimension", true, "Sets a length, distance, angle or diameter; type a number or a parameter (D)."),
+        ("Coincident", true, "Puts a point on another point or on a curve."),
+        ("Collinear", true, "Keeps lines on one straight line."),
+        ("Concentric", true, "Gives circles and arcs the same centre."),
+        ("Horizontal", true, "Makes a line (or two points) level."),
+        ("Vertical", true, "Makes a line (or two points) upright."),
+        ("Parallel", true, "Keeps lines pointing the same way."),
+        ("Perpendicular", true, "Keeps lines at right angles."),
+        ("Equal", true, "Same length lines, or same size circles."),
+        ("Tangent", true, "A line or arc touches a curve smoothly."),
+        ("Midpoint", true, "Puts a point at the middle of a line."),
+        ("Symmetric", true, "Two points mirror each other across a line."),
+        ("Fix", true, "Pins geometry where it is."),
+    ]),
+    ("Create", &[
+        ("Extrude", false, "Pulls sketch profiles or faces into a solid, or cuts with them: a distance, to an object, or through all; one side, two sides or symmetric; with a taper (E)."),
+        ("Revolve", false, "Turns a profile round an axis into a solid (a bottle, a wheel)."),
+        ("Sweep", false, "Moves a profile along a path."),
+        ("Loft", false, "Blends between two or more profiles."),
+        ("Pipe", false, "A round, square or triangular tube along a path."),
+        ("Coil", false, "A spring or coil: diameter, turns, pitch and section size."),
+        ("Emboss", false, "Raises or cuts sketch text or profiles into a flat face, or wraps them round a cylinder."),
+        ("Hole", false, "Simple, counterbored or countersunk holes, tapped or not, at sketch points or a clicked spot (H)."),
+        ("Thread", false, "Adds a real (modeled) thread to a round face, from the standard sizes."),
+    ]),
+    ("Modify", &[
+        ("Press Pull", false, "Drag a face to push it in or pull it out (Q)."),
+        ("Fillet", false, "Rounds picked edges (F)."),
+        ("Chamfer", false, "Bevels picked edges: one distance, two distances, or distance and angle."),
+        ("Shell", false, "Hollows a body to a wall thickness, leaving picked faces open."),
+        ("Move/Copy", false, "Moves or turns bodies with arrows, or by numbers; can leave a copy (M)."),
+        ("Combine", false, "Joins bodies, cuts one with others, or keeps only where they overlap."),
+        ("Split Body", false, "Cuts a body into pieces along a plane or flat face."),
+        ("Scale", false, "Makes bodies bigger or smaller, evenly or by X / Y / Z."),
+        ("Appearance", false, "How bodies or faces look: metals, plastics, paint, wood, glass (A)."),
+        ("Change Parameters", false, "Named values used by dimensions and features; change one and the design follows."),
+    ]),
+    ("Pattern", &[
+        ("Mirror", false, "Copies bodies or features across a plane."),
+        ("Rectangular Pattern", false, "Copies bodies or features in rows and columns."),
+        ("Circular Pattern", false, "Copies bodies or features round an axis."),
+    ]),
+    ("Construct", &[
+        ("Offset Plane", false, "A plane parallel to a plane or face, a distance away."),
+        ("Plane at Angle", false, "A plane through an edge or axis, turned by an angle."),
+        ("Midplane", false, "A plane halfway between two faces."),
+        ("Plane Through Three Points", false, "A plane through three points or corners."),
+        ("Tangent Plane", false, "A plane touching a round face."),
+        ("Axis Along Edge", false, "An axis along a straight edge."),
+        ("Axis Through Cylinder", false, "An axis through the middle of a round face."),
+        ("Axis Through Two Points", false, "An axis from one point to another."),
+        ("Point", false, "A construction point on a corner, an edge, a face or in space."),
+    ]),
+    ("Inspect", &[
+        ("Measure", false, "Distances, angles, lengths and areas between whatever you click (I)."),
+        ("Print Check", false, "For 3-D printing: does it fit the printer, where it overhangs, and the best face to lay it on."),
+    ]),
+];
+
+#[cfg(test)]
+mod tool_reference_tests {
+    #[test]
+    fn every_tool_is_in_the_reference_with_an_icon() {
+        let has = |name: &str, sketching: bool| super::TOOLS.iter().any(|(_, tools)| tools.iter().any(|(n, s, _)| *n == name && *s == sketching));
+        for name in crate::shortcuts::SOLID {
+            assert!(has(name, false), "solid tool {name} has no Help entry");
+        }
+        for name in crate::shortcuts::SKETCH {
+            assert!(has(name, true), "sketch tool {name} has no Help entry");
+        }
+        for (_, tools) in super::TOOLS {
+            for (name, sketching, _) in tools.iter() {
+                assert!(crate::app::menus::tool_icon(name, *sketching).is_some(), "{name} has no icon");
+            }
+        }
+    }
+}

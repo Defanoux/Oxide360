@@ -473,6 +473,7 @@ fn rgb(c: Color32) -> [f32; 3] {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum HelpPage {
     GettingStarted,
+    Tools,
     About,
 }
 

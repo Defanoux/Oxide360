@@ -7,7 +7,7 @@ mod panels;
 mod timeline;
 mod viewport;
 mod control;
-mod menus;
+pub(crate) mod menus;
 mod start;
 mod browse;
 mod drawing;
