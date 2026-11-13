@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install Oxide360</title>
+<link rel="icon" href="icon.svg">
+<style>
+  :root { --bg: #f6f6f4; --fg: #1d1d1b; --weak: #66665f; --card: #ffffff; --line: #deded8; --accent: #c4561c; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1b1b1d; --fg: #ececea; --weak: #a2a29c; --card: #242427; --line: #36363a; --accent: #e6773a; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 40px 16px 64px; }
+  header { display: flex; gap: 16px; align-items: center; }
+  header img { width: 64px; height: 64px; }
+  h1 { margin: 0; font-size: 32px; }
+  .weak { color: var(--weak); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; margin-top: 20px; }
+  h2 { margin: 0 0 8px; font-size: 19px; }
+  a.button { display: inline-block; background: var(--accent); color: #fff; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 600; }
+  code, pre { font-family: ui-monospace, monospace; font-size: 14px; }
+  pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="icon.svg" alt="">
+    <div>
+      <h1>Oxide360</h1>
+      <div class="weak">Parametric 3D CAD for Linux · version @VERSION@</div>
+    </div>
+  </header>
+
+  <section>
+    <h2>Install (updates come by themselves)</h2>
+    <p><a class="button" href="Oxide360.flatpakref">Install Oxide360</a></p>
+    <p class="weak">Opens Discover or GNOME Software. After that, new versions show up there like any other update.</p>
+    <p>Or in a terminal:</p>
+    <pre>flatpak install --user https://defanoux.github.io/Oxide360/Oxide360.flatpakref</pre>
+    <p class="weak">Needs Flatpak (already there on Fedora, Mint, Pop!_OS…). The Freedesktop runtime comes from Flathub the first time.</p>
+  </section>
+
+  <section>
+    <h2>Already installed from a downloaded .flatpak?</h2>
+    <p>Remove that one first (your designs and settings stay), then install as above:</p>
+    <pre>flatpak uninstall --user io.github.Defanoux.Oxide360</pre>
+  </section>
+
+  <section>
+    <h2>Update by hand</h2>
+    <pre>flatpak update io.github.Defanoux.Oxide360</pre>
+  </section>
+
+  <p class="weak">Source, releases and bug reports: <a href="https://github.com/Defanoux/Oxide360">github.com/Defanoux/Oxide360</a></p>
+</main>
+</body>
+</html>

@@ -5,3 +5,5 @@ packaging/flatpak/repo/
 packaging/flatpak/.flatpak-builder/
 packaging/flathub/test/
 .aider*
+packaging/flatpak/pages-repo/
+packaging/flatpak/site-preview/

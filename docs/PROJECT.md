@@ -84,6 +84,15 @@ Rough order of what landed (see `git log` and TODO.md's Done list for detail):
 4. `git tag -a vX.Y.Z -m "Oxide360 X.Y.Z" && git push origin vX.Y.Z`
 5. `gh release create vX.Y.Z dist/Oxide360.flatpak --title "Oxide360 X.Y.Z" --notes "…"`
    (0.1.0's notes are the template: install steps + what's new).
+6. `packaging/flatpak/publish.sh` — signs the build into Oxide360's own
+   Flatpak repository and force-pushes it as the only commit of the
+   `gh-pages` branch (GitHub Pages: https://defanoux.github.io/Oxide360/,
+   with `Oxide360.flatpakref`). Everyone who installed from there (or from a
+   0.3.3+ `.flatpak`, which remembers the repository) gets the update in
+   Discover / `flatpak update`. `OXIDE360_PUBLISH_DRY=1` builds the site
+   into `packaging/flatpak/site-preview/` without pushing. The signing key is
+   in `~/.local/share/oxide360-signing/gnupg` (outside the project, never
+   committed; keep a backup — a new key means everyone re-installs).
 
 To try a built Flatpak: `flatpak install --user -y dist/Oxide360.flatpak`,
 then `flatpak run io.github.Defanoux.Oxide360`. To drive it with the control

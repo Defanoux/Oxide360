@@ -11,7 +11,7 @@ Fusion's behaviour is the spec for each; FEATURES.md has the full Fusion list.
 - **Cloud folders, next step**: Nextcloud straight over WebDAV (no sync app, if KIO / gvfs WebDAV isn't enough); conflict copy names use UTC (local time would need the time zone).
 - **Pattern along path**, **Draft**.
 - **Joint limits** and motion settings (min/max, animation speed).
-- **Own Flatpak repository** (Flathub's AI policy rules it out — see docs/PROJECT.md): CI builds the Flatpak on each release tag, signs it, publishes the repo on GitHub Pages, plus an `Oxide360.flatpakref` so Discover installs it and shows updates.
+- **Own Flatpak repository**: done locally (2026-11-13: `packaging/flatpak/publish.sh`, signed, checked from a sandboxed Flatpak setup); first publish + turning on GitHub Pages waits on Gavin running it. Later: CI builds it on each release tag.
 
 Later (big): sheet metal, surfaces, CAM, mesh bodies for big STLs.
 Later (drawings, on hold — few users): views placed by hand (Base / Projected View), centre marks and centre lines, dimensions.
