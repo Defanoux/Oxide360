@@ -32,12 +32,20 @@
   </header>
 
   <section>
-    <h2>Install (updates come by themselves)</h2>
+    <h2>Fedora</h2>
+    <p>From <a href="https://copr.fedorainfracloud.org/coprs/defanoux/oxide360/">Oxide360's Fedora COPR</a> (Fedora 44 and 45):</p>
+    <pre>sudo dnf copr enable defanoux/oxide360
+sudo dnf install oxide360</pre>
+    <p class="weak">Updates then come with the rest of Fedora's, in Discover or <code>sudo dnf upgrade</code>.</p>
+  </section>
+
+  <section>
+    <h2>Any Linux (Flatpak, updates come by themselves)</h2>
     <p><a class="button" href="Oxide360.flatpakref">Install Oxide360</a></p>
     <p class="weak">Opens Discover or GNOME Software. After that, new versions show up there like any other update.</p>
     <p>Or in a terminal:</p>
     <pre>flatpak install --user https://defanoux.github.io/Oxide360/Oxide360.flatpakref</pre>
-    <p class="weak">Needs Flatpak (already there on Fedora, Mint, Pop!_OS…). The Freedesktop runtime comes from Flathub the first time.</p>
+    <p class="weak">Needs Flatpak (already there on Fedora, Mint, Pop!_OS…). The Freedesktop runtime comes from Flathub the first time. Use one or the other, not both: two would show up in your app menu.</p>
   </section>
 
   <section>

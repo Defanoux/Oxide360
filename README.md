@@ -6,7 +6,7 @@
 
 ## Install
 
-**Fedora (44, 45):**
+**Fedora (44, 45)**, from [Oxide360's COPR](https://copr.fedorainfracloud.org/coprs/defanoux/oxide360/):
 
 ```sh
 sudo dnf copr enable defanoux/oxide360
