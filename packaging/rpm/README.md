@@ -3,7 +3,7 @@
 Fedora users install it with:
 
 ```sh
-sudo dnf copr enable <copr-user>/oxide360
+sudo dnf copr enable defanoux/oxide360
 sudo dnf install oxide360
 ```
 

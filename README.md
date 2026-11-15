@@ -6,7 +6,16 @@
 
 ## Install
 
-**[Install Oxide360](https://defanoux.github.io/Oxide360/)**: one click opens Discover or GNOME Software, and updates arrive there like any other app. Or in a terminal:
+**Fedora (44, 45):**
+
+```sh
+sudo dnf copr enable defanoux/oxide360
+sudo dnf install oxide360
+```
+
+Updates then come with the rest of Fedora's (Discover or `sudo dnf upgrade`).
+
+**Any Linux (Flatpak):** **[Install Oxide360](https://defanoux.github.io/Oxide360/)**: one click opens Discover or GNOME Software, and updates arrive there like any other app. Or in a terminal:
 
 ```sh
 flatpak install --user https://defanoux.github.io/Oxide360/Oxide360.flatpakref
