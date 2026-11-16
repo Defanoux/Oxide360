@@ -10,7 +10,7 @@
 //! so editing a sketch or a distance updates everything after it.
 
 use crate::doc::{BodyId, Feature};
-use crate::model::{Blob, EmbossFace, EmbossFeature, ImportFeature, JointFeature, JointSnap, SweepFeature, SweepKind, AxisKind, ConstructionPoint, PlaneKind, PointKind, PointRef, MoveFeature, MoveKind, CombineFeature, SplitFeature, ScaleAt, ScaleFeature, OffsetFaceFeature, ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
+use crate::model::{CopyKind, MAX_COPIES, Blob, EmbossFace, EmbossFeature, ImportFeature, JointFeature, JointSnap, SweepFeature, SweepKind, AxisKind, ConstructionPoint, PlaneKind, PointKind, PointRef, MoveFeature, MoveKind, CombineFeature, SplitFeature, ScaleAt, ScaleFeature, OffsetFaceFeature, ShellFeature, ShellDirection, CylinderRef, ThreadFeature, HoleExtent, HoleFeature, HolePlace, TapType, Hinge, PlaneAngle, PlaneFeature, AxisFeature, CopyFeature, ExtrudeTarget, RemoveFeature, Placement, EdgeFeature, EdgeKind, EdgeRef, Extrude, Follow, Mesh, Operation, Revolve, RevolveAxis, mesh_edges};
 use crate::measure::{self, Geom};
 use crate::profile::{Curve, Region, find_regions, signed_area, union};
 use crate::sketch::{FacePlane, Sketch};
@@ -3796,12 +3796,39 @@ pub fn build(
 
 /// Copy the picked bodies once per placement (mirror or pattern). The copies
 /// are new bodies; the originals stay.
-fn apply_copy(bodies: Tagged, cf: &CopyFeature, k: usize, axes: &[Option<(DVec3, DVec3)>], planes: &[Option<FacePlane>]) -> Result<(Tagged, Option<BodyId>), String> {
+/// Where Pattern on Path puts its copies: each moved the way the path goes
+/// from the start point to its own place on it (and turned with the path,
+/// when the feature says so).
+fn path_placements(cf: &CopyFeature, sketches: &[Sketch], frames: &[Option<FacePlane>]) -> Result<Vec<Placement>, String> {
+    let CopyKind::Path { sketch, count, distance, spacing, start, symmetric, align, flip } = cf.kind else { return Err("not a pattern on a path".into()) };
+    let sk = sketches.get(sketch).ok_or("the sketch its path is in was deleted")?;
+    let plane = frame_for(sk, frames.get(sketch).copied().flatten())?;
+    let path = crate::path::Path::of(sk, &cf.path)?;
+    let path = if flip { path.reversed() } else { path };
+    let spread = crate::path::Spread { count: count.clamp(1, MAX_COPIES), distance, spacing, start, symmetric };
+    let (base, stations) = spread.stations(path.length(), path.closed)?;
+    let (p0, t0) = path.at(base);
+    let origin = world(&plane, p0);
+    let normal = plane.normal();
+    Ok(stations
+        .into_iter()
+        .map(|s| {
+            let (p, t) = path.at(s);
+            let radians = if align { t0.perp_dot(t).atan2(t0.dot(t)) } else { 0.0 };
+            Placement::Rigid { origin, axis: normal, radians, shift: world(&plane, p) - origin }
+        })
+        .collect())
+}
+
+fn apply_copy(bodies: Tagged, cf: &CopyFeature, k: usize, axes: &[Option<(DVec3, DVec3)>], planes: &[Option<FacePlane>], sketches: &[Sketch], frames: &[Option<FacePlane>]) -> Result<(Tagged, Option<BodyId>), String> {
     let sources: Vec<usize> = (0..bodies.len()).filter(|&i| cf.bodies.contains(&bodies[i].1)).collect();
     if sources.is_empty() {
         return Err("the bodies it copies are gone — edit it and pick again".into());
     }
-    let placements = cf.kind.placements(axes, planes)?;
+    let placements = match cf.kind {
+        CopyKind::Path { .. } => path_placements(cf, sketches, frames)?,
+        _ => cf.kind.placements(axes, planes)?,
+    };
     if placements.is_empty() {
         return Err("it makes no copies — raise the quantity".into());
     }
@@ -3819,6 +3846,10 @@ fn apply_copy(bodies: Tagged, cf: &CopyFeature, k: usize, axes: &[Option<(DVec3,
                     moved.as_ref().unwrap_or(src).rotated_about(kv(origin), kv(axis), radians)
                 }
                 Placement::Reflect { origin, normal } => src.mirrored_in_plane(kv(origin), kv(normal)),
+                Placement::Rigid { origin, axis, radians, shift } => {
+                    let turned = if radians.abs() > 1e-12 { Some(src.rotated_about(kv(origin), kv(axis), radians)) } else { None };
+                    turned.as_ref().unwrap_or(src).translated(kv(shift))
+                }
             };
             let id = BodyId { feature: Feature::Copy(k), piece };
             piece += 1;
@@ -4098,7 +4129,11 @@ impl Build {
                 Feature::Extrude(k) => extrudes.get(k).map(|ex| format!("{f:?}|{ex:?}|{}|{:?}|{planes:?}", sketch_geometry(sketches.get(ex.sketch)), frames.get(ex.sketch))),
                 Feature::Revolve(k) => revolves.get(k).map(|rv| format!("{f:?}|{rv:?}|{}|{:?}|{axes:?}", sketch_geometry(sketches.get(rv.sketch)), frames.get(rv.sketch))),
                 Feature::Edge(k) => edge_features.get(k).map(|ef| format!("{f:?}|{ef:?}|{extrude_ends:?}|{revolve_ends:?}")),
-                Feature::Copy(k) => copies.get(k).map(|c| format!("{f:?}|{c:?}|{axes:?}|{planes:?}")),
+                Feature::Copy(k) => copies.get(k).map(|c| match c.kind {
+                    // (A pattern on a path also follows its sketch.)
+                    CopyKind::Path { sketch, .. } => format!("{f:?}|{c:?}|{}|{:?}", sketch_geometry(sketches.get(sketch)), frames.get(sketch)),
+                    _ => format!("{f:?}|{c:?}|{axes:?}|{planes:?}"),
+                }),
                 Feature::Shell(k) => shells.get(k).map(|sf| format!("{f:?}|{sf:?}")),
                 Feature::OffsetFace(k) => offset_faces.get(k).map(|of| format!("{f:?}|{of:?}")),
                 Feature::Combine(k) => combines.get(k).map(|c| format!("{f:?}|{c:?}")),
@@ -4476,8 +4511,8 @@ impl Build {
                         *shapes = current;
                         continue;
                     };
-                    let (axes_now, planes_now) = (&axes, &planes);
-                    let r = catch_unwind(AssertUnwindSafe(|| apply_copy(current, cf, k, axes_now, planes_now)));
+                    let (axes_now, planes_now, frames_now) = (&axes, &planes, &frames);
+                    let r = catch_unwind(AssertUnwindSafe(|| apply_copy(current, cf, k, axes_now, planes_now, sketches, frames_now)));
                     (r, &mut copy_errors[k])
                 }
                 Feature::Edge(k) => {
@@ -4667,7 +4702,7 @@ mod tests {
     fn copies_of_a_box(kind: crate::model::CopyKind) -> Model {
         let mut sk = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk, 2.0, 0.0, 6.0, 3.0);
-        let c = CopyFeature { name: "C".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind };
+        let c = CopyFeature { name: "C".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind, path: Vec::new() };
         let mut t = timeline(1, 1);
         t.push(Feature::Copy(0));
         build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[], &[], &t)
@@ -4833,6 +4868,83 @@ mod tests {
         assert!((lo - DVec3::new(-6.0, -3.0, 0.0)).length() < 1e-6 && (hi - DVec3::new(-2.0, 0.0, 5.0)).length() < 1e-6, "{lo:?} {hi:?}");
     }
 
+    /// A 10 × 10 × 5 box at the origin, and a pattern of it along sketch 1's
+    /// curve 0: a line 60 along X, or a quarter circle of radius 20 from
+    /// the origin bending toward +Y.
+    fn box_along(arc: bool, kind: crate::model::CopyKind) -> Model {
+        use crate::sketch::Entity;
+        let mut sk = Sketch::new("S".into(), OriginPlane::XY);
+        rect(&mut sk, 0.0, 0.0, 10.0, 10.0);
+        let mut path = Sketch::new("P".into(), OriginPlane::XY);
+        if arc {
+            path.points.extend([DVec2::new(0.0, 20.0), DVec2::new(20.0, 20.0)]);
+            path.entities.push(Entity::Arc { center: 1, a: 0, b: 2 });
+        } else {
+            path.points.push(DVec2::new(60.0, 0.0));
+            path.entities.push(Entity::Line { a: 0, b: 1 });
+        }
+        let c = CopyFeature { name: "C".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind, path: vec![0] };
+        let t = [Feature::Sketch(0), Feature::Extrude(0), Feature::Sketch(1), Feature::Copy(0)];
+        build_with(&[sk, path], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[], &[], &t)
+    }
+
+    #[test]
+    fn pattern_on_path_spaces_copies_along_a_line() {
+        use crate::model::CopyKind;
+        let kind = |count, distance, spacing, start, symmetric, flip| CopyKind::Path { sketch: 1, count, distance, spacing, start, symmetric, align: false, flip };
+        // Spacing 20, and the same as an extent of 40: boxes at x = 0, 20, 40.
+        for k in [kind(3, 20.0, true, 0.0, false, false), kind(3, 40.0, false, 0.0, false, false)] {
+            let m = box_along(false, k);
+            assert_eq!(m.copy_errors, vec![None]);
+            assert_eq!(m.bodies.len(), 3);
+            assert!(close(total(&m), 3.0 * 500.0), "{}", total(&m));
+            for (b, x) in m.bodies.iter().zip([0.0, 20.0, 40.0]) {
+                let (lo, hi) = box_of(b);
+                assert!((lo - DVec3::new(x, 0.0, 0.0)).length() < 1e-6 && (hi - DVec3::new(x + 10.0, 10.0, 5.0)).length() < 1e-6, "{lo:?} {hi:?}");
+            }
+        }
+        // From the middle of the path, both ways: one copy each side.
+        let m = box_along(false, kind(2, 15.0, true, 0.5, true, false));
+        assert_eq!(m.copy_errors, vec![None]);
+        let mut xs: Vec<f64> = m.bodies.iter().map(|b| box_of(b).0.x).collect();
+        xs.sort_by(f64::total_cmp);
+        assert!(xs.len() == 3 && (xs[0] + 15.0).abs() < 1e-6 && xs[1].abs() < 1e-6 && (xs[2] - 15.0).abs() < 1e-6, "{xs:?}");
+        // From the path's other end the copies go back along -X.
+        let m = box_along(false, kind(2, 20.0, true, 0.0, false, true));
+        assert!((box_of(&m.bodies[1]).0.x + 20.0).abs() < 1e-6);
+        // Four copies 25 apart don't fit 60 mm: an error, and the box is left alone.
+        let m = box_along(false, kind(4, 25.0, true, 0.0, false, false));
+        assert!(m.copy_errors[0].as_deref().is_some_and(|e| e.contains("too short")), "{:?}", m.copy_errors);
+        assert_eq!(m.bodies.len(), 1);
+    }
+
+    #[test]
+    fn pattern_on_path_follows_an_arc_and_can_turn_with_it() {
+        use crate::model::CopyKind;
+        // The whole quarter circle (20 · π/2 long): the copy ends up where the arc ends, (20, 20).
+        let extent = 20.0 * std::f64::consts::FRAC_PI_2;
+        let kind = |align| CopyKind::Path { sketch: 1, count: 2, distance: extent, spacing: false, start: 0.0, symmetric: false, align, flip: false };
+        let m = box_along(true, kind(false));
+        assert_eq!(m.copy_errors, vec![None]);
+        let (lo, hi) = box_of(&m.bodies[1]);
+        assert!((lo - DVec3::new(20.0, 20.0, 0.0)).length() < 1e-6 && (hi - DVec3::new(30.0, 30.0, 5.0)).length() < 1e-6, "{lo:?} {hi:?}");
+        // Turned with the path (a quarter turn, the way the arc bends): the box that lay to the
+        // path's left at the start still does at the end.
+        let m = box_along(true, kind(true));
+        assert_eq!(m.copy_errors, vec![None]);
+        let (lo, hi) = box_of(&m.bodies[1]);
+        assert!((lo - DVec3::new(10.0, 20.0, 0.0)).length() < 1e-6 && (hi - DVec3::new(20.0, 30.0, 5.0)).length() < 1e-6, "{lo:?} {hi:?}");
+        assert!(close(total(&m), 1000.0), "{}", total(&m));
+        // Half way round: 45 degrees on, the corner that was at the path's start is on the path.
+        let m = box_along(true, CopyKind::Path { sketch: 1, count: 2, distance: extent / 2.0, spacing: true, start: 0.0, symmetric: false, align: true, flip: false });
+        let d = std::f64::consts::FRAC_1_SQRT_2;
+        let on_path = DVec3::new(20.0 * d, 20.0 - 20.0 * d, 0.0);
+        let (lo, hi) = box_of(&m.bodies[1]);
+        // A 10 square turned 45° about that corner spans 10·√2 across and up from it.
+        assert!((lo - (on_path - DVec3::new(10.0 * d, 0.0, 0.0))).length() < 1e-6, "{lo:?}");
+        assert!((hi - (on_path + DVec3::new(10.0 * d, 20.0 * d, 5.0))).length() < 1e-6, "{hi:?}");
+    }
+
     #[test]
     fn circular_pattern_can_push_the_copies_out_from_the_axis() {
         use crate::model::{CopyKind, WorldAxis};
@@ -4853,8 +4965,8 @@ mod tests {
         let mut sk = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk, 2.0, 0.0, 6.0, 3.0);
         let gone = BodyId { feature: Feature::Extrude(7), piece: 0 };
-        let c = CopyFeature { name: "C".into(), bodies: vec![gone], kind: CopyKind::Mirror(OriginPlane::XY) };
-        let one = CopyFeature { name: "C".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 1, angle: 360.0, radial: 0.0 } };
+        let c = CopyFeature { name: "C".into(), bodies: vec![gone], kind: CopyKind::Mirror(OriginPlane::XY), path: Vec::new() };
+        let one = CopyFeature { name: "C".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 1, angle: 360.0, radial: 0.0 }, path: Vec::new() };
         let mut t = timeline(1, 1);
         t.extend([Feature::Copy(0), Feature::Copy(1)]);
         let m = build_with(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c, one], &[], &[], &t);
@@ -4874,6 +4986,7 @@ mod tests {
             name: "C".into(),
             bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }],
             kind: CopyKind::Circular { axis: WorldAxis::X, custom: Some(0), count: 2, angle: 360.0, radial: 0.0 },
+            path: Vec::new(),
         };
         let mut t = timeline(1, 1);
         t.extend([Feature::Axis(0), Feature::Copy(0)]);
@@ -4942,7 +5055,7 @@ mod tests {
         rect(&mut sk, 2.0, 0.0, 6.0, 3.0);
         let yz = FacePlane::from_face(DVec3::X, DVec3::ZERO);
         let plane = PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None, kind: None };
-        let c = CopyFeature { name: "M".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: crate::model::CopyKind::MirrorPlane(0) };
+        let c = CopyFeature { name: "M".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: crate::model::CopyKind::MirrorPlane(0), path: Vec::new() };
         let t = [Feature::Sketch(0), Feature::Extrude(0), Feature::Plane(0), Feature::Copy(0)];
         let m = build_all(&[sk], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c], &[], &[plane], &[], &[], &[], &[], &t);
         assert_eq!(m.copy_errors, vec![None]);
@@ -4952,7 +5065,7 @@ mod tests {
         assert!((lo - DVec3::new(14.0, 0.0, 0.0)).length() < 1e-6 && (hi - DVec3::new(18.0, 3.0, 5.0)).length() < 1e-6, "{lo} {hi}");
         assert!(close(copy.shape.volume(), 60.0));
         // Before its plane is built, the mirror can't work.
-        let c2 = CopyFeature { name: "M".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: crate::model::CopyKind::MirrorPlane(0) };
+        let c2 = CopyFeature { name: "M".into(), bodies: vec![BodyId { feature: Feature::Extrude(0), piece: 0 }], kind: crate::model::CopyKind::MirrorPlane(0), path: Vec::new() };
         let mut sk2 = Sketch::new("S".into(), OriginPlane::XY);
         rect(&mut sk2, 2.0, 0.0, 6.0, 3.0);
         let early = build_all(&[sk2], &[ex(0, vec![0], 5.0, Operation::NewBody)], &[], &[], &[c2], &[], &[PlaneFeature { name: "P".into(), base: yz, on_origin: true, offset: 10.0, anchor: [0.0, 0.0], extent: [0.0; 4], angle: None, kind: None }], &[], &[], &[], &[], &[Feature::Sketch(0), Feature::Extrude(0), Feature::Copy(0), Feature::Plane(0)]);

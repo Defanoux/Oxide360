@@ -499,6 +499,13 @@ pub enum CopyKind {
         #[serde(default)]
         radial: f64,
     },
+    /// Pattern on Path: `count` copies (the original included) along the
+    /// chain of curves `CopyFeature::path` of sketch `sketch`. `distance` is
+    /// the gap between copies (`spacing`) or from the first to the last;
+    /// `start` is where on the path the original counts as being (0 its
+    /// start, 1 its end); `symmetric` copies both ways; `align` turns each
+    /// copy with the path; `flip` walks the path from its other end.
+    Path { sketch: usize, count: u32, distance: f64, spacing: bool, start: f64, symmetric: bool, align: bool, flip: bool },
 }
 
 /// Where one copy goes relative to the original.
@@ -509,6 +516,8 @@ pub enum Placement {
     Rotate { origin: DVec3, axis: DVec3, radians: f64, radial: f64 },
     /// In the plane through `origin` with this normal.
     Reflect { origin: DVec3, normal: DVec3 },
+    /// Turned about an axis through `origin` (radians), then moved by `shift`.
+    Rigid { origin: DVec3, axis: DVec3, radians: f64, shift: DVec3 },
 }
 
 /// Copy bodies: mirrored in a plane, or repeated in a pattern. The copies
@@ -518,6 +527,10 @@ pub struct CopyFeature {
     pub name: String,
     pub bodies: Vec<BodyId>,
     pub kind: CopyKind,
+    /// Pattern on Path: the sketch curves it follows (entities of
+    /// `CopyKind::Path::sketch`, joined end to end).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<usize>,
 }
 
 /// Remove bodies from the design from this point in the timeline on
@@ -1256,6 +1269,8 @@ impl CopyKind {
                 let step = if full { angle / count as f64 } else { angle / (count - 1) as f64 };
                 Ok((1..count).map(|i| Placement::Rotate { origin, axis: dir, radians: (step * i as f64).to_radians(), radial }).collect())
             }
+            // (Needs its sketch: the kernel places these, see `kernel::path_placements`.)
+            CopyKind::Path { .. } => Err("its path couldn't be found".into()),
         }
     }
 }

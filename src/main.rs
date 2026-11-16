@@ -61,6 +61,7 @@ mod save_dialog;
 mod greetings;
 mod debuglog;
 mod update;
+mod path;
 mod scad;
 mod scad_kernel;
 mod emboss_dialog;

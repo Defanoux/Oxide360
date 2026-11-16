@@ -92,6 +92,7 @@ pub enum Icon {
     Axis,
     RectPattern,
     CircPattern,
+    PathPattern,
     Polygon,
     Select,
     Line,
@@ -801,6 +802,20 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, enabled: bool) {
                     for (a, b) in [((x, y), (x + 0.18, y)), ((x + 0.18, y), (x + 0.18, y + 0.24)), ((x + 0.18, y + 0.24), (x, y + 0.24)), ((x, y + 0.24), (x, y))] {
                         line(a, b, Stroke::new(thin.width * 1.2, col));
                     }
+                }
+            }
+        }
+        Icon::PathPattern => {
+            // Small squares along a curve, each turned with it.
+            let curve = |t: f32| (0.1 + 0.8 * t, 0.72 - 0.5 * (t * std::f32::consts::PI).sin() * (0.35 + 0.65 * t));
+            for k in 0..12 {
+                line(curve(k as f32 / 12.0), curve((k + 1) as f32 / 12.0), thin);
+            }
+            for k in 0..3 {
+                let (cx, cy) = curve(0.12 + 0.36 * k as f32);
+                let col = if k == 0 { orange } else { ink };
+                for (p, q) in [((-1.0, -1.0), (1.0, -1.0)), ((1.0, -1.0), (1.0, 1.0)), ((1.0, 1.0), (-1.0, 1.0)), ((-1.0, 1.0), (-1.0, -1.0))] {
+                    line((cx + p.0 * 0.08, cy - 0.14 + p.1 * 0.08), (cx + q.0 * 0.08, cy - 0.14 + q.1 * 0.08), Stroke::new(thin.width * 1.2, col));
                 }
             }
         }

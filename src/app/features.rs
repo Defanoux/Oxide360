@@ -275,7 +275,7 @@ impl OpenCad {
     pub(crate) fn copy_handles(&self, d: &CopyDialog) -> Vec<Handle> {
         let Some(g) = self.copy_geometry(d) else { return Vec::new() };
         match d.mode {
-            CopyMode::Mirror => Vec::new(),
+            CopyMode::Mirror | CopyMode::Path => Vec::new(),
             CopyMode::Rectangular => vec![
                 Handle::Line { line: LineHandle { origin: g.centroid, dir: d.dir.dir() }, value: d.spacing, target: HandleTarget::PatternSpacing1 },
                 Handle::Line { line: LineHandle { origin: g.centroid, dir: d.dir2.dir() }, value: d.spacing2, target: HandleTarget::PatternSpacing2 },
@@ -637,6 +637,8 @@ impl OpenCad {
                     Some(copy_dialog::Field::Bodies)
                 } else if mode == CopyMode::Mirror {
                     Some(copy_dialog::Field::Plane)
+                } else if mode == CopyMode::Path {
+                    Some(copy_dialog::Field::Path)
                 } else {
                     None
                 };
@@ -2253,7 +2255,7 @@ impl OpenCad {
         let Some(d) = self.copy_dialog.as_mut() else { return };
         let tips: Vec<Option<egui::Pos2>> = self.arrows.iter().map(|a| a.map(|(_, tip)| to_pos(tip))).collect();
         let slots: Vec<(&'static str, &mut u32)> = match d.mode {
-            CopyMode::Mirror => Vec::new(),
+            CopyMode::Mirror | CopyMode::Path => Vec::new(),
             CopyMode::Rectangular => vec![("copy_qty1", &mut d.count), ("copy_qty2", &mut d.count2)],
             CopyMode::Circular => vec![("copy_qty1", &mut d.count_round)],
         };

@@ -73,6 +73,17 @@ impl OpenCad {
                 }
             }
         }
+        if self.copies.iter().any(|c| matches!(c.kind, model::CopyKind::Path { sketch, .. } if sketch == i)) {
+            self.notify("A pattern follows a curve of that sketch — delete the pattern first".into());
+            return;
+        }
+        for c in &mut self.copies {
+            if let model::CopyKind::Path { sketch, .. } = &mut c.kind {
+                if *sketch > i {
+                    *sketch -= 1;
+                }
+            }
+        }
         if self.planes.iter().any(|p| p.angle.is_some_and(|a| a.hinge.uses_sketch(i))) {
             self.notify("A plane at angle turns about a line of that sketch — delete the plane first".into());
             return;

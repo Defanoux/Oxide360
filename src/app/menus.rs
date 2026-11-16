@@ -66,6 +66,7 @@ pub(crate) fn tool_icon(name: &str, sketching: bool) -> Option<Icon> {
         ("Mirror", _) => Icon::Mirror,
         ("Rectangular Pattern", _) => Icon::RectPattern,
         ("Circular Pattern", _) => Icon::CircPattern,
+        ("Pattern on Path", _) => Icon::PathPattern,
         ("Press Pull", _) => Icon::PressPull,
         ("Fillet", _) => Icon::Fillet,
         ("Chamfer", _) => Icon::Chamfer,

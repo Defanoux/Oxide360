@@ -937,6 +937,7 @@ impl OpenCad {
             "Mirror" => self.open_copy(CopyMode::Mirror, None),
             "Rectangular Pattern" => self.open_copy(CopyMode::Rectangular, None),
             "Circular Pattern" => self.open_copy(CopyMode::Circular, None),
+            "Pattern on Path" => self.open_copy(CopyMode::Path, None),
             "Press Pull" if self.offset_dialog.is_some() => self.cancel_offset(),
             "Press Pull" => self.open_offset(None, true),
             "Fillet" => self.open_edge_dialog(None, EdgeKind::Fillet),
@@ -1159,6 +1160,7 @@ impl OpenCad {
                     ToolItem { name: "Mirror", icon: Icon::Mirror, tip: "Mirror: copy bodies across an origin plane", enabled: has_bodies, on: copy_mode == Some(CopyMode::Mirror) },
                     ToolItem { name: "Rectangular Pattern", icon: Icon::RectPattern, tip: "Rectangular Pattern: copies in a grid", enabled: has_bodies, on: copy_mode == Some(CopyMode::Rectangular) },
                     ToolItem { name: "Circular Pattern", icon: Icon::CircPattern, tip: "Circular Pattern: copies round an axis", enabled: has_bodies, on: copy_mode == Some(CopyMode::Circular) },
+                    ToolItem { name: "Pattern on Path", icon: Icon::PathPattern, tip: "Pattern on Path: copies along a sketch curve", enabled: has_bodies, on: copy_mode == Some(CopyMode::Path) },
                 ];
                 let pattern = tool_group(ui, "PATTERN", "Solid ", &items, &[], hidden, order);
                 let angled = self.plane_dialog.as_ref().is_some_and(|d| d.angle.is_some());

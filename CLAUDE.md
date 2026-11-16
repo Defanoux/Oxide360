@@ -158,6 +158,7 @@ lists there).
 | `emboss_dialog.rs` | Emboss: profiles, face (flat or cylinder), depth, Emboss / Deboss (`kernel::emboss_tool` wraps round cylinders) |
 | `scad.rs`, `scad_kernel.rs` | OpenSCAD scripts: the language run into a shape tree (`scad::run`, parameters = top-level `name = value;`), then exact OCCT solids (`scad_kernel::make`); kept as an Insert (`ImportFeature::scad`) whose parameters change in its dialog |
 | `debuglog.rs`, `greetings.rs` | each run's log (`$XDG_DATA_HOME/oxide360/logs`, last 10: steps, GPU, stderr, panics with backtraces; a run that never closed is reported at the next start — `debuglog::line` to add to it) and the start page's time-of-day line |
+| `path.rs` | a chain of sketch curves as a path to measure along (`Path::of`, `at`, `Spread::stations`): where Pattern on Path (`CopyKind::Path`, `kernel::path_placements`) puts its copies |
 | `update.rs` | the check for a newer version (GitHub's latest release through `curl`, once per start, off in Settings), how this copy was installed (`Install`: Flatpak / COPR / source / download) and the update steps for each; drawn by `update_ui` in `app/start.rs` |
 | `sketch_import.rs` | Insert SVG / DXF: reading drawings into sketch curves |
 | `theme.rs` | colour themes (Dark, Slate, Light): egui visuals, view background, grid and icon ink — use `theme::now()` instead of fixed greys on panels |

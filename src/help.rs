@@ -130,6 +130,7 @@ pub const TOOLS: &[(&str, &[(&str, bool, &str)])] = &[
         ("Mirror", false, "Copies bodies or features across a plane."),
         ("Rectangular Pattern", false, "Copies bodies or features in rows and columns."),
         ("Circular Pattern", false, "Copies bodies or features round an axis."),
+        ("Pattern on Path", false, "Copies bodies along a sketch curve: pick the bodies, then a line, arc, spline or circle. Spacing or Extent, both ways, and turned with the path if you want."),
     ]),
     ("Construct", &[
         ("Offset Plane", false, "A plane parallel to a plane or face, a distance away."),

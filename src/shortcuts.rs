@@ -6,7 +6,7 @@
 pub const SOLID: &[&str] = &[
     "Create Sketch", "Extrude", "Revolve", "Sweep", "Loft", "Pipe", "Coil", "Emboss", "Hole", "Thread",
     "Offset Plane", "Plane at Angle", "Midplane", "Plane Through Three Points", "Tangent Plane", "Axis Along Edge", "Axis Through Cylinder", "Axis Through Two Points", "Point",
-    "Mirror", "Rectangular Pattern", "Circular Pattern",
+    "Mirror", "Rectangular Pattern", "Circular Pattern", "Pattern on Path",
     "Press Pull", "Fillet", "Chamfer", "Shell", "Move/Copy", "Combine", "Split Body", "Scale", "Appearance", "Print Check", "Change Parameters",
 ];
 

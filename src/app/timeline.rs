@@ -733,6 +733,7 @@ impl OpenCad {
                         model::CopyKind::Mirror(_) | model::CopyKind::MirrorPlane(_) => Icon::Mirror,
                         model::CopyKind::Rectangular { .. } => Icon::RectPattern,
                         model::CopyKind::Circular { .. } => Icon::CircPattern,
+                        model::CopyKind::Path { .. } => Icon::PathPattern,
                     },
                     Feature::Edge(k) => match self.edge_features[k].kind {
                         EdgeKind::Fillet => Icon::Fillet,
@@ -942,6 +943,7 @@ impl OpenCad {
                     model::CopyKind::Mirror(_) | model::CopyKind::MirrorPlane(_) => CopyMode::Mirror,
                     model::CopyKind::Rectangular { .. } => CopyMode::Rectangular,
                     model::CopyKind::Circular { .. } => CopyMode::Circular,
+                    model::CopyKind::Path { .. } => CopyMode::Path,
                 };
                 self.open_copy(mode, Some(k));
             }

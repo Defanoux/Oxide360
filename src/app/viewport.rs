@@ -427,6 +427,8 @@ impl OpenCad {
                             .min_by(|a, b| a.1.total_cmp(&b.1))
                             .map(|(id, _)| id);
                     }
+                    // (The path's curves are picked with a Sweep's, further down.)
+                    copy_dialog::Field::Path => {}
                 }
             }
             if response.clicked() {
@@ -1109,8 +1111,8 @@ impl OpenCad {
                     d.picking_axis = false;
                 }
             }
-        } else if self.sweep_dialog.as_ref().is_some_and(|d| d.picking_path) {
-            // --- Sweep's path: a sketch curve, with the curves joined to it ---
+        } else if self.sweep_dialog.as_ref().is_some_and(|d| d.picking_path) || self.copy_dialog.as_ref().is_some_and(|d| d.picking == Some(copy_dialog::Field::Path)) {
+            // --- Sweep's (or Pattern on Path's) path: a sketch curve, with the curves joined to it ---
             self.path_hover = None;
             if let Some(px) = hover_px {
                 let ray = self.camera.ray_from_ndc(aspect, ndc_from_pixel(px, min, size));
@@ -1126,6 +1128,9 @@ impl OpenCad {
             }
             if let (true, Some((s, chain)), Some(d)) = (response.clicked(), self.path_hover.clone(), self.sweep_dialog.as_mut()) {
                 (d.path_sketch, d.path, d.picking_path) = (Some(s), chain, false);
+            }
+            if let (true, Some((s, chain)), Some(d)) = (response.clicked(), self.path_hover.clone(), self.copy_dialog.as_mut()) {
+                (d.path_sketch, d.path, d.picking) = (Some(s), chain, None);
             }
             if esc && !typing {
                 if let Some(d) = self.sweep_dialog.as_mut() {
@@ -3369,8 +3374,13 @@ impl OpenCad {
             }
         }
 
-        // --- draw: a Sweep's path (picked, and the chain under the cursor) ---
-        if let Some(d) = &self.sweep_dialog {
+        // --- draw: a Sweep's or Pattern on Path's path (picked, and the chain under the cursor) ---
+        let path_shown = match (&self.sweep_dialog, &self.copy_dialog) {
+            (Some(d), _) => Some((d.path_sketch, d.path.as_slice(), d.picking_path)),
+            (_, Some(d)) if d.mode == CopyMode::Path => Some((d.path_sketch, d.path.as_slice(), d.picking == Some(copy_dialog::Field::Path))),
+            _ => None,
+        };
+        if let Some((path_sketch, path, picking_path)) = path_shown {
             let draw = |s: usize, chain: &[usize], col: Color32| {
                 let (sk, plane) = (&self.sketches[s], self.plane_of(s));
                 for &e in chain {
@@ -3379,10 +3389,12 @@ impl OpenCad {
                     }
                 }
             };
-            if let (Some(s), false) = (d.path_sketch, d.path.is_empty()) {
-                draw(s, &d.path, COL_SELECT);
+            if let (Some(s), false) = (path_sketch, path.is_empty()) {
+                if s < self.sketches.len() {
+                    draw(s, path, COL_SELECT);
+                }
             }
-            if let (true, Some((s, chain))) = (d.picking_path, &self.path_hover) {
+            if let (true, Some((s, chain))) = (picking_path, &self.path_hover) {
                 draw(*s, chain, COL_HOVER);
             }
         }

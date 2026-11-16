@@ -565,6 +565,7 @@ pub fn validate(doc: &Document) -> Result<(), String> {
             Circular { count, angle, custom, radial, .. } => {
                 (1..=MAX_COPIES).contains(&count) && angle.is_finite() && radial.is_finite() && custom.is_none_or(|k| k < doc.axes.len())
             }
+            Path { sketch, count, distance, start, .. } => (1..=MAX_COPIES).contains(&count) && distance.is_finite() && start.is_finite() && sketch < doc.sketches.len(),
         };
         if !ok {
             return Err(format!("{}: invalid count, spacing or angle", c.name));
@@ -1333,15 +1334,49 @@ mod tests {
         assert!(validate(&bad).is_err(), "there are no axes");
     }
 
+    /// A design to try Pattern on Path on, written to `$SHOT_DIR/path.ox360`:
+    /// a 10 × 10 × 5 box and a sketch with a line then an arc.
+    #[test]
+    #[ignore]
+    fn path_pattern_sample() {
+        use crate::sketch::Entity;
+        let Ok(dir) = std::env::var("SHOT_DIR") else { return };
+        let mut sk = Sketch::new("Sketch1".into(), OriginPlane::XY);
+        sk.points.extend([DVec2::new(10.0, 0.0), DVec2::new(10.0, 10.0), DVec2::new(0.0, 10.0)]);
+        for (a, b) in [(0, 1), (1, 2), (2, 3), (3, 0)] {
+            sk.entities.push(Entity::Line { a, b });
+        }
+        let mut path = Sketch::new("Sketch2".into(), OriginPlane::XY);
+        // 60 along X, then a quarter circle of radius 30 up to (90, 30).
+        path.points.extend([DVec2::new(60.0, 0.0), DVec2::new(60.0, 30.0), DVec2::new(90.0, 30.0)]);
+        path.entities.push(Entity::Line { a: 0, b: 1 });
+        path.entities.push(Entity::Arc { center: 2, a: 1, b: 3 });
+        let mut doc = sample();
+        doc.sketches = vec![sk, path];
+        doc.extrudes[0].distance = 5.0;
+        doc.edge_features.clear();
+        doc.timeline = vec![Feature::Sketch(0), Feature::Extrude(0), Feature::Sketch(1)];
+        save(std::path::Path::new(&dir).join("path.ox360").as_path(), &doc).unwrap();
+    }
+
     #[test]
     fn mirrors_and_patterns_round_trip_and_are_checked() {
         use crate::model::{CopyKind, WorldAxis};
         let mut doc = sample();
         let src = BodyId { feature: Feature::Extrude(0), piece: 0 };
-        doc.copies.push(CopyFeature { name: "Mirror1".into(), bodies: vec![src], kind: CopyKind::Mirror(OriginPlane::YZ) });
-        doc.copies.push(CopyFeature { name: "Circular Pattern2".into(), bodies: vec![src], kind: CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 6, angle: 360.0, radial: 0.0 } });
+        doc.copies.push(CopyFeature { name: "Mirror1".into(), bodies: vec![src], kind: CopyKind::Mirror(OriginPlane::YZ), path: Vec::new() });
+        doc.copies.push(CopyFeature { name: "Circular Pattern2".into(), bodies: vec![src], kind: CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 6, angle: 360.0, radial: 0.0 }, path: Vec::new() });
         doc.timeline.extend([Feature::Copy(0), Feature::Copy(1)]);
         assert_eq!(from_json(&to_json(&doc)).unwrap(), doc);
+        // A pattern on a path keeps its curves, and its sketch must exist.
+        let mut along = doc.clone();
+        let on_path = |sketch| CopyKind::Path { sketch, count: 4, distance: 12.0, spacing: true, start: 0.0, symmetric: false, align: true, flip: false };
+        along.copies.push(CopyFeature { name: "Pattern on Path3".into(), bodies: vec![src], kind: on_path(0), path: vec![0, 1] });
+        along.timeline.push(Feature::Copy(2));
+        assert_eq!(from_json(&to_json(&along)).unwrap(), along);
+        assert!(!to_json(&doc).contains("\"path\""), "other patterns save no path list");
+        along.copies[2].kind = on_path(9);
+        assert!(validate(&along).is_err(), "there is no sketch 9");
         assert!(validate(&doc).is_ok());
         let mut bad = doc.clone();
         bad.copies[1].kind = CopyKind::Circular { axis: WorldAxis::Z, custom: None, count: 0, angle: 360.0, radial: 0.0 };

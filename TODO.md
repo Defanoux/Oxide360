@@ -9,7 +9,7 @@ Fusion's behaviour is the spec for each; FEATURES.md has the full Fusion list.
 
 - **Profiles found by their edges, not their number**: an extrude keeps its regions when a sketch edit adds or renumbers regions (resizing key-noelle's box used to send every extrude to the wrong area). Gavin still sees key-noelle's snap wedge come loose when he changes the 7.0 box dims — not reproduced on 2026-11-05 (kernel and app both kept one body at 6.8 / 7.2); ask for the exact steps.
 - **Cloud folders, next step**: Nextcloud straight over WebDAV (no sync app, if KIO / gvfs WebDAV isn't enough); conflict copy names use UTC (local time would need the time zone).
-- **Pattern along path**, **Draft**.
+- **Draft**.
 - **Joint limits** and motion settings (min/max, animation speed).
 - **Own Flatpak repository**: live at https://defanoux.github.io/Oxide360/ (2026-11-13, `packaging/flatpak/publish.sh`, release step 6). Later: CI builds it on each release tag.
 
@@ -24,6 +24,7 @@ Later (drawings, on hold — few users): views placed by hand (Base / Projected 
 
 ## Done
 
+- Pattern on Path (2026-11-16): PATTERN > Pattern on Path copies bodies along a sketch chain (lines, arcs, splines, a circle): Spacing / Extent, start point, Flip, Symmetric, Identical / Path direction. A kind of the Mirror / Pattern feature (`CopyKind::Path` + `CopyFeature::path`). Not done: patterning faces / features, suppressing single copies; deleting a curve of the path sketch renumbers its entities (the pattern then says its path is broken, like a Sweep).
 - Release 0.3.5 (2026-11-16): About Oxide360 says how the copy was installed, with a Check for Updates button (a small release so a friend on the Flatpak sees the update notice).
 - Releases 0.3.3 (update check) and 0.3.4 (.scad files offer Oxide360 under Open With: desktop MimeType + application/x-openscad glob), 2026-11-16. The GitHub release goes up after the COPR build, so the notice never points at a version dnf doesn't have yet.
 - Update check (2026-11-16): at start the latest GitHub release is asked for (curl, in the background; off in Settings); a newer one shows an Update button by the version and a notice on the start page with the steps for how this copy was installed (Flatpak / COPR / source / download). Help > Check for Updates. Goes out with the next release.
