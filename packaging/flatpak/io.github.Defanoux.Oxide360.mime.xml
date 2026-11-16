@@ -6,4 +6,10 @@
     <glob pattern="*.ox360"/>
     <glob pattern="*.ocad"/>
   </mime-type>
+  <!-- OpenSCAD scripts open as solids (Open With > Oxide360). -->
+  <mime-type type="application/x-openscad">
+    <comment>OpenSCAD script</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.scad"/>
+  </mime-type>
 </mime-info>

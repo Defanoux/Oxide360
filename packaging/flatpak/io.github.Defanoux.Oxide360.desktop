@@ -8,5 +8,5 @@ Icon=io.github.Defanoux.Oxide360
 Terminal=false
 Categories=Graphics;Engineering;3DGraphics;
 Keywords=CAD;3D;modelling;modeling;sketch;STEP;STL;Fusion;
-MimeType=application/x-oxide360;
+MimeType=application/x-oxide360;application/x-openscad;
 StartupWMClass=io.github.Defanoux.Oxide360
