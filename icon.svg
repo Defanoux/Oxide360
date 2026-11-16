@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F08A3C"/>
+      <stop offset="1" stop-color="#D9662A"/>
+    </linearGradient>
+    <linearGradient id="left" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C2541E"/>
+      <stop offset="1" stop-color="#9A3D14"/>
+    </linearGradient>
+    <linearGradient id="right" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8E3712"/>
+      <stop offset="1" stop-color="#6B280C"/>
+    </linearGradient>
+  </defs>
+  <!-- Background: a dark rounded tile -->
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="#1C2026"/>
+  <!-- The 360° ring: patina (oxidised copper) green, going round with an arrowhead -->
+  <path d="M 128 34 A 94 94 0 1 1 41.5 91.3" fill="none" stroke="#3FB08F" stroke-width="12" stroke-linecap="round"/>
+  <path d="M 27.7 85.4 L 51.6 67.3 L 55.3 97.1 Z" fill="#3FB08F"/>
+  <!-- The cube: rust-orange faces -->
+  <path d="M 128 72 L 180 102 L 128 132 L 76 102 Z" fill="url(#top)"/>
+  <path d="M 76 102 L 128 132 L 128 192 L 76 162 Z" fill="url(#left)"/>
+  <path d="M 128 132 L 180 102 L 180 162 L 128 192 Z" fill="url(#right)"/>
+  <!-- Edges, light -->
+  <path d="M 128 72 L 180 102 L 180 162 L 128 192 L 76 162 L 76 102 Z M 76 102 L 128 132 L 180 102 M 128 132 L 128 192" fill="none" stroke="#FFD2B0" stroke-opacity="0.55" stroke-width="2.5" stroke-linejoin="round"/>
+</svg>

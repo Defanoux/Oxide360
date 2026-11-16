@@ -1,0 +1,11 @@
+[Flatpak Ref]
+Title=Oxide360
+Name=io.github.Defanoux.Oxide360
+Branch=master
+Url=https://defanoux.github.io/Oxide360/repo/
+SuggestRemoteName=oxide360
+Homepage=https://github.com/Defanoux/Oxide360
+Icon=https://defanoux.github.io/Oxide360/icon.svg
+RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
+IsRuntime=false
+GPGKey=mDMEavaamhYJKwYBBAHaRw8BAQdAgxofE/FAHiWQ3cRWrdW3qtqiPza10dpMqsdt0vuxmnG0E094aWRlMzYwIHJlcG9zaXRvcnmIkwQTFgoAOxYhBDwkRFDjORa9XlLUEdJXOkVoVH/ABQJq9pqaAhsDBQsJCAcCAiICBhUKCQgLAgQWAgMBAh4HAheAAAoJENJXOkVoVH/AeRQBAPtS/vDX34y9iJ2ECeapwXh2qGF+j8Ke21sh3PMtReFqAPwM/I09Q51SSKiGku4RzaGeZ5vcCLrBRvmN0DCt9951BA==
