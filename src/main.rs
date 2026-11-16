@@ -60,6 +60,7 @@ mod preview;
 mod save_dialog;
 mod greetings;
 mod debuglog;
+mod update;
 mod scad;
 mod scad_kernel;
 mod emboss_dialog;
@@ -996,6 +997,8 @@ struct OpenCad {
     rename_rx: Option<std::sync::mpsc::Receiver<(Result<PathBuf, String>, Vec<PathBuf>)>>, // the design's file being renamed (off the main thread)
     sync_now: bool,                         // a cloud save is waiting: upload now (see Tabs::sync_cloud)
     save_place: String,                     // where new designs save first (settings; see Settings::save_place)
+    update_check: bool,                     // ask for a newer version at start (settings)
+    update_skip: String,                    // the newer version whose notice was skipped (settings)
     save_note: Option<(String, bool, bool, f64)>, // "Saved to …": the text, in the cloud?, done (else under way), when shown
     local_open: Option<(PathBuf, String)>, // a cloud design opened from the copy on this computer (no network / server away): its path, and why
     local_checked: f64, // when the connection was last looked at for that notice (app time)
@@ -1308,6 +1311,8 @@ impl Default for OpenCad {
             rename_rx: None,
             sync_now: false,
             save_place: String::new(),
+            update_check: true,
+            update_skip: String::new(),
             save_note: None,
             local_open: None,
             local_checked: 0.0,
@@ -1871,6 +1876,7 @@ impl OpenCad {
         self.connect_window(&ctx);
         self.save_note_ui(&ctx);
         self.local_open_ui(&ctx);
+        self.update_ui(&ctx);
         self.modals(&ctx);
         self.record_history(&ctx);
         self.save_settings_if_changed();
@@ -1900,6 +1906,8 @@ impl OpenCad {
         self.tool_colors = s.tool_colors;
         self.cloud_folders = s.cloud_folders.clone();
         self.save_place = s.save_place.clone();
+        self.update_check = s.update_check;
+        self.update_skip = s.update_skip.clone();
         self.browse.list_view = s.browse_list;
         // (Folders added before addresses were kept: noted now.)
         for f in &mut self.cloud_folders {
@@ -2586,6 +2594,11 @@ fn main() -> eframe::Result {
             };
             let recovered = recovery::default_dir().map_or_else(Vec::new, |d| recovery::left_behind(&d, recovery::process_alive));
             let mut first = OpenCad::fresh(&s, gpu);
+            // A newer version out? (In the background; see `update`.)
+            if s.update_check {
+                let ctx = cc.egui_ctx.clone();
+                update::check(move || ctx.request_repaint());
+            }
             match open_at_start {
                 Some(p) => first.open_path(p),
                 // Nothing to open: the start page (recent and cloud designs, New, Open).

@@ -724,3 +724,123 @@ impl OpenCad {
         }
     }
 }
+
+// ---------- updates ----------
+
+impl OpenCad {
+    /// A newer version: a notice on the start page, and the Check for
+    /// Updates window (Help menu, or the title bar's Update button).
+    pub(crate) fn update_ui(&mut self, ctx: &egui::Context) {
+        use std::sync::atomic::Ordering;
+        let status = update::status();
+        let pal = theme::now();
+        if update::WINDOW.load(Ordering::Relaxed) {
+            let mut open = true;
+            egui::Window::new("Check for Updates").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
+                ui.set_max_width(440.0);
+                ui.label(format!("You have Oxide360 {}, installed as {}.", env!("CARGO_PKG_VERSION"), update::Install::now().name()));
+                ui.add_space(6.0);
+                match &status {
+                    update::Status::Idle | update::Status::Checking => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Asking GitHub for the latest version…");
+                        });
+                    }
+                    update::Status::UpToDate(v) => {
+                        ui.label(egui::RichText::new("This is the latest version.").strong());
+                        if v != env!("CARGO_PKG_VERSION") {
+                            ui.weak(format!("(The latest release is {v}; this one is newer.)"));
+                        }
+                    }
+                    update::Status::Available(r) => self.update_steps(ui, r),
+                    update::Status::Failed(why) => {
+                        ui.label(format!("Couldn't find out: {why}."));
+                        ui.hyperlink_to("See the releases on GitHub", update::RELEASES);
+                    }
+                }
+                ui.add_space(6.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.update_check, "Check at start");
+                    if !matches!(status, update::Status::Checking) && ui.button("Check Again").clicked() {
+                        let ctx = ctx.clone();
+                        update::check(move || ctx.request_repaint());
+                    }
+                });
+            });
+            if !open {
+                update::WINDOW.store(false, Ordering::Relaxed);
+            }
+            return;
+        }
+        // The notice: on the start page only (not in the middle of work).
+        let update::Status::Available(r) = status else { return };
+        if !self.showing_start() || update::HIDDEN.load(Ordering::Relaxed) || self.update_skip == r.version {
+            return;
+        }
+        let mut hide = false;
+        let mut skip = false;
+        egui::Area::new(egui::Id::new("update_notice"))
+            .order(egui::Order::Middle)
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-14.0, -self.timeline_height - 14.0))
+            .show(ctx, |ui| {
+                egui::Frame::new().fill(pal.window).corner_radius(8.0).stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(196, 86, 28))).inner_margin(egui::Margin::symmetric(14, 12)).show(ui, |ui| {
+                    ui.set_max_width(380.0);
+                    self.update_steps(ui, &r);
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Later").on_hover_text("Hide until Oxide360 starts again").clicked() {
+                            hide = true;
+                        }
+                        if ui.button("Skip This Version").on_hover_text(format!("Don't tell me about {} again", r.version)).clicked() {
+                            skip = true;
+                        }
+                    });
+                });
+            });
+        if hide {
+            update::HIDDEN.store(true, Ordering::Relaxed);
+        }
+        if skip {
+            self.update_skip = r.version.clone();
+        }
+    }
+
+    /// "0.3.3 is out", and how to update this copy.
+    fn update_steps(&self, ui: &mut egui::Ui, r: &update::Release) {
+        let pal = theme::now();
+        ui.label(egui::RichText::new(format!("Oxide360 {} is out", r.version)).strong().size(15.0).color(pal.text));
+        ui.horizontal(|ui| {
+            ui.weak(format!("You have {}.", env!("CARGO_PKG_VERSION")));
+            ui.hyperlink_to("What's new", &r.url);
+        });
+        ui.add_space(4.0);
+        let how = update::Install::now();
+        let (what, command, note) = how.steps();
+        ui.label(what);
+        if let Some(c) = command {
+            ui.horizontal(|ui| {
+                egui::Frame::new().fill(pal.panel).corner_radius(4.0).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(c).monospace()).selectable(true));
+                });
+                if ui.small_button("Copy").on_hover_text("Copy the command").clicked() {
+                    ui.ctx().copy_text(c.to_string());
+                }
+            });
+        }
+        if !note.is_empty() {
+            ui.weak(note);
+        }
+        match how {
+            update::Install::Flatpak | update::Install::Download => {
+                ui.horizontal(|ui| {
+                    ui.hyperlink_to("Install page", update::INSTALL_PAGE);
+                    ui.weak("·");
+                    ui.hyperlink_to("Releases", update::RELEASES);
+                });
+            }
+            _ => {}
+        }
+    }
+}

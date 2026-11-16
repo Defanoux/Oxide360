@@ -24,6 +24,7 @@ Later (drawings, on hold — few users): views placed by hand (Base / Projected 
 
 ## Done
 
+- Update check (2026-11-16): at start the latest GitHub release is asked for (curl, in the background; off in Settings); a newer one shows an Update button by the version and a notice on the start page with the steps for how this copy was installed (Flatpak / COPR / source / download). Help > Check for Updates. Goes out with the next release.
 - Fedora COPR (2026-11-15): `sudo dnf copr enable defanoux/oxide360 && sudo dnf install oxide360` (Fedora 44, 45); built by `packaging/rpm/copr.sh`, release step 7. The Flatpak repository stays for other distros.
 - Release 0.3.0 (2026-11-12): OpenSCAD scripts open / insert as exact solids with editable parameters (scad.rs, scad_kernel.rs); Help > Tool Reference with icons; workspace tab hover, SKETCH tab only while sketching. Next: Coil with many turns lags and hides the progress card; a friend's Flatpak crashed (cause unknown, waiting on their terminal output).
 - Release 0.2.0 (2026-11-12): cloud saving (own server), offline copies opening at once with no network (notice bottom right), where-it-is badges on the file viewer; Flatpak gets network access (else it looks offline) and talks to KIO FUSE / gvfs.

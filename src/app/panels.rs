@@ -436,6 +436,12 @@ impl OpenCad {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // The version, as the GitHub releases name it (v0.1.1).
                 ui.weak(concat!("v", env!("CARGO_PKG_VERSION"))).on_hover_text(concat!("Oxide360 ", env!("CARGO_PKG_VERSION")));
+                if let crate::update::Status::Available(r) = crate::update::status() {
+                    let b = egui::Button::new(egui::RichText::new("Update").color(Color32::WHITE).size(12.0)).fill(Color32::from_rgb(196, 86, 28)).corner_radius(4.0);
+                    if ui.add(b).on_hover_text(format!("Oxide360 {} is out: how to update", r.version)).clicked() {
+                        crate::update::WINDOW.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
                 if ui.button("⚙").on_hover_text("Settings").clicked() {
                     self.settings_open = !self.settings_open;
                 }
@@ -452,6 +458,12 @@ impl OpenCad {
                     }
                     if ui.button("Keyboard Shortcuts").clicked() {
                         self.keybinds_open = true;
+                        ui.close();
+                    }
+                    if ui.button("Check for Updates…").clicked() {
+                        crate::update::WINDOW.store(true, std::sync::atomic::Ordering::Relaxed);
+                        let ctx = ui.ctx().clone();
+                        crate::update::check(move || ctx.request_repaint());
                         ui.close();
                     }
                     ui.separator();
@@ -582,6 +594,9 @@ impl OpenCad {
                 ui.end_row();
                 ui.label("View cube");
                 ui.checkbox(&mut self.cube_axes, "Show X/Y/Z axes");
+                ui.end_row();
+                ui.label("Updates");
+                ui.checkbox(&mut self.update_check, "Check for a new version at start").on_hover_text("Asks GitHub for the latest release (nothing about you is sent)");
                 ui.end_row();
                 ui.label("Measure precision");
                 egui::ComboBox::from_id_salt("settings_precision").selected_text(format!("{:.*}", self.measure_precision, 0.0)).show_ui(ui, |ui| {

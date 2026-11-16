@@ -344,6 +344,8 @@ impl OpenCad {
             cloud_folders: self.cloud_folders.clone(),
             save_place: self.save_place.clone(),
             browse_list: self.browse.list_view,
+            update_check: self.update_check,
+            update_skip: self.update_skip.clone(),
         }
     }
 

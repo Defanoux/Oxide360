@@ -31,6 +31,8 @@ Requires:       mesa-vulkan-drivers
 Requires:       libxkbcommon
 Requires:       libwayland-client
 Requires:       hicolor-icon-theme
+# The check for a newer version asks GitHub through curl.
+Requires:       curl
 # File choosers come from the desktop's portal.
 Recommends:     xdg-desktop-portal
 
