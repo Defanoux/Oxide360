@@ -9,7 +9,7 @@
 %global debug_package %{nil}
 
 Name:           oxide360
-Version:        0.3.4
+Version:        0.3.5
 Release:        1%{?dist}
 Summary:        Parametric 3D CAD modeller in the spirit of Fusion 360
 License:        GPL-3.0-or-later
@@ -73,6 +73,9 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.Defanoux.Ox
 %{_datadir}/mime/packages/io.github.Defanoux.Oxide360.xml
 
 %changelog
+* Mon Nov 16 2026 Defanoux <128421570+Defanoux@users.noreply.github.com> - 0.3.5-1
+- About says how this copy was installed, with a Check for Updates button
+
 * Mon Nov 16 2026 Defanoux <128421570+Defanoux@users.noreply.github.com> - 0.3.4-1
 - OpenSCAD scripts (.scad) offer Oxide360 under Open With
 

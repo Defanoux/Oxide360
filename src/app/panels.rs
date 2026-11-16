@@ -783,6 +783,14 @@ impl OpenCad {
             HelpPage::About => {
                 ui.heading(format!("Oxide360 {}", help::version()));
                 ui.label("A parametric CAD modeller in the spirit of Fusion 360, for Linux.");
+                ui.horizontal(|ui| {
+                    ui.weak(format!("Installed as {}.", crate::update::Install::now().name()));
+                    if ui.small_button("Check for Updates…").clicked() {
+                        crate::update::WINDOW.store(true, std::sync::atomic::Ordering::Relaxed);
+                        let ctx = ui.ctx().clone();
+                        crate::update::check(move || ctx.request_repaint());
+                    }
+                });
                 ui.add_space(4.0);
                 ui.label("Made by Gavin (Defanoux), with Claude (Anthropic).");
                 ui.label("Discord: Defanoux   ·   oxide360@defanoux.uk");

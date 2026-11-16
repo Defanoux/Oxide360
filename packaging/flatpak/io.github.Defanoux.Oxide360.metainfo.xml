@@ -45,6 +45,11 @@
     <control>keyboard</control>
   </supports>
   <releases>
+    <release version="0.3.5" date="2026-11-16">
+      <description>
+        <p>About Oxide360 says how this copy was installed and has a Check for Updates button.</p>
+      </description>
+    </release>
     <release version="0.3.4" date="2026-11-16">
       <description>
         <p>OpenSCAD scripts (.scad) offer Oxide360 under Open With in the file manager.</p>
