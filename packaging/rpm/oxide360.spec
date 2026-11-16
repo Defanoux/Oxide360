@@ -9,7 +9,7 @@
 %global debug_package %{nil}
 
 Name:           oxide360
-Version:        0.3.2
+Version:        0.3.3
 Release:        1%{?dist}
 Summary:        Parametric 3D CAD modeller in the spirit of Fusion 360
 License:        GPL-3.0-or-later
@@ -73,6 +73,9 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.Defanoux.Ox
 %{_datadir}/mime/packages/io.github.Defanoux.Oxide360.xml
 
 %changelog
+* Mon Nov 16 2026 Defanoux <128421570+Defanoux@users.noreply.github.com> - 0.3.3-1
+- Checks for a newer version at start and says how to update
+
 * Fri Nov 13 2026 Defanoux <128421570+Defanoux@users.noreply.github.com> - 0.3.2-1
 - First RPM: fix for big coils on smaller graphics cards, crash logs,
   OpenSCAD import, own-cloud saving

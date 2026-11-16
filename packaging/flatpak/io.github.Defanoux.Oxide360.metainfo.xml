@@ -45,6 +45,11 @@
     <control>keyboard</control>
   </supports>
   <releases>
+    <release version="0.3.3" date="2026-11-16">
+      <description>
+        <p>Checks for a newer version at start and says how to update the copy you have (Flatpak, Fedora COPR, built from source); Help &gt; Check for Updates.</p>
+      </description>
+    </release>
     <release version="0.3.2" date="2026-11-12">
       <description>
         <p>Fixes a crash with big coils on graphics cards with smaller limits; meshing uses every core and keeps bodies to a size any card can draw; the taskbar entry flashes when a long rebuild finishes in the background.</p>
